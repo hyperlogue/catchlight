@@ -139,7 +139,8 @@ pub struct SpineData {
     pub joints: Vec<Vec2>,
     /// This frame's bend per link, in half turns. As long as `joints`.
     pub bends: Vec<f32>,
-    pub(crate) pins: SpinePins,
+    /// Rest data, shared between clones of a puppet.
+    pub(crate) pins: std::sync::Arc<SpinePins>,
     /// The last fold's posed guide in the node's own space: the root, then
     /// each joint. Empty reads as the drawing, the root at the origin. What
     /// the transport turns the art about.
@@ -157,7 +158,7 @@ impl SpineData {
         Self {
             joints,
             bends,
-            pins: SpinePins::default(),
+            pins: Default::default(),
             posed_guide: Vec::new(),
         }
     }

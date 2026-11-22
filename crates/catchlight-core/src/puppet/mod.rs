@@ -54,6 +54,7 @@ pub use arena::GlobalTransforms;
 pub(crate) use arena::Arena;
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use glam::{Mat4, Vec2, Vec3};
 
@@ -192,8 +193,11 @@ impl Located {
 /// A model being animated: its pose, its drivers' state and the frame its last
 /// tick produced.
 ///
-/// Cloning one is how a caller forks an animation — the clone shares every
-/// binding grid with the original through `Arc` and copies only the frame.
+/// Cloning one is how a caller forks an animation. Everything a bake derives
+/// from the model — meshes, mesh-group and spine pins, the tree, the binding
+/// grids, the Id tables — is held through `Arc`, so the clone shares it with
+/// the original and copies only the frame: the pose, the drivers' state and
+/// each node's evaluated transform, colour and deform stack.
 #[derive(Clone)]
 pub struct Puppet {
     /// The `Model::identity` of the model this puppet animates.
@@ -203,12 +207,12 @@ pub struct Puppet {
     arena: Arena,
     transforms: GlobalTransforms,
 
-    node_of_id: HashMap<NodeId, NodeIdx>,
+    node_of_id: Arc<HashMap<NodeId, NodeIdx>>,
     /// Indexed by `NodeIdx.0`, so the arena's DFS order is the Id order.
-    id_of_node: Vec<NodeId>,
+    id_of_node: Arc<Vec<NodeId>>,
 
-    params: Vec<BakedParam>,
-    slot_of_param: HashMap<ParamId, u32>,
+    params: Arc<Vec<BakedParam>>,
+    slot_of_param: Arc<HashMap<ParamId, u32>>,
     /// Posed value per param slot; `None` reads the param's default, which is
     /// the state `clear_param_value` leaves.
     param_values: Vec<Option<f32>>,
@@ -233,16 +237,16 @@ pub struct Puppet {
     param_generation: u64,
     last_tick_folded_param_generation: Option<u64>,
 
-    bindings: Vec<BakedBinding>,
+    bindings: Arc<Vec<BakedBinding>>,
     // True for slots that can change a mesh group's input pose. Ordinary
     // writes and driver claims invalidate the same baked slot.
-    mesh_group_inputs: Vec<bool>,
+    mesh_group_inputs: Arc<Vec<bool>>,
     mesh_groups_dirty: bool,
     responses: response::Responses,
     motion_responses_enabled: bool,
-    spine_targets: Vec<Vec<Option<u32>>>,
+    spine_targets: Arc<Vec<Vec<Option<u32>>>>,
 
-    animations: Vec<ClmAnimation>,
+    animations: Arc<Vec<ClmAnimation>>,
     wrap_cuts: Vec<ParamId>,
     play_state: Option<AnimationPlayState>,
     sampled_animation: Option<(AnimationPlayState, f32)>,
@@ -277,10 +281,10 @@ impl Puppet {
             baked_generation: model.generation(),
             arena: Arena::new(),
             transforms: GlobalTransforms::new(),
-            node_of_id: HashMap::new(),
-            id_of_node: Vec::new(),
-            params: Vec::new(),
-            slot_of_param: HashMap::new(),
+            node_of_id: Arc::default(),
+            id_of_node: Arc::default(),
+            params: Arc::default(),
+            slot_of_param: Arc::default(),
             param_values: Vec::new(),
             param_values_overflow: HashMap::new(),
             param_contributions: Vec::new(),
@@ -288,13 +292,13 @@ impl Puppet {
             param_contributed: Vec::new(),
             param_generation: 0,
             last_tick_folded_param_generation: None,
-            bindings: Vec::new(),
-            mesh_group_inputs: Vec::new(),
+            bindings: Arc::default(),
+            mesh_group_inputs: Arc::default(),
             mesh_groups_dirty: true,
             responses: response::Responses::default(),
             motion_responses_enabled: true,
-            spine_targets: Vec::new(),
-            animations: Vec::new(),
+            spine_targets: Arc::default(),
+            animations: Arc::default(),
             wrap_cuts: Vec::new(),
             play_state: None,
             sampled_animation: None,
@@ -904,7 +908,7 @@ impl Puppet {
             .arena
             .spine_node_ids
             .iter()
-            .zip(&self.spine_targets)
+            .zip(self.spine_targets.iter())
             .flat_map(|(&node, params)| params.iter().flatten().map(move |&p| (node, p)));
         bindings.chain(bends)
     }
@@ -924,7 +928,7 @@ impl Puppet {
                 }
             }
         }
-        self.mesh_group_inputs = inputs;
+        self.mesh_group_inputs = Arc::new(inputs);
     }
 
     fn bump_param_generation(&mut self, slot: u32) {
@@ -946,7 +950,7 @@ impl Puppet {
     /// by hand. [`Self::set_animations_from`] is the one that takes the
     /// model's own.
     pub fn set_animations(&mut self, animations: Vec<ClmAnimation>) {
-        self.animations = animations;
+        self.animations = Arc::new(animations);
         // Any play state indexes into the old list.
         self.play_state = None;
         self.sampled_animation = None;
@@ -1084,9 +1088,9 @@ impl Puppet {
         };
         self.responses.reset_changed_inputs(&jumps);
         self.sampled_animation = Some((state, frame));
-        // Move the list out so the writes below can take `&mut self`; nothing
-        // here can early-return before it is put back.
-        let animations = std::mem::take(&mut self.animations);
+        // Hold the list by its own handle so the writes below can take
+        // `&mut self`.
+        let animations = Arc::clone(&self.animations);
         let mut changed = false;
         if let Some(anim) = animations.get(state.index) {
             for lane in &anim.lanes {
@@ -1100,7 +1104,6 @@ impl Puppet {
                 }
             }
         }
-        self.animations = animations;
         self.play_state = Some(state);
         changed
     }
@@ -1237,13 +1240,12 @@ impl Puppet {
         for slot in 0..self.params.len() {
             self.located[slot] = self.locate(slot as u32);
         }
-        // Move the bindings out so the fold can take `&mut Arena`; they are
-        // put back before returning, and nothing here can early-return.
-        let bindings = std::mem::take(&mut self.bindings);
-        for b in &bindings {
+        // Hold the bindings by their own handle so the fold can take
+        // `&mut Arena`.
+        let bindings = Arc::clone(&self.bindings);
+        for b in bindings.iter() {
             self.fold_binding(b);
         }
-        self.bindings = bindings;
     }
 
     /// The current resolved input and its normalized param-range position.
@@ -1617,6 +1619,73 @@ mod tests {
             puppet.param_contributions.len(),
             "every claim is indexed exactly once",
         );
+    }
+
+    /// A clone forks the animation: it shares what the bake derived from the
+    /// model and owns its frame, so posing one never moves the other.
+    #[test]
+    fn a_clone_shares_the_baked_model_and_owns_its_frame() {
+        use crate::formats::clm::{ClmIndices, ClmMesh};
+        use crate::id::SeededHex;
+        use crate::model::{BindingKey, BindingTarget, ModelNode, ModelNodeKind, ModelParam};
+        use crate::model::{ModelPart, ScalarTarget};
+        use crate::Name;
+
+        let mut hex = SeededHex::new(3);
+        let mut model = Model::new();
+        let param = model
+            .add_param(
+                ModelParam {
+                    name: Name::truncated("slide"),
+                    min: 0.0,
+                    max: 1.0,
+                    default: 0.0,
+                },
+                &mut hex,
+            )
+            .expect("add param");
+        let root = model.root().expect("a fresh model has one root").clone();
+        let mesh = ClmMesh {
+            verts: vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0],
+            uvs: vec![0.0; 6],
+            indices: ClmIndices::U16(vec![0, 1, 2]),
+            origin: [0.0, 0.0],
+        };
+        let part = model
+            .add_node(
+                &root,
+                ModelNode::new("art", ModelNodeKind::Part(ModelPart::new(mesh))),
+                &mut hex,
+            )
+            .expect("add part");
+        let key = BindingKey::new(
+            param.clone(),
+            part.clone(),
+            BindingTarget::Scalar(ScalarTarget::Tx),
+        );
+        // Both ends authored: a lone cell would fill the whole axis.
+        model.set_binding_key(&key, [0, 0], 0.0).expect("key");
+        model.set_binding_key(&key, [1, 0], 40.0).expect("key");
+
+        let mut original = Puppet::new(&model);
+        original.tick(&model, 0.0);
+        let mut fork = original.clone();
+        let idx = original.node_idx(&part).expect("part baked");
+
+        let mesh_of = |p: &Puppet| match &p.get(idx).expect("node").kind {
+            NodeKind::Part(part) => Arc::clone(&part.mesh),
+            _ => unreachable!("the node is a part"),
+        };
+        assert!(Arc::ptr_eq(&mesh_of(&original), &mesh_of(&fork)));
+        assert!(Arc::ptr_eq(&original.bindings, &fork.bindings));
+        assert!(Arc::ptr_eq(&original.arena.tree, &fork.arena.tree));
+        assert!(Arc::ptr_eq(&original.id_of_node, &fork.id_of_node));
+
+        fork.set_param_value(&param, 1.0);
+        fork.tick(&model, 0.0);
+        let tx = |p: &Puppet| p.get(idx).expect("node").transform.translation.x;
+        assert_eq!(tx(&fork), 40.0);
+        assert_eq!(tx(&original), 0.0, "the original's frame is its own");
     }
 
     /// One param and two nodes to claim it with. The nodes are plain groups:

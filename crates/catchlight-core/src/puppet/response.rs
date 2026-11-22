@@ -325,16 +325,24 @@ impl Responses {
         pose.stop_animation();
         let needed = &self.geometry_nodes;
         let mut welds = self.geometry_welds.iter();
-        pose.arena.welds.retain(|_| welds.next() == Some(&true));
+        std::sync::Arc::make_mut(&mut pose.arena.welds).retain(|_| welds.next() == Some(&true));
         pose.arena.retain_geometry(needed, &self.points);
-        pose.spine_targets = pose
-            .spine_targets
-            .into_iter()
-            .zip(&pose.arena.spine_node_ids)
-            .filter_map(|(row, node)| needed.contains(node).then_some(row))
-            .collect();
+        pose.spine_targets = std::sync::Arc::new(
+            pose.spine_targets
+                .iter()
+                .zip(&pose.arena.spine_node_ids)
+                .filter(|(_, node)| needed.contains(node))
+                .map(|(row, _)| row.clone())
+                .collect(),
+        );
         pose.arena.spine_node_ids.retain(|n| needed.contains(n));
-        pose.bindings.retain(|b| needed.contains(&b.node));
+        pose.bindings = std::sync::Arc::new(
+            pose.bindings
+                .iter()
+                .filter(|b| needed.contains(&b.node))
+                .cloned()
+                .collect(),
+        );
         // A render puppet may have an explicit pose on a reserved output.
         for (slot, reserved) in self.reserved.iter().enumerate() {
             if *reserved {
@@ -654,8 +662,9 @@ mod tests {
         // Exercise a partial runtime map directly. A normally loaded complete
         // model validates all these references before reaching the baker.
         let index = puppet.node_idx(&parent).unwrap();
-        puppet.id_of_node[index.0 as usize] = NodeId::new("missing").unwrap();
-        puppet.slot_of_param.remove(&output);
+        std::sync::Arc::make_mut(&mut puppet.id_of_node)[index.0 as usize] =
+            NodeId::new("missing").unwrap();
+        std::sync::Arc::make_mut(&mut puppet.slot_of_param).remove(&output);
         puppet.responses = Responses::bake(&puppet, &model, Default::default());
         puppet.set_param_value(&input, 0.25);
         puppet.tick(&model, 1. / 60.);

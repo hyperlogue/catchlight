@@ -182,9 +182,12 @@ const _: () = assert!(
     "NodeKind is too large - consider boxing new variants"
 );
 
+/// `mesh` is what the model authored and never changes between bakes, so it
+/// sits behind an `Arc`: cloning a puppet shares it and copies only the
+/// evaluated fields beside it.
 #[derive(Debug, Clone)]
 pub struct PartData {
-    pub mesh: Mesh,
+    pub mesh: Arc<Mesh>,
     pub albedo_texture: TextureIdx,
     pub opacity: f32,
     pub base_opacity: f32,
@@ -201,7 +204,7 @@ pub struct PartData {
 impl Default for PartData {
     fn default() -> Self {
         Self {
-            mesh: Mesh::default(),
+            mesh: Arc::default(),
             albedo_texture: TextureIdx(0),
             opacity: 1.0,
             base_opacity: 1.0,
@@ -254,24 +257,25 @@ impl Default for CompositeData {
 /// ([`ClmLoadError::ColorOnMeshGroup`](crate::model::ClmLoadError)).
 #[derive(Debug, Clone)]
 pub struct MeshGroupData {
-    pub mesh: Mesh,
+    /// Shared between clones of a puppet, like a part's.
+    pub mesh: Arc<Mesh>,
     pub translate_children: bool,
     pub deform_stack: crate::deform::DeformStack,
-    pub(crate) pins: crate::meshgroup::MeshGroupPins,
+    pub(crate) pins: Arc<crate::meshgroup::MeshGroupPins>,
     /// Spatial triangle candidates baked from `mesh` ahead of `pins`, which
     /// are found through them. Exact containment is checked at the current
     /// position. `None` when the cache cannot be built within its limits;
     /// propagation then falls back to the linear hinted scan.
-    pub(crate) bins: Option<crate::meshgroup::MgTriangleBins>,
+    pub(crate) bins: Option<Arc<crate::meshgroup::MgTriangleBins>>,
 }
 
 impl Default for MeshGroupData {
     fn default() -> Self {
         Self {
-            mesh: Mesh::default(),
+            mesh: Arc::default(),
             translate_children: true,
             deform_stack: crate::deform::DeformStack::default(),
-            pins: crate::meshgroup::MeshGroupPins::default(),
+            pins: Arc::default(),
             bins: None,
         }
     }

@@ -16,6 +16,8 @@
 //! the whole reason it is a separate struct — [`crate::puppet`] carries the
 //! pose layers over one set of passes.
 
+use std::sync::Arc;
+
 use glam::{Mat4, Vec2};
 
 use crate::components::{Node, NodeIdx};
@@ -82,7 +84,8 @@ pub(crate) struct Arena {
     // as the slot index -- no HashMap<NodeIdx,_> indirection, full-node
     // passes are cache-linear, and point lookups are a bounds check + index.
     pub(crate) nodes: Vec<Node>,
-    pub(crate) tree: NodeTree,
+    // Fixed once the bake has filled it, so clones of a puppet share it.
+    pub(crate) tree: Arc<NodeTree>,
     next_id: u32,
     // Frame-persistent scratch used by propagate_mesh_group_deforms to
     // carry computed offsets between a read-borrow of the MG node and a
@@ -111,14 +114,14 @@ pub(crate) struct Arena {
     // base_transform.to_matrix() cached per slot. 60-100ns per node of
     // quat/mat ops saved in compute_transforms when the node has no
     // active transform delta this frame.
-    pub(crate) base_local_matrix: Vec<Mat4>,
+    pub(crate) base_local_matrix: Arc<Vec<Mat4>>,
     // Parallel to nodes: true when a fold wrote a delta into
     // node.transform this frame. Cleared by reset_dynamic_state.
     pub(crate) node_transform_dirty: Vec<bool>,
     pub(crate) deform_node_ids: Vec<NodeIdx>,
     /// Puppet-global weld list; solve order is list order (see
     /// [`crate::weld::apply_welds`]).
-    pub(crate) welds: Vec<crate::weld::Weld>,
+    pub(crate) welds: Arc<Vec<crate::weld::Weld>>,
     // Frame-persistent scratches for the weld pass: each side's current
     // deform sum, read without disturbing the stack memos.
     pub(crate) weld_cur_a_scratch: Vec<glam::Vec2>,
@@ -138,7 +141,7 @@ pub(crate) struct Arena {
 impl Arena {
     pub(crate) fn new() -> Self {
         let root_id = NodeIdx::new(0);
-        let tree = NodeTree::new(root_id);
+        let tree = Arc::new(NodeTree::new(root_id));
 
         // Slot 0 = root (NodeIdx::new(0)).
         let nodes = vec![Node::default()];
@@ -154,10 +157,10 @@ impl Arena {
             mg_pre_order_cache: None,
             mg_written_sources: Vec::new(),
             mg_shifts: Vec::new(),
-            base_local_matrix: vec![Mat4::IDENTITY],
+            base_local_matrix: Arc::new(vec![Mat4::IDENTITY]),
             node_transform_dirty: vec![false],
             deform_node_ids: Vec::new(),
-            welds: Vec::new(),
+            welds: Arc::default(),
             weld_cur_a_scratch: Vec::new(),
             weld_cur_b_scratch: Vec::new(),
             spine_node_ids: Vec::new(),
@@ -246,7 +249,8 @@ impl Arena {
             if let Some(crate::NodeKind::MeshGroup(mesh_group)) =
                 self.nodes.get_mut(id.0 as usize).map(|node| &mut node.kind)
             {
-                mesh_group.bins = crate::meshgroup::MgTriangleBins::build(&mesh_group.mesh);
+                mesh_group.bins =
+                    crate::meshgroup::MgTriangleBins::build(&mesh_group.mesh).map(Arc::new);
             }
         }
         let mut transforms = GlobalTransforms::new();
@@ -265,7 +269,7 @@ impl Arena {
             if let Some(crate::NodeKind::MeshGroup(mesh_group)) =
                 self.nodes.get_mut(id.0 as usize).map(|node| &mut node.kind)
             {
-                mesh_group.pins = pins;
+                mesh_group.pins = Arc::new(pins);
             }
         }
     }
@@ -348,7 +352,7 @@ impl Arena {
             else {
                 continue;
             };
-            spine.pins = pins;
+            spine.pins = Arc::new(pins);
         }
     }
 
@@ -387,13 +391,15 @@ impl Arena {
         let id = self.allocate_id();
         // An unresolvable parent would leave the node registered in every side
         // index but absent from tree walks.
-        if let Err(err) = self.tree.add_child(parent, id) {
+        // Only a bake grows the arena, and it holds the only reference.
+        let tree = Arc::make_mut(&mut self.tree);
+        if let Err(err) = tree.add_child(parent, id) {
             tracing::warn!(
                 "insert_child: {err:?}; node {} attached to the root instead",
                 id.0
             );
-            let root = self.tree.root;
-            let _ = self.tree.add_child(root, id);
+            let root = tree.root;
+            let _ = tree.add_child(root, id);
         }
         debug_assert_eq!(
             id.0 as usize,
@@ -406,7 +412,7 @@ impl Arena {
         );
         let is_mesh_group = matches!(&node.kind, crate::NodeKind::MeshGroup(_));
         let is_spine = matches!(&node.kind, crate::NodeKind::Spine(_));
-        self.base_local_matrix.push(node.base_transform.to_matrix());
+        Arc::make_mut(&mut self.base_local_matrix).push(node.base_transform.to_matrix());
         self.node_transform_dirty.push(false);
         self.nodes.push(node);
         if is_deform_node {

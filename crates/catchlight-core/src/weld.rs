@@ -72,7 +72,7 @@ pub(crate) fn apply_welds(arena: &mut Arena, transforms: &GlobalTransforms) {
     }
     let _span = tracing::trace_span!("apply_welds").entered();
 
-    let welds = std::mem::take(&mut arena.welds);
+    let welds = std::sync::Arc::clone(&arena.welds);
     let mut cur_a = std::mem::take(&mut arena.weld_cur_a_scratch);
     let mut cur_b = std::mem::take(&mut arena.weld_cur_b_scratch);
     // Parts whose Weld slot has been zeroed this frame. The slot buffer is
@@ -80,7 +80,7 @@ pub(crate) fn apply_welds(arena: &mut Arena, transforms: &GlobalTransforms) {
     // contents before accumulating.
     let mut touched: SmallVec<[NodeIdx; 8]> = SmallVec::new();
 
-    for weld in &welds {
+    for weld in welds.iter() {
         apply_one(
             arena,
             transforms,
@@ -91,7 +91,6 @@ pub(crate) fn apply_welds(arena: &mut Arena, transforms: &GlobalTransforms) {
         );
     }
 
-    arena.welds = welds;
     arena.weld_cur_a_scratch = cur_a;
     arena.weld_cur_b_scratch = cur_b;
 }
@@ -270,7 +269,7 @@ mod tests {
         );
         let part = PartData {
             deform_stack: DeformStack::new(verts.len()),
-            mesh,
+            mesh: mesh.into(),
             albedo_texture: TextureIdx(0),
             ..PartData::default()
         };
@@ -353,7 +352,7 @@ mod tests {
             ],
             origin_b,
         );
-        arena.welds = vec![seam_weld(a, b, 0.5)];
+        arena.welds = vec![seam_weld(a, b, 0.5)].into();
         run(&mut arena);
         for v in weld_slot(&arena, a)
             .iter()
@@ -366,7 +365,7 @@ mod tests {
     #[test]
     fn coincident_seam_at_rest_is_a_no_op() {
         let (mut arena, a, b) = two_part_arena(Vec2::ZERO);
-        arena.welds = vec![seam_weld(a, b, 0.5)];
+        arena.welds = vec![seam_weld(a, b, 0.5)].into();
         run(&mut arena);
         assert_eq!(weld_slot(&arena, a), vec![Vec2::ZERO; 3]);
         assert_eq!(weld_slot(&arena, b), vec![Vec2::ZERO; 3]);
@@ -379,7 +378,7 @@ mod tests {
     #[test]
     fn differing_local_frames_with_coincident_world_seam_is_a_no_op() {
         let (mut arena, a, b) = two_part_arena(Vec2::new(4.0, 2.0));
-        arena.welds = vec![seam_weld(a, b, 0.5)];
+        arena.welds = vec![seam_weld(a, b, 0.5)].into();
         run(&mut arena);
         for v in weld_slot(&arena, a)
             .iter()
@@ -400,7 +399,7 @@ mod tests {
                     .unwrap();
             }
         }
-        arena.welds = vec![seam_weld(a, b, 0.5)];
+        arena.welds = vec![seam_weld(a, b, 0.5)].into();
         run(&mut arena);
 
         let slot_a = weld_slot(&arena, a);
@@ -426,7 +425,7 @@ mod tests {
                         .unwrap();
                 }
             }
-            arena.welds = vec![seam_weld(a, b, w)];
+            arena.welds = vec![seam_weld(a, b, w)].into();
             run(&mut arena);
             let a_pull = weld_slot(&arena, a)[0] - Vec2::new(8.0, 0.0);
             let b_pull = weld_slot(&arena, b)[0];
@@ -481,7 +480,7 @@ mod tests {
         );
         let part = PartData {
             deform_stack: DeformStack::new(3),
-            mesh,
+            mesh: mesh.into(),
             ..PartData::default()
         };
         let node = Node {
@@ -508,7 +507,8 @@ mod tests {
                 b_vert: 0,
                 weight: 1.0,
             }],
-        }];
+        }]
+        .into();
         run(&mut arena);
         // World pull on B is (8, 0); in B's +90°-rotated local frame that is
         // (0, -8).
@@ -530,7 +530,7 @@ mod tests {
                     .unwrap();
             }
         }
-        arena.welds = vec![seam_weld(a, b, 0.5)];
+        arena.welds = vec![seam_weld(a, b, 0.5)].into();
         run(&mut arena);
         assert_eq!(weld_slot(&arena, b), vec![Vec2::ZERO; 3]);
     }
@@ -558,7 +558,7 @@ mod tests {
         }
         // a–b with w=1 snaps b's seam to a's (moved by 8); then b–c with w=1
         // snaps c's seam to b's — which must be the *welded* position.
-        arena.welds = vec![seam_weld(a, b, 1.0), seam_weld(b, c, 1.0)];
+        arena.welds = vec![seam_weld(a, b, 1.0), seam_weld(b, c, 1.0)].into();
         run(&mut arena);
         let c_pull = weld_slot(&arena, c)[0];
         assert!(
@@ -578,7 +578,7 @@ mod tests {
                     .unwrap();
             }
         }
-        arena.welds = vec![seam_weld(a, b, 0.0)];
+        arena.welds = vec![seam_weld(a, b, 0.0)].into();
         run(&mut arena);
         let first = weld_slot(&arena, a);
         // Frame 2: same pose. reset + re-apply like a real frame.

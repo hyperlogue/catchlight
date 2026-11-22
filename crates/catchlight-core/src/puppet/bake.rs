@@ -71,14 +71,17 @@ impl BakedBinding {
 }
 
 /// Everything [`super::Puppet::new`] derives from a model in one pass.
+///
+/// Every table here is fixed until the next bake, so each sits behind an
+/// `Arc`: a puppet clones the handles and owns only its frame.
 pub(super) struct Baked {
     pub(super) arena: Arena,
-    pub(super) node_of_id: HashMap<NodeId, NodeIdx>,
-    pub(super) id_of_node: Vec<NodeId>,
-    pub(super) params: Vec<BakedParam>,
-    pub(super) slot_of_param: HashMap<ParamId, u32>,
-    pub(super) bindings: Vec<BakedBinding>,
-    pub(super) spine_targets: Vec<Vec<Option<u32>>>,
+    pub(super) node_of_id: Arc<HashMap<NodeId, NodeIdx>>,
+    pub(super) id_of_node: Arc<Vec<NodeId>>,
+    pub(super) params: Arc<Vec<BakedParam>>,
+    pub(super) slot_of_param: Arc<HashMap<ParamId, u32>>,
+    pub(super) bindings: Arc<Vec<BakedBinding>>,
+    pub(super) spine_targets: Arc<Vec<Vec<Option<u32>>>>,
 }
 
 pub(super) fn bake(model: &Model) -> Baked {
@@ -93,17 +96,17 @@ pub(super) fn bake(model: &Model) -> Baked {
     let Some(root_id) = model.root().cloned() else {
         return Baked {
             arena,
-            node_of_id,
-            id_of_node,
-            params: Vec::new(),
-            slot_of_param: HashMap::new(),
-            bindings: Vec::new(),
-            spine_targets: Vec::new(),
+            node_of_id: Arc::new(node_of_id),
+            id_of_node: Arc::new(id_of_node),
+            params: Arc::default(),
+            slot_of_param: Arc::default(),
+            bindings: Arc::default(),
+            spine_targets: Arc::default(),
         };
     };
     if let Some(root) = model.node(&root_id) {
         arena.nodes[0] = build_node(model, root);
-        arena.base_local_matrix[0] = arena.nodes[0].base_transform.to_matrix();
+        Arc::make_mut(&mut arena.base_local_matrix)[0] = arena.nodes[0].base_transform.to_matrix();
     }
     node_of_id.insert(root_id.clone(), arena.root());
     id_of_node.push(root_id.clone());
@@ -159,25 +162,27 @@ pub(super) fn bake(model: &Model) -> Baked {
     // Slot pairs resolve here: the solve wants vertex pairs, and a slot the
     // author has not refilled since the part was re-meshed drops out rather
     // than pulling a vertex that means something else now.
-    arena.welds = model
-        .welds()
-        .iter()
-        .filter_map(|w| {
-            Some(crate::weld::Weld {
-                a: *node_of_id.get(w.a())?,
-                b: *node_of_id.get(w.b())?,
-                pairs: w
-                    .resolve(model)
-                    .into_iter()
-                    .map(|p| crate::weld::WeldPair {
-                        a_vert: p.a_vert,
-                        b_vert: p.b_vert,
-                        weight: p.weight,
-                    })
-                    .collect(),
+    arena.welds = Arc::new(
+        model
+            .welds()
+            .iter()
+            .filter_map(|w| {
+                Some(crate::weld::Weld {
+                    a: *node_of_id.get(w.a())?,
+                    b: *node_of_id.get(w.b())?,
+                    pairs: w
+                        .resolve(model)
+                        .into_iter()
+                        .map(|p| crate::weld::WeldPair {
+                            a_vert: p.a_vert,
+                            b_vert: p.b_vert,
+                            weight: p.weight,
+                        })
+                        .collect(),
+                })
             })
-        })
-        .collect();
+            .collect(),
+    );
 
     arena.rebuild_all_mesh_group_pins();
     arena.rebuild_spine_rest_state();
@@ -203,7 +208,7 @@ pub(super) fn bake(model: &Model) -> Baked {
         }
     }
 
-    let spine_targets = arena
+    let spine_targets: Vec<Vec<Option<u32>>> = arena
         .spine_node_ids
         .iter()
         .map(|&idx| {
@@ -221,12 +226,12 @@ pub(super) fn bake(model: &Model) -> Baked {
 
     Baked {
         arena,
-        node_of_id,
-        id_of_node,
-        params,
-        slot_of_param,
-        bindings,
-        spine_targets,
+        node_of_id: Arc::new(node_of_id),
+        id_of_node: Arc::new(id_of_node),
+        params: Arc::new(params),
+        slot_of_param: Arc::new(slot_of_param),
+        bindings: Arc::new(bindings),
+        spine_targets: Arc::new(spine_targets),
     }
 }
 
@@ -290,7 +295,7 @@ fn build_node(model: &Model, node: &crate::model::ModelNode) -> Node {
         ModelNodeKind::MotionResponse(_) => NodeKind::MotionResponse,
         ModelNodeKind::Group => NodeKind::Group,
         ModelNodeKind::Part(p) => {
-            let mesh = build_mesh(p.mesh());
+            let mesh = Arc::new(build_mesh(p.mesh()));
             let deform_stack = DeformStack::new(mesh.vertices.len());
             NodeKind::Part(Box::new(PartData {
                 mesh,
@@ -326,7 +331,7 @@ fn build_node(model: &Model, node: &crate::model::ModelNode) -> Node {
             mask_threshold: c.mask_threshold,
         })),
         ModelNodeKind::MeshGroup(mg) => {
-            let mesh = build_mesh(mg.mesh());
+            let mesh = Arc::new(build_mesh(mg.mesh()));
             let deform_stack = DeformStack::new(mesh.vertices.len());
             NodeKind::MeshGroup(Box::new(MeshGroupData {
                 mesh,
