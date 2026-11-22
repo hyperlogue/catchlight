@@ -43,7 +43,9 @@ fn three_keys(mode: InterpolateMode) -> (Model, ParamId, NodeId, BindingKey) {
         .add_binding_with_positions(&key, vec![vec![0.0, 0.5, 1.0]])
         .unwrap();
     for (cell, value) in [10.0f32, 20.0, 30.0].into_iter().enumerate() {
-        model.set_binding_key(&key, [cell as u32, 0], value).unwrap();
+        model
+            .set_binding_key(&key, [cell as u32, 0], value)
+            .unwrap();
     }
     model.set_binding_interpolate(&key, mode).unwrap();
     (model, param, node, key)
