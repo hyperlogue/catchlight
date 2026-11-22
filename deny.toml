@@ -14,25 +14,14 @@ all-features = true
 # fails the check. Add an entry only with the RUSTSEC id and a reason.
 yanked = "deny"
 ignore = [
-    # quick-xml DoS pair, fixed only in 0.41 -- a major bump neither dependent
-    # has taken. Via wayland-scanner (build-time protocol XML) and
-    # accesskit -> atspi -> zbus_xml (D-Bus introspection); no untrusted input.
-    { id = "RUSTSEC-2026-0194", reason = "quick-xml <0.41 via wayland-scanner and accesskit/zbus_xml; no untrusted XML" },
-    { id = "RUSTSEC-2026-0195", reason = "quick-xml <0.41 via wayland-scanner and accesskit/zbus_xml; no untrusted XML" },
+    # quick-xml DoS pair, fixed only in 0.41 -- a major bump wayland-scanner
+    # has not taken. It parses build-time protocol XML; no untrusted input.
+    { id = "RUSTSEC-2026-0194", reason = "quick-xml <0.41 via wayland-scanner; no untrusted XML" },
+    { id = "RUSTSEC-2026-0195", reason = "quick-xml <0.41 via wayland-scanner; no untrusted XML" },
     # ttf-parser unmaintained, no patched version exists. Via winit's
     # sctk-adwaita -> ab_glyph -> owned_ttf_parser, for Wayland window
     # decoration titles only.
     { id = "RUSTSEC-2026-0192", reason = "ttf-parser unmaintained, no fix released; via sctk-adwaita -> ab_glyph -> owned_ttf_parser" },
-    # zbus 6 folded these into zbus itself and published no patched
-    # standalone release. They are only reachable through accesskit's AT-SPI
-    # adapter (accesskit_unix -> atspi -> zbus 5), which bevy_winit and
-    # egui-winit both pull in. accesskit_unix 0.24.1, the newest release,
-    # still depends on zbus ^5.19, and Bevy 0.20 has not moved off that
-    # either. Informational unmaintained notices, not vulnerabilities.
-    # Drop these once accesskit publishes a zbus 6 release.
-    { id = "RUSTSEC-2026-0370", reason = "zvariant merged into zbus 6; only via accesskit_unix/atspi on zbus 5, no migrated release" },
-    { id = "RUSTSEC-2026-0371", reason = "zbus_names merged into zbus 6; only via accesskit_unix/atspi on zbus 5, no migrated release" },
-    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive merged into zbus 6; only via accesskit_unix/atspi on zbus 5, no migrated release" },
 ]
 
 [licenses]
