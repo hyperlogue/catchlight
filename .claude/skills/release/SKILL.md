@@ -39,7 +39,7 @@ description: Prepare or cut a Catchlight release with changelog review, a shared
 6. When publication is requested, use `crates-io.yml` and `npm.yml` from the same
    tag, initially with dry-run enabled. After checks pass, dispatch the live
    workflows within the user's authorization and inspect their actual results.
-   Preserve the workflow names and environments (`crates-io` and `npm`): trusted
+   Preserve the workflow names and shared `release` environment: trusted
    publisher registrations depend on them. For local npm publishing or first
    publication, follow the linked npm release guide. Rust uploads use
    `.github/scripts/publish-crates.sh publish` with a token supplied through

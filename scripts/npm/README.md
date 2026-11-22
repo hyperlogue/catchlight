@@ -53,11 +53,40 @@ rebuild or edit the tarballs between verification and publishing.
 
 ## Subsequent GitHub releases
 
-Configure each package's npm trusted publisher for owner `hyperlogue`, repository
-`catchlight`, workflow `npm.yml`, environment `npm`, with direct `npm publish`
-allowed. Create the GitHub `npm` environment with release-tag restrictions and
-required reviewers. No stored npm publishing token is used by the workflow.
+Both publishing jobs use the GitHub environment `release`. Set it up in the
+repository's **Settings → Environments → New environment**. Under deployment
+branches and tags, choose **Selected branches and tags**, add a **Tag** rule
+`v*`, and save. Optionally add required reviewers; if you are the only releaser,
+leave **Prevent self-review** unchecked so you can approve your own runs.
+No environment secrets or variables are needed for publishing.
+See [GitHub environment setup](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments).
+
+Configure GitHub Actions as a trusted publisher on every public package:
+
+| Field | crates.io | npm |
+| --- | --- | --- |
+| Repository owner | `hyperlogue` | `hyperlogue` |
+| Repository name | `catchlight` | `catchlight` |
+| Workflow filename | `crates-io.yml` | `npm.yml` |
+| Environment | `release` | `release` |
+
+On crates.io, open each crate's **Settings → Trusted Publishing → Add**, select
+GitHub, enter the fields above, and save. Register all nine: `catchlight`,
+`catchlight-core`, `catchlight-wgpu`, `catchlight-bevy`, `catchlight-cli`,
+`catchlight-editor-core`, `catchlight-editor-protocol`, `catchlight-editor-server`,
+and `catchlight-editor-cli`. A crate must already exist and you must be an owner.
+See [crates.io trusted publishing](https://crates.io/docs/trusted-publishing).
+
+On npm, open **Settings → Trusted publishing** for each of `@catchlight/core`,
+`@catchlight/react`, and `@catchlight/editor`. Select GitHub Actions, enter the
+fields above, and enable direct `npm publish` in allowed actions. Save each
+registration. Workflow filenames are filenames only, without `.github/workflows/`.
 See [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/).
+
+If you previously registered the `npm` or `crates-io` environment, replace that
+registration with `release`. Existing environment secrets are not needed by
+these workflows. Push the updated workflow commit before creating a release tag
+so both the default branch and the tagged commit contain the new configuration.
 
 Use the shared version in `Cargo.toml` for all public Rust and npm packages.
 Update internal Rust dependency versions, `Cargo.lock`, and `bun.lock` together.
@@ -70,3 +99,8 @@ environment approval, a fresh runner publishes those exact tarballs with OIDC.
 Dispatch **Publish Rust crates** from the same tag for the matching crates.io
 release. Registry uploads are not atomic: resume a partial release at the same
 version before starting another release.
+
+Dry runs validate packages but skip the publishing jobs, so they do not test
+OIDC authentication or environment approvals. The next authorized live release
+must succeed on both registries to verify the entire setup. If the scripts skip
+an already-published version, that is not proof of npm publishing access.

@@ -59,7 +59,7 @@ jobs:
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    environment: npm
+    environment: release
     permissions:
       contents: read
       id-token: write
