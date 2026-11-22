@@ -116,17 +116,17 @@ so both the default branch and the tagged commit contain the new configuration.
 Use the shared version in `Cargo.toml` for all public Rust and npm packages.
 Update internal Rust dependency versions, `Cargo.lock`, and `bun.lock` together.
 `python3 scripts/release/check.py` rejects version drift before packaging or
-publishing. Run CI, tag the validated commit `v<version>`, then manually dispatch **Publish npm
-packages** from that tag. It defaults to dry-run; disable it for publication.
+publishing. Run CI, tag the validated commit `v<version>` and push the tag:
+that starts **Publish npm packages** and **Publish Rust crates**. Run either by
+hand for a dry run (the default) or to resume a partial release from the tag.
 The verification job builds and tests tarballs without OIDC permission, and the
 `app` job builds the editor binaries on every platform. A live run attaches the
 binary archives, install scripts and `SHA256SUMS` to the `v<version>` GitHub
 release. After environment approval, a fresh runner publishes those exact
 tarballs with OIDC.
 
-Dispatch **Publish Rust crates** from the same tag for the matching crates.io
-release. Registry uploads are not atomic: resume a partial release at the same
-version before starting another release.
+Registry uploads are not atomic: resume a partial release at the same version
+before starting another release.
 
 Dry runs validate packages but skip the publishing jobs, so they do not test
 OIDC authentication or environment approvals. The next authorized live release

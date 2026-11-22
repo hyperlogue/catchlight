@@ -40,9 +40,10 @@ description: Prepare or cut a Catchlight release with changelog review, a shared
    commit, with subject `Catchlight vX.Y.Z`. Both registries use this one tag.
    Leave pushing and publication to the user unless requested; changelog review
    alone does not authorize registry uploads.
-6. When publication is requested, use `crates-io.yml` and `npm.yml` from the same
-   tag, initially with dry-run enabled. After checks pass, dispatch the live
-   workflows within the user's authorization and inspect their actual results.
+6. Pushing the `vX.Y.Z` tag publishes: it starts `crates-io.yml` and `npm.yml`
+   live. Before that push, a manual run of either from the tag (dry-run by
+   default) checks it. Inspect the tag-triggered runs' actual results; rerun a
+   failed one manually from the tag with dry-run off.
    Preserve the workflow names and shared `release` environment: trusted
    publisher registrations depend on them. A live `npm.yml` run also builds the
    `catchlight-editor` binaries and attaches them, the install scripts and

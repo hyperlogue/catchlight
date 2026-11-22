@@ -1,6 +1,9 @@
 name: Publish Rust crates
 
+# A `v<version>` tag push publishes; a manual run defaults to a dry run.
 on:
+  push:
+    tags: ['v*']
   workflow_dispatch:
     inputs:
       dry_run:
