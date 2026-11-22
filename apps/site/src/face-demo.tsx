@@ -2,7 +2,8 @@
  * Tracking only poses the replica: no authored keys or saved model changes.
  * Each run owns its stream, detector and frame loop, including late async arrivals.
  * Mirroring is read per frame, so toggling it never restarts the camera.
- * The face detector drives the head and expression; a second pose detector
+ * The face detector drives the head, brows and mouth through One Euro filters
+ * that damp landmark jitter, leaving blinks raw; a second pose detector
  * drives the torso from the shoulders, eased because pose depth is noisy.
  * A torso param eases back to rest whenever its landmarks are out of view.
  */
@@ -20,6 +21,24 @@ const MODELS = "https://storage.googleapis.com/mediapipe-models";
 const LEFT_SHOULDER = 11, RIGHT_SHOULDER = 12, LEFT_HIP = 23, RIGHT_HIP = 24;
 /** Share of the gap to the target closed per detection. */
 const BODY_EASE = 0.35;
+
+/** One Euro filter settings: the cutoff in Hz at rest, and how fast it rises
+ * with speed in rig units per second. Head params are in degrees. */
+const STEADY = { head: { minCutoff: 1, beta: 0.02 }, face: { minCutoff: 1.5, beta: 1 } };
+
+/** Smooths one tracked signal: steady while still, low lag while moving. */
+function oneEuro({ minCutoff, beta }: { minCutoff: number; beta: number }) {
+  let last: { t: number; x: number; dx: number } | undefined;
+  const alpha = (cutoff: number, dt: number) => 1 / (1 + 1 / (2 * Math.PI * cutoff * dt));
+  return (x: number, ms: number) => {
+    const dt = last ? (ms - last.t) / 1000 : 0;
+    if (!last || dt <= 0) { last = { t: ms, x, dx: 0 }; return x; }
+    const dx = last.dx + alpha(1, dt) * ((x - last.x) / dt - last.dx);
+    const smoothed = last.x + alpha(minCutoff + beta * Math.abs(dx), dt) * (x - last.x);
+    last = { t: ms, x: smoothed, dx };
+    return smoothed;
+  };
+}
 
 /** Torso targets in rig units, unmirrored and before clamping. A param is
  * absent while the landmarks it needs are out of view. */
@@ -69,6 +88,8 @@ export function FaceDemo({ session }: { session: Session }) {
     let poser: PoseLandmarker | undefined;
     /** Eased torso values, by param name. */
     const body = new Map<string, number>();
+    /** Jitter filters for steadied face params, by param name. */
+    const filters = new Map<string, (x: number, ms: number) => number>();
     let frame = 0;
     const params = session.params();
     const pose = (name: string, value: number) => {
@@ -82,6 +103,7 @@ export function FaceDemo({ session }: { session: Session }) {
       stats.driven.clear();
       stats.shapes = [];
       body.clear();
+      filters.clear();
     };
     const cleanup = () => {
       disposed = true;
@@ -148,7 +170,7 @@ export function FaceDemo({ session }: { session: Session }) {
               reset();
               setStatus("No face in view. Face the camera in good light.");
             } else {
-              setStatus("Tracking live — turn your head, blink, open your mouth, or lean.");
+              setStatus("Tracking live — turn your head, blink, raise your brows, open your mouth, or lean.");
               stats.faces++;
               const categories = result.faceBlendshapes[0]?.categories ?? [];
               stats.shapes = categories.filter(c => c.categoryName !== "_neutral")
@@ -159,17 +181,29 @@ export function FaceDemo({ session }: { session: Session }) {
               // the eye on the same side of the screen, and turns follow suit.
               const flip = mirror.current;
               const side = flip ? -1 : 1;
+              // Blinks stay unfiltered: any lag makes them look sluggish.
+              const steady = (name: string, value: number, kind: keyof typeof STEADY) => {
+                let filter = filters.get(name);
+                if (!filter) filters.set(name, filter = oneEuro(STEADY[kind]));
+                pose(name, filter(value, now));
+              };
               pose(flip ? "eye_right_open" : "eye_left_open", 1 - score("eyeBlinkLeft"));
               pose(flip ? "eye_left_open" : "eye_right_open", 1 - score("eyeBlinkRight"));
-              pose("mouth_open", score("jawOpen") * 1.5);
-              pose("mouth_expression", (score("mouthSmileLeft") + score("mouthSmileRight")) / 2);
+              steady("mouth_open", score("jawOpen") * 1.5, "face");
+              steady("mouth_expression", (score("mouthSmileLeft") + score("mouthSmileRight")) / 2, "face");
+              // Brow scores rarely pass 0.6, so they are scaled toward the rig's full range.
+              for (const [subject, own] of [["Left", flip ? "right" : "left"], ["Right", flip ? "left" : "right"]] as const) {
+                const down = score(`browDown${subject}`);
+                steady(`eyebrow_${own}_height`, (score(`browOuterUp${subject}`) - down) * 1.5, "face");
+                steady(`eyebrow_${own}_inner_height`, (score("browInnerUp") - down) * 1.5, "face");
+              }
               // MediaPipe's column-major rotation matrix, converted to degrees.
               const m = result.facialTransformationMatrixes[0]?.data;
               if (m) {
                 const degrees = 180 / Math.PI;
-                pose("head_yaw", -side * Math.atan2(m[8]!, m[10]!) * degrees);
-                pose("head_pitch", -Math.atan2(-m[9]!, Math.hypot(m[8]!, m[10]!)) * degrees);
-                pose("head_roll", -side * Math.atan2(m[1]!, m[5]!) * degrees);
+                steady("head_yaw", -side * Math.atan2(m[8]!, m[10]!) * degrees, "head");
+                steady("head_pitch", -Math.atan2(-m[9]!, Math.hypot(m[8]!, m[10]!)) * degrees, "head");
+                steady("head_roll", -side * Math.atan2(m[1]!, m[5]!) * degrees, "head");
               }
               const targets = torsoTargets(posture);
               for (const name of ["body_yaw", "body_roll", "body_move_x", "body_pitch"]) {
@@ -208,7 +242,7 @@ export function FaceDemo({ session }: { session: Session }) {
     </div>
     <aside className="face-controls">
       <p className="eyebrow">LIVE PERFORMANCE</p><h1>Your expressions.<br />Lan’s animation.</h1>
-      <p>Turn your head, blink, open your mouth, and lean or turn your shoulders to bring Lan to life.</p>
+      <p>Turn your head, blink, raise your brows, open your mouth, and lean or turn your shoulders to bring Lan to life.</p>
       <video ref={video} muted playsInline className={mirrored ? "mirrored" : undefined}
         aria-label={mirrored ? "Mirrored camera preview" : "Camera preview"} />
       <p role="status">{status}</p>
