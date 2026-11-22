@@ -99,6 +99,12 @@ export type SocketFactory = (url: string) => SocketLike;
 export interface ConnectOptions {
   fetch?: FetchLike;
   socket?: SocketFactory;
+  /**
+   * The bearer token, when the host already holds it — a launcher that hands
+   * it to its own page in the URL fragment. Skips `GET /token`, which such a
+   * server does not serve.
+   */
+  token?: string;
 }
 
 /** A request that has gone out and not been answered. */
@@ -132,7 +138,8 @@ export class ConnectedBackend implements Backend {
   }
 
   /**
-   * Asks `baseUrl` for a token, then opens the socket with it.
+   * Asks `baseUrl` for a token, unless `options.token` already is one, then
+   * opens the socket with it.
    *
    * The token request is a plain `fetch`: whatever authorizes this tab —
    * a cookie, an origin allowance — is what CORS already carries, and a
@@ -144,6 +151,10 @@ export class ConnectedBackend implements Backend {
     const doFetch = options?.fetch ?? defaultFetch;
     const open = options?.socket ?? defaultSocket;
 
+    if (options?.token !== undefined) {
+      const url = `${wsBase(base)}/ws?token=${encodeURIComponent(options.token)}`;
+      return new ConnectedBackend(base, options.token, doFetch, await openSocket(open, url));
+    }
     const response = await doFetch(`${base}/token`).catch((cause: unknown) => {
       throw asProtocolError(cause, "closed");
     });

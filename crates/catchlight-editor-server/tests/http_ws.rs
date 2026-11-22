@@ -1704,3 +1704,11 @@ fn without_a_ui_the_root_is_behind_the_token() {
     let server = start();
     assert_eq!(http(server.addr, "GET", "/", &[], &[]).status, 401);
 }
+
+#[test]
+fn a_server_that_does_not_serve_its_token_keeps_it_behind_itself() {
+    let server = start_with(|options| options.serve_token = false);
+    assert_eq!(http(server.addr, "GET", "/token", &[], &[]).status, 401);
+    let mut socket = connect(server.addr, TOKEN, None).unwrap();
+    new_session(&mut socket, 1);
+}

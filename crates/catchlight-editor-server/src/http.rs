@@ -99,7 +99,10 @@
 //!   origin is the one origin `GET /token` answers by default. A UI file is
 //!   only ever a fallback for a path no route claims, so a bundle cannot
 //!   shadow an API route, and every UI response forbids framing so another
-//!   page cannot dress up a local editor and click through it.
+//!   page cannot dress up a local editor and click through it. A launcher
+//!   serving its own page sets [`HttpOptions::serve_token`] off and hands the
+//!   page the token in the URL fragment instead, since `GET /token` is
+//!   readable by any local process that skips CORS.
 //!
 //! - **An idle socket is proved live, not assumed.** A tab that is only
 //!   watching sends nothing for minutes, and a proxy between it and here reaps
@@ -169,6 +172,11 @@ pub struct HttpOptions {
     /// The editor page and its assets, served at `/` and below. `None`
     /// serves no page; a tab is then hosted elsewhere and allowlisted.
     pub ui: Option<UiFiles>,
+    /// Whether `GET /token` hands the token out. CORS keeps it from foreign
+    /// *pages*, not from other local processes or users, so a server whose
+    /// own page is given the token another way (the launcher puts it in the
+    /// URL fragment) turns the route off.
+    pub serve_token: bool,
 }
 
 /// A built page: each file's path relative to the site root (`index.html`,
@@ -183,6 +191,7 @@ impl Default for HttpOptions {
             max_upload_bytes: DEFAULT_MAX_UPLOAD_BYTES,
             ping_interval: DEFAULT_PING_INTERVAL,
             ui: None,
+            serve_token: true,
         }
     }
 }
@@ -204,6 +213,7 @@ struct ServerState {
     ping_interval: Duration,
     connections: Arc<ConnectionLimiter>,
     ui: Option<UiFiles>,
+    serve_token: bool,
 }
 
 /// Bind `addr` without serving it. The allowlist is the server's own two
@@ -237,6 +247,7 @@ pub fn bind_http(
             ping_interval: options.ping_interval,
             connections: Arc::new(ConnectionLimiter::default()),
             ui: options.ui,
+            serve_token: options.serve_token,
         }),
     })
 }
@@ -382,7 +393,7 @@ fn serve_connection(state: &ServerState, stream: TcpStream) {
     // The gate closes on the head alone. A refusal here leaves the body
     // unread and the connection is dropped under it, which is what keeps an
     // unauthenticated caller from spending the upload ceiling.
-    if !opens_without_a_token(&request)
+    if !opens_without_a_token(state, &request)
         && ui_file(state, &request).is_none()
         && !bearer_matches(&request, &state.token)
     {
@@ -411,14 +422,14 @@ fn serve_connection(state: &ServerState, stream: TcpStream) {
 
 /// The one door the token does not gate: the CORS headers, not the token, are
 /// what keep a foreign page from reading `GET /token`.
-fn opens_without_a_token(request: &HttpRequest) -> bool {
-    request.method == "GET" && request.path == "/token"
+fn opens_without_a_token(state: &ServerState, request: &HttpRequest) -> bool {
+    state.serve_token && request.method == "GET" && request.path == "/token"
 }
 
 /// Dispatch a request the gate in [`serve_connection`] has already let
 /// through. Only [`opens_without_a_token`] arrives here unauthenticated.
 fn route(state: &ServerState, request: &HttpRequest, allowed: Option<&str>) -> Response {
-    if opens_without_a_token(request) {
+    if opens_without_a_token(state, request) {
         return cors(
             Response::new(200, "OK")
                 .with("Content-Type", "application/json")

@@ -178,6 +178,18 @@ describe("connected", () => {
     expect(socket.url).toBe("ws://editor.local/ws?token=abc123");
   });
 
+  test("a token the host already holds skips the token request", async () => {
+    FakeSocket.opened = [];
+    const http = fakeFetch({});
+    await ConnectedBackend.connect("http://editor.local", {
+      fetch: http.fetch,
+      socket: (url) => new FakeSocket(url),
+      token: "held",
+    });
+    expect(http.calls).toHaveLength(0);
+    expect(FakeSocket.opened[0]?.url).toBe("ws://editor.local/ws?token=held");
+  });
+
   test("correlates replies by id, whatever order they arrive in", async () => {
     const { backend, socket } = await connect();
 

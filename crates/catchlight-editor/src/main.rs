@@ -18,8 +18,13 @@
 //! - **One editor per user.** A second `serve` that finds a live editor in
 //!   the connection file opens that one (and the model, if given) instead of
 //!   starting another, so agents and tabs never split across two processes.
-//!   "Live" means the recorded URL answers `GET /token` with the recorded
-//!   token, not merely that something listens on the port.
+//!   "Live" means the recorded URL accepts the recorded token, not merely
+//!   that something listens on the port. A lock held from that check until
+//!   the new record is written keeps two simultaneous launches from both
+//!   starting.
+//! - **The token never travels unauthenticated.** The server does not serve
+//!   `GET /token`; the browser is opened at `/#token=…`, and a fragment is
+//!   never sent over the wire.
 //! - **Loopback only.** The listener binds `127.0.0.1`; the server's token,
 //!   `Host` and `Origin` checks are unchanged.
 
@@ -155,13 +160,18 @@ fn serve(options: Serve) -> Result<()> {
     let connection_path = default_connection_path()
         .ok_or_else(|| anyhow!("no per-user directory for the connection file; set HOME"))?;
 
+    // Held from the liveness check until the new record is written, so two
+    // launches at once cannot both decide they are the first. The OS drops
+    // the lock with the process, so a crash leaves nothing to clean up.
+    let lock = launch_lock(&connection_path)?;
     if let Some(running) = read_connection(&connection_path).filter(is_live) {
+        drop(lock);
         eprintln!("{NAME}: an editor is already running at {}", running.url);
         if let Some(model) = model {
             open_in_running(&running, &model)?;
         }
         if options.open {
-            open_browser(&running.url);
+            open_browser(&page_url(&running.url, &running.token));
         }
         return Ok(());
     }
@@ -190,8 +200,11 @@ fn serve(options: Serve) -> Result<()> {
              serving the API only"
         );
     }
+    // The page gets the token in its URL fragment, so `GET /token`, which
+    // any local process can read, stays off.
     let http_options = || HttpOptions {
         ui: (!ui.is_empty()).then_some(ui),
+        serve_token: false,
         ..HttpOptions::default()
     };
     let loopback = |port| SocketAddr::from(([127, 0, 0, 1], port));
@@ -208,8 +221,11 @@ fn serve(options: Serve) -> Result<()> {
         &connection_path,
         &server,
     )?)));
+    drop(lock);
+    let page = page_url(&url, &server.token);
     let on_signal = file.clone();
     // Dropping the file is what removes it; a signal skips destructors.
+    // `ctrlc`'s `termination` feature covers SIGTERM and SIGHUP too.
     ctrlc::set_handler(move || {
         if let Ok(mut file) = on_signal.lock() {
             file.take();
@@ -218,14 +234,14 @@ fn serve(options: Serve) -> Result<()> {
     })
     .context("installing the Ctrl-C handler")?;
 
-    eprintln!("{NAME}: {url}");
+    eprintln!("{NAME}: {page}");
     eprintln!(
         "{NAME}: connection recorded in {}",
         connection_path.display()
     );
     eprintln!("{NAME}: drive it with `{NAME} <command>`; Ctrl-C stops it");
     if options.open && !ui.is_empty() {
-        open_browser(&url);
+        open_browser(&page);
     }
     let served = server.serve();
     if let Ok(mut file) = file.lock() {
@@ -234,9 +250,37 @@ fn serve(options: Serve) -> Result<()> {
     served.context("serving the editor")
 }
 
+/// The page with the token in its fragment, which the browser never sends
+/// back over the wire; the page reads it and drops it from the address bar.
+fn page_url(url: &str, token: &str) -> String {
+    format!("{url}/#token={token}")
+}
+
+/// An exclusive lock beside the connection file, created in a directory only
+/// this user can enter.
+fn launch_lock(connection: &Path) -> Result<std::fs::File> {
+    let parent = connection.parent().unwrap_or(Path::new("."));
+    let mut dir = std::fs::DirBuilder::new();
+    dir.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut dir, 0o700);
+    dir.create(parent)
+        .with_context(|| format!("creating {}", parent.display()))?;
+    let path = connection.with_extension("lock");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .with_context(|| format!("opening {}", path.display()))?;
+    file.lock()
+        .with_context(|| format!("locking {}", path.display()))?;
+    Ok(file)
+}
+
 /// Whether the recorded editor is still the process that wrote the record:
-/// the URL answers `GET /token` with the recorded token. A port reused by
-/// anything else fails the comparison.
+/// the URL accepts the recorded token on an authenticated route. A port
+/// reused by anything else, or a newer editor with another token, fails.
 fn is_live(connection: &Connection) -> bool {
     let Some(addr) = connection
         .url
@@ -252,13 +296,18 @@ fn is_live(connection: &Connection) -> bool {
         return false;
     };
     let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-    let request = format!("GET /token HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n");
+    let body = r#"{"id":0,"cmd":"session_list"}"#;
+    let request = format!(
+        "POST /request HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {}\r\n\
+         Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        connection.token,
+        body.len()
+    );
     let mut response = Vec::new();
     if stream.write_all(request.as_bytes()).is_err() || stream.read_to_end(&mut response).is_err() {
         return false;
     }
-    let text = String::from_utf8_lossy(&response);
-    text.starts_with("HTTP/1.1 200") && text.contains(&format!("\"{}\"", connection.token))
+    response.starts_with(b"HTTP/1.1 200")
 }
 
 /// Ask the running editor to open `model` through the cli, which already
@@ -368,7 +417,10 @@ mod tests {
         let server = bind_http(
             Arc::new(Editor::new()),
             "127.0.0.1:0".parse().unwrap(),
-            HttpOptions::default(),
+            HttpOptions {
+                serve_token: false,
+                ..HttpOptions::default()
+            },
         )
         .unwrap();
         let mut record = Connection {

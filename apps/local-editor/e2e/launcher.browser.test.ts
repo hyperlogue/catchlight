@@ -60,7 +60,9 @@ test.skipIf(!browserExe || !existsSync(exe))(
         if (Date.now() > deadline) throw new Error("the launcher never wrote its connection file");
         await Bun.sleep(50);
       }
-      const { url } = JSON.parse(await readFile(connection, "utf8")) as { url: string };
+      const { url, token } = JSON.parse(await readFile(connection, "utf8")) as { url: string; token: string };
+      // The launcher keeps its token off unauthenticated routes.
+      expect((await fetch(`${url}/token`)).status).toBe(401);
       if ((await fetch(url)).status !== 200) {
         throw new Error(`${exe} serves no page; run \`cargo xtask bundle-ui\` and rebuild it`);
       }
@@ -69,8 +71,9 @@ test.skipIf(!browserExe || !existsSync(exe))(
       page.setDefaultTimeout(60_000);
       const errors: string[] = [];
       page.on("pageerror", (error) => errors.push(error.message));
-      await page.goto(url);
+      await page.goto(`${url}/#token=${token}`);
       await page.getByRole("button", { name: "Open a model", exact: true }).waitFor();
+      expect(new URL(page.url()).hash).toBe("");
 
       // The agent opens a model; the tab lists it without a reload.
       expect(cli("session", "open", model)).toContain("session 1");

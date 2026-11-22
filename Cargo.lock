@@ -1537,6 +1537,7 @@ dependencies = [
  "catchlight-editor-core",
  "catchlight-editor-protocol",
  "catchlight-wgpu",
+ "ctrlc",
  "getrandom 0.3.4",
  "glam",
  "image",

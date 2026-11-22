@@ -32,6 +32,8 @@ tungstenite = "0.30"
 getrandom = "0.3"
 # `PUT /files/{key}` carries its storage key in the path, percent-encoded.
 percent-encoding = "2.3"
+# The binary removes its `--connection-file` on Ctrl-C, SIGTERM and SIGHUP.
+ctrlc = { version = "3", features = ["termination"] }
 
 [lints]
 workspace = true

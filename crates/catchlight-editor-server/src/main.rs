@@ -96,10 +96,17 @@ fn main() -> std::io::Result<()> {
     )?;
     eprintln!("catchlight-editor-server: http://{}", server.addr);
     eprintln!("catchlight-editor-server: token: {}", server.token);
-    let _connection = match &args.connection_file {
-        Some(path) => Some(ConnectionFile::write(path, &server)?),
-        None => None,
-    };
+    if let Some(path) = &args.connection_file {
+        let file = std::sync::Mutex::new(Some(ConnectionFile::write(path, &server)?));
+        // `serve` never returns, so the file leaves on a signal or not at all.
+        ctrlc::set_handler(move || {
+            if let Ok(mut file) = file.lock() {
+                file.take();
+            }
+            std::process::exit(130);
+        })
+        .map_err(std::io::Error::other)?;
+    }
     // The socket keeps serving agents in the background; HTTP owns main.
     spawn_socket(editor, args.socket);
     server.serve()

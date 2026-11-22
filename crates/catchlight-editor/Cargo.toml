@@ -27,8 +27,9 @@ catchlight-editor-server = { workspace = true }
 catchlight-editor-protocol = { workspace = true }
 catchlight-editor-cli = { workspace = true }
 anyhow = { workspace = true }
-# Ctrl-C removes the connection file instead of leaving it stale.
-ctrlc = "3"
+# Ctrl-C, SIGTERM and SIGHUP remove the connection file instead of leaving it
+# stale.
+ctrlc = { version = "3", features = ["termination"] }
 
 # `cargo binstall catchlight-editor` fetches the release archive instead of
 # building; the names are the ones `scripts/release/editor_app.py` writes.
