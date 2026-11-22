@@ -25,12 +25,20 @@
 use std::sync::Arc;
 
 use crate::components::{srgb_encode_to_byte, DecodedTexture};
+use crate::load_budget::{LoadBudget, LoadLimitError};
 
 /// Why a texture could not be prepared.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum TextureError {
     #[error("texture decode failed: {0}")]
     Decode(String),
+    /// A texture is larger than
+    /// [`MAX_TEXTURE_DIMENSION`](crate::load_budget::MAX_TEXTURE_DIMENSION) on
+    /// a side, or the textures together decode to more bytes than the
+    /// caller's budget allows.
+    #[error(transparent)]
+    Limit(#[from] LoadLimitError),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -379,6 +387,11 @@ impl UvCrop {
 pub struct PreppedTexture {
     pub texture: DecodedTexture,
     pub uv_crop: Option<UvCrop>,
+    /// The image's width and height as its header states them, before any
+    /// halving or crop. `width * height * 4` is what [`prepare_textures`]
+    /// charged the budget for it, so a caller that keeps this texture across
+    /// a rebuild can charge the same amount without reading the header again.
+    pub source_size: [u32; 2],
 }
 
 /// Decode `textures` (each halved `texture_halvings` times) and crop each to
@@ -394,17 +407,39 @@ pub struct PreppedTexture {
 /// the GPU texture of every other one by Id and payload `Arc` — so a memo in
 /// front of this would hold a decoded copy of every texture for a hit that
 /// never comes.
+///
+/// **Every header is charged before any pixel is decoded.** A model stores
+/// its textures encoded and loading one never looks inside them, so this is
+/// the first place a texture's real size is known — and a few kilobytes of
+/// PNG can state any size at all. Each image's header dimensions are held to
+/// [`MAX_TEXTURE_DIMENSION`](crate::load_budget::MAX_TEXTURE_DIMENSION) and
+/// charged to `budget` as RGBA8 at full size
+/// ([`LoadBudget::check_texture_dimensions`], the same charge the importer
+/// makes), so a file that would decode past the caller's
+/// `decoded_texture_bytes` is refused having allocated nothing. Full size,
+/// whatever `texture_halvings` says: the halving runs on the decoded image.
 pub fn prepare_textures(
     textures: &[EncodedTexture],
     texture_halvings: u32,
+    budget: &mut LoadBudget,
 ) -> Result<Vec<PreppedTexture>, TextureError> {
+    let mut sizes = Vec::with_capacity(textures.len());
+    for tex in textures {
+        let (width, height) = tex
+            .dimensions()
+            .map_err(|e| TextureError::Decode(e.to_string()))?;
+        budget.check_texture_dimensions(width, height)?;
+        sizes.push([width, height]);
+    }
+
     let prepped = prep_textures(textures, texture_halvings)?;
     // Albedo ids index this table positionally, so a dropped entry would
     // silently repoint every later part at the wrong texture.
     assert_eq!(prepped.len(), textures.len());
     Ok(prepped
         .into_iter()
-        .map(|(texture, plan)| PreppedTexture {
+        .zip(sizes)
+        .map(|((texture, plan), source_size)| PreppedTexture {
             texture,
             uv_crop: plan.crop.map(|(x, y, w, h)| UvCrop {
                 src_w: plan.src_w,
@@ -414,6 +449,7 @@ pub fn prepare_textures(
                 w,
                 h,
             }),
+            source_size,
         })
         .collect())
 }
@@ -669,12 +705,13 @@ mod tests {
     /// and bytes read under the wrong format are an error rather than a guess.
     #[test]
     fn alpha_convention_and_format_decide_the_decode() {
+        let budget = &mut LoadBudget::default();
         let straight = encoded_png([64, 0, 0, 128], false);
-        let straight_result = prepare_textures(std::slice::from_ref(&straight), 0).unwrap();
+        let straight_result = prepare_textures(std::slice::from_ref(&straight), 0, budget).unwrap();
 
         let mut premultiplied = straight.clone();
         premultiplied.premultiplied = true;
-        let premultiplied_result = prepare_textures(&[premultiplied], 0).unwrap();
+        let premultiplied_result = prepare_textures(&[premultiplied], 0, budget).unwrap();
         assert_ne!(
             straight_result[0].texture.rgba,
             premultiplied_result[0].texture.rgba
@@ -683,8 +720,117 @@ mod tests {
         let mut wrong_format = straight;
         wrong_format.format = TextureFormat::Tga;
         assert!(matches!(
-            prepare_textures(&[wrong_format], 0),
+            prepare_textures(&[wrong_format], 0, budget),
             Err(TextureError::Decode(_))
+        ));
+    }
+
+    /// A PNG whose header states `width` x `height` and whose image data is
+    /// not a deflate stream at all: [`EncodedTexture::dimensions`] reads it,
+    /// a decode fails. Which of the two errors comes back therefore says
+    /// whether the header was checked before the pixels were asked for.
+    fn png_stating(width: u32, height: u32) -> EncodedTexture {
+        fn chunk(out: &mut Vec<u8>, kind: &[u8; 4], body: &[u8]) {
+            out.extend_from_slice(&(body.len() as u32).to_be_bytes());
+            let start = out.len();
+            out.extend_from_slice(kind);
+            out.extend_from_slice(body);
+            let mut crc = u32::MAX;
+            for &byte in &out[start..] {
+                crc ^= u32::from(byte);
+                for _ in 0..8 {
+                    crc = (crc >> 1) ^ (0xEDB8_8320 & 0u32.wrapping_sub(crc & 1));
+                }
+            }
+            out.extend_from_slice(&(!crc).to_be_bytes());
+        }
+        let mut data = vec![0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1A, b'\n'];
+        let mut header = Vec::new();
+        header.extend_from_slice(&width.to_be_bytes());
+        header.extend_from_slice(&height.to_be_bytes());
+        // 8-bit RGBA, no interlace.
+        header.extend_from_slice(&[8, 6, 0, 0, 0]);
+        chunk(&mut data, b"IHDR", &header);
+        chunk(&mut data, b"IDAT", &[0xFF; 16]);
+        chunk(&mut data, b"IEND", &[]);
+        EncodedTexture {
+            format: TextureFormat::Png,
+            data: data.into(),
+            premultiplied: false,
+        }
+    }
+
+    fn budget_of(decoded_texture_bytes: u64) -> LoadBudget {
+        LoadBudget::new(crate::load_budget::LoadLimits {
+            decoded_texture_bytes,
+            ..Default::default()
+        })
+    }
+
+    /// A model keeps its textures encoded, so nothing has looked at a `.clm`
+    /// texture's size until it is prepared. One side over the cap is refused
+    /// from the header: a few dozen bytes may not ask for a 8193-wide decode.
+    #[test]
+    fn a_texture_over_the_dimension_cap_is_refused_from_its_header() {
+        use crate::load_budget::MAX_TEXTURE_DIMENSION;
+
+        for (width, height) in [(MAX_TEXTURE_DIMENSION + 1, 1), (1, MAX_TEXTURE_DIMENSION + 1)] {
+            let err = prepare_textures(&[png_stating(width, height)], 0, &mut budget_of(u64::MAX))
+                .unwrap_err();
+            assert!(
+                matches!(
+                    err,
+                    TextureError::Limit(LoadLimitError {
+                        resource: "texture dimension",
+                        ..
+                    })
+                ),
+                "{width}x{height}: {err:?}"
+            );
+        }
+    }
+
+    /// The decoded-bytes budget is over every texture in the call together,
+    /// and all of it is charged before the first decode starts: the textures
+    /// here cannot be decoded, so a `Decode` error would mean the budget was
+    /// consulted too late to stop the allocation.
+    #[test]
+    fn the_decoded_budget_is_aggregate_and_charged_before_any_decode() {
+        let textures = [png_stating(64, 64), png_stating(64, 64)];
+        let both = 2 * 64 * 64 * 4;
+
+        let err = prepare_textures(&textures, 0, &mut budget_of(both - 1)).unwrap_err();
+        assert_eq!(
+            err,
+            TextureError::Limit(LoadLimitError {
+                resource: "decoded texture bytes",
+                limit: both - 1,
+                got: both,
+            })
+        );
+        // Halving does not shrink the charge: the image is decoded at full
+        // size first.
+        let err = prepare_textures(&textures, 3, &mut budget_of(both - 1)).unwrap_err();
+        assert!(matches!(err, TextureError::Limit(_)), "{err:?}");
+
+        // Exactly at the limit the headers pass, and only then is a decode
+        // attempted.
+        let err = prepare_textures(&textures, 0, &mut budget_of(both)).unwrap_err();
+        assert!(matches!(err, TextureError::Decode(_)), "{err:?}");
+    }
+
+    /// The budget is the caller's, so what one call charged counts against
+    /// the next — which is how a render cache holds a model's kept and fresh
+    /// textures to one total.
+    #[test]
+    fn a_budget_carries_across_calls() {
+        let one = encoded_png([255, 0, 0, 255], false);
+        let mut budget = budget_of(4);
+        let prepped = prepare_textures(std::slice::from_ref(&one), 0, &mut budget).unwrap();
+        assert_eq!(prepped[0].source_size, [1, 1]);
+        assert!(matches!(
+            prepare_textures(&[one], 0, &mut budget),
+            Err(TextureError::Limit(_))
         ));
     }
 
@@ -757,8 +903,10 @@ mod tests {
             premultiplied: false,
         };
 
-        let prepped = prepare_textures(std::slice::from_ref(&source), 0).unwrap();
+        let prepped =
+            prepare_textures(std::slice::from_ref(&source), 0, &mut LoadBudget::default()).unwrap();
         assert_eq!(prepped.len(), 1);
+        assert_eq!(prepped[0].source_size, [64, 64]);
         let crop = prepped[0].uv_crop.expect("an opaque texel means a crop");
         let (cx, cy, cw, ch) = alpha_crop_rect(&decode_halved(&source, 0).unwrap())
             .expect("the same crop the prep found");

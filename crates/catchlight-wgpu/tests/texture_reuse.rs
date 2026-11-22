@@ -175,6 +175,73 @@ async fn replica_sync(options: PrepareOptions) {
     assert_eq!(after.textures_kept - before.textures_kept, 1);
 }
 
+/// The decoded-texture limit is over the whole model, so the textures a
+/// rebuild keeps count against it as much as the ones it decodes. Otherwise
+/// a model over the limit loads so long as it arrives one texture at a time.
+#[test]
+fn the_decoded_texture_limit_counts_the_textures_a_rebuild_keeps() {
+    pollster::block_on(async {
+        let mut ctx = context().await;
+        let (mut model, mut hex) = two_texture_model();
+        // Two 8x8 textures, RGBA8.
+        let both = 2 * 8 * 8 * 4;
+
+        let tight = PrepareOptions {
+            max_decoded_texture_bytes: both - 1,
+            ..PrepareOptions::default()
+        };
+        let Err(error) = RenderCache::prepare(&mut ctx.renderer, &model, tight) else {
+            panic!("a model over the limit was prepared");
+        };
+        assert!(
+            error.to_string().contains("decoded texture bytes"),
+            "{error}"
+        );
+
+        let exact = PrepareOptions {
+            max_decoded_texture_bytes: both,
+            ..PrepareOptions::default()
+        };
+        let mut cache = RenderCache::prepare(&mut ctx.renderer, &model, exact).expect("prepare");
+        let mut puppet = Puppet::new(&model);
+
+        // A third texture, alone well under the limit; with the two the
+        // cache keeps it is over.
+        let root = model.root().expect("a complete model").clone();
+        let part = model
+            .add_node(
+                &root,
+                ModelNode::new(
+                    "third",
+                    ModelNodeKind::Part(catchlight_core::ModelPart::new(common::quad(0.25, 0.25))),
+                ),
+                &mut hex,
+            )
+            .expect("add part");
+        model
+            .add_texture(
+                &part,
+                common::solid_texture(8, 8, [40, 200, 60, 255]),
+                &mut hex,
+            )
+            .expect("add texture");
+
+        puppet.tick(&model, 0.0);
+        let error = cache
+            .refresh(&mut ctx.renderer, &model, &puppet)
+            .expect_err("the kept textures were not charged");
+        assert!(
+            error.to_string().contains("decoded texture bytes"),
+            "{error}"
+        );
+        assert_eq!(
+            cache.texture_count(),
+            2,
+            "the previous build stays resident"
+        );
+    });
+}
+
 /// The in-tab handoff takes the same path: `replace_from` shares the payload
 /// `Arc`s, so the cache keeps every GPU texture it holds.
 #[test]

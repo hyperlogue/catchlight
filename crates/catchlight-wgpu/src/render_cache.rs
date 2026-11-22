@@ -81,6 +81,7 @@ use std::sync::Arc;
 
 use catchlight_core::components::{NodeIdx, NodeKind};
 use catchlight_core::formats::clm::{ClmIndices, ClmMesh};
+use catchlight_core::load_budget::{LoadBudget, LoadLimits};
 use catchlight_core::{
     Mesh, MeshIndices, Model, ModelNodeKind, ModelTexture, Node, NodeId, NodeTree, Puppet, TexId,
     UvCrop, Vec2,
@@ -99,12 +100,38 @@ pub(crate) struct MeshIdx(pub(crate) u32);
 pub(crate) struct TexIdx(pub(crate) u32);
 
 /// What a caller decides about how a model reaches the GPU.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PrepareOptions {
     /// Halve every texture this many times before upload (0 = full
     /// resolution). A budget knob, not a model property: two caches over one
     /// model may choose differently.
     pub texture_halvings: u32,
+    /// The most bytes the model's textures may decode to, all of them
+    /// together, as RGBA8 at the size their headers state. A build that
+    /// would pass it fails with [`RendererError::TexturePrep`] before any
+    /// image is decoded and leaves the previous build resident.
+    ///
+    /// A `.clm` stores its textures encoded and loading one decodes nothing,
+    /// so this is where a file's stated image sizes are first held to
+    /// anything. The total is over the whole model, not one build: a texture
+    /// a rebuild keeps on the GPU is charged the same as one it decodes, so
+    /// a model cannot grow past the limit one edit at a time. Each texture is
+    /// also held to
+    /// [`MAX_TEXTURE_DIMENSION`](catchlight_core::load_budget::MAX_TEXTURE_DIMENSION)
+    /// a side whatever this says.
+    ///
+    /// The default is [`LoadLimits`]' `decoded_texture_bytes`, the total the
+    /// importer already holds an `.inx` to.
+    pub max_decoded_texture_bytes: u64,
+}
+
+impl Default for PrepareOptions {
+    fn default() -> Self {
+        Self {
+            texture_halvings: 0,
+            max_decoded_texture_bytes: LoadLimits::default().decoded_texture_bytes,
+        }
+    }
 }
 
 /// What a cache's builds have cost, counted since it was prepared.
@@ -143,6 +170,10 @@ struct UploadedTexture {
     /// The crop the decode returned, kept because a rebuild that reuses the
     /// GPU texture never runs the decode that would produce it again.
     uv_crop: Option<UvCrop>,
+    /// The image's header size, kept for the same reason: a rebuild charges
+    /// a kept texture against [`PrepareOptions::max_decoded_texture_bytes`]
+    /// without reading its header again.
+    source_size: [u32; 2],
 }
 
 impl UploadedTexture {
@@ -454,9 +485,20 @@ impl RenderCache {
         let mut moved: Vec<(u32, u32)> = Vec::new();
         let mut fresh_slots: Vec<usize> = Vec::new();
         let mut fresh: Vec<catchlight_core::EncodedTexture> = Vec::new();
+        // One total over the model's textures, kept and fresh alike. Charging
+        // only what this build decodes would let a model pass the limit one
+        // edit at a time, and make whether it loads depend on its history.
+        let mut limits = LoadLimits::default();
+        limits.decoded_texture_bytes = self.options.max_decoded_texture_bytes;
+        let mut budget = LoadBudget::new(limits);
+        let over = |error: &dyn std::fmt::Display| RendererError::TexturePrep(error.to_string());
         for (slot, (id, texture)) in wanted.iter().enumerate() {
             match previous.get(*id) {
                 Some(up) if up.holds(texture) => {
+                    let [width, height] = up.source_size;
+                    budget
+                        .check_texture_dimensions(width, height)
+                        .map_err(|error| over(&error))?;
                     moved.push((up.slot, slot as u32));
                     kept.push(Some(UploadedTexture {
                         slot: slot as u32,
@@ -477,9 +519,12 @@ impl RenderCache {
         // would strand this cache's tables — and the caller's last-good
         // render list — describing slots the renderer no longer holds, which
         // draws stale contents under new numbers.
-        let prepped =
-            catchlight_core::prepare_textures(fresh.as_slice(), self.options.texture_halvings)
-                .map_err(|error| RendererError::TexturePrep(error.to_string()))?;
+        let prepped = catchlight_core::prepare_textures(
+            fresh.as_slice(),
+            self.options.texture_halvings,
+            &mut budget,
+        )
+        .map_err(|error| over(&error))?;
         for prep in prepped.iter() {
             renderer.validate_texture_upload(&prep.texture)?;
         }
@@ -505,6 +550,7 @@ impl RenderCache {
                 slot: slot as u32,
                 payload: wanted[slot].1.data.clone(),
                 uv_crop: prep.uv_crop,
+                source_size: prep.source_size,
             });
         }
         let uv_crops: Vec<Option<UvCrop>> = kept
