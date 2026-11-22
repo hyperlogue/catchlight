@@ -43,6 +43,9 @@ mod ui {
 }
 
 const NAME: &str = "catchlight-editor";
+/// The workflow an agent reads once per session (`catchlight-editor guide`),
+/// shipped in the binary so it always matches the commands it names.
+const GUIDE: &str = include_str!("guide.md");
 /// Tried first so a bookmark keeps working; any free port when it is taken.
 const DEFAULT_PORT: u16 = 7323;
 
@@ -64,7 +67,8 @@ running, it opens that one instead.
 Every other command drives the running editor, e.g.
   catchlight-editor session list
   catchlight-editor node tree
-Run `catchlight-editor help` for the full command list.";
+Run `catchlight-editor help` for the full command list.
+Agents: read `catchlight-editor guide` once per session before working.";
 
 #[derive(Debug, Default, PartialEq)]
 struct Serve {
@@ -84,6 +88,10 @@ fn main() -> Result<()> {
         }
         Some("-V" | "--version") => {
             println!("{NAME} {}", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        }
+        Some("guide") if args.len() == 2 => {
+            print!("{GUIDE}");
             Ok(())
         }
         Some("serve") => serve(parse_serve(&args[2..])?),
@@ -310,6 +318,32 @@ mod tests {
         assert!(!is_serve_argument("node"));
         assert!(!is_serve_argument("--json"));
         assert!(!is_serve_argument("status"));
+    }
+
+    /// Every `catchlight-editor <word>` the guide shows has to be a command
+    /// this binary runs, or the guide teaches an agent to fail.
+    #[test]
+    fn the_guide_names_only_real_commands() {
+        let commands = catchlight_editor_cli::command_names();
+        let mut checked = 0;
+        for line in GUIDE.lines() {
+            for (index, _) in line.match_indices("catchlight-editor ") {
+                let rest = &line[index + NAME.len() + 1..];
+                let word: String = rest
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '/')
+                    .collect();
+                if word.is_empty() || word.starts_with('-') || word.starts_with('/') {
+                    continue;
+                }
+                assert!(
+                    commands.contains(&word) || matches!(word.as_str(), "guide" | "help"),
+                    "the guide names `{NAME} {word}`, which is no command"
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked > 10, "only {checked} commands found in the guide");
     }
 
     #[test]

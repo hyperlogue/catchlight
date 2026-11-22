@@ -765,6 +765,15 @@ enum DeformCmd {
     },
 }
 
+/// The subcommand names `run` accepts, for a caller that documents them.
+pub fn command_names() -> Vec<String> {
+    use clap::CommandFactory;
+    Cli::command()
+        .get_subcommands()
+        .map(|c| c.get_name().to_owned())
+        .collect()
+}
+
 /// Which running editor a command reaches when no flag names one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Discovery {
