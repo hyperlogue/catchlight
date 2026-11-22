@@ -1,6 +1,11 @@
-"""Check the shared public release version before building or publishing."""
+"""Check the shared public release version before building or publishing.
+
+`--notes` prints that version's CHANGELOG.md section instead: the GitHub
+release body, so the release page carries the reviewed notes verbatim.
+"""
 import json
 from pathlib import Path
+import re
 import sys
 import tomllib
 
@@ -31,8 +36,26 @@ def check(root=ROOT):
     return version
 
 
+def release_notes(version, root=ROOT):
+    """The body of `## [version]` in CHANGELOG.md, without its heading or link
+    definitions. Raises when the section is missing or empty."""
+    lines, inside = [], False
+    for line in (root / 'CHANGELOG.md').read_text().splitlines():
+        if line.startswith('## ['):
+            inside = line.startswith(f'## [{version}]')
+        elif inside and not re.match(r'\[[^\]]+\]: ', line):
+            lines.append(line)
+    notes = '\n'.join(lines).strip()
+    if not notes:
+        raise ValueError(f'CHANGELOG.md has no notes under ## [{version}]')
+    return notes + '\n'
+
+
 if __name__ == '__main__':
     try:
+        if sys.argv[1:] == ['--notes']:
+            print(release_notes(check()), end='')
+            sys.exit()
         print(check())
     except ValueError as error:
         sys.exit(str(error))

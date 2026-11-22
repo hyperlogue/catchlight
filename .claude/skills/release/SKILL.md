@@ -53,8 +53,10 @@ description: Prepare or cut a Catchlight release with changelog review, a shared
    runs' actual results, and rerun a failed one from the tag with dry-run off.
    Preserve the workflow names and shared `release` environment: trusted
    publisher registrations depend on them. A live `npm.yml` run also builds the
-   `catchlight-editor` binaries and attaches them, the install scripts and
-   `SHA256SUMS` to the tag's GitHub release. A crate or npm package publishing
+   `catchlight-editor` binaries and publishes the tag's GitHub release with
+   them, the install scripts and `SHA256SUMS`, its body the version's changelog
+   section. Releases are immutable once published; recover an incomplete one
+   with a patch release. A crate or npm package publishing
    for the first time cannot use trusted publishing yet; publish it once locally
    per the npm guide, then register it. While any `@catchlight/editor` version
    below 0.2.0 is not deprecated, deprecate those versions with a pointer to

@@ -60,6 +60,8 @@ jobs:
           # @catchlight/editor below 0.2.0 is the component library.
           [[ "$version" != 0.0.* && "$version" != 0.1.* ]] || {
             echo "Release the editor app as 0.2.0 or later, not $version" >&2; exit 1; }
+          # The release body; fail here rather than after the builds.
+          python3 scripts/release/check.py --notes > /dev/null
       - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
       - run: nix develop -c cargo xtask bundle-ui
       - uses: actions/upload-artifact@v4
