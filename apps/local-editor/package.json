@@ -11,7 +11,7 @@
   },
   "dependencies": {
     "@catchlight/core": "workspace:*",
-    "@catchlight/editor": "workspace:*",
+    "@catchlight/editor-ui": "workspace:*",
     "@catchlight/wasm": "workspace:*",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"

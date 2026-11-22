@@ -16,7 +16,7 @@ rmSync(output, { recursive: true, force: true });
 mkdirSync(output, { recursive: true });
 const paths = {};
 const releases = [];
-for (const name of ['core', 'react', 'editor']) {
+for (const name of ['core', 'react', 'editor-ui']) {
   const source = resolve('packages', name);
   const dest = resolve(output, name);
   mkdirSync(dest, { recursive: true });
@@ -46,7 +46,7 @@ for (const name of ['core', 'react', 'editor']) {
   pkg.types = './dist/index.d.ts';
   pkg.exports = exports;
   pkg.files = ['dist', 'README.md', 'LICENSE-MIT', 'LICENSE-APACHE', 'THIRD-PARTY-NOTICES.md'];
-  pkg.sideEffects = name === 'editor' ? ['**/*.css'] : false;
+  pkg.sideEffects = name === 'editor-ui' ? ['**/*.css'] : false;
   if (name === 'core') {
     const wasmDir = resolve(dest, 'dist/wasm');
     execFileSync('wasm-bindgen', [
@@ -76,7 +76,7 @@ for (const name of ['core', 'react', 'editor']) {
   for (const file of ['LICENSE-MIT', 'LICENSE-APACHE', 'THIRD-PARTY-NOTICES.md']) {
     cpSync(file, resolve(dest, file));
   }
-  if (name === 'editor') {
+  if (name === 'editor-ui') {
     cpSync(resolve(source, 'src/theme.css'), resolve(dest, 'dist/theme.css'));
     cpSync('assets/logo-transparent.svg', resolve(dest, 'dist/logo.svg'));
   }

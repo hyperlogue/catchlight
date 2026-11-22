@@ -12,7 +12,7 @@
   },
   "dependencies": {
     "@catchlight/core": "workspace:*",
-    "@catchlight/editor": "workspace:*",
+    "@catchlight/editor-ui": "workspace:*",
     "@catchlight/react": "workspace:*",
     "@catchlight/wasm": "workspace:*",
     "@mediapipe/tasks-vision": "0.10.32",

@@ -1,6 +1,6 @@
 # npm releases
 
-Release `@catchlight/core`, `@catchlight/react`, and `@catchlight/editor` in that
+Release `@catchlight/core`, `@catchlight/react`, and `@catchlight/editor-ui` in that
 order. Core bundles the release WASM runtime under `@catchlight/core/wasm`, with
 explicit initialization. The generated workspace `@catchlight/wasm` package and
 demo remain private; they are not additional npm dependencies.
@@ -78,7 +78,7 @@ and `catchlight-editor-cli`. A crate must already exist and you must be an owner
 See [crates.io trusted publishing](https://crates.io/docs/trusted-publishing).
 
 On npm, open **Settings → Trusted publishing** for each of `@catchlight/core`,
-`@catchlight/react`, and `@catchlight/editor`. Select GitHub Actions, enter the
+`@catchlight/react`, and `@catchlight/editor-ui`. Select GitHub Actions, enter the
 fields above, and enable direct `npm publish` in allowed actions. Save each
 registration. Workflow filenames are filenames only, without `.github/workflows/`.
 See [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/).

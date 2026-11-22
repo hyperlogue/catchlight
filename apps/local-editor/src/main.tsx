@@ -7,8 +7,8 @@
  * in the session list as they are opened.
  */
 import { ConnectedBackend, Editor } from "@catchlight/core";
-import { CatchlightEditor } from "@catchlight/editor";
-import "@catchlight/editor/theme.css";
+import { CatchlightEditor } from "@catchlight/editor-ui";
+import "@catchlight/editor-ui/theme.css";
 // wasm-bindgen's bundler target initializes itself on import.
 import * as catchlight from "@catchlight/wasm";
 import { StrictMode } from "react";

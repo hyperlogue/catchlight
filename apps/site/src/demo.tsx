@@ -8,10 +8,10 @@ import {
   OpfsStorage,
 } from "@catchlight/core";
 import type { Backend, Session, Storage } from "@catchlight/core";
-import { CatchlightEditor } from "@catchlight/editor";
+import { CatchlightEditor } from "@catchlight/editor-ui";
 // Only the probe door below uses this, and only when the URL asks for it.
 import { EditorProvider, fitCamera } from "@catchlight/react";
-import "@catchlight/editor/theme.css";
+import "@catchlight/editor-ui/theme.css";
 // The generated module initializes itself on import: `cargo xtask build-wasm` emits
 // wasm-bindgen's bundler target, whose `.wasm` is an ESM import rather than a
 // fetch this page would have to sequence.

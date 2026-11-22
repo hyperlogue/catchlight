@@ -1,5 +1,5 @@
 /**
- * `@catchlight/editor` — the assembled editor, and the one place a default
+ * `@catchlight/editor-ui` — the assembled editor, and the one place a default
  * look lives.
  *
  * Layer 4: pure layout over `@catchlight/react`'s parts plus a stylesheet.
@@ -18,7 +18,7 @@ export { CatchlightEditor } from "./CatchlightEditor.js";
 export type { CatchlightEditorProps } from "./CatchlightEditor.js";
 
 /**
- * The stylesheet, as a host imports it: `import "@catchlight/editor/theme.css"`.
+ * The stylesheet, as a host imports it: `import "@catchlight/editor-ui/theme.css"`.
  * Nothing is styled without it.
  */
-export const themeStylesheet = "@catchlight/editor/theme.css";
+export const themeStylesheet = "@catchlight/editor-ui/theme.css";

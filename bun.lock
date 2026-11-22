@@ -14,7 +14,7 @@
       "version": "0.1.0",
       "dependencies": {
         "@catchlight/core": "workspace:*",
-        "@catchlight/editor": "workspace:*",
+        "@catchlight/editor-ui": "workspace:*",
         "@catchlight/wasm": "workspace:*",
         "react": "^19.2.0",
         "react-dom": "^19.2.0",
@@ -33,7 +33,7 @@
       "version": "0.1.0",
       "dependencies": {
         "@catchlight/core": "workspace:*",
-        "@catchlight/editor": "workspace:*",
+        "@catchlight/editor-ui": "workspace:*",
         "@catchlight/react": "workspace:*",
         "@catchlight/wasm": "workspace:*",
         "@mediapipe/tasks-vision": "0.10.32",
@@ -53,8 +53,8 @@
       "name": "@catchlight/core",
       "version": "0.1.1",
     },
-    "packages/editor": {
-      "name": "@catchlight/editor",
+    "packages/editor-ui": {
+      "name": "@catchlight/editor-ui",
       "version": "0.1.1",
       "devDependencies": {
         "@catchlight/core": "workspace:*",
@@ -98,7 +98,7 @@
   "packages": {
     "@catchlight/core": ["@catchlight/core@workspace:packages/core"],
 
-    "@catchlight/editor": ["@catchlight/editor@workspace:packages/editor"],
+    "@catchlight/editor-ui": ["@catchlight/editor-ui@workspace:packages/editor-ui"],
 
     "@catchlight/react": ["@catchlight/react@workspace:packages/react"],
 

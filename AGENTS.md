@@ -12,7 +12,7 @@ a tier-1 runtime target; browser rendering supports WebGPU and WebGL2.
   holding its scratch until the committed revision arrives.
 - Logic a native editor would also need belongs in Rust. `packages/core/`
   holds web-platform glue; `packages/react/` exposes hooks and unstyled parts;
-  `packages/editor/` assembles them with the default theme under
+  `packages/editor-ui/` assembles them with the default theme under
   `@layer catchlight`.
 - `.clm` is the only model load format. External-format import adapters belong
   in `catchlight-importer`, which depends on core, never the reverse.
@@ -31,7 +31,7 @@ a tier-1 runtime target; browser rendering supports WebGPU and WebGL2.
   TypeScript module comment. Document new invariants beside the code that
   enforces them. Keep this file focused on repo-wide constraints rather than
   duplicating the crate map, module invariants, or command help.
-- For editor UI work, use [packages/editor/DESIGN.md](packages/editor/DESIGN.md).
+- For editor UI work, use [packages/editor-ui/DESIGN.md](packages/editor-ui/DESIGN.md).
 - For model-file operations, use `cargo run -p catchlight-cli -- --help`.
   Workspace automation is documented in `crates/xtask/src/main.rs`; for
   Python session editing, use [python/README.md](python/README.md).

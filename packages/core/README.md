@@ -31,7 +31,7 @@ copying or bundler URL imports. Keep the loader and binary from the same release
 
 You can still pass a custom implementation of `WasmModule` to `Editor.create`.
 React hosts can pass the resulting editor to `CatchlightEditor` from
-`@catchlight/editor`, importing `@catchlight/editor/theme.css` for its theme.
+`@catchlight/editor-ui`, importing `@catchlight/editor-ui/theme.css` for its theme.
 
 [Project and demo](https://github.com/hyperlogue/catchlight#readme).
 Licensed under MIT OR Apache-2.0; license texts and third-party notices are

@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process';
 const version = execFileSync('python3', [resolve(import.meta.dirname, '../release/check.py')], { encoding: 'utf8' }).trim();
 const dir = resolve(import.meta.dirname, '../../dist/npm');
 const releases = JSON.parse(readFileSync(resolve(dir, 'releases.json'), 'utf8'));
-const expected = ['@catchlight/core', '@catchlight/react', '@catchlight/editor'];
+const expected = ['@catchlight/core', '@catchlight/react', '@catchlight/editor-ui'];
 if (JSON.stringify(releases.map(p => p.name)) !== JSON.stringify(expected)) throw new Error('Unexpected npm release set/order');
 const live = process.argv[2] === '--publish';
 if (process.argv.length > 2 && !live) throw new Error('Usage: node scripts/npm/publish.mjs [--publish]');

@@ -24,8 +24,8 @@ try {
       for (const file of typeof target === 'string' ? [target] : Object.values(target)) assert(existsSync(resolve(pkgDir, file)), file);
     }
   }
-  assert(existsSync(resolve(dir, 'node_modules/@catchlight/editor/dist/logo.svg')));
-  for (const name of ['react', 'editor']) {
+  assert(existsSync(resolve(dir, 'node_modules/@catchlight/editor-ui/dist/logo.svg')));
+  for (const name of ['react', 'editor-ui']) {
     assert(!existsSync(resolve(dir, `node_modules/@catchlight/${name}/dist/wasm`)), 'Only core ships WASM');
   }
   writeFileSync(resolve(dir, 'smoke.mjs'), `
@@ -33,21 +33,21 @@ import assert from 'node:assert/strict';
 import { Editor, InTabBackend, MemoryStorage } from '@catchlight/core';
 import { fakeWasm } from '@catchlight/core/fakes';
 import { EditorProvider } from '@catchlight/react';
-import { CatchlightEditor, themeStylesheet } from '@catchlight/editor';
+import { CatchlightEditor, themeStylesheet } from '@catchlight/editor-ui';
 assert.equal(typeof Editor, 'function');
 assert.equal(typeof InTabBackend, 'function');
 assert.equal(typeof MemoryStorage, 'function');
 assert.equal(typeof fakeWasm, 'function');
 assert.equal(typeof EditorProvider, 'function');
 assert.equal(typeof CatchlightEditor, 'function');
-assert.equal(themeStylesheet, '@catchlight/editor/theme.css');
+assert.equal(themeStylesheet, '@catchlight/editor-ui/theme.css');
 `);
   execFileSync(process.execPath, ['smoke.mjs'], { cwd: dir, stdio: 'inherit' });
   writeFileSync(resolve(dir, 'smoke.ts'), `
 import { Editor, InTabBackend, MemoryStorage, type WasmModule } from '@catchlight/core';
 import init, * as wasm from '@catchlight/core/wasm';
 import { EditorProvider } from '@catchlight/react';
-import { CatchlightEditor, type CatchlightEditorProps } from '@catchlight/editor';
+import { CatchlightEditor, type CatchlightEditorProps } from '@catchlight/editor-ui';
 export const component: (props: CatchlightEditorProps) => React.JSX.Element = CatchlightEditor;
 export type Host = { editor: Editor; wasm: WasmModule; provider: typeof EditorProvider };
 export async function createEditor() {

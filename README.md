@@ -5,7 +5,7 @@
 # Catchlight
 
 [![crates.io](https://img.shields.io/crates/v/catchlight.svg?color=72bffb)](https://crates.io/crates/catchlight)
-[![npm](https://img.shields.io/npm/v/%40catchlight%2Feditor.svg?color=72bffb)](https://www.npmjs.com/package/@catchlight/editor)
+[![npm](https://img.shields.io/npm/v/%40catchlight%2Feditor-ui.svg?color=72bffb)](https://www.npmjs.com/package/@catchlight/editor-ui)
 
 Catchlight is a software stack for 2.5D character animation. It simulates
 3D movement through deforming 2D parts.
@@ -18,7 +18,7 @@ Catchlight is a software stack for 2.5D character animation. It simulates
 | **Catchlight Studio** | Author locally with a person and an agent sharing editor sessions. | Planned local application: the editor server together with a web UI served on the local machine. The server and connected frontend exist; the bundled application and its launcher are not implemented yet. |
 | **Catchlight libraries** | Embed animation or authoring in another application, or automate an editor. | Rust libraries, the `@catchlight/*` browser packages, and the [Python client](python/README.md). |
 
-`@catchlight/editor` is the embeddable React frontend with the default theme.
+`@catchlight/editor-ui` is the embeddable React frontend with the default theme.
 The host chooses its backend and initializes the WASM module bundled in
 `@catchlight/core/wasm`. The editor package does not include
 the native editor-server executable or a local application launcher.

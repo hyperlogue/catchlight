@@ -147,7 +147,7 @@ boundaries keep future tools consistent:
 | `catchlight-editor-wasm` | Evaluated geometry, coordinate conversion, decoded artwork, owned draft/gesture handles           |
 | `@catchlight/core`       | Session lifecycle, replica reads, typed protocol routing, scratch and storage                     |
 | `@catchlight/react`      | Unstyled controls, authoring panels, gestures and workspace hooks                                 |
-| `@catchlight/editor`     | Layout, theme, command palette and notifications                                                  |
+| `@catchlight/editor-ui`  | Layout, theme, command palette and notifications                                                  |
 | `apps/site`              | Backend choice, bundled Lan demo and an optional development starter override                                                |
 
 No component maintains a second authored model. Queries read the replica;
