@@ -3,18 +3,39 @@
 //! Runtime identity, generation and derived caches are not authored state.
 //! The CLM structure defines authored ordering and sparse-cell semantics;
 //! encoded asset bytes are compared directly without image decoding or copying.
+//!
+//! The answer is the one comparing the two written structures would give —
+//! the same fields, in the orders [`Model::to_clm_structure`] writes them —
+//! but it is read off the models themselves, so nothing is cloned to give it.
+//! Two things make the usual question, "did this edit change anything",
+//! cost what changed rather than what the model holds:
+//!
+//! - **The same model at the same generation is the same state.** A
+//!   generation is drawn from a process-wide clock that never reissues a
+//!   number, and nothing mutates a model without bumping it, so a snapshot
+//!   and the model it was taken from compare equal without being read for as
+//!   long as neither has been edited.
+//! - **A leaf both models share is equal without being read.** Meshes, mask
+//!   and slot lists, binding cells and texture payloads sit behind `Arc`s
+//!   that a clone shares and an edit copies out, so after an edit only the
+//!   leaves it touched are compared by value.
 
-use super::{Model, ModelError};
+use super::{same, Model, ModelBinding, ModelError, ModelNode, ModelNodeKind};
 
 impl Model {
     /// Whether both models contain exactly the same authored structure and
     /// assets. Ignores runtime identity, generation and derived caches.
     ///
     /// Texture order, encoding, alpha convention and encoded bytes all matter,
-    /// as do sparse binding holes, animations and extension values. Large
-    /// payloads remain borrowed; structure comparison materializes the ordinary
-    /// CLM structure. Invalid intermediate models return their export error.
+    /// as do sparse binding holes, animations and extension values. Nothing
+    /// is materialized: large payloads remain borrowed and the structure is
+    /// compared in place. A model that could not be written has no structure
+    /// to compare, and returns the error its export would.
     pub fn authored_eq(&self, other: &Self) -> Result<bool, ModelError> {
+        // See the module docs: one model, one generation, one state.
+        if self.identity == other.identity && self.generation == other.generation {
+            return Ok(true);
+        }
         if self.texture_order != other.texture_order || self.extensions != other.extensions {
             return Ok(false);
         }
@@ -25,17 +46,132 @@ impl Model {
                 return Ok(false);
             }
         }
-        Ok(self.to_clm_structure()? == other.to_clm_structure()?)
+        self.check_writable()?;
+        other.check_writable()?;
+        Ok(self.structure_eq(other))
     }
+
+    /// Whether the two models would write the same `Structure` section, bar
+    /// the extensions [`Self::authored_eq`] has already compared: nodes in
+    /// tree order, params, bindings, welds and animations, each in the
+    /// model's own order, field for field.
+    fn structure_eq(&self, other: &Self) -> bool {
+        // The cheap disagreements first.
+        if self.param_order != other.param_order
+            || self.bindings.len() != other.bindings.len()
+            || self.welds.len() != other.welds.len()
+            || self.animations.len() != other.animations.len()
+        {
+            return false;
+        }
+
+        // Tree order is what the structure writes, so two models agree on
+        // their nodes exactly when the walks agree and each node does. A
+        // node's place among its siblings is in the walk; its `children` list
+        // is not compared again.
+        let order = self.nodes_in_order();
+        if order != other.nodes_in_order() {
+            return false;
+        }
+        let nodes_agree = order
+            .iter()
+            .all(|id| match (self.nodes.get(id), other.nodes.get(id)) {
+                (Some(a), Some(b)) => node_eq(a, b),
+                _ => false,
+            });
+        let params_agree = || {
+            self.param_order
+                .iter()
+                .all(|id| match (self.params.get(id), other.params.get(id)) {
+                    (Some(a), Some(b)) => {
+                        a.name.as_str() == b.name.as_str()
+                            && a.min == b.min
+                            && a.max == b.max
+                            && a.default == b.default
+                    }
+                    _ => false,
+                })
+        };
+        nodes_agree
+            && params_agree()
+            && self
+                .bindings
+                .iter()
+                .zip(&other.bindings)
+                .all(|(a, b)| binding_eq(a, b))
+            && self.welds == other.welds
+            && self.animations == other.animations
+    }
+}
+
+/// One node as the structure writes it: where it hangs, its properties and
+/// its kind. `children` is the tree order's business.
+fn node_eq(a: &ModelNode, b: &ModelNode) -> bool {
+    a.parent == b.parent
+        && a.name.as_str() == b.name.as_str()
+        && a.enabled == b.enabled
+        && a.z_order == b.z_order
+        && a.transform == b.transform
+        && a.lock_to_root == b.lock_to_root
+        && kind_eq(&a.kind, &b.kind)
+}
+
+fn kind_eq(a: &ModelNodeKind, b: &ModelNodeKind) -> bool {
+    use ModelNodeKind as Kind;
+    match (a, b) {
+        (Kind::Group, Kind::Group) => true,
+        (Kind::Part(a), Kind::Part(b)) => {
+            a.opacity == b.opacity
+                && a.blend_mode == b.blend_mode
+                && a.tint == b.tint
+                && a.screen_tint == b.screen_tint
+                && a.mask_threshold == b.mask_threshold
+                && a.albedo == b.albedo
+                && same(&a.masks, &b.masks)
+                && same(&a.slots, &b.slots)
+                && same(&a.mesh.0, &b.mesh.0)
+        }
+        (Kind::Composite(a), Kind::Composite(b)) => {
+            a.opacity == b.opacity
+                && a.blend_mode == b.blend_mode
+                && a.tint == b.tint
+                && a.screen_tint == b.screen_tint
+                && a.mask_threshold == b.mask_threshold
+                && a.propagate_meshgroup == b.propagate_meshgroup
+                && same(&a.masks, &b.masks)
+        }
+        (Kind::MeshGroup(a), Kind::MeshGroup(b)) => {
+            a.translate_children == b.translate_children && same(&a.mesh.0, &b.mesh.0)
+        }
+        (Kind::MotionResponse(a), Kind::MotionResponse(b)) => a == b,
+        (Kind::Spine(a), Kind::Spine(b)) => {
+            same(&a.joints, &b.joints) && same(&a.targets, &b.targets)
+        }
+        _ => false,
+    }
+}
+
+/// One binding as the structure writes it. The target is not compared apart
+/// from the values: the variant of the values *is* the target.
+fn binding_eq(a: &ModelBinding, b: &ModelBinding) -> bool {
+    a.key.params == b.key.params
+        && a.key.node == b.key.node
+        && a.interpolate_mode == b.interpolate_mode
+        && a.key_positions == b.key_positions
+        && same(&a.values.0, &b.values.0)
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
     use crate::{
-        formats::clm::{ClmMesh, TextureAlpha, TextureEncoding},
-        BindingKey, BindingTarget, ExtensionKey, ExtensionValue, ModelNode, ModelNodeKind,
-        ModelParam, ModelPart, ModelTexture, Name, ParamId, ScalarTarget, SeededHex,
+        formats::clm::{
+            ClmAnimation, ClmIndices, ClmKeyframe, ClmLane, ClmMesh, TextureAlpha, TextureEncoding,
+        },
+        BindingKey, BindingTarget, BlendMode, ExtensionKey, ExtensionValue, InterpolateMode,
+        MaskMode, ModelComposite, ModelMeshGroup, ModelNode, ModelNodeKind, ModelParam, ModelPart,
+        ModelSpine, ModelTexture, ModelWeld, MotionResponse, Name, NodeId, ParamId, ScalarTarget,
+        SeededHex, SlotId, SlotPair,
     };
 
     use super::*;
@@ -86,6 +222,10 @@ mod tests {
             )
             .unwrap();
         let mut other = model.clone();
+        // The pokes below write fields directly and so skip the bump every
+        // real edit makes. Without one the two are the same model at the same
+        // generation, which `authored_eq` takes at its word.
+        other.bump();
         other.textures.get_mut(&texture).unwrap().data = vec![1, 2, 3].into();
         assert!(model.authored_eq(&other).unwrap());
         other.textures.get_mut(&texture).unwrap().encoding = TextureEncoding::Tga;
@@ -155,5 +295,479 @@ mod tests {
         assert!(model.authored_eq(&other).unwrap());
         other.key_move(&key, &param, 1, 0.25).unwrap();
         assert!(!model.authored_eq(&other).unwrap());
+    }
+
+    /// The same model at the same generation is equal without a field being
+    /// read. Shown the only way it can be: by writing a field behind the
+    /// model's back, which no real edit does, and seeing the comparison not
+    /// notice until the generation moves.
+    #[test]
+    fn the_same_model_at_the_same_generation_is_equal_without_being_read() {
+        let r = rich();
+        let snapshot = r.model.clone();
+        assert_eq!(r.model.generation(), snapshot.generation());
+        assert!(r.model.authored_eq(&snapshot).unwrap());
+
+        let mut poked = r.model.clone();
+        poked.nodes.get_mut(&r.upper).unwrap().properties.name = Name::truncated("poked");
+        assert!(
+            r.model.authored_eq(&poked).unwrap(),
+            "nothing was compared: the generation says nothing changed"
+        );
+        poked.bump();
+        assert!(
+            !r.model.authored_eq(&poked).unwrap(),
+            "once the generation moves, the content is what answers"
+        );
+
+        // Another model with the same contents shares neither identity nor
+        // any allocation, and is equal by value.
+        let twin = rich();
+        assert_ne!(r.model.identity(), twin.model.identity());
+        assert!(r.model.authored_eq(&twin.model).unwrap());
+    }
+
+    /// What `authored_eq` was before it stopped materializing: compare the
+    /// two written structures. Every answer has to match it.
+    fn by_writing_both(a: &Model, b: &Model) -> bool {
+        a.texture_order == b.texture_order
+            && a.extensions == b.extensions
+            && a.texture_order.iter().all(|id| {
+                let (x, y) = (&a.textures[id], &b.textures[id]);
+                x.encoding == y.encoding && x.alpha == y.alpha && x.data == y.data
+            })
+            && a.to_clm_structure().unwrap() == b.to_clm_structure().unwrap()
+    }
+
+    /// Every kind of authored state, changed one edit at a time: the in-place
+    /// comparison says what comparing the two written structures says, in
+    /// both directions, and an edit taken back is equal again.
+    #[test]
+    fn the_in_place_comparison_agrees_with_comparing_written_structures() {
+        let r = rich();
+        type Edit = Box<dyn Fn(&mut Model, &Rich, &mut SeededHex)>;
+        let edits: Vec<(&str, Edit)> = vec![
+            (
+                "name",
+                Box::new(|m, r, _| {
+                    m.update_node(&r.upper, |n| n.name = Name::truncated("renamed"))
+                        .unwrap();
+                }),
+            ),
+            (
+                "z order",
+                Box::new(|m, r, _| m.update_node(&r.upper, |n| n.z_order = 3.0).unwrap()),
+            ),
+            (
+                "transform",
+                Box::new(|m, r, _| {
+                    m.update_node(&r.lower, |n| n.transform.rotation[2] = 0.5)
+                        .unwrap()
+                }),
+            ),
+            (
+                "enabled",
+                Box::new(|m, r, _| m.update_node(&r.lower, |n| n.enabled = false).unwrap()),
+            ),
+            (
+                "lock to root",
+                Box::new(|m, r, _| m.update_node(&r.lower, |n| n.lock_to_root = true).unwrap()),
+            ),
+            (
+                "part opacity",
+                Box::new(|m, r, _| {
+                    m.update_node_kind(&r.upper, |kind| {
+                        if let ModelNodeKind::Part(p) = kind {
+                            p.opacity = 0.5;
+                        }
+                    })
+                    .unwrap()
+                }),
+            ),
+            (
+                "composite blend mode",
+                Box::new(|m, r, _| {
+                    m.update_node_kind(&r.face, |kind| {
+                        if let ModelNodeKind::Composite(c) = kind {
+                            c.blend_mode = BlendMode::Multiply;
+                        }
+                    })
+                    .unwrap()
+                }),
+            ),
+            (
+                "mesh group flag",
+                Box::new(|m, r, _| {
+                    m.update_node_kind(&r.bend, |kind| {
+                        if let ModelNodeKind::MeshGroup(mg) = kind {
+                            mg.translate_children = false;
+                        }
+                    })
+                    .unwrap()
+                }),
+            ),
+            (
+                "part mesh",
+                Box::new(|m, r, _| {
+                    m.set_node_mesh(&r.lower, quad(5.0)).unwrap();
+                }),
+            ),
+            (
+                "mesh group mesh",
+                Box::new(|m, r, _| {
+                    m.set_node_mesh(&r.bend, quad(5.0)).unwrap();
+                }),
+            ),
+            (
+                "mask added",
+                Box::new(|m, r, _| m.mask_add(&r.upper, &r.lower, MaskMode::Mask).unwrap()),
+            ),
+            (
+                "mask mode",
+                Box::new(|m, r, _| m.mask_set_mode(&r.face, 0, MaskMode::Mask).unwrap()),
+            ),
+            (
+                "slot added",
+                Box::new(|m, r, _| m.slot_add(&r.upper, slot("extra")).unwrap()),
+            ),
+            (
+                "slot refilled",
+                Box::new(|m, r, _| m.slot_fill(&r.upper, &slot("seam"), 2).unwrap()),
+            ),
+            (
+                "weld weight",
+                Box::new(|m, r, _| {
+                    m.set_weld_slot_weight(&r.upper, &r.lower, &slot("seam"), 0.75)
+                        .unwrap()
+                }),
+            ),
+            (
+                "weld removed",
+                Box::new(|m, _, _| m.set_welds(Vec::new()).unwrap()),
+            ),
+            (
+                "param added",
+                Box::new(|m, _, hex| {
+                    m.add_param(ModelParam::new(Name::truncated("new"), 0.0, 1.0, 0.0), hex)
+                        .unwrap();
+                }),
+            ),
+            (
+                "param name",
+                Box::new(|m, r, _| m.set_param_name(&r.x, Name::truncated("other")).unwrap()),
+            ),
+            (
+                "param range",
+                Box::new(|m, r, _| m.set_param_range(&r.x, -2.0, 2.0).unwrap()),
+            ),
+            (
+                "param default",
+                Box::new(|m, r, _| m.set_param_default(&r.x, 0.5).unwrap()),
+            ),
+            (
+                "scalar cell",
+                Box::new(|m, r, _| m.set_binding_key(&r.tx, [0, 0], 4.0).unwrap()),
+            ),
+            (
+                "deform cell",
+                Box::new(|m, r, _| {
+                    m.set_deform_vertices(&r.deform, [0, 0], vec![0.5; 8])
+                        .unwrap()
+                }),
+            ),
+            (
+                "key position",
+                Box::new(|m, r, _| m.key_move(&r.tx, &r.x, 0, 0.1).unwrap()),
+            ),
+            (
+                "interpolation",
+                Box::new(|m, r, _| {
+                    m.set_binding_interpolate(&r.tx, InterpolateMode::Stepped)
+                        .unwrap()
+                }),
+            ),
+            (
+                "binding added",
+                Box::new(|m, r, _| {
+                    m.add_binding(&BindingKey::new(
+                        r.x.clone(),
+                        r.lower.clone(),
+                        BindingTarget::Scalar(ScalarTarget::Opacity),
+                    ))
+                    .unwrap()
+                }),
+            ),
+            (
+                "animation",
+                Box::new(|m, r, _| m.set_animations(vec![animation(&r.x, 9)]).unwrap()),
+            ),
+            (
+                "spine joints",
+                Box::new(|m, r, _| {
+                    m.set_spine_joints(&r.spine, vec![[0.0, -5.0], [0.0, -9.0]])
+                        .unwrap()
+                }),
+            ),
+            (
+                "spine targets",
+                Box::new(|m, r, _| {
+                    m.set_spine_targets(&r.spine, vec![None, Some(r.x.clone())])
+                        .unwrap()
+                }),
+            ),
+            (
+                "response",
+                Box::new(|m, r, _| {
+                    m.set_motion_response(
+                        &r.sway,
+                        MotionResponse {
+                            period_s: 1.5,
+                            ..MotionResponse::default()
+                        },
+                    )
+                    .unwrap()
+                }),
+            ),
+            (
+                "sibling order",
+                Box::new(|m, r, _| m.reorder(&r.lower, 0).unwrap()),
+            ),
+            (
+                "parent",
+                Box::new(|m, r, _| m.reparent(&r.lower, &r.face).unwrap()),
+            ),
+            (
+                "node added",
+                Box::new(|m, r, hex| {
+                    m.add_node(&r.face, ModelNode::new("new", ModelNodeKind::Group), hex)
+                        .unwrap();
+                }),
+            ),
+            (
+                "node deleted",
+                Box::new(|m, r, _| m.delete_node(&r.sway).unwrap()),
+            ),
+            (
+                "extension",
+                Box::new(|m, _, _| {
+                    m.set_extension(
+                        ExtensionKey::new("test.note").unwrap(),
+                        ExtensionValue::Json(serde_json::json!(1)),
+                    )
+                    .unwrap()
+                }),
+            ),
+            (
+                "texture added",
+                Box::new(|m, r, hex| {
+                    m.add_texture(&r.lower, texture(7), hex).unwrap();
+                }),
+            ),
+        ];
+
+        for (what, edit) in &edits {
+            let mut hex = SeededHex::new(77);
+            let mut edited = r.model.clone();
+            edit(&mut edited, &r, &mut hex);
+            assert_ne!(edited.generation(), r.model.generation(), "{what}");
+
+            assert!(
+                !by_writing_both(&r.model, &edited),
+                "{what}: the edit was meant to change the written structure"
+            );
+            assert!(!r.model.authored_eq(&edited).unwrap(), "{what}");
+            assert!(!edited.authored_eq(&r.model).unwrap(), "{what}, reversed");
+
+            // The same edit made twice from one snapshot: equal by value,
+            // with only the touched leaves no longer shared.
+            let mut again = r.model.clone();
+            edit(&mut again, &r, &mut SeededHex::new(77));
+            assert!(by_writing_both(&edited, &again), "{what}");
+            assert!(edited.authored_eq(&again).unwrap(), "{what}, made twice");
+        }
+
+        // An edit that bumps without changing anything leaves the content to
+        // answer, and every leaf is still shared with the snapshot.
+        let mut touched = r.model.clone();
+        let name = touched.node(&r.upper).unwrap().name.clone();
+        touched.update_node(&r.upper, |n| n.name = name).unwrap();
+        assert_ne!(touched.generation(), r.model.generation());
+        assert!(by_writing_both(&r.model, &touched));
+        assert!(r.model.authored_eq(&touched).unwrap());
+    }
+
+    /// A model that cannot be written still says so, as its export would,
+    /// when the comparison has to look at it.
+    #[test]
+    fn an_unwritable_model_reports_its_export_error() {
+        let r = rich();
+        let mut broken = r.model.clone();
+        // No edit builds this any more; it is what a kind swap used to leave.
+        broken.nodes.get_mut(&r.lower).unwrap().kind = ModelNodeKind::Group;
+        broken.bindings.retain(|b| b.key.node != r.lower);
+        broken.bump();
+
+        assert!(matches!(
+            broken.to_clm_structure(),
+            Err(ModelError::WeldEndNotAPart)
+        ));
+        assert!(matches!(
+            r.model.authored_eq(&broken),
+            Err(ModelError::WeldEndNotAPart)
+        ));
+        assert!(matches!(
+            broken.authored_eq(&r.model),
+            Err(ModelError::WeldEndNotAPart)
+        ));
+    }
+
+    fn slot(id: &str) -> SlotId {
+        SlotId::new(id).unwrap()
+    }
+
+    fn quad(x: f32) -> ClmMesh {
+        ClmMesh {
+            verts: vec![x - 1.0, -1.0, x + 1.0, -1.0, x + 1.0, 1.0, x - 1.0, 1.0],
+            uvs: vec![0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0],
+            indices: ClmIndices::U16(vec![0, 1, 2, 0, 2, 3]),
+            origin: [0.0, 0.0],
+        }
+    }
+
+    fn texture(byte: u8) -> ModelTexture {
+        ModelTexture {
+            encoding: TextureEncoding::Png,
+            alpha: TextureAlpha::Straight,
+            data: vec![byte; 4].into(),
+        }
+    }
+
+    fn animation(param: &ParamId, frame: i32) -> ClmAnimation {
+        ClmAnimation {
+            name: "nod".into(),
+            length: 12,
+            lanes: vec![ClmLane {
+                param: param.clone(),
+                interpolation: InterpolateMode::Linear,
+                keyframes: vec![ClmKeyframe { frame, value: 0.5 }],
+            }],
+            ..ClmAnimation::default()
+        }
+    }
+
+    /// One model holding every kind of authored state the structure writes.
+    struct Rich {
+        model: Model,
+        upper: NodeId,
+        lower: NodeId,
+        face: NodeId,
+        bend: NodeId,
+        spine: NodeId,
+        sway: NodeId,
+        x: ParamId,
+        tx: BindingKey,
+        deform: BindingKey,
+    }
+
+    fn rich() -> Rich {
+        let mut hex = SeededHex::new(21);
+        let mut model = Model::new();
+        let root = model.root().unwrap().clone();
+        let mut add = |model: &mut Model, parent: &NodeId, name: &str, kind: ModelNodeKind| {
+            model
+                .add_node(parent, ModelNode::new(name, kind), &mut hex)
+                .unwrap()
+        };
+        let part = |x: f32| ModelNodeKind::Part(ModelPart::new(quad(x)));
+        let upper = add(&mut model, &root, "upper", part(0.0));
+        let lower = add(&mut model, &root, "lower", part(3.0));
+        let face = add(
+            &mut model,
+            &root,
+            "face",
+            ModelNodeKind::Composite(ModelComposite::new()),
+        );
+        let bend = add(
+            &mut model,
+            &face,
+            "bend",
+            ModelNodeKind::MeshGroup(ModelMeshGroup::new(quad(6.0))),
+        );
+        let spine = add(
+            &mut model,
+            &root,
+            "spine",
+            ModelNodeKind::Spine(ModelSpine::new(vec![[0.0, -5.0], [0.0, -10.0]])),
+        );
+        let sway = add(
+            &mut model,
+            &root,
+            "sway",
+            ModelNodeKind::MotionResponse(MotionResponse::default()),
+        );
+        model.add_texture(&upper, texture(1), &mut hex).unwrap();
+        model.mask_add(&face, &lower, MaskMode::DodgeMask).unwrap();
+        for part in [&upper, &lower] {
+            model.slot_add(part, slot("seam")).unwrap();
+            model.slot_fill(part, &slot("seam"), 1).unwrap();
+        }
+        model
+            .set_welds(vec![ModelWeld::new(
+                upper.clone(),
+                lower.clone(),
+                vec![SlotPair {
+                    a: slot("seam"),
+                    b: slot("seam"),
+                    weight: 0.25,
+                }],
+            )])
+            .unwrap();
+
+        let x = ParamId::new("x").unwrap();
+        model
+            .add_param_with_id(
+                x.clone(),
+                ModelParam::new(Name::truncated("x"), -1.0, 1.0, 0.0),
+            )
+            .unwrap();
+        model
+            .set_spine_targets(&spine, vec![Some(x.clone()), None])
+            .unwrap();
+        let tx = BindingKey::new(
+            x.clone(),
+            upper.clone(),
+            BindingTarget::Scalar(ScalarTarget::Tx),
+        );
+        model
+            .add_binding_with_positions(&tx, vec![vec![0.0, 0.5, 1.0]])
+            .unwrap();
+        model.set_binding_key(&tx, [2, 0], 1.0).unwrap();
+        let deform = BindingKey::new(x.clone(), lower.clone(), BindingTarget::Deform);
+        model
+            .add_binding_with_positions(&deform, vec![vec![0.0, 1.0]])
+            .unwrap();
+        model
+            .set_deform_vertices(&deform, [1, 0], vec![1.0; 8])
+            .unwrap();
+        model.set_animations(vec![animation(&x, 4)]).unwrap();
+        model
+            .set_extension(
+                ExtensionKey::new("test.metadata").unwrap(),
+                ExtensionValue::Json(serde_json::json!({"value": 1})),
+            )
+            .unwrap();
+
+        Rich {
+            model,
+            upper,
+            lower,
+            face,
+            bend,
+            spine,
+            sway,
+            x,
+            tx,
+            deform,
+        }
     }
 }

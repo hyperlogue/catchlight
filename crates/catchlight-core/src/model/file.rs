@@ -306,10 +306,37 @@ fn extensions_of(
 }
 
 impl Model {
+    /// Everything [`Self::to_clm_structure`] refuses, without building the
+    /// structure: a weld whose end is not a part, and a deform cell whose
+    /// length its node's mesh cannot take. No edit produces either any more;
+    /// both stay checked so that a structure this writes is always one this
+    /// reader takes. Separate from the writer so that
+    /// [`Self::authored_eq`] can report an unwritable model the way writing
+    /// it would, without writing it.
+    pub(super) fn check_writable(&self) -> Result<(), ModelError> {
+        let fragment = self.is_fragment();
+        for weld in &self.welds {
+            // A fragment's weld into a base part has one end this model
+            // cannot see, and only the end it can see is checked.
+            for end in [weld.a(), weld.b()] {
+                match validate::WeldEnd::of(self.node(end).map(|n| &n.kind), fragment) {
+                    validate::WeldEnd::Part | validate::WeldEnd::Deferred => {}
+                    validate::WeldEnd::NotAPart(_) => return Err(ModelError::WeldEndNotAPart),
+                    validate::WeldEnd::Missing => return Err(ModelError::UnknownNode),
+                }
+            }
+        }
+        for b in &self.bindings {
+            check_deform_cells(&b.key.node, self.deform_len(&b.key.node), &b.values)?;
+        }
+        Ok(())
+    }
+
     /// Snapshot the model's `Structure` section — everything a `.clm`
     /// carries except the texture payloads. Total for any Model whose deform
     /// cells are sized to the meshes they sit on.
     pub fn to_clm_structure(&self) -> Result<ClmStructure, ModelError> {
+        self.check_writable()?;
         let order = self.nodes_in_order();
         let mut nodes = Vec::with_capacity(order.len());
         for id in &order {
@@ -326,21 +353,8 @@ impl Model {
             });
         }
 
-        let fragment = self.is_fragment();
         let mut welds = Vec::with_capacity(self.welds.len());
         for weld in &self.welds {
-            // Unreachable through the Model's own methods: they refuse a weld
-            // whose end is not a part, and `update_node_kind` refuses to swap
-            // a welded node's kind. Kept because the reader refuses such a
-            // file. A fragment's weld into a base part has one end this model
-            // cannot see, and only the end it can see is checked.
-            for end in [weld.a(), weld.b()] {
-                match validate::WeldEnd::of(self.node(end).map(|n| &n.kind), fragment) {
-                    validate::WeldEnd::Part | validate::WeldEnd::Deferred => {}
-                    validate::WeldEnd::NotAPart(_) => return Err(ModelError::WeldEndNotAPart),
-                    validate::WeldEnd::Missing => return Err(ModelError::UnknownNode),
-                }
-            }
             welds.push(ClmWeld {
                 a: weld.a().clone(),
                 b: weld.b().clone(),
@@ -370,10 +384,6 @@ impl Model {
 
         let mut bindings = Vec::with_capacity(self.bindings.len());
         for b in &self.bindings {
-            // Caught here as well as on the way in, so a refit that sized a
-            // deform wrong is reported when the file is written rather than
-            // when someone tries to open it.
-            check_deform_cells(&b.key.node, self.deform_len(&b.key.node), &b.values)?;
             bindings.push(ClmBinding {
                 params: b.key.params.iter().cloned().collect(),
                 key_positions: b.key_positions.clone(),

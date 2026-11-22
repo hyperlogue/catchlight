@@ -2764,16 +2764,19 @@ impl Model {
     }
 }
 
+/// Whether two shared leaves hold the same value. A leaf two models share —
+/// a snapshot and the model it was taken from share nearly all of them — is
+/// one allocation and is equal without being read; only a leaf that was
+/// replaced is compared by value.
+fn same<T: PartialEq + ?Sized>(a: &Arc<T>, b: &Arc<T>) -> bool {
+    Arc::ptr_eq(a, b) || a == b
+}
+
 /// What an in-place kind edit changed that it may not, named the way
 /// [`ModelError::KindEdit`] says it — or `None` if the edit stayed within the
 /// fields a kind exposes. The rule [`Model::update_node_kind`] documents.
 fn kind_edit_fault(before: &ModelNodeKind, after: &ModelNodeKind) -> Option<&'static str> {
     use ModelNodeKind as Kind;
-    // An untouched list is still the same allocation, which is the usual
-    // case; only a replaced one is compared by value.
-    fn same<T: PartialEq>(a: &Arc<T>, b: &Arc<T>) -> bool {
-        Arc::ptr_eq(a, b) || a == b
-    }
     match (before, after) {
         (Kind::Group, Kind::Group) | (Kind::MotionResponse(_), Kind::MotionResponse(_)) => None,
         (Kind::Part(a), Kind::Part(b)) => {
