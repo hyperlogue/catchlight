@@ -1484,6 +1484,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "catchlight-editor"
+version = "0.1.1"
+dependencies = [
+ "anyhow",
+ "catchlight-editor-cli",
+ "catchlight-editor-protocol",
+ "catchlight-editor-server",
+ "ctrlc",
+]
+
+[[package]]
 name = "catchlight-editor-cli"
 version = "0.1.1"
 dependencies = [

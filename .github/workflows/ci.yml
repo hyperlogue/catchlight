@@ -109,6 +109,12 @@ jobs:
       # model the editor's own reader opens back, so it runs here, not in a job
       # of its own.
       - run: nix develop -c bash -c 'cd python && uv run pytest -q'
+      # The downloadable editor: its page compiled in, a tab watching while an
+      # agent drives the session through the same binary.
+      - run: nix develop -c cargo xtask bundle-ui
+      - run: nix develop -c cargo build -p catchlight-editor
+      - name: launcher E2E
+        run: nix develop -c bun run --filter catchlight-local-editor e2e
       - run: nix develop -c cargo test -p visual-tests --lib
       - name: headless Lan visual regressions
         run: nix develop -c cargo test -p visual-tests --test regression lan_visual_regressions -- --nocapture

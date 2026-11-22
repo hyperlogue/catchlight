@@ -1,0 +1,5 @@
+{
+  "//": "The end-to-end test is Bun code, not browser code: it wants bun's globals rather than vite's.",
+  "extends": "../../../tsconfig.base.json",
+  "include": ["**/*.ts"]
+}

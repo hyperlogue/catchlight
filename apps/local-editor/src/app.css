@@ -1,0 +1,36 @@
+html,
+body {
+  margin: 0;
+  block-size: 100%;
+  background: #12171b;
+}
+
+#root {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  block-size: 100dvh;
+}
+
+#failure {
+  margin: 0;
+  padding: 8px 12px;
+  background: #1d242b;
+  color: #f5a6a6;
+  font: 12px/1.5 ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  white-space: pre-wrap;
+  border-block-end: 1px solid #ffffff21;
+}
+
+/* Row 2 by name: a hidden `#failure` is no grid item. */
+#editor {
+  grid-row: 2;
+  min-block-size: 0;
+}
+
+.loading {
+  display: grid;
+  place-items: center;
+  block-size: 100%;
+  color: #92a3b0;
+  font: 15px/1.5 system-ui, sans-serif;
+}

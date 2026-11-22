@@ -9,6 +9,25 @@
         "typescript": "^5.9.3",
       },
     },
+    "apps/local-editor": {
+      "name": "catchlight-local-editor",
+      "version": "0.1.0",
+      "dependencies": {
+        "@catchlight/core": "workspace:*",
+        "@catchlight/editor": "workspace:*",
+        "@catchlight/wasm": "workspace:*",
+        "react": "^19.2.0",
+        "react-dom": "^19.2.0",
+      },
+      "devDependencies": {
+        "@types/react": "^19.2.0",
+        "@types/react-dom": "^19.2.0",
+        "@vitejs/plugin-react": "^6.1.1",
+        "playwright-core": "1.62.1",
+        "typescript": "^5.9.3",
+        "vite": "^8.2.2",
+      },
+    },
     "apps/site": {
       "name": "catchlight-demo",
       "version": "0.1.0",
@@ -142,6 +161,8 @@
     "bun-types": ["bun-types@1.4.0", "", { "dependencies": { "@types/node": "*" } }, "sha512-iIKw23BspnQQYd3prITOBxeUsxBHnwzX6YJfGMuNOZzeNcMmVqzIIVGRm1l69ogaPQmb4wB6BN8mA5bE9YuC5Q=="],
 
     "catchlight-demo": ["catchlight-demo@workspace:apps/site"],
+
+    "catchlight-local-editor": ["catchlight-local-editor@workspace:apps/local-editor"],
 
     "csstype": ["csstype@3.2.3", "", {}, "sha512-z1HGKcYy2xA8AGQfwrn0PAy+PB7X/GSj3UVJW9qKyn43xWa+gl5nXmU4qqLMRzWVLFC8KusUX8T/0kCiOYpAIQ=="],
 

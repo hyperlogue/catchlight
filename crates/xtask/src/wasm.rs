@@ -150,7 +150,7 @@ fn package_json() -> String {
     )
 }
 
-fn run_to_completion(cmd: &mut Command, what: &str) -> Result<()> {
+pub(crate) fn run_to_completion(cmd: &mut Command, what: &str) -> Result<()> {
     let status = cmd.status().with_context(|| format!("spawning {what}"))?;
     if !status.success() {
         bail!("{what} failed with {status}");

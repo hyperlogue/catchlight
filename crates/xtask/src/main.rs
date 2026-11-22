@@ -5,10 +5,12 @@
 //! Commands:
 //!   cargo xtask gen-fixture <name>
 //!   cargo xtask build-wasm [--debug]
+//!   cargo xtask bundle-ui [--debug]
 //!   cargo xtask generate [typescript|python]
 
 mod fixtures;
 mod generate;
+mod ui;
 mod wasm;
 
 use anyhow::{bail, Context, Result};
@@ -19,6 +21,7 @@ fn main() -> Result<()> {
     match args.first().map(String::as_str) {
         Some("gen-fixture") => gen_fixture(&args[1..]),
         Some("build-wasm") => wasm::run(&args[1..]),
+        Some("bundle-ui") => ui::run(&args[1..]),
         Some("generate") => generate::run(&args[1..]),
         _ => {
             print_usage();
@@ -39,6 +42,9 @@ fn print_usage() {
     );
     eprintln!("  build-wasm [--debug]");
     eprintln!("      Build @catchlight/wasm into packages/wasm/ (generated, not committed).");
+    eprintln!("  bundle-ui [--debug]");
+    eprintln!("      Build the wasm, then apps/local-editor, into crates/catchlight-editor/ui/");
+    eprintln!("      (generated, not committed) for catchlight-editor to embed.");
     eprintln!("  generate [typescript|python]");
     eprintln!("      Write the editor protocol out in the languages that speak it:");
     eprintln!("      packages/core/src/protocol.gen.ts and");

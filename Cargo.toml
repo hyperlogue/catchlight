@@ -9,6 +9,7 @@ members = [
     "crates/catchlight-editor-protocol",
     "crates/catchlight-editor-server",
     "crates/catchlight-editor-cli",
+    "crates/catchlight-editor",
     "crates/catchlight-editor-wasm",
     "crates/catchlight-wgpu",
     "crates/visual-tests",
@@ -31,6 +32,7 @@ catchlight-importer = { path = "crates/catchlight-importer", version = "0.1.1" }
 catchlight-editor-core = { path = "crates/catchlight-editor-core", version = "0.1.1" }
 catchlight-editor-protocol = { path = "crates/catchlight-editor-protocol", version = "0.1.1" }
 catchlight-editor-server = { path = "crates/catchlight-editor-server", version = "0.1.1" }
+catchlight-editor-cli = { path = "crates/catchlight-editor-cli", version = "0.1.1" }
 catchlight-wgpu = { path = "crates/catchlight-wgpu", version = "0.1.1" }
 catchlight-bevy = { path = "crates/catchlight-bevy", version = "0.1.1" }
 

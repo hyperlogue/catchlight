@@ -447,3 +447,6 @@ node_modules/
 
 # Built by `bun run --filter catchlight-demo build`.
 /apps/site/dist/
+
+# Built by `cargo xtask bundle-ui`; compiled into catchlight-editor, never committed.
+/crates/catchlight-editor/ui/
