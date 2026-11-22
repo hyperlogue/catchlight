@@ -1,7 +1,8 @@
 # npm releases
 
 Release `@catchlight/core`, `@catchlight/react`, and `@catchlight/editor-ui` in that
-order. Core bundles the release WASM runtime under `@catchlight/core/wasm`, with
+order, then the editor app (below). Core bundles the release WASM runtime
+under `@catchlight/core/wasm`, with
 explicit initialization. The generated workspace `@catchlight/wasm` package and
 demo remain private; they are not additional npm dependencies.
 
@@ -37,6 +38,26 @@ its types. `npm:publish` defaults to an npm
 publish dry run. Both dry and live publication skip exact versions already on
 npm, fail on lookup errors, and check archive integrity before proceeding.
 
+## The editor app
+
+`@catchlight/editor` is the downloadable editor, not a library: a launcher that
+runs the `catchlight-editor` binary from one of five platform packages,
+`@catchlight/editor-{linux-x64,linux-arm64,darwin-arm64,darwin-x64,win32-x64}`,
+each restricted by `os`/`cpu`. The binaries come from `editor-app.yml`, which
+`npm.yml` calls; `scripts/npm/editor-app.mjs <binaries-dir> [--verify]` packs
+them into `dist/npm-app/`. `publish.mjs --with-app` publishes the platform
+packages and then the launcher after the libraries. Until version 0.2.0 the
+name held the component library now published as `@catchlight/editor-ui`.
+
+To check the packaging locally with this machine's binary:
+
+```sh
+cargo xtask bundle-ui && cargo build --release -p catchlight-editor
+mkdir -p /tmp/bins/x86_64-unknown-linux-gnu
+cp target/release/catchlight-editor /tmp/bins/x86_64-unknown-linux-gnu/
+node scripts/npm/editor-app.mjs /tmp/bins --verify
+```
+
 ## First publication
 
 Ensure you have publish rights to the `@catchlight` npm scope (create or join
@@ -71,14 +92,18 @@ Configure GitHub Actions as a trusted publisher on every public package:
 | Environment | `release` | `release` |
 
 On crates.io, open each crate's **Settings → Trusted Publishing → Add**, select
-GitHub, enter the fields above, and save. Register all nine: `catchlight`,
+GitHub, enter the fields above, and save. Register all ten: `catchlight`,
 `catchlight-core`, `catchlight-wgpu`, `catchlight-bevy`, `catchlight-cli`,
 `catchlight-editor-core`, `catchlight-editor-protocol`, `catchlight-editor-server`,
-and `catchlight-editor-cli`. A crate must already exist and you must be an owner.
+`catchlight-editor-cli`, and `catchlight-editor`. A crate must already exist
+and you must be an owner.
 See [crates.io trusted publishing](https://crates.io/docs/trusted-publishing).
 
 On npm, open **Settings → Trusted publishing** for each of `@catchlight/core`,
-`@catchlight/react`, and `@catchlight/editor-ui`. Select GitHub Actions, enter the
+`@catchlight/react`, `@catchlight/editor-ui`, `@catchlight/editor`, and the five
+`@catchlight/editor-<platform>` packages. A package must exist before it can
+be registered, so publish each new name once locally (see First publication)
+before relying on the workflow. Select GitHub Actions, enter the
 fields above, and enable direct `npm publish` in allowed actions. Save each
 registration. Workflow filenames are filenames only, without `.github/workflows/`.
 See [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/).
@@ -93,8 +118,11 @@ Update internal Rust dependency versions, `Cargo.lock`, and `bun.lock` together.
 `python3 scripts/release/check.py` rejects version drift before packaging or
 publishing. Run CI, tag the validated commit `v<version>`, then manually dispatch **Publish npm
 packages** from that tag. It defaults to dry-run; disable it for publication.
-The verification job builds and tests tarballs without OIDC permission. After
-environment approval, a fresh runner publishes those exact tarballs with OIDC.
+The verification job builds and tests tarballs without OIDC permission, and the
+`app` job builds the editor binaries on every platform. A live run attaches the
+binary archives, install scripts and `SHA256SUMS` to the `v<version>` GitHub
+release. After environment approval, a fresh runner publishes those exact
+tarballs with OIDC.
 
 Dispatch **Publish Rust crates** from the same tag for the matching crates.io
 release. Registry uploads are not atomic: resume a partial release at the same

@@ -15,13 +15,26 @@ Catchlight is a software stack for 2.5D character animation. It simulates
 | Offering | Audience and purpose | Distribution |
 | --- | --- | --- |
 | **Catchlight Demo** | Choose the in-browser editor or camera-driven face tracking. | The hosted app in `apps/site/`, named `catchlight-demo` in the web workspace. |
-| **Catchlight Studio** | Author locally with a person and an agent sharing editor sessions. | Planned local application: the editor server together with a web UI served on the local machine. The server and connected frontend exist; the bundled application and its launcher are not implemented yet. |
+| **Catchlight Studio** | Author locally with a person and an agent sharing editor sessions. | `catchlight-editor`: one binary that serves the editor UI on `127.0.0.1`, opens the browser, and runs agent commands against the same session. Install it below. |
 | **Catchlight libraries** | Embed animation or authoring in another application, or automate an editor. | Rust libraries, the `@catchlight/*` browser packages, and the [Python client](python/README.md). |
+
+Install the local editor from a [release](https://github.com/hyperlogue/catchlight/releases),
+npm or crates.io, then run `catchlight-editor [model.clm]`:
+
+```sh
+curl -fsSL https://github.com/hyperlogue/catchlight/releases/latest/download/install.sh | sh
+irm https://github.com/hyperlogue/catchlight/releases/latest/download/install.ps1 | iex  # Windows
+npx @catchlight/editor
+cargo install catchlight-editor
+```
+
+An agent drives the open editor with the same binary, for example
+`catchlight-editor node tree`; `catchlight-editor help` lists every command.
 
 `@catchlight/editor-ui` is the embeddable React frontend with the default theme.
 The host chooses its backend and initializes the WASM module bundled in
-`@catchlight/core/wasm`. The editor package does not include
-the native editor-server executable or a local application launcher.
+`@catchlight/core/wasm`. The component package does not include
+the native editor server; `@catchlight/editor` is the packaged application.
 `@catchlight/react` exposes the unstyled parts, and `@catchlight/core` supplies
 the web-platform glue.
 

@@ -30,8 +30,10 @@ description: Prepare or cut a Catchlight release with changelog review, a shared
    WASM with `cargo xtask build-wasm --release`, then use that release binary for
    core's explicit-init web loader. Run `npm:verify` against the resulting
    tarballs: it exercises a production browser consumer outside the workspace.
-   Run `bash .github/scripts/publish-crates.sh dry-run` for Rust. Resolve failures
-   before committing or tagging.
+   Run `cargo xtask bundle-ui`, then `bash .github/scripts/publish-crates.sh
+   dry-run` for Rust; the `catchlight-editor` crate packages that built page.
+   Check the editor app's packaging with the local steps in the npm guide's
+   editor app section. Resolve failures before committing or tagging.
 5. Commit the approved release and create an annotated `vX.Y.Z` tag on that
    commit, with subject `Catchlight vX.Y.Z`. Both registries use this one tag.
    Leave pushing and publication to the user unless requested; changelog review
@@ -40,14 +42,22 @@ description: Prepare or cut a Catchlight release with changelog review, a shared
    tag, initially with dry-run enabled. After checks pass, dispatch the live
    workflows within the user's authorization and inspect their actual results.
    Preserve the workflow names and shared `release` environment: trusted
-   publisher registrations depend on them. For local npm publishing or first
-   publication, follow the linked npm release guide. Rust uploads use
-   `.github/scripts/publish-crates.sh publish` with a token supplied through
-   `CARGO_REGISTRY_TOKEN`; never put credentials in repository files.
-7. Verify every public package's exact version in both registries before
-   reporting completion. Uploads across registries are not atomic. On a partial
-   failure, report what remains and retry the same version using the scripts'
-   already-published skipping behavior. Honor a rate limit's retry time; stop
-   repeated auth or validation failures for correction. Preserve verified npm
-   tarballs when retrying. Start a new version only after the coordinated release
-   is complete; recover published mistakes with a new patch release.
+   publisher registrations depend on them. A live `npm.yml` run also builds the
+   `catchlight-editor` binaries and attaches them, the install scripts and
+   `SHA256SUMS` to the tag's GitHub release. A crate or npm package publishing
+   for the first time cannot use trusted publishing yet; publish it once locally
+   per the npm guide, then register it. While any `@catchlight/editor` version
+   below 0.2.0 is not deprecated, deprecate those versions with a pointer to
+   `@catchlight/editor-ui`, within the user's authorization. For local npm
+   publishing or first publication, follow the linked npm release guide. Rust
+   uploads use `.github/scripts/publish-crates.sh publish` with a token
+   supplied through `CARGO_REGISTRY_TOKEN`; never put credentials in
+   repository files.
+7. Verify every public package's exact version in both registries, and the
+   GitHub release's editor assets, before reporting completion. Uploads across
+   registries are not atomic. On a partial failure, report what remains and
+   retry the same version using the scripts' already-published skipping
+   behavior. Honor a rate limit's retry time; stop repeated auth or validation
+   failures for correction. Preserve verified npm tarballs when retrying.
+   Start a new version only after the coordinated release is complete; recover
+   published mistakes with a new patch release.

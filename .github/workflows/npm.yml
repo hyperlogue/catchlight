@@ -54,9 +54,18 @@ jobs:
             dist/npm/releases.json
           if-no-files-found: error
 
+  # The downloadable editor: platform binaries, the npm launcher and its
+  # platform packages, and (when live) the GitHub release assets.
+  app:
+    uses: ./.github/workflows/editor-app.yml
+    with:
+      dry_run: ${{ inputs.dry_run }}
+    permissions:
+      contents: write
+
   publish:
     if: ${{ !inputs.dry_run }}
-    needs: verify
+    needs: [verify, app]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: release
@@ -76,4 +85,8 @@ jobs:
         with:
           name: npm-release
           path: dist/npm
-      - run: node scripts/npm/publish.mjs --publish
+      - uses: actions/download-artifact@v4
+        with:
+          name: editor-app
+          path: dist
+      - run: node scripts/npm/publish.mjs --publish --with-app
