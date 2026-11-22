@@ -101,6 +101,8 @@
 //!   origin can reach that port — so a random per-launch token gates every
 //!   door, and `GET /token` is readable only from an allowlisted origin.
 
+#[cfg(not(target_arch = "wasm32"))]
+pub mod connection;
 mod edit;
 #[cfg(test)]
 mod history_tests;

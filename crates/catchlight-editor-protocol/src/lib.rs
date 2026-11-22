@@ -2837,6 +2837,44 @@ pub fn default_socket_path() -> std::path::PathBuf {
     base.join("catchlight-editor").join("server.sock")
 }
 
+/// Where a running editor's HTTP door is written down for local clients: a
+/// JSON [`Connection`]. Lives beside [`default_socket_path`] for the same
+/// reason. `CATCHLIGHT_EDITOR_CONNECTION` overrides it so a test or a second
+/// editor can keep its own.
+///
+/// The file holds a bearer token, so it lives in a directory only its user
+/// can write — `$XDG_RUNTIME_DIR`, then `$HOME/.cache`, `%LOCALAPPDATA%` on
+/// Windows — and never in a shared temp dir, where another user could plant
+/// a file naming a server of theirs.
+pub fn default_connection_path() -> Option<std::path::PathBuf> {
+    use std::path::PathBuf;
+    if let Some(path) = std::env::var_os("CATCHLIGHT_EDITOR_CONNECTION") {
+        return Some(PathBuf::from(path));
+    }
+    let base = if cfg!(windows) {
+        std::env::var_os("LOCALAPPDATA").map(PathBuf::from)
+    } else {
+        std::env::var_os("XDG_RUNTIME_DIR")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
+    }?;
+    Some(base.join("catchlight-editor").join("connection.json"))
+}
+
+/// The contents of [`default_connection_path`]: how a local client reaches
+/// the editor that wrote it.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct Connection {
+    /// `http://127.0.0.1:<port>`, the base every route hangs off.
+    pub url: String,
+    /// The per-launch bearer token.
+    pub token: String,
+    /// The process that wrote the file, so it removes only its own.
+    pub pid: u32,
+    /// The writer's crate version, for a client to notice skew.
+    pub version: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
