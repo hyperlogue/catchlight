@@ -333,7 +333,7 @@ fn build_node(model: &Model, node: &crate::model::ModelNode) -> Node {
                 translate_children: mg.translate_children,
                 deform_stack,
                 pins: Default::default(),
-                bitmap: None,
+                bins: None,
             }))
         }
         // The per-vertex assignment is left empty here: it needs the rest

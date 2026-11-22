@@ -258,11 +258,11 @@ pub struct MeshGroupData {
     pub translate_children: bool,
     pub deform_stack: crate::deform::DeformStack,
     pub(crate) pins: crate::meshgroup::MeshGroupPins,
-    /// Pixel hints and spatial triangle candidates baked from `mesh` alongside
-    /// `pins`. Exact containment is checked at the current position. `None`
-    /// when the cache cannot be built within its limits; propagation then
-    /// falls back to the linear hinted scan.
-    pub(crate) bitmap: Option<crate::meshgroup::MgTriangleBitmap>,
+    /// Spatial triangle candidates baked from `mesh` ahead of `pins`, which
+    /// are found through them. Exact containment is checked at the current
+    /// position. `None` when the cache cannot be built within its limits;
+    /// propagation then falls back to the linear hinted scan.
+    pub(crate) bins: Option<crate::meshgroup::MgTriangleBins>,
 }
 
 impl Default for MeshGroupData {
@@ -272,7 +272,7 @@ impl Default for MeshGroupData {
             translate_children: true,
             deform_stack: crate::deform::DeformStack::default(),
             pins: crate::meshgroup::MeshGroupPins::default(),
-            bitmap: None,
+            bins: None,
         }
     }
 }

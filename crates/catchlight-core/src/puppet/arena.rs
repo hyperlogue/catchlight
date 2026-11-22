@@ -9,7 +9,7 @@
 //!
 //! The arena holds the *evaluated frame* — each node's working transform,
 //! z order, colour and deform stack — plus what is baked once from the model
-//! it came from: mesh-group pins, the triangle bitmap, and the base
+//! it came from: mesh-group pins, the triangle bins, and the base
 //! matrices the transform walk reuses when a node has no delta this frame.
 //! What it does not hold is a pose: a fold writes into the arena, but which
 //! fold to run and at what values is the owning runtime's business. That is
@@ -98,6 +98,10 @@ pub(crate) struct Arena {
     // child-vert when many children of the same MG hit the same MG
     // triangle. Sized by the largest MG vertex count.
     pub(crate) mg_deformed_vertices_scratch: Vec<glam::Vec2>,
+    // Per-MG scratch for the lattice's rest positions in its own space,
+    // `mg_vertices[i] - origin`, filled once per MG and read by the
+    // translate-children shift and by every child below it.
+    pub(crate) mg_local_scratch: Vec<glam::Vec2>,
     // Cached pre-order of MeshGroup NodeIdxs. Invalidated on tree edits
     // (see insert_child). None = stale, recompute on next access.
     pub(crate) mg_pre_order_cache: Option<Vec<NodeIdx>>,
@@ -146,6 +150,7 @@ impl Arena {
             mg_propagate_scratch: Vec::new(),
             mg_cur_deform_scratch: Vec::new(),
             mg_deformed_vertices_scratch: Vec::new(),
+            mg_local_scratch: Vec::new(),
             mg_pre_order_cache: None,
             mg_written_sources: Vec::new(),
             mg_shifts: Vec::new(),
@@ -235,31 +240,32 @@ impl Arena {
         if self.mesh_group_node_ids.is_empty() {
             return;
         }
+        // The bins first: the pins are found through them.
+        for i in 0..self.mesh_group_node_ids.len() {
+            let id = self.mesh_group_node_ids[i];
+            if let Some(crate::NodeKind::MeshGroup(mesh_group)) =
+                self.nodes.get_mut(id.0 as usize).map(|node| &mut node.kind)
+            {
+                mesh_group.bins = crate::meshgroup::MgTriangleBins::build(&mesh_group.mesh);
+            }
+        }
         let mut transforms = GlobalTransforms::new();
         self.compute_transforms(&mut transforms);
         let baked: Vec<_> = self
             .mesh_group_node_ids
             .iter()
             .map(|&id| {
-                let pins = crate::meshgroup::bake_mesh_group_pins(self, &transforms, id);
-                let bitmap = self
-                    .nodes
-                    .get(id.0 as usize)
-                    .and_then(|node| match &node.kind {
-                        crate::NodeKind::MeshGroup(mesh_group) => {
-                            crate::meshgroup::MgTriangleBitmap::build(&mesh_group.mesh)
-                        }
-                        _ => None,
-                    });
-                (id, pins, bitmap)
+                (
+                    id,
+                    crate::meshgroup::bake_mesh_group_pins(self, &transforms, id),
+                )
             })
             .collect();
-        for (id, pins, bitmap) in baked {
+        for (id, pins) in baked {
             if let Some(crate::NodeKind::MeshGroup(mesh_group)) =
                 self.nodes.get_mut(id.0 as usize).map(|node| &mut node.kind)
             {
                 mesh_group.pins = pins;
-                mesh_group.bitmap = bitmap;
             }
         }
     }
