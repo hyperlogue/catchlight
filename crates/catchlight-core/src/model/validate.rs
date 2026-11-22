@@ -32,6 +32,9 @@
 //!   one finite `[dx, dy]` per mesh vertex ([`deform_offsets`]); and an axis
 //!   of key positions is nonempty, finite, strictly increasing and within
 //!   `0..=1` ([`binding_positions_are_valid`]).
+//! - **Where a node sits is a number.** A `NaN` z-order has no place in the
+//!   draw sort and a `NaN` in a transform spreads through every matrix
+//!   beneath the node ([`node_placement`]).
 //! - **A response input does not outlive the slot it reads.** Whatever
 //!   removes a part or a slot drops the inputs that named it
 //!   ([`drop_slot_inputs`]).
@@ -302,6 +305,46 @@ pub(super) fn binding_positions_are_valid(params: usize, positions: &[Vec<f32>])
 
 // ---- nodes ----------------------------------------------------------------
 
+/// Which of a node's placement values is not a number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PlacementFault {
+    ZOrder,
+    Transform,
+}
+
+impl PlacementFault {
+    /// The field's own name, for an error that already says which node.
+    pub(super) fn field(self) -> &'static str {
+        match self {
+            Self::ZOrder => "z-order",
+            Self::Transform => "transform",
+        }
+    }
+}
+
+/// How every mutator reports a node placed nowhere.
+impl From<PlacementFault> for ModelError {
+    fn from(fault: PlacementFault) -> Self {
+        Self::NonFinite(match fault {
+            PlacementFault::ZOrder => "a node's z-order",
+            PlacementFault::Transform => "a node's transform",
+        })
+    }
+}
+
+/// A node's z-order and every component of its transform are finite.
+pub(super) fn node_placement(z_order: f32, transform: &ClmTransform) -> Result<(), PlacementFault> {
+    if !z_order.is_finite() {
+        return Err(PlacementFault::ZOrder);
+    }
+    let finite = |values: &[f32]| values.iter().all(|v| v.is_finite());
+    if !finite(&transform.translation) || !finite(&transform.rotation) || !finite(&transform.scale)
+    {
+        return Err(PlacementFault::Transform);
+    }
+    Ok(())
+}
+
 /// Drop every motion response input that reads a slot `gone` says is going
 /// away. A no-op on any other kind of node.
 pub(super) fn drop_slot_inputs(kind: &mut ModelNodeKind, gone: impl Fn(&NodeId, &SlotId) -> bool) {
@@ -426,6 +469,26 @@ mod tests {
             spine_joints(&[[0.0, -1.0], [0.0, -1.0]]),
             Err(SpineJointError::Coincident(1))
         );
+    }
+
+    #[test]
+    fn a_nodes_placement_is_finite() {
+        let identity = ClmTransform::default();
+        assert_eq!(node_placement(0.0, &identity), Ok(()));
+        assert_eq!(
+            node_placement(f32::NAN, &identity),
+            Err(PlacementFault::ZOrder)
+        );
+        let poisons: [fn(&mut ClmTransform); 3] = [
+            |t| t.translation[2] = f32::NAN,
+            |t| t.rotation[0] = f32::INFINITY,
+            |t| t.scale[1] = f32::NEG_INFINITY,
+        ];
+        for poison in poisons {
+            let mut bad = identity;
+            poison(&mut bad);
+            assert_eq!(node_placement(0.0, &bad), Err(PlacementFault::Transform));
+        }
     }
 
     #[test]

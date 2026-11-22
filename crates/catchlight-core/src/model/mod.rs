@@ -1113,13 +1113,23 @@ impl Model {
     }
 
     /// Edit a node's common properties in place. They cannot change response ownership or inputs.
+    ///
+    /// The z-order and the transform have to come back finite, as the reader
+    /// requires of a file: a `NaN` in either poisons the draw sort or every
+    /// matrix beneath the node. One that does not is refused with
+    /// [`ModelError::NonFinite`] and the properties put back as they were.
     pub fn update_node<R>(
         &mut self,
         id: &NodeId,
         f: impl FnOnce(&mut NodeProperties) -> R,
     ) -> Result<R, ModelError> {
         let node = self.nodes.get_mut(id).ok_or(ModelError::UnknownNode)?;
+        let previous = node.properties.clone();
         let out = f(&mut node.properties);
+        if let Err(fault) = validate::node_placement(node.z_order, &node.transform) {
+            node.properties = previous;
+            return Err(fault.into());
+        }
         self.bump();
         Ok(out)
     }
@@ -1225,6 +1235,9 @@ impl Model {
         if self.nodes.contains_key(&id) {
             return Err(ModelError::DuplicateId(id.to_string()));
         }
+        // A node is built outside the model, so this is where its placement
+        // is first held to what `update_node` and the reader hold it to.
+        validate::node_placement(node.z_order, &node.transform)?;
         // A mesh reaches a Model here or through `set_node_mesh_with`, and
         // both hold it to the same shape: the reader refuses a malformed one,
         // so nothing may author one either.
@@ -1773,6 +1786,11 @@ impl Model {
     /// that are sized to it move in one step, so no reader ever sees offsets
     /// fitted to a mesh that is gone.
     ///
+    /// Every cell `refit` returns has to be one finite `[dx, dy]` per vertex
+    /// of the new mesh. One that is not refuses the edit
+    /// ([`ModelError::DeformLength`], [`ModelError::NonFinite`]) with the
+    /// model untouched.
+    ///
     /// Slots are *not* refitted. Which vertex fills a slot is a claim about
     /// the mesh that just went away, and guessing a new one would defeat the
     /// point of naming vertices by slot — so every slot on the part is
@@ -1795,13 +1813,37 @@ impl Model {
                 })
             }
         };
-        let mut refit_binding = |b: &mut ModelBinding| {
+        // Refit every authored cell before anything moves. What `refit` hands
+        // back is the caller's arithmetic, so each cell is held to what
+        // `set_deform_vertices` holds an authored one to — one finite
+        // `[dx, dy]` per vertex of the new mesh — and a bad one refuses the
+        // whole edit instead of surfacing at the next save.
+        let expected = mesh.verts.len();
+        let mut refitted: Vec<(usize, Vec<Vec<f32>>)> = Vec::new();
+        for (index, binding) in self
+            .bindings
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| b.node() == id)
+        {
+            let mut values = Vec::new();
+            if let ClmBindingValues::Deform(cells) = binding.values() {
+                values.reserve(cells.cells.len());
+                for cell in &cells.cells {
+                    let value = refit(&old, &mesh, &cell.value);
+                    validate::deform_offsets(&value, expected)?;
+                    values.push(value);
+                }
+            }
+            refitted.push((index, values));
+        }
+        let apply = |b: &mut ModelBinding, values: Vec<Vec<f32>>| {
             // A deform's identity is sized to the mesh, so every binding on
             // the node loses its derived grid, authored cells or not.
             b.invalidate_dense();
             if let ClmBindingValues::Deform(cells) = b.values_mut() {
-                for cell in &mut cells.cells {
-                    cell.value = refit(&old, &mesh, &cell.value);
+                for (cell, value) in cells.cells.iter_mut().zip(values) {
+                    cell.value = value;
                 }
             }
         };
@@ -1811,15 +1853,10 @@ impl Model {
             b.target() == BindingTarget::Deform
                 && b.params().iter().any(|p| self.response_owner(p).is_some())
         }) {
-            let mut edits = Vec::new();
-            for (index, binding) in self
-                .bindings
-                .iter()
-                .enumerate()
-                .filter(|(_, b)| b.node() == id)
-            {
-                let mut candidate = binding.clone();
-                refit_binding(&mut candidate);
+            let mut edits = Vec::with_capacity(refitted.len());
+            for (index, values) in refitted {
+                let mut candidate = self.bindings[index].clone();
+                apply(&mut candidate, values);
                 self.validate_response_binding(&candidate)?;
                 edits.push((index, candidate));
             }
@@ -1827,8 +1864,8 @@ impl Model {
                 self.bindings[index] = binding;
             }
         } else {
-            for binding in self.bindings.iter_mut().filter(|b| b.node() == id) {
-                refit_binding(binding);
+            for (index, values) in refitted {
+                apply(&mut self.bindings[index], values);
             }
         }
         if let Some(slot) = self.nodes.get_mut(id).and_then(ModelNode::mesh_mut) {
@@ -2130,10 +2167,16 @@ impl Model {
     /// Add a param under an Id the author chose. Fails if the Id is taken, or
     /// if the range is one [`Self::set_param_range`] would refuse — the key
     /// positions are normalized across it, and a collapsed, inverted or
-    /// non-finite range has nothing to normalize onto.
+    /// non-finite range has nothing to normalize onto — or if the default is
+    /// not finite, which [`Self::set_param_default`] would refuse: a pose
+    /// starts from the default, and `NaN` there is `NaN` in every binding the
+    /// param drives.
     pub fn add_param_with_id(&mut self, id: ParamId, param: ModelParam) -> Result<(), ModelError> {
         if !param_range_is_valid(param.min, param.max) {
             return Err(ModelError::InvalidParamRange);
+        }
+        if !param.default.is_finite() {
+            return Err(ModelError::NonFinite("a param's default"));
         }
         if self.params.contains_key(&id) {
             return Err(ModelError::DuplicateId(id.to_string()));
@@ -3107,6 +3150,134 @@ mod tests {
         // What the mutators take, the reader takes.
         r.model
             .set_spine_joints(&spine, vec![[0.0, -10.0]])
+            .unwrap();
+        Model::from_clm_bytes(&r.model.to_clm_bytes().unwrap()).unwrap();
+    }
+
+    /// A number a model stores has to be a number. The reader held binding
+    /// cells to that and nothing else; the mutators held neither a node's
+    /// placement nor a param's default to it, so one `NaN` from an edit
+    /// reached the draw sort, every matrix under the node, or every binding
+    /// the param drives — and saved.
+    #[test]
+    fn a_value_that_is_not_a_number_is_refused_by_every_mutator_that_writes_one() {
+        let mut r = fixture();
+        let (part, root, param) = (r.part.clone(), r.root.clone(), r.param.clone());
+        let before = r.model.generation();
+
+        // The closure's other writes are undone along with the bad one.
+        let got = r.model.update_node(&part, |n| {
+            n.name = Name::truncated("renamed");
+            n.enabled = false;
+            n.z_order = f32::NAN;
+        });
+        assert!(
+            matches!(got, Err(ModelError::NonFinite("a node's z-order"))),
+            "{got:?}"
+        );
+        let got = r
+            .model
+            .update_node(&part, |n| n.transform.scale[0] = f32::INFINITY);
+        assert!(
+            matches!(got, Err(ModelError::NonFinite("a node's transform"))),
+            "{got:?}"
+        );
+        let node = r.model.node(&part).unwrap();
+        assert_eq!(node.name.as_str(), "part");
+        assert!(node.enabled);
+        assert_eq!(node.z_order, 0.0);
+        assert_eq!(node.transform, ClmTransform::default());
+
+        let mut adrift = ModelNode::new("adrift", ModelNodeKind::Group);
+        adrift.transform.translation[1] = f32::NAN;
+        let got = r.model.add_node(&root, adrift, &mut r.hex);
+        assert!(
+            matches!(got, Err(ModelError::NonFinite("a node's transform"))),
+            "{got:?}"
+        );
+
+        let got = r.model.add_param_with_id(
+            ParamId::new("nan").unwrap(),
+            ModelParam::new(Name::truncated("nan"), 0.0, 1.0, f32::NAN),
+        );
+        assert!(
+            matches!(got, Err(ModelError::NonFinite("a param's default"))),
+            "{got:?}"
+        );
+        let got = r.model.set_param_default(&param, f32::INFINITY);
+        assert!(
+            matches!(got, Err(ModelError::NonFinite("a param's default"))),
+            "{got:?}"
+        );
+        assert_eq!(r.model.param(&param).unwrap().default, 0.0);
+
+        assert_eq!(r.model.generation(), before, "a refused edit is no edit");
+        // A finite value outside the range is still the author's business.
+        r.model.set_param_default(&param, 7.0).unwrap();
+    }
+
+    /// A refit is the caller's arithmetic, and its output went into the
+    /// binding unchecked: a cell of the wrong length was only reported when
+    /// the model was next saved, and a `NaN` not at all.
+    #[test]
+    fn a_refit_that_returns_a_bad_cell_refuses_the_whole_mesh_edit() {
+        let mut r = fixture();
+        let part = r.part.clone();
+        let key = deform_key(&r);
+        r.model
+            .set_deform_vertices(&key, [0, 0], vec![0.5; 8])
+            .unwrap();
+        r.model
+            .set_deform_vertices(&key, [1, 0], vec![0.25; 8])
+            .unwrap();
+        let mut bigger = quad();
+        bigger.verts.extend([0.0, 0.0]);
+        bigger.uvs.extend([0.0, 0.0]);
+        let resized = |new: &ClmMesh, offsets: &[f32]| {
+            let mut out = offsets.to_vec();
+            out.resize(new.verts.len(), 0.0);
+            out
+        };
+        let before = r.model.generation();
+        let bytes = r.model.to_clm_bytes().unwrap();
+
+        // The first cell refits fine; the second is still sized to the old
+        // mesh. Nothing of the first may stick.
+        let mut cell = 0;
+        let got = r
+            .model
+            .set_node_mesh_with(&part, bigger.clone(), |_, new, offsets| {
+                cell += 1;
+                if cell == 2 {
+                    offsets.to_vec()
+                } else {
+                    resized(new, offsets)
+                }
+            });
+        assert!(
+            matches!(
+                got,
+                Err(ModelError::DeformLength {
+                    expected: 10,
+                    got: 8
+                })
+            ),
+            "{got:?}"
+        );
+        let got = r
+            .model
+            .set_node_mesh_with(&part, bigger.clone(), |_, new, _| {
+                vec![f32::NAN; new.verts.len()]
+            });
+        assert!(
+            matches!(got, Err(ModelError::NonFinite("a deform offset"))),
+            "{got:?}"
+        );
+        assert_eq!(r.model.generation(), before, "a refused edit is no edit");
+        assert_eq!(r.model.to_clm_bytes().unwrap(), bytes);
+
+        r.model
+            .set_node_mesh_with(&part, bigger, |_, new, offsets| resized(new, offsets))
             .unwrap();
         Model::from_clm_bytes(&r.model.to_clm_bytes().unwrap()).unwrap();
     }

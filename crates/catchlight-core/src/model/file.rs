@@ -6,12 +6,13 @@
 //! obligations:
 //!
 //! - **Writing is total and deterministic.** A Model's tree is always valid
-//!   and its cross-references are always live, so the only thing
-//!   [`Model::to_clm_file`] can refuse is a deform cell whose length its
-//!   node's mesh cannot take. (It also refuses a weld whose end is not a
-//!   part. No edit produces one — [`Model::update_node_kind`] refuses the kind
-//!   swap that used to — and the check stays so that a file this writes is
-//!   always one this reader takes.)
+//!   and its cross-references are always live, so [`Model::to_clm_file`] has
+//!   nothing left to refuse. It still checks the two things it used to be
+//!   able to meet — a deform cell whose length its node's mesh cannot take,
+//!   and a weld whose end is not a part — though no edit produces either any
+//!   more ([`Model::set_node_mesh_with`] holds a refit to the new mesh, and
+//!   [`Model::update_node_kind`] refuses the kind swap), so that a file this
+//!   writes is always one this reader takes.
 //!   The orders it
 //!   writes — nodes pre-order from the root, params, textures and bindings in
 //!   the Model's own order — are the Model's, so the same Model always writes
@@ -20,10 +21,14 @@
 //!   the file itself declares, and a failure names the field and the Id that
 //!   dangled ([`ClmLoadError`]). What the reader accepts is exactly what the
 //!   Model's own invariants allow, so a loaded Model needs no repair pass.
-//!   Beyond the Ids, that is eight checks, each the file-shaped half of a rule
-//!   an edit already obeys: a param's range has to be finite and increasing
-//!   ([`crate::param_range_is_valid`]); a mask source has to be a kind the
-//!   renderer draws ([`Model::mask_add`]); a deform binding has to sit on a
+//!   Beyond the Ids, that is a list of checks, each the file-shaped half of a
+//!   rule an edit already obeys: a param's range has to be finite and
+//!   increasing ([`crate::param_range_is_valid`]) and its default finite
+//!   ([`Model::set_param_default`]); a node's z-order and transform have to
+//!   be finite ([`Model::update_node`]); a spine's joints have to be ones the
+//!   turn pass can compose ([`Model::set_spine_joints`]); a binding's key has
+//!   to be its own ([`Model::add_binding`]); a mask source has to be a kind
+//!   the renderer draws ([`Model::mask_add`]); a deform binding has to sit on a
 //!   node that carries a mesh, and a colour binding may not sit on a mesh
 //!   group ([`Model::add_binding`]); a mesh has to be `[x, y]` pairs with uvs
 //!   to match and every index in range ([`Model::set_node_mesh`]); a deform
@@ -178,6 +183,10 @@ pub enum ClmLoadError {
     DuplicateWeld { a: String, b: String },
     #[error("param {param:?} has a range that is not finite and increasing")]
     ParamRange { param: String },
+    #[error("param {param:?} has a default that is not finite")]
+    ParamDefault { param: String },
+    #[error("node {node:?} has a {field} that is not finite")]
+    NodeNotFinite { node: String, field: &'static str },
     #[error("spine {node:?} carries no joints; a spine is at least one link")]
     SpineNoJoints { node: String },
     #[error("spine {node:?} joint {joint}: a coordinate is not finite")]
@@ -544,6 +553,12 @@ impl Model {
                 }
                 .into());
             }
+            if !p.default.is_finite() {
+                return Err(ClmLoadError::ParamDefault {
+                    param: p.id.to_string(),
+                }
+                .into());
+            }
             if params
                 .insert(
                     p.id.clone(),
@@ -624,6 +639,13 @@ impl Model {
                 _ => Vec::new(),
             };
 
+            // The file-shaped half of `Model::update_node`'s rule.
+            validate::node_placement(cn.z_order, &cn.transform).map_err(|fault| {
+                ClmLoadError::NodeNotFinite {
+                    node: cn.id.to_string(),
+                    field: fault.field(),
+                }
+            })?;
             let mut node = ModelNode::new(&cn.name, ModelNodeKind::Group);
             node.parent = cn.parent.clone();
             node.enabled = cn.enabled;
@@ -2259,6 +2281,61 @@ mod tests {
         assert_eq!(Model::from_clm_file(&file).unwrap().bindings().count(), 2);
     }
 
+    /// The file-shaped half of the mutators' finite checks: a `NaN` z-order,
+    /// transform or param default used to load, and then poisoned the draw
+    /// sort, every matrix under the node, or every binding the param drives.
+    #[test]
+    fn a_value_that_is_not_a_number_is_a_structured_error() {
+        fn upper(file: &mut ClmFile) -> &mut ClmNode {
+            file.doc
+                .nodes
+                .iter_mut()
+                .find(|n| n.name == "Upper")
+                .unwrap()
+        }
+
+        let mut file = sample().to_clm_file().unwrap();
+        upper(&mut file).z_order = f32::NAN;
+        let id = upper(&mut file).id.to_string();
+        assert_eq!(
+            load_err(&file),
+            ClmLoadError::NodeNotFinite {
+                node: id.clone(),
+                field: "z-order",
+            }
+        );
+
+        let mut file = sample().to_clm_file().unwrap();
+        upper(&mut file).transform.rotation[2] = f32::INFINITY;
+        assert_eq!(
+            load_err(&file),
+            ClmLoadError::NodeNotFinite {
+                node: id.clone(),
+                field: "transform",
+            }
+        );
+
+        let mut file = sample().to_clm_file().unwrap();
+        file.doc.params[0].default = f32::NAN;
+        assert_eq!(
+            load_err(&file),
+            ClmLoadError::ParamDefault {
+                param: file.doc.params[0].id.to_string(),
+            }
+        );
+
+        // A fragment is held to the same node rule.
+        let mut fragment = sample_fragment_file();
+        upper(&mut fragment).transform.scale[0] = f32::NAN;
+        assert_eq!(
+            fragment_err(&fragment),
+            ClmLoadError::NodeNotFinite {
+                node: id,
+                field: "transform",
+            }
+        );
+    }
+
     #[test]
     fn a_dangling_binding_node_is_a_structured_error() {
         let mut file = sample().to_clm_file().unwrap();
@@ -2363,8 +2440,10 @@ mod tests {
         }
     }
 
-    /// And the writer refuses the same shape, so a bad refit is reported when
-    /// the file is saved rather than when someone next opens it.
+    /// And the writer refuses the same shape. A refit that returned the wrong
+    /// length used to be the one way a Model reached it; that is refused at
+    /// the edit now, so the state is built by hand. The writer's check stays
+    /// as the line that keeps a file it writes one this reader takes.
     #[test]
     fn a_deform_cell_the_mesh_cannot_take_cannot_be_written() {
         let mut m = sample();
@@ -2373,12 +2452,21 @@ mod tests {
             .into_iter()
             .find(|id| m.node(id).is_some_and(|n| n.name.as_str() == "Upper"))
             .unwrap();
-        // A refit that returns the wrong length is the one way a Model can
-        // reach this state; `set_node_mesh` itself resizes correctly.
-        m.set_node_mesh_with(&upper, quad(0.0), |_, _, offsets| {
-            offsets.to_vec()[..2].to_vec()
-        })
-        .unwrap();
+        assert!(matches!(
+            m.set_node_mesh_with(&upper, quad(0.0), |_, _, offsets| offsets[..2].to_vec()),
+            Err(ModelError::DeformLength {
+                expected: 8,
+                got: 2
+            })
+        ));
+        assert!(m.to_clm_file().is_ok(), "the refused refit changed nothing");
+        for binding in &mut m.bindings {
+            if let ClmBindingValues::Deform(cells) = binding.values_mut() {
+                for cell in &mut cells.cells {
+                    cell.value.truncate(2);
+                }
+            }
+        }
 
         assert!(matches!(
             m.to_clm_file(),

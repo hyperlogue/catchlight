@@ -1114,7 +1114,12 @@ impl Model {
         Ok(())
     }
 
+    /// Change the value a pose starts the param from. It has to be finite;
+    /// whether it sits inside the range is the author's business.
     pub fn set_param_default(&mut self, param: &ParamId, default: f32) -> Result<(), ModelError> {
+        if !default.is_finite() {
+            return Err(ModelError::NonFinite("a param's default"));
+        }
         if default != 0.0 {
             self.check_response_writer(param)?;
         }
