@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use catchlight_core::formats::clm::{
     self as clm, ClmExtension, ClmExtensionBlob, ClmExtensionMarker, ClmFile, ClmStructure,
-    MAX_EXTENSION_BYTES,
+    MAX_EXTENSION_BYTES, MAX_EXTENSION_JSON_BYTES,
 };
 use catchlight_core::id::ExtensionKey;
 use catchlight_core::{ExtensionValue, InstallError, Model, ModelError};
@@ -165,6 +165,46 @@ fn a_byte_value_over_the_cap_is_refused() {
     );
 }
 
+/// A JSON string whose compact JSON text is exactly `len` bytes: the two
+/// quotes count.
+fn json_of_len(len: usize) -> serde_json::Value {
+    serde_json::Value::String("a".repeat(len - 2))
+}
+
+/// A JSON value rides inside the structure, so it is pushed whole with every
+/// structure feed. It used to have no cap at all.
+#[test]
+fn a_json_value_over_the_cap_is_refused() {
+    let mut model = Model::new();
+    model
+        .set_extension(
+            key("acme.note"),
+            ExtensionValue::Json(json_of_len(MAX_EXTENSION_JSON_BYTES)),
+        )
+        .expect("a value exactly at the cap");
+
+    let err = model
+        .set_extension(
+            key("acme.huge"),
+            ExtensionValue::Json(json_of_len(MAX_EXTENSION_JSON_BYTES + 1)),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(
+            &err,
+            ModelError::ExtensionTooLarge { key, size, max }
+                if key == "acme.huge"
+                    && *size == MAX_EXTENSION_JSON_BYTES + 1
+                    && *max == MAX_EXTENSION_JSON_BYTES
+        ),
+        "{err}"
+    );
+    assert!(
+        model.extension(&key("acme.huge")).is_none(),
+        "a refused value is not set"
+    );
+}
+
 // ---- what the reader refuses --------------------------------------------
 
 /// A one-node structure, the smallest complete model.
@@ -263,6 +303,120 @@ fn a_byte_value_over_the_cap_is_refused_on_the_way_in() {
         refusal(&doc, &[blob("acme.huge", &big)]),
         clm::ClmError::ExtensionTooLarge { key, .. } if key == "acme.huge"
     ));
+}
+
+/// The reader and the writer hold a JSON value to the same cap the model
+/// does, measured the same way.
+#[test]
+fn a_json_value_over_the_cap_is_refused_on_the_way_in_and_out() {
+    let at_cap = with_extensions(vec![(
+        key("acme.note"),
+        ClmExtension::Json(json_of_len(MAX_EXTENSION_JSON_BYTES)),
+    )]);
+    clm::check_extensions(&at_cap, &[]).expect("a value exactly at the cap");
+
+    let over = with_extensions(vec![(
+        key("acme.huge"),
+        ClmExtension::Json(json_of_len(MAX_EXTENSION_JSON_BYTES + 1)),
+    )]);
+    assert!(matches!(
+        refusal(&over, &[]),
+        clm::ClmError::ExtensionTooLarge { key, size, max }
+            if key == "acme.huge"
+                && size == MAX_EXTENSION_JSON_BYTES + 1
+                && max == MAX_EXTENSION_JSON_BYTES
+    ));
+    assert!(matches!(
+        clm::encode(&over, &[], &[]).unwrap_err(),
+        clm::ClmError::ExtensionTooLarge { .. }
+    ));
+
+    // A file some other writer produced: the structure section written
+    // straight to CBOR, past `encode`'s own check.
+    let mut structure = Vec::new();
+    ciborium::into_writer(&over, &mut structure).unwrap();
+    let bytes = catchlight_core::formats::container::write(
+        &clm::MAGIC,
+        clm::FORMAT_VERSION,
+        &[
+            catchlight_core::formats::container::Section {
+                kind: 0,
+                data: &structure,
+            },
+            // An empty texture table.
+            catchlight_core::formats::container::Section {
+                kind: 1,
+                data: &[0x80],
+            },
+        ],
+    )
+    .unwrap();
+    assert!(matches!(
+        clm::decode(&bytes).unwrap_err(),
+        clm::ClmError::ExtensionTooLarge { key, .. } if key == "acme.huge"
+    ));
+}
+
+/// CBOR can spell NaN and the infinities; JSON cannot. `serde_json` reads
+/// one as `null`, which would hand back a different value from the one the
+/// file carries — so it is refused, wherever in the value it sits.
+#[test]
+fn a_float_that_is_not_finite_is_refused_rather_than_read_as_null() {
+    use ciborium::value::Value;
+
+    let wrap = |value: Value| {
+        let mut buf = Vec::new();
+        ciborium::into_writer(&Value::Map(vec![(Value::Text("json".into()), value)]), &mut buf)
+            .unwrap();
+        buf
+    };
+    for (what, value) in [
+        ("NaN", Value::Float(f64::NAN)),
+        ("infinity", Value::Float(f64::INFINITY)),
+        ("-infinity", Value::Float(f64::NEG_INFINITY)),
+        (
+            "NaN in an array",
+            Value::Array(vec![Value::Integer(1.into()), Value::Float(f64::NAN)]),
+        ),
+        (
+            "infinity in a map",
+            Value::Map(vec![(
+                Value::Text("ratio".into()),
+                Value::Float(f64::INFINITY),
+            )]),
+        ),
+    ] {
+        let decoded: Result<ClmExtension, _> = ciborium::from_reader(&wrap(value)[..]);
+        let message = decoded
+            .expect_err(&format!("{what} should not be a value"))
+            .to_string();
+        assert!(message.contains("not a JSON number"), "{what}: {message}");
+    }
+
+    // Everything JSON can spell still reads as itself, nested or not.
+    let finite = Value::Map(vec![
+        (Value::Text("ratio".into()), Value::Float(0.5)),
+        (Value::Text("count".into()), Value::Integer(3.into())),
+        (Value::Text("below".into()), Value::Integer((-7).into())),
+        (Value::Text("name".into()), Value::Text("rig".into())),
+        (Value::Text("none".into()), Value::Null),
+        (
+            "flags".to_string().into(),
+            Value::Array(vec![Value::Bool(true), Value::Bool(false)]),
+        ),
+    ]);
+    let decoded: ClmExtension = ciborium::from_reader(&wrap(finite)[..]).unwrap();
+    assert_eq!(
+        decoded,
+        ClmExtension::Json(serde_json::json!({
+            "ratio": 0.5,
+            "count": 3,
+            "below": -7,
+            "name": "rig",
+            "none": null,
+            "flags": [true, false],
+        }))
+    );
 }
 
 #[test]

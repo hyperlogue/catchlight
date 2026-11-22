@@ -2429,8 +2429,9 @@ impl Model {
     /// A reserved key is refused: `catchlight.` is the format's own prefix,
     /// and a reader accepts one because the format may write one some day,
     /// but nothing outside the format may author it. A byte value over
-    /// [`clm::MAX_EXTENSION_BYTES`] is refused with the same cap the reader
-    /// applies, so a model that takes a value is one that can be saved.
+    /// [`clm::MAX_EXTENSION_BYTES`], or a JSON value over
+    /// [`clm::MAX_EXTENSION_JSON_BYTES`], is refused with the same cap the
+    /// reader applies, so a model that takes a value is one that can be saved.
     pub fn set_extension(
         &mut self,
         key: ExtensionKey,
@@ -2439,14 +2440,19 @@ impl Model {
         if key.is_reserved() {
             return Err(ModelError::ReservedExtension(key.to_string()));
         }
-        if let ExtensionValue::Bytes(data) = &value {
-            if data.len() > clm::MAX_EXTENSION_BYTES {
-                return Err(ModelError::ExtensionTooLarge {
-                    key: key.to_string(),
-                    size: data.len(),
-                    max: clm::MAX_EXTENSION_BYTES,
-                });
-            }
+        let (size, max) = match &value {
+            ExtensionValue::Bytes(data) => (data.len(), clm::MAX_EXTENSION_BYTES),
+            ExtensionValue::Json(json) => (
+                clm::extension_json_len(json),
+                clm::MAX_EXTENSION_JSON_BYTES,
+            ),
+        };
+        if size > max {
+            return Err(ModelError::ExtensionTooLarge {
+                key: key.to_string(),
+                size,
+                max,
+            });
         }
         self.extensions.insert(key, value);
         self.bump();

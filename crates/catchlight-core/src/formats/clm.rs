@@ -54,10 +54,12 @@
 //!   a key off the charset or without its dot; a value that is neither
 //!   JSON-compatible nor a marker (bytes inline, a CBOR tag, a non-string map
 //!   key — `serde_json::Value` turns each into an "invalid type" on the way
-//!   in); a marker whose bytes are absent; bytes nothing names; a size or a
-//!   hash that disagrees with the marker; and a byte value over
-//!   [`MAX_EXTENSION_BYTES`]. The pairing is checked on the way *out* too, so
-//!   a writer never leaves a marker without its payload.
+//!   in); a float that is not finite, which JSON cannot spell; a marker whose
+//!   bytes are absent; bytes nothing names; a size or a hash that disagrees
+//!   with the marker; a byte value over [`MAX_EXTENSION_BYTES`]; and a JSON
+//!   value over [`MAX_EXTENSION_JSON_BYTES`]. The pairing and both caps are
+//!   checked on the way *out* too, so a writer never leaves a marker without
+//!   its payload or a value the next reader refuses.
 //! - **An extension is carried, never interpreted.** A vendor files
 //!   annotations under a dotted key ([`crate::id::ExtensionKey`], vendor
 //!   first) and catchlight reads none of them. A value is either
@@ -405,6 +407,12 @@ pub struct ClmStructure {
 /// break that is a file, not an annotation.
 pub const MAX_EXTENSION_BYTES: usize = 1024 * 1024;
 
+/// The most one extension's JSON value may measure, by
+/// [`extension_json_len`]. The same reasoning as [`MAX_EXTENSION_BYTES`],
+/// and more pressing: a JSON value rides *inside* the structure, so unlike
+/// bytes it is pushed whole with every structure feed.
+pub const MAX_EXTENSION_JSON_BYTES: usize = 1024 * 1024;
+
 /// What an extension holds, as the structure spells it.
 ///
 /// Externally tagged, so the two arms are a one-key map (`{"json": …}`,
@@ -416,15 +424,119 @@ pub const MAX_EXTENSION_BYTES: usize = 1024 * 1024;
 pub enum ClmExtension {
     /// A JSON-compatible value, written as native CBOR inline in the
     /// structure: string-keyed maps, arrays, strings, numbers, bools, null.
-    /// `serde_json::Value` is what refuses everything else — a CBOR byte
-    /// string, a tag, a non-string map key are each an "invalid type" on the
-    /// way in.
-    Json(serde_json::Value),
+    /// Everything else is refused on the way in — a CBOR byte string, a tag,
+    /// a non-string map key are each an "invalid type", and a float that is
+    /// not finite is an error rather than the `null` `serde_json` would make
+    /// of it: an extension is carried, never rewritten.
+    Json(#[serde(deserialize_with = "json_value")] serde_json::Value),
     /// A stand-in for bytes in the `SECTION_EXTENSIONS` section. The
     /// structure carries only the size and the hash, so a client watching a
     /// structure feed sees that a thumbnail changed without the thumbnail
     /// travelling with every unrelated edit.
     Bytes(ClmExtensionMarker),
+}
+
+/// Read a JSON-compatible value without changing it.
+///
+/// `serde_json::Value`'s own `Deserialize` is almost this, except that JSON
+/// has no NaN or infinity and it reads one as `null`. CBOR has both, so a
+/// `.clm` can carry one where a number was meant — and a reader that turned
+/// it into `null` would write back a different value from the one it read,
+/// which is the one thing an extension is promised not to suffer.
+fn json_value<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<serde_json::Value, D::Error> {
+    deserializer.deserialize_any(JsonValue)
+}
+
+struct JsonValue;
+
+impl<'de> serde::de::DeserializeSeed<'de> for JsonValue {
+    type Value = serde_json::Value;
+
+    fn deserialize<D: serde::Deserializer<'de>>(
+        self,
+        deserializer: D,
+    ) -> Result<Self::Value, D::Error> {
+        deserializer.deserialize_any(self)
+    }
+}
+
+impl<'de> serde::de::Visitor<'de> for JsonValue {
+    type Value = serde_json::Value;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("a JSON-compatible value")
+    }
+
+    fn visit_bool<E>(self, v: bool) -> Result<Self::Value, E> {
+        Ok(serde_json::Value::Bool(v))
+    }
+
+    fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E> {
+        Ok(serde_json::Value::Number(v.into()))
+    }
+
+    fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E> {
+        Ok(serde_json::Value::Number(v.into()))
+    }
+
+    fn visit_i128<E: serde::de::Error>(self, v: i128) -> Result<Self::Value, E> {
+        i64::try_from(v)
+            .map(|v| serde_json::Value::Number(v.into()))
+            .map_err(|_| E::custom("an integer outside the 64-bit range is not a JSON number"))
+    }
+
+    fn visit_u128<E: serde::de::Error>(self, v: u128) -> Result<Self::Value, E> {
+        u64::try_from(v)
+            .map(|v| serde_json::Value::Number(v.into()))
+            .map_err(|_| E::custom("an integer outside the 64-bit range is not a JSON number"))
+    }
+
+    fn visit_f64<E: serde::de::Error>(self, v: f64) -> Result<Self::Value, E> {
+        serde_json::Number::from_f64(v)
+            .map(serde_json::Value::Number)
+            .ok_or_else(|| E::custom(format_args!("{v} is not a JSON number")))
+    }
+
+    fn visit_str<E>(self, v: &str) -> Result<Self::Value, E> {
+        Ok(serde_json::Value::String(v.to_owned()))
+    }
+
+    fn visit_string<E>(self, v: String) -> Result<Self::Value, E> {
+        Ok(serde_json::Value::String(v))
+    }
+
+    fn visit_none<E>(self) -> Result<Self::Value, E> {
+        Ok(serde_json::Value::Null)
+    }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E> {
+        Ok(serde_json::Value::Null)
+    }
+
+    fn visit_some<D: serde::Deserializer<'de>>(
+        self,
+        deserializer: D,
+    ) -> Result<Self::Value, D::Error> {
+        deserializer.deserialize_any(self)
+    }
+
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+        let mut items = Vec::new();
+        while let Some(item) = seq.next_element_seed(JsonValue)? {
+            items.push(item);
+        }
+        Ok(serde_json::Value::Array(items))
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        let mut entries = serde_json::Map::new();
+        while let Some(key) = map.next_key::<String>()? {
+            entries.insert(key, map.next_value_seed(JsonValue)?);
+        }
+        Ok(serde_json::Value::Object(entries))
+    }
 }
 
 /// What the structure carries in place of an extension's bytes.
@@ -683,8 +795,19 @@ pub fn check_extensions(doc: &ClmStructure, blobs: &[ClmExtensionBlob]) -> Resul
     }
 
     for (key, value) in &doc.extensions {
-        let ClmExtension::Bytes(marker) = value else {
-            continue;
+        let marker = match value {
+            ClmExtension::Bytes(marker) => marker,
+            ClmExtension::Json(json) => {
+                let size = extension_json_len(json);
+                if size > MAX_EXTENSION_JSON_BYTES {
+                    return Err(ClmError::ExtensionTooLarge {
+                        key: key.to_string(),
+                        size,
+                        max: MAX_EXTENSION_JSON_BYTES,
+                    });
+                }
+                continue;
+            }
         };
         let blob = carried
             .remove(key)
