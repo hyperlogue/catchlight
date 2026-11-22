@@ -27,6 +27,9 @@ pub enum DeformSource {
     /// source a fold does not produce, and so the one [`DeformStack::reset`]
     /// leaves alone: nothing else can reconstruct it.
     Scratch,
+    /// A slot for this crate's own unit tests, so they can write a source no
+    /// pass owns. Not part of the public enum.
+    #[cfg(test)]
     Test,
 }
 
@@ -63,8 +66,8 @@ struct SourceSlot {
 }
 
 // Inline capacity 2 covers the observed hot-path shape: at most one
-// Param source + one MeshGroup-parent Node source per node. Tests use a
-// third slot (Test) which spills to heap without losing correctness.
+// Param source + one MeshGroup-parent Node source per node. More spill to
+// the heap without losing correctness.
 type Sources = SmallVec<[SourceSlot; 2]>;
 
 #[derive(Debug, Clone, Default)]

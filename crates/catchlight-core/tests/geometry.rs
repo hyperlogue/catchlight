@@ -152,9 +152,9 @@ fn inherited_meshgroup_and_weld_deformations_are_observed_from_the_same_frame() 
     let mut puppet = Puppet::new(&model);
     let idx = puppet.node_idx(&group).unwrap();
     puppet.set_scratch_deform(idx, &[Vec2::new(3.0, 4.0); 4]);
-    // A local scratch edit is evaluated with the editor's refold path; the
-    // observer does not choose a tick/preview policy on the caller's behalf.
-    puppet.refold_with_node_edits(|_| {});
+    // A scratch edit shows after the caller's own evaluation; the observer
+    // does not choose a tick/preview policy on the caller's behalf.
+    puppet.tick(&model, 0.0);
     let frame = EvaluatedGeometry::new(&model, &puppet).unwrap();
     let a = frame.mesh(&a).unwrap();
     let b = frame.mesh(&b).unwrap();

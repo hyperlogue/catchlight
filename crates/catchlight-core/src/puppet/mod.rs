@@ -111,61 +111,15 @@ fn resolve_contributions(entries: &[Contribution], claims: &[u32], base: f32) ->
     }
 }
 
-/// A live edit to node properties, handed to the closure
-/// [`Puppet::refold_with_node_edits`] takes.
-///
-/// It reaches only the three properties a gesture drags — the transform, the
-/// z order and the opacity — and it writes into the puppet's own evaluated
-/// frame, never into the model. Anything more belongs in a model edit.
-pub struct NodeEdits<'a> {
-    arena: &'a mut Arena,
-}
-
-impl NodeEdits<'_> {
-    /// Edit the node's transform in place. `false` when the arena has no such
-    /// node.
-    pub fn transform(&mut self, id: NodeIdx, edit: impl FnOnce(&mut crate::Transform)) -> bool {
-        let Some(node) = self.arena.get_mut(id) else {
-            return false;
-        };
-        edit(&mut node.transform);
-        self.arena.mark_transform_dirty(id);
-        true
-    }
-
-    /// `false` when the arena has no such node.
-    pub fn set_z_order(&mut self, id: NodeIdx, z_order: f32) -> bool {
-        let Some(node) = self.arena.get_mut(id) else {
-            return false;
-        };
-        node.z_order = z_order;
-        true
-    }
-
-    /// `false` when the arena has no such node, or when the node is not one
-    /// that carries an opacity (only parts and composites do).
-    pub fn set_opacity(&mut self, id: NodeIdx, opacity: f32) -> bool {
-        let Some(node) = self.arena.get_mut(id) else {
-            return false;
-        };
-        match &mut node.kind {
-            NodeKind::Part(part) => part.opacity = opacity,
-            NodeKind::Composite(composite) => composite.opacity = opacity,
-            _ => return false,
-        }
-        true
-    }
-}
-
 /// A live edit to one node's properties, held by the puppet and re-applied by
 /// every fold — the transform half of an edit in progress, exactly as a
 /// scratch deform is its per-vertex half.
 ///
-/// It reaches the same three properties [`NodeEdits`] does, because they are
-/// the three a gesture drags: the local transform, the z order and the
-/// opacity. Every field is optional and `None` means *leave what the fold
-/// produced*, so a drag that only translates does not also pin the rotation a
-/// binding is animating.
+/// It reaches the three properties a gesture drags: the local transform, the
+/// z order and the opacity. Anything more belongs in a model edit. Every
+/// field is optional and `None` means *leave what the fold produced*, so a
+/// drag that only translates does not also pin the rotation a binding is
+/// animating.
 ///
 /// **The values are absolute, not deltas.** A field that is `Some` replaces
 /// the node's evaluated property outright, and the number a client previews is
@@ -366,8 +320,13 @@ impl Puppet {
     /// drivers across by Id.
     ///
     /// `model` must be the model this puppet was built from — a puppet
-    /// animates one model, and handing it another is a programmer error the
-    /// identity check catches.
+    /// animates one model, and handing it another is a programmer error.
+    /// Debug builds assert on it. A release build does not check: it rebakes
+    /// against whatever it is handed, because a different model never shares
+    /// a generation, and keeps reporting the identity it was built with.
+    ///
+    /// Driver claims are not carried across: motion responses are their only
+    /// source, and the rebaked responses publish again on their next step.
     pub fn sync(&mut self, model: &Model) {
         debug_assert_eq!(
             self.model_identity,
@@ -389,21 +348,6 @@ impl Puppet {
                     .map(|(id, v)| (id.clone(), *v)),
             )
             .collect();
-        let contributions: Vec<_> = self
-            .param_contributions
-            .iter()
-            .filter_map(|c| {
-                if self.responses.owns(c.slot) {
-                    return None;
-                }
-                Some((
-                    self.params.get(c.slot as usize)?.id.clone(),
-                    self.id_of_node.get(c.source.0 as usize)?.clone(),
-                    c.value,
-                    c.weight,
-                ))
-            })
-            .collect();
         let scratch: Vec<(NodeId, ScratchTransform)> = self
             .scratch_transforms
             .iter()
@@ -423,22 +367,6 @@ impl Puppet {
         }
         for (id, value) in pose {
             self.set_param_value(&id, value);
-        }
-        for (param, source, value, weight) in contributions {
-            let (Some(&slot), Some(&source)) =
-                (self.slot_of_param.get(&param), self.node_of_id.get(&source))
-            else {
-                continue;
-            };
-            if self.responses.owns(slot) {
-                continue;
-            }
-            self.record_contribution(Contribution {
-                slot,
-                source,
-                value,
-                weight,
-            });
         }
     }
 
@@ -739,43 +667,6 @@ impl Puppet {
         self.scratch_transforms = scratch;
     }
 
-    /// Re-evaluate the current frame with a live edit to node properties on
-    /// top of the pose — the transform half of an edit in progress, shown
-    /// live and never part of the model, exactly as a scratch deform is its
-    /// per-vertex half.
-    ///
-    /// This is not a tick: no driver steps and no animation advances. The
-    /// bindings are folded again from the model's authored values, `edit`
-    /// writes over what they produced, and then everything that reads a
-    /// transform is redone — the transform walk, the mesh-group pass, welds
-    /// and the deform combine. Doing them again is the point: a previewed
-    /// transform has to move the children of a translate-children group and
-    /// the mesh groups above them, or the frame shows a node in its new place
-    /// and its dependents in their old one.
-    ///
-    /// The edit lives until the next fold. [`Self::tick`] starts from the
-    /// model's authored values, so a preview never accumulates and nothing has
-    /// to undo it — which is also why a caller whose puppet ticks every frame
-    /// wants [`Self::set_scratch_transform`] instead. The closure runs *after*
-    /// the scratch transforms, so it wins over them on any field they share.
-    pub fn refold_with_node_edits(&mut self, edit: impl FnOnce(&mut NodeEdits<'_>)) {
-        let _span = tracing::trace_span!("refold_with_node_edits").entered();
-        self.invalidate_fold();
-        self.reset_frame();
-        self.apply_params();
-        self.apply_scratch_transforms();
-        edit(&mut NodeEdits {
-            arena: &mut self.arena,
-        });
-        let mut out = std::mem::take(&mut self.transforms);
-        self.arena.compute_transforms(&mut out);
-        self.arena
-            .propagate_mesh_group_deforms(&mut out, Mat4::IDENTITY);
-        self.arena.apply_welds(&out);
-        self.arena.combine_deforms();
-        self.transforms = out;
-    }
-
     // ---- the pose ---------------------------------------------------------
 
     /// The params this puppet was baked with, in the model's order.
@@ -885,24 +776,11 @@ impl Puppet {
             .collect()
     }
 
-    /// Record `source`'s weighted claim on `param`, replacing that source's
-    /// previous one. Returns whether the resolved value moved.
-    pub fn contribute_param_value(
-        &mut self,
-        param: &ParamId,
-        source: NodeIdx,
-        value: f32,
-        weight: f32,
-    ) -> bool {
-        let Some(slot) = self.slot_of_param.get(param).copied() else {
-            return false;
-        };
-        if self.responses.owns(slot) {
-            return false;
-        }
-        self.contribute(slot, source, value, weight)
-    }
-
+    /// Record `source`'s weighted claim on a param slot, replacing that
+    /// source's previous one. Returns whether the resolved value moved.
+    ///
+    /// Motion responses are the only claimants: each publishes its output
+    /// here, and two responses aimed at one param meet as a weighted mean.
     fn contribute(&mut self, slot: u32, source: NodeIdx, value: f32, weight: f32) -> bool {
         self.record_contribution(Contribution {
             slot,
@@ -951,7 +829,7 @@ impl Puppet {
     }
 
     /// Drop every driver claim, restoring each param to what was posed.
-    pub fn clear_param_contributions(&mut self) {
+    fn clear_param_contributions(&mut self) {
         if self.param_contributions.is_empty() {
             return;
         }
@@ -1351,8 +1229,9 @@ impl Puppet {
         self.arena.reset_deforms();
     }
 
-    /// Fold every binding at the current pose.
-    pub fn apply_params(&mut self) {
+    /// Fold every binding at the current pose. Additive on top of whatever
+    /// the arena holds, so it only ever follows `reset_frame`.
+    pub(crate) fn apply_params(&mut self) {
         let _span = tracing::trace_span!("apply_params").entered();
         // Normalize each input once; each binding locates it on its own axes.
         for slot in 0..self.params.len() {
@@ -1464,56 +1343,6 @@ mod tests {
         assert_eq!(a.generation(), b.generation());
         let mut puppet = Puppet::new(&a);
         puppet.tick(&b, 0.0);
-    }
-
-    /// A live node edit has to reach everything downstream of the node, not
-    /// just the node: an editor dragging a group must show its children
-    /// following. And it has to be *only* live — the next tick folds from the
-    /// model's authored values, so nothing has to undo it.
-    #[test]
-    fn a_live_node_edit_moves_the_subtree_and_the_next_tick_folds_it_away() {
-        use crate::id::SeededHex;
-        use crate::model::{ModelNode, ModelNodeKind};
-
-        let mut model = Model::new();
-        let mut hex = SeededHex::new(3);
-        let root = model.root().expect("a fresh model has one root").clone();
-        let parent = model
-            .add_node(
-                &root,
-                ModelNode::new("parent", ModelNodeKind::Group),
-                &mut hex,
-            )
-            .expect("add parent");
-        let child = model
-            .add_node(
-                &parent,
-                ModelNode::new("child", ModelNodeKind::Group),
-                &mut hex,
-            )
-            .expect("add child");
-
-        let mut puppet = Puppet::new(&model);
-        puppet.tick(&model, 0.0);
-        let parent_idx = puppet.node_idx(&parent).expect("parent baked");
-        let child_idx = puppet.node_idx(&child).expect("child baked");
-        let at_rest = puppet.transforms().get(child_idx);
-
-        puppet.refold_with_node_edits(|edits| {
-            assert!(edits.transform(parent_idx, |t| t.translation.x += 25.0));
-        });
-        let previewed = puppet.transforms().get(child_idx);
-        assert!(
-            (previewed.w_axis.x - at_rest.w_axis.x - 25.0).abs() < 1e-4,
-            "the child must follow its previewed parent",
-        );
-
-        puppet.tick(&model, 0.0);
-        assert_eq!(
-            puppet.transforms().get(child_idx),
-            at_rest,
-            "a tick folds from the model, so the preview is gone",
-        );
     }
 
     /// A scratch deform is an edit in progress that only its writer holds, so
@@ -1832,12 +1661,13 @@ mod tests {
     #[test]
     fn two_claims_on_one_slot_average() {
         let (_model, mut puppet, param, a, b) = two_claimants();
+        let slot = puppet.slot_of_param.get(&param).copied().expect("a slot");
         puppet.set_param_value(&param, 4.0);
 
-        assert!(puppet.contribute_param_value(&param, a, 0.0, 1.0));
+        assert!(puppet.contribute(slot, a, 0.0, 1.0));
         assert_eq!(puppet.param_value(&param), Some(0.0), "one full claim wins");
 
-        assert!(puppet.contribute_param_value(&param, b, 1.0, 1.0));
+        assert!(puppet.contribute(slot, b, 1.0, 1.0));
         assert_eq!(
             puppet.param_value(&param),
             Some(0.5),
@@ -1847,7 +1677,7 @@ mod tests {
 
         // Half authority leaves half the pose showing, and the two rows are
         // still one slot's.
-        assert!(puppet.contribute_param_value(&param, b, 1.0, 0.0));
+        assert!(puppet.contribute(slot, b, 1.0, 0.0));
         assert_eq!(puppet.param_value(&param), Some(0.0));
         assert_eq!(puppet.param_contributions.len(), 2, "an upsert, not a push");
         claim_index_agrees(&puppet);
@@ -1859,21 +1689,21 @@ mod tests {
     #[test]
     fn a_claim_made_twice_counts_once() {
         let (_model, mut puppet, param, a, _b) = two_claimants();
+        let slot = puppet.slot_of_param.get(&param).copied().expect("a slot");
 
-        assert!(puppet.contribute_param_value(&param, a, 2.0, 1.0));
-        assert!(puppet.contribute_param_value(&param, a, 6.0, 1.0));
+        assert!(puppet.contribute(slot, a, 2.0, 1.0));
+        assert!(puppet.contribute(slot, a, 6.0, 1.0));
         assert_eq!(
             puppet.param_value(&param),
             Some(6.0),
             "the second claim replaced the first instead of averaging with it",
         );
         assert_eq!(puppet.param_contributions.len(), 1);
-        let slot = puppet.slot_of_param.get(&param).copied().expect("a slot");
         assert_eq!(puppet.slot_claims[slot as usize].len(), 1);
         claim_index_agrees(&puppet);
 
         // A claim that changes nothing says so, and still leaves one entry.
-        assert!(!puppet.contribute_param_value(&param, a, 6.0, 1.0));
+        assert!(!puppet.contribute(slot, a, 6.0, 1.0));
         assert_eq!(puppet.param_contributions.len(), 1);
         claim_index_agrees(&puppet);
     }
@@ -1883,9 +1713,10 @@ mod tests {
     #[test]
     fn clearing_the_claims_empties_the_index() {
         let (_model, mut puppet, param, a, b) = two_claimants();
+        let slot = puppet.slot_of_param.get(&param).copied().expect("a slot");
         puppet.set_param_value(&param, 3.0);
-        puppet.contribute_param_value(&param, a, 0.0, 1.0);
-        puppet.contribute_param_value(&param, b, 1.0, 1.0);
+        puppet.contribute(slot, a, 0.0, 1.0);
+        puppet.contribute(slot, b, 1.0, 1.0);
         claim_index_agrees(&puppet);
 
         puppet.clear_param_contributions();
