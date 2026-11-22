@@ -34,18 +34,8 @@ pub enum DeformSource {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum DeformShapeError {
-    #[error("deform matrix dimensions overflow: {width} x {height}")]
-    MatrixDimensionsOverflow { width: usize, height: usize },
-    #[error("deform matrix has {actual} cells; expected {expected} for {width} x {height}")]
-    MatrixCellCount {
-        width: usize,
-        height: usize,
-        expected: usize,
-        actual: usize,
-    },
-    #[error("deform matrix storage overflows: {cells} cells x {vert_count} vertices")]
-    MatrixStorageOverflow { cells: usize, vert_count: usize },
     #[error("deform has {actual} vertices; expected {expected}")]
     StackLength { expected: usize, actual: usize },
 }

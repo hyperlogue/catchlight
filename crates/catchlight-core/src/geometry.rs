@@ -24,6 +24,7 @@ use crate::{Mesh, Model, NodeId, NodeKind, Puppet};
 
 /// An observation cannot mix model versions or invent a missing frame.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum GeometryError {
     #[error("the puppet belongs to a different model")]
     ModelMismatch,

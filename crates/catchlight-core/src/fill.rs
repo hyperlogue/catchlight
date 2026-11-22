@@ -1,8 +1,9 @@
 //! Derive a binding's dense evaluation grid from its sparse authored cells.
 //!
 //! `.clm` stores only authored keypoint cells; the dense grid the runtime
-//! interpolates over (see `params.rs`) is a derived cache computed here, at
-//! load (runtime) or on model change (editor). This is the single fill
+//! interpolates over (see `crate::puppet`'s fold and `crate::interpolate`) is
+//! a derived cache computed here, at load (runtime) or on model change
+//! (editor). This is the single fill
 //! implementation both sides call. Pixel stability depends on runtime and
 //! editor deriving identical values for unauthored cells.
 //!

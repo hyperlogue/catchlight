@@ -447,8 +447,9 @@ impl Arena {
     /// Fold `root` into the top-level transform of the puppet so it
     /// renders at an arbitrary world position. Used by bevy integration
     /// to apply the entity's `GlobalTransform` without re-pointing the
-    /// shared camera uniform between puppets (which would hit the
-    /// queue.write_buffer batching hazard documented in AGENTS.md).
+    /// shared camera uniform between puppets: every `queue.write_buffer`
+    /// lands at the start of the next submit, so a uniform rewritten between
+    /// two puppets' passes would reach both with its last value.
     pub(crate) fn compute_transforms_with_root(&self, out: &mut GlobalTransforms, root: Mat4) {
         let _span = tracing::trace_span!("compute_transforms_with_root").entered();
         // Size the Vec once at frame start; each insert below is then a

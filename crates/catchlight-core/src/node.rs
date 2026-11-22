@@ -173,6 +173,7 @@ impl NodeTree {
 }
 
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum NodeTreeError {
     #[error("Node {0:?} not found in tree")]
     NodeNotFound(NodeIdx),
