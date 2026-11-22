@@ -22,6 +22,13 @@ case "${1:-}" in
   *) echo "Usage: $0 {dry-run|publish}" >&2; exit 2 ;;
 esac
 
+# The page is gitignored but packaged, which Cargo counts as uncommitted; check
+# the checkout here so --allow-dirty admits only that page.
+if [[ -n "$(git status --porcelain)" ]]; then
+  echo "Commit or stash changes before publishing:" >&2; git status --short >&2; exit 1
+fi
+flags+=(--allow-dirty)
+
 version=$(python3 scripts/release/check.py)
 packages=()
 for crate in "${crates[@]}"; do
