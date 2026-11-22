@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.2.1] - 2026-11-22
+## [0.2.2] - 2026-11-22
 
 ### New
 
@@ -50,4 +50,4 @@
   (e.g., `import { CatchlightEditor } from "@catchlight/editor-ui"` and
   `@catchlight/editor-ui/theme.css`).
 
-[0.2.1]: https://github.com/hyperlogue/catchlight/releases/tag/v0.2.1
+[0.2.2]: https://github.com/hyperlogue/catchlight/releases/tag/v0.2.2

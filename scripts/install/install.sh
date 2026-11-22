@@ -3,7 +3,7 @@
 #
 #   curl -fsSL https://github.com/hyperlogue/catchlight/releases/latest/download/install.sh | sh
 #
-# CATCHLIGHT_VERSION   a release tag such as v0.2.1 (default: the latest)
+# CATCHLIGHT_VERSION   a release tag such as v0.2.2 (default: the latest)
 # CATCHLIGHT_INSTALL_DIR  where the binary goes (default: ~/.local/bin)
 # CATCHLIGHT_DOWNLOAD_URL a mirror holding the release assets (overrides both)
 #
