@@ -696,6 +696,11 @@ pub fn encode(
     extensions: &[ClmExtensionBlob],
 ) -> Result<Vec<u8>, ClmError> {
     check_extensions(doc, extensions)?;
+    // The payloads alone are a lower bound on the section that holds them,
+    // so a table the container would refuse is refused here, before it is
+    // serialized only to be thrown away.
+    let payloads: u64 = textures.iter().map(|t| t.data.len() as u64).sum();
+    container::check_section_len(SECTION_TEXTURES, payloads)?;
     let structure = cbor_to_vec(doc)?;
     let tex = cbor_to_vec(&textures)?;
     let ext = cbor_to_vec(&extensions)?;
@@ -717,7 +722,7 @@ pub fn encode(
             data: &ext,
         });
     }
-    Ok(container::write(&MAGIC, FORMAT_VERSION, &sections))
+    Ok(container::write(&MAGIC, FORMAT_VERSION, &sections)?)
 }
 
 /// Serialize the `Structure` half alone: the same CBOR value [`encode`]
@@ -743,7 +748,7 @@ pub fn encode_structure(
             data: &manifest,
         },
     ];
-    Ok(container::write(&MAGIC, FORMAT_VERSION, &sections))
+    Ok(container::write(&MAGIC, FORMAT_VERSION, &sections)?)
 }
 
 pub fn decode(bytes: &[u8]) -> Result<ClmFile, ClmError> {
@@ -967,6 +972,28 @@ mod tests {
         assert_eq!(
             a, b,
             "encode must be deterministic for editor dirty-checking"
+        );
+    }
+
+    /// A texture table the reader would refuse is refused on save, not
+    /// written with its section length truncated. The payload is zero pages
+    /// the refusal never touches.
+    #[test]
+    fn encode_refuses_a_texture_table_the_reader_would_refuse() {
+        let (doc, mut textures) = sample();
+        textures[0].data = vec![0u8; container::MAX_SECTION_LEN as usize + 1];
+
+        let err = encode(&doc, &textures, &[]).unwrap_err();
+
+        assert!(
+            matches!(
+                err,
+                ClmError::Container(ContainerError::SectionTooLarge {
+                    kind: SECTION_TEXTURES,
+                    ..
+                })
+            ),
+            "{err:?}"
         );
     }
 

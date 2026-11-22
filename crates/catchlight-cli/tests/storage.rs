@@ -126,7 +126,8 @@ fn unknown_fields_are_not_misreported_as_exact_element_sizes() {
                 data: original.section(1).unwrap(),
             },
         ],
-    );
+    )
+    .unwrap();
     let report = storage::inspect(&input, Path::new("future.clm")).unwrap();
     assert!(!report.canonical_matches_input);
     assert_eq!(report.stored_bytes, input.len());

@@ -6,6 +6,12 @@
 //! validated against the buffer size before use, so a malformed or hostile
 //! file errors instead of panicking or over-allocating.
 //!
+//! **Whatever [`write`] returns, [`read`] accepts.** The writer holds its
+//! input to the reader's caps — [`MAX_SECTION_COUNT`] sections, each at most
+//! [`MAX_SECTION_LEN`] bytes — and refuses what is over them, rather than
+//! truncating a length into the table's `u32` and leaving a file that only
+//! fails, or silently misreads, at the next open.
+//!
 //! Section *meaning* — which `kind` is Structure, Textures, TextureManifest
 //! or Extensions — lives in the `.clm` layer; this module frames opaque byte
 //! sections and owns only the version word that layer branches on.
@@ -15,11 +21,31 @@ use thiserror::Error;
 const HEADER_LEN: usize = 8 + 2 + 4;
 const SECTION_ENTRY_LEN: usize = 4 + 8 + 4;
 
-/// Caps on untrusted sizes read from the file. A section
-/// can hold a whole texture atlas, so the length cap is generous; it exists to
-/// turn a corrupt `u32::MAX` length into an error rather than an allocation.
-const MAX_SECTION_COUNT: u32 = 4096;
-const MAX_SECTION_LEN: u64 = 512 * 1024 * 1024;
+/// The most sections one container may frame. A cap on an untrusted count
+/// read from the file, and on what [`write`] will frame.
+pub const MAX_SECTION_COUNT: u32 = 4096;
+/// The most bytes one section may hold. A section can hold a whole texture
+/// atlas, so the cap is generous; on the way in it turns a corrupt `u32::MAX`
+/// length into an error rather than an allocation, and on the way out it is
+/// what keeps a length from being truncated into the table's `u32`.
+pub const MAX_SECTION_LEN: u64 = 512 * 1024 * 1024;
+
+/// Hold one section's length to [`MAX_SECTION_LEN`], the same test on the
+/// way in and on the way out. Returns the length as the table stores it.
+pub fn check_section_len(kind: u32, len: u64) -> Result<u32, ContainerError> {
+    u32::try_from(len)
+        .ok()
+        .filter(|_| len <= MAX_SECTION_LEN)
+        .ok_or(ContainerError::SectionTooLarge { kind, len })
+}
+
+fn check_section_count(count: usize) -> Result<u32, ContainerError> {
+    let shown = u32::try_from(count).unwrap_or(u32::MAX);
+    if shown > MAX_SECTION_COUNT {
+        return Err(ContainerError::TooManySections(shown));
+    }
+    Ok(shown)
+}
 
 #[derive(Debug, Error, PartialEq, Eq)]
 #[non_exhaustive]
@@ -84,26 +110,39 @@ fn le_u64(bytes: &[u8], at: usize) -> Option<u64> {
 /// Serialize `magic` + `version` + the section table + the payloads. Section
 /// offsets are absolute from the file start and laid out in `sections` order
 /// directly after the table; the result is deterministic for a given input.
-pub fn write(magic: &[u8; 8], version: u16, sections: &[Section]) -> Vec<u8> {
+///
+/// Refuses what [`read`] would refuse — too many sections, or one too long —
+/// before copying a byte, so the error costs nothing.
+pub fn write(
+    magic: &[u8; 8],
+    version: u16,
+    sections: &[Section],
+) -> Result<Vec<u8>, ContainerError> {
+    let count = check_section_count(sections.len())?;
+    let mut lens = Vec::with_capacity(sections.len());
+    for s in sections {
+        lens.push(check_section_len(s.kind, s.data.len() as u64)?);
+    }
+
     let table_len = sections.len() * SECTION_ENTRY_LEN;
     let payloads_len: usize = sections.iter().map(|s| s.data.len()).sum();
     let mut out = Vec::with_capacity(HEADER_LEN + table_len + payloads_len);
 
     out.extend_from_slice(magic);
     out.extend_from_slice(&version.to_le_bytes());
-    out.extend_from_slice(&(sections.len() as u32).to_le_bytes());
+    out.extend_from_slice(&count.to_le_bytes());
 
     let mut offset = (HEADER_LEN + table_len) as u64;
-    for s in sections {
+    for (s, len) in sections.iter().zip(lens) {
         out.extend_from_slice(&s.kind.to_le_bytes());
         out.extend_from_slice(&offset.to_le_bytes());
-        out.extend_from_slice(&(s.data.len() as u32).to_le_bytes());
-        offset += s.data.len() as u64;
+        out.extend_from_slice(&len.to_le_bytes());
+        offset += u64::from(len);
     }
     for s in sections {
         out.extend_from_slice(s.data);
     }
-    out
+    Ok(out)
 }
 
 /// Parse a container, checking `magic` and bounds-checking the table against
@@ -137,9 +176,7 @@ pub fn read<'a>(
         let offset = le_u64(bytes, base + 4).ok_or(ContainerError::Truncated)?;
         let len = le_u32(bytes, base + 12).ok_or(ContainerError::Truncated)? as u64;
 
-        if len > MAX_SECTION_LEN {
-            return Err(ContainerError::SectionTooLarge { kind, len });
-        }
+        check_section_len(kind, len)?;
         let oob = ContainerError::SectionOutOfBounds {
             kind,
             offset,
@@ -185,7 +222,7 @@ mod tests {
             Section { kind: 7, data: &a },
             Section { kind: 42, data: &b },
         ];
-        let bytes = write(MAGIC, 3, &sections);
+        let bytes = write(MAGIC, 3, &sections).unwrap();
         let c = read(&bytes, MAGIC).unwrap();
         assert_eq!(c.version, 3);
         assert_eq!(c.sections.len(), 2);
@@ -196,15 +233,78 @@ mod tests {
 
     #[test]
     fn empty_section_list_roundtrips() {
-        let bytes = write(MAGIC, 1, &[]);
+        let bytes = write(MAGIC, 1, &[]).unwrap();
         let c = read(&bytes, MAGIC).unwrap();
         assert_eq!(c.version, 1);
         assert!(c.sections.is_empty());
     }
 
+    /// The writer refuses what the reader would: a count over the cap never
+    /// reaches the header, and the largest count the reader takes round-trips.
+    #[test]
+    fn write_refuses_more_sections_than_read_accepts() {
+        let at_cap: Vec<Section> = (0..MAX_SECTION_COUNT)
+            .map(|kind| Section { kind, data: &[] })
+            .collect();
+        let bytes = write(MAGIC, 1, &at_cap).unwrap();
+        assert_eq!(
+            read(&bytes, MAGIC).unwrap().sections.len(),
+            MAX_SECTION_COUNT as usize
+        );
+
+        let over: Vec<Section> = (0..=MAX_SECTION_COUNT)
+            .map(|kind| Section { kind, data: &[] })
+            .collect();
+        assert_eq!(
+            write(MAGIC, 1, &over).err(),
+            Some(ContainerError::TooManySections(MAX_SECTION_COUNT + 1))
+        );
+    }
+
+    /// A section over the cap used to be written with its length truncated
+    /// to the table's `u32` — or, under 4 GiB, written whole into a file the
+    /// reader then refused. Refused before a byte is copied, so the test's
+    /// zero pages are never touched.
+    #[test]
+    fn write_refuses_a_section_longer_than_read_accepts() {
+        let over = vec![0u8; MAX_SECTION_LEN as usize + 1];
+        let sections = [
+            Section {
+                kind: 7,
+                data: &[1, 2, 3],
+            },
+            Section {
+                kind: 9,
+                data: &over,
+            },
+        ];
+        assert_eq!(
+            write(MAGIC, 1, &sections).err(),
+            Some(ContainerError::SectionTooLarge {
+                kind: 9,
+                len: MAX_SECTION_LEN + 1,
+            })
+        );
+    }
+
+    #[test]
+    fn the_section_length_check_is_the_readers() {
+        assert_eq!(check_section_len(0, 0), Ok(0));
+        assert_eq!(
+            check_section_len(0, MAX_SECTION_LEN),
+            Ok(MAX_SECTION_LEN as u32)
+        );
+        for len in [MAX_SECTION_LEN + 1, u64::from(u32::MAX) + 1, u64::MAX] {
+            assert_eq!(
+                check_section_len(3, len),
+                Err(ContainerError::SectionTooLarge { kind: 3, len })
+            );
+        }
+    }
+
     #[test]
     fn wrong_magic_is_rejected() {
-        let bytes = write(MAGIC, 1, &[]);
+        let bytes = write(MAGIC, 1, &[]).unwrap();
         assert_eq!(
             read(&bytes, b"OTHER\0\0\0").err(),
             Some(ContainerError::BadMagic)
