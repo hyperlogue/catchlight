@@ -177,18 +177,4 @@ jobs:
       - name: Create or update the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          tag="v$(python3 scripts/release/check.py)"
-          gh release view "$tag" >/dev/null 2>&1 ||
-            gh release create "$tag" --verify-tag --title "Catchlight $tag" \
-              --notes "See [CHANGELOG.md](https://github.com/${GITHUB_REPOSITORY}/blob/$tag/CHANGELOG.md)."
-          # Resume a partial upload without replacing assets already out: a
-          # rebuilt binary would differ from the one npm already published.
-          existing=$(gh release view "$tag" --json assets --jq '.assets[].name')
-          for file in dist/editor-app/*; do
-            if grep -qxF "$(basename "$file")" <<<"$existing"; then
-              echo "Already attached: $(basename "$file")"
-            else
-              gh release upload "$tag" "$file"
-            fi
-          done
+        run: bash .github/scripts/attach-release-assets.sh dist/editor-app
