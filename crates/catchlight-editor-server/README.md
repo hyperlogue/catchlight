@@ -4,8 +4,10 @@ The Catchlight editor backend: model sessions, authoring commands, history,
 and native headless previews. Embed `Editor` in an application or run the
 server for editor clients.
 
-The session core also supports in-browser wasm execution. The Unix-socket
-server is Linux development tooling; `catchlight-editor-cli` connects to it.
+The session core also supports in-browser wasm execution. The binary serves
+HTTP on every platform and a Unix socket as Linux development tooling;
+`catchlight-editor-cli` connects to either. `catchlight-editor` is the
+packaged editor built on it.
 
 ```sh
 cargo add catchlight-editor-server

@@ -93,6 +93,14 @@
 //!   `model_changed` before its `ok`. A client keyed on `rev` does not
 //!   care; one that assumes reply-then-event does.
 //!
+//! - **The UI is public; everything else is not.** A launcher may hand
+//!   [`HttpOptions::ui`] the built editor page, served by `GET` without a
+//!   token — it is the same bundle anyone can download, and a page from this
+//!   origin is the one origin `GET /token` answers by default. A UI file is
+//!   only ever a fallback for a path no route claims, so a bundle cannot
+//!   shadow an API route, and every UI response forbids framing so another
+//!   page cannot dress up a local editor and click through it.
+//!
 //! - **An idle socket is proved live, not assumed.** A tab that is only
 //!   watching sends nothing for minutes, and a proxy between it and here reaps
 //!   a connection that carries no bytes. So the reader parks with a timeout of
@@ -158,7 +166,14 @@ pub struct HttpOptions {
     /// with before the connection is dropped. The default suits a browser tab;
     /// shorten it only to exercise the keepalive.
     pub ping_interval: Duration,
+    /// The editor page and its assets, served at `/` and below. `None`
+    /// serves no page; a tab is then hosted elsewhere and allowlisted.
+    pub ui: Option<UiFiles>,
 }
+
+/// A built page: each file's path relative to the site root (`index.html`,
+/// `assets/app.js`) and its bytes, compiled into the binary that serves it.
+pub type UiFiles = &'static [(&'static str, &'static [u8])];
 
 impl Default for HttpOptions {
     fn default() -> Self {
@@ -167,6 +182,7 @@ impl Default for HttpOptions {
             token: None,
             max_upload_bytes: DEFAULT_MAX_UPLOAD_BYTES,
             ping_interval: DEFAULT_PING_INTERVAL,
+            ui: None,
         }
     }
 }
@@ -187,6 +203,7 @@ struct ServerState {
     max_upload_bytes: usize,
     ping_interval: Duration,
     connections: Arc<ConnectionLimiter>,
+    ui: Option<UiFiles>,
 }
 
 /// Bind `addr` without serving it. The allowlist is the server's own two
@@ -219,6 +236,7 @@ pub fn bind_http(
             max_upload_bytes: options.max_upload_bytes,
             ping_interval: options.ping_interval,
             connections: Arc::new(ConnectionLimiter::default()),
+            ui: options.ui,
         }),
     })
 }
@@ -364,7 +382,10 @@ fn serve_connection(state: &ServerState, stream: TcpStream) {
     // The gate closes on the head alone. A refusal here leaves the body
     // unread and the connection is dropped under it, which is what keeps an
     // unauthenticated caller from spending the upload ceiling.
-    if !opens_without_a_token(&request) && !bearer_matches(&request, &state.token) {
+    if !opens_without_a_token(&request)
+        && ui_file(state, &request).is_none()
+        && !bearer_matches(&request, &state.token)
+    {
         let _ = write_response(
             &mut writer,
             &cors(
@@ -419,9 +440,62 @@ fn route(state: &ServerState, request: &HttpRequest, allowed: Option<&str>) -> R
         ("GET", ["sessions", id, "clm"]) => clm(state, id),
         ("GET", ["sessions", id, "textures", tex]) => texture(state, id, tex),
         ("GET", ["sessions", id, "extensions", key]) => extension(state, id, key),
-        _ => Response::text(404, "Not Found", "no such endpoint"),
+        _ => match ui_file(state, request) {
+            Some((path, bytes)) => return ui_response(path, bytes),
+            None => Response::text(404, "Not Found", "no such endpoint"),
+        },
     };
     cors(response, allowed)
+}
+
+/// The UI file a `GET` names, if a launcher gave the server a UI and no route
+/// claims the path. `/` is `index.html`.
+fn ui_file(state: &ServerState, request: &HttpRequest) -> Option<(&'static str, &'static [u8])> {
+    let ui = state.ui?;
+    if request.method != "GET" || claimed_by_a_route(&request.path) {
+        return None;
+    }
+    let wanted = match request.path.trim_start_matches('/') {
+        "" => "index.html",
+        path => path,
+    };
+    ui.iter().find(|(path, _)| *path == wanted).copied()
+}
+
+/// Whether `path` belongs to the API whatever a UI bundle holds.
+fn claimed_by_a_route(path: &str) -> bool {
+    let first = path.trim_start_matches('/').split('/').next().unwrap_or("");
+    matches!(first, "token" | "ws" | "request" | "sessions")
+}
+
+fn ui_response(path: &str, bytes: &'static [u8]) -> Response {
+    let kind = match path.rsplit_once('.').map_or("", |(_, ext)| ext) {
+        "html" => "text/html; charset=utf-8",
+        "js" | "mjs" => "text/javascript; charset=utf-8",
+        "css" => "text/css; charset=utf-8",
+        "wasm" => "application/wasm",
+        "json" | "map" => "application/json",
+        "svg" => "image/svg+xml",
+        "png" => "image/png",
+        "ico" => "image/x-icon",
+        "woff2" => "font/woff2",
+        "txt" => "text/plain; charset=utf-8",
+        _ => "application/octet-stream",
+    };
+    // Vite names everything under `assets/` by content hash, so only the
+    // page itself has to be revalidated.
+    let cache = if path.starts_with("assets/") {
+        "public, max-age=31536000, immutable"
+    } else {
+        "no-cache"
+    };
+    Response::new(200, "OK")
+        .with("Content-Type", kind)
+        .with("Cache-Control", cache)
+        .with("X-Content-Type-Options", "nosniff")
+        .with("X-Frame-Options", "DENY")
+        .with("Content-Security-Policy", "frame-ancestors 'none'")
+        .body(Body::Static(bytes))
 }
 
 /// One request in the body, its reply in the answer. The same [`Editor`] entry
@@ -1166,6 +1240,7 @@ struct Response {
 enum Body {
     Owned(Vec<u8>),
     Shared(Arc<[u8]>),
+    Static(&'static [u8]),
 }
 
 impl Body {
@@ -1173,6 +1248,7 @@ impl Body {
         match self {
             Self::Owned(bytes) => bytes,
             Self::Shared(bytes) => bytes,
+            Self::Static(bytes) => bytes,
         }
     }
 }

@@ -1653,3 +1653,54 @@ fn only_a_byte_extension_answers_on_that_route() {
     );
     assert_eq!(response.status, 400);
 }
+
+const UI: catchlight_editor_server::UiFiles = &[
+    ("index.html", b"<!doctype html>page"),
+    ("assets/app-1234.js", b"export {}"),
+    ("assets/app-1234.wasm", b"\0asm"),
+    // A bundle that happened to hold a file named like a route.
+    ("token", b"not the token"),
+];
+
+#[test]
+fn the_ui_is_served_without_a_token_and_never_shadows_a_route() {
+    let server = start_with(|options| options.ui = Some(UI));
+    let page = http(server.addr, "GET", "/", &[], &[]);
+    assert_eq!(page.status, 200);
+    assert_eq!(page.body, b"<!doctype html>page");
+    assert_eq!(
+        page.header("content-type"),
+        Some("text/html; charset=utf-8")
+    );
+    assert_eq!(page.header("cache-control"), Some("no-cache"));
+    assert_eq!(page.header("x-frame-options"), Some("DENY"));
+
+    let wasm = http(server.addr, "GET", "/assets/app-1234.wasm", &[], &[]);
+    assert_eq!(wasm.status, 200);
+    assert_eq!(wasm.header("content-type"), Some("application/wasm"));
+    assert!(wasm.header("cache-control").unwrap().contains("immutable"));
+
+    // The route answers, not the bundle's file of the same name.
+    let token = http(server.addr, "GET", "/token", &[], &[]);
+    assert!(String::from_utf8_lossy(&token.body).contains(TOKEN));
+    // A path the bundle lacks is still behind the token, and API routes stay
+    // there too.
+    assert_eq!(
+        http(server.addr, "GET", "/missing.js", &[], &[]).status,
+        401
+    );
+    assert_eq!(
+        http(server.addr, "GET", "/sessions/1/clm", &[], &[]).status,
+        401
+    );
+    assert_eq!(
+        http(server.addr, "POST", "/index.html", &[], &[]).status,
+        401
+    );
+}
+
+#[test]
+fn without_a_ui_the_root_is_behind_the_token() {
+    let server = start();
+    assert_eq!(http(server.addr, "GET", "/", &[], &[]).status, 401);
+}
