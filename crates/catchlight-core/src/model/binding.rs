@@ -395,28 +395,12 @@ fn upsert<T>(cells: &mut Vec<ClmCell<T>>, cell: [u32; 2], value: T) {
 }
 
 /// Validate binding-owned normalized axes before any grid is allocated.
-pub(crate) fn validate_binding_positions(
-    params: usize,
-    positions: &[Vec<f32>],
-) -> Result<(), ModelError> {
-    if positions.len() != params
-        || positions.iter().any(|axis| {
-            axis.is_empty()
-                || axis
-                    .iter()
-                    .any(|v| !v.is_finite() || !(0.0..=1.0).contains(v))
-                || axis.windows(2).any(|pair| pair[0] >= pair[1])
-        })
-    {
-        return Err(ModelError::CellOutOfRange);
+fn validate_binding_positions(params: usize, positions: &[Vec<f32>]) -> Result<(), ModelError> {
+    if validate::binding_positions_are_valid(params, positions) {
+        Ok(())
+    } else {
+        Err(ModelError::CellOutOfRange)
     }
-    let cells = positions
-        .iter()
-        .try_fold(1u64, |n, axis| n.checked_mul(axis.len() as u64));
-    if cells.is_none_or(|n| n > crate::load_budget::MAX_BINDING_GRID_CELLS) {
-        return Err(ModelError::CellOutOfRange);
-    }
-    Ok(())
 }
 
 /// A corrective binding contributes identity when all of its response inputs
@@ -744,19 +728,13 @@ impl Model {
             .node(&key.node)
             .map(|n| &n.kind)
             .ok_or(ModelError::UnknownNode)?;
+        validate::binding_target(kind, key.target).map_err(|fault| match fault {
+            validate::BindingFault::DeformOnUnmeshed => ModelError::NotMeshed,
+            validate::BindingFault::ColorOnMeshGroup(_) => ModelError::ColorOnMeshGroup,
+        })?;
         let values = match key.target {
-            BindingTarget::Deform => {
-                if !matches!(kind, ModelNodeKind::Part(_) | ModelNodeKind::MeshGroup(_)) {
-                    return Err(ModelError::NotMeshed);
-                }
-                ClmBindingValues::Deform(ClmCells::default())
-            }
-            BindingTarget::Scalar(t) => {
-                if t.is_color() && matches!(kind, ModelNodeKind::MeshGroup(_)) {
-                    return Err(ModelError::ColorOnMeshGroup);
-                }
-                t.wrap(ClmCells::default())
-            }
+            BindingTarget::Deform => ClmBindingValues::Deform(ClmCells::default()),
+            BindingTarget::Scalar(t) => t.wrap(ClmCells::default()),
         };
         self.binding_grid(key)?;
         validate_binding_positions(key.params.iter().count(), &key_positions)?;
@@ -1081,16 +1059,7 @@ impl Model {
         if self.node_mesh(&key.node).is_none() {
             return Err(ModelError::NotMeshed);
         }
-        let expected = self.deform_len(&key.node);
-        if offsets.len() != expected {
-            return Err(ModelError::DeformLength {
-                expected,
-                got: offsets.len(),
-            });
-        }
-        if offsets.iter().any(|v| !v.is_finite()) {
-            return Err(ModelError::NonFinite("a deform offset"));
-        }
+        validate::deform_offsets(&offsets, self.deform_len(&key.node))?;
         self.check_cell(key, cell)?;
         self.edit_binding(key, BindingEdit::CreateIfMissing, |binding| {
             if let ClmBindingValues::Deform(c) = binding.values_mut() {

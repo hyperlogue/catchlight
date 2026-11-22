@@ -131,6 +131,7 @@ mod equality;
 mod eval;
 mod file;
 mod response;
+mod validate;
 
 pub use addon::{InstallError, Installed, Required, Requirement, Requirements};
 pub use binding::{
@@ -141,6 +142,7 @@ pub use check::CheckWarning;
 pub use correspondence::{DeformMapping, MeshMappingError, VertexWeight, MAX_MAPPING_ENTRIES};
 pub use eval::Pose;
 pub use file::ClmLoadError;
+pub use validate::SpineJointError;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::Deref;
@@ -244,6 +246,8 @@ pub enum ModelError {
     NotMotionResponse,
     #[error("a spine reads one param per link: {targets} targets for {joints} joints")]
     SpineTargetArity { targets: usize, joints: usize },
+    #[error(transparent)]
+    SpineJoints(#[from] SpineJointError),
     #[error("a colour binding cannot target a mesh group, which is never drawn")]
     ColorOnMeshGroup,
     #[error("a two-param binding needs two different params")]
@@ -717,12 +721,24 @@ pub struct ModelSpine {
 }
 
 impl ModelSpine {
+    /// A spine over `joints`, every link rigid. Building one checks nothing:
+    /// the joints are held to [`Self::check_joints`] when the spine joins a
+    /// model, by [`Model::add_node`] and [`Model::set_spine_joints`].
     pub fn new(joints: Vec<[f32; 2]>) -> Self {
         let targets = vec![None; joints.len()];
         Self {
             joints: joints.into(),
             targets: targets.into(),
         }
+    }
+
+    /// Whether `joints` is a chain the turn pass can compose: at least one
+    /// joint, every coordinate finite, and no joint repeating the point above
+    /// it — the node's own origin for the first one. The one rule every way
+    /// into a model holds a spine to, the `.clm` reader included; public so a
+    /// caller can refuse bad joints before it has built anything around them.
+    pub fn check_joints(joints: &[[f32; 2]]) -> Result<(), SpineJointError> {
+        validate::spine_joints(joints)
     }
 
     /// The far end of each link, in the node's own space.
@@ -1193,6 +1209,11 @@ impl Model {
         if let Some(mesh) = node.mesh() {
             validate_mesh(mesh)?;
         }
+        // The same goes for a spine's joints: `ModelSpine::new` takes any,
+        // and this is where they join a model.
+        if let ModelNodeKind::Spine(spine) = &node.kind {
+            validate::spine_joints(spine.joints())?;
+        }
         // A node cloned out of another model carries that model's Ids.
         self.check_node_refs(&node)?;
         node.parent = Some(parent.clone());
@@ -1244,9 +1265,7 @@ impl Model {
         }
         for node in self.nodes.values_mut() {
             node.remove_masks(|id| removed.contains(id));
-            if let ModelNodeKind::MotionResponse(r) = &mut node.kind {
-                r.inputs.retain(|t| !matches!(&t.source,crate::ResponseSource::PartSlot{part,..} if removed.contains(part)));
-            }
+            validate::drop_slot_inputs(&mut node.kind, |part, _| removed.contains(part));
         }
         self.bindings.retain(|b| !removed.contains(&b.key.node));
         self.welds
@@ -1694,13 +1713,20 @@ impl Model {
 
     /// Reshape a spine. The targets follow the new length: links past the new
     /// end lose their param, new links arrive rigid.
+    ///
+    /// The joints have to be ones the reader would take
+    /// ([`ModelSpine::check_joints`]), so a reshaped spine is one that saves
+    /// and loads.
     pub fn set_spine_joints(
         &mut self,
         node: &NodeId,
         joints: Vec<[f32; 2]>,
     ) -> Result<(), ModelError> {
         match self.nodes.get_mut(node).map(|n| &mut n.kind) {
-            Some(ModelNodeKind::Spine(spine)) => spine.set_joints(joints),
+            Some(ModelNodeKind::Spine(spine)) => {
+                validate::spine_joints(&joints)?;
+                spine.set_joints(joints);
+            }
             Some(_) => return Err(ModelError::NotSpine),
             None => return Err(ModelError::UnknownNode),
         }
@@ -2023,9 +2049,7 @@ impl Model {
                 .retain(|p| !(drops_a && &p.a == slot) && !(drops_b && &p.b == slot));
         }
         for node in self.nodes.values_mut() {
-            if let ModelNodeKind::MotionResponse(r) = &mut node.kind {
-                r.inputs.retain(|t| !matches!(&t.source,crate::ResponseSource::PartSlot{part,slot:s,..} if part==id && s==slot));
-            }
+            validate::drop_slot_inputs(&mut node.kind, |part, s| part == id && s == slot);
         }
         self.bump();
         Ok(())
@@ -2411,56 +2435,40 @@ impl Model {
     /// validated, and [`Model::install`] checks the other against the base.
     pub fn set_welds(&mut self, welds: Vec<ModelWeld>) -> Result<(), ModelError> {
         let fragment = self.is_fragment();
-        let mut recorded: HashSet<(&NodeId, &NodeId)> = HashSet::with_capacity(welds.len());
+        let mut welded = validate::Welded::with_capacity(welds.len());
         for w in &welds {
-            if w.a == w.b {
-                return Err(ModelError::WeldSelfPaired);
-            }
-            let ends = [
-                self.weld_end(&w.a, fragment)?,
-                self.weld_end(&w.b, fragment)?,
-            ];
-            let key = if w.a < w.b {
-                (&w.a, &w.b)
-            } else {
-                (&w.b, &w.a)
-            };
-            if !recorded.insert(key) {
-                return Err(ModelError::DuplicateWeld);
-            }
-            let mut seen_a = HashSet::with_capacity(w.pairs.len());
-            let mut seen_b = HashSet::with_capacity(w.pairs.len());
-            for pair in w.pairs.iter() {
-                if !(0.0..=1.0).contains(&pair.weight) {
-                    return Err(ModelError::WeldWeightOutOfRange);
+            validate::weld(
+                &w.a,
+                &w.b,
+                w.pairs.iter().map(|pair| (&pair.a, &pair.b, pair.weight)),
+                &mut welded,
+                |end| self.weld_end(end, fragment),
+                |part, slot| self.slot(part, slot).is_some(),
+            )
+            .map_err(|fault| match fault {
+                validate::WeldFault::SelfPaired => ModelError::WeldSelfPaired,
+                validate::WeldFault::EndNotAPart { .. } => ModelError::WeldEndNotAPart,
+                validate::WeldFault::EndMissing { .. } => ModelError::UnknownNode,
+                validate::WeldFault::Duplicate => ModelError::DuplicateWeld,
+                validate::WeldFault::WeightOutOfRange { .. } => ModelError::WeldWeightOutOfRange,
+                validate::WeldFault::UnknownSlot { slot, .. } => {
+                    ModelError::WeldUnknownSlot(slot.to_string())
                 }
-                for (slots, slot) in ends.into_iter().zip([&pair.a, &pair.b]) {
-                    if slots.is_some_and(|carried| !carried.iter().any(|s| &s.id == slot)) {
-                        return Err(ModelError::WeldUnknownSlot(slot.to_string()));
-                    }
+                validate::WeldFault::SlotPairedTwice { slot, .. } => {
+                    ModelError::WeldSlotPairedTwice(slot.to_string())
                 }
-                if !seen_a.insert(&pair.a) {
-                    return Err(ModelError::WeldSlotPairedTwice(pair.a.to_string()));
-                }
-                if !seen_b.insert(&pair.b) {
-                    return Err(ModelError::WeldSlotPairedTwice(pair.b.to_string()));
-                }
-            }
+            })?;
         }
         self.welds = welds;
         self.bump();
         Ok(())
     }
 
-    /// The slots one end of a weld carries, or why that end is not a part.
-    /// `Ok(None)` is a fragment's end reaching into the base model.
-    fn weld_end(&self, end: &NodeId, fragment: bool) -> Result<Option<&[Slot]>, ModelError> {
-        match self.node(end).map(|n| &n.kind) {
-            Some(ModelNodeKind::Part(p)) => Ok(Some(p.slots())),
-            Some(_) => Err(ModelError::WeldEndNotAPart),
-            None if fragment => Ok(None),
-            None => Err(ModelError::UnknownNode),
-        }
+    /// What one end of a weld names in this model. A node a fragment does
+    /// not carry is an end reaching into the base model, which is
+    /// [`Model::install`]'s to check.
+    fn weld_end(&self, end: &NodeId, fragment: bool) -> validate::WeldEnd {
+        validate::WeldEnd::of(self.node(end).map(|n| &n.kind), fragment)
     }
 
     // ---- accounting ----
@@ -2980,6 +2988,57 @@ mod tests {
 
         r.model.delete_param(&param).unwrap();
         assert_eq!(spine_targets(&r.model, &spine), vec![None, None]);
+    }
+
+    /// A spine's joints are held to one rule on every way in. The reader
+    /// refused a jointless, non-finite or zero-length link while the mutators
+    /// took any, so an edit could author a model that saved and would not
+    /// load again.
+    #[test]
+    fn a_spine_no_reader_would_take_cannot_be_authored() {
+        let mut r = fixture();
+        let spine = r.spine();
+        let root = r.root.clone();
+        let before = r.model.generation();
+
+        for (joints, expected) in [
+            (Vec::new(), SpineJointError::NoJoints),
+            (vec![[0.0, f32::NAN]], SpineJointError::NonFinite(0)),
+            (vec![[0.0, 0.0]], SpineJointError::Coincident(0)),
+            (
+                vec![[0.0, -5.0], [0.0, -5.0]],
+                SpineJointError::Coincident(1),
+            ),
+        ] {
+            assert!(
+                matches!(
+                    r.model.set_spine_joints(&spine, joints.clone()),
+                    Err(ModelError::SpineJoints(e)) if e == expected
+                ),
+                "set_spine_joints took {joints:?}"
+            );
+            let node = ModelNode::new("bad", ModelNodeKind::Spine(ModelSpine::new(joints.clone())));
+            assert!(
+                matches!(
+                    r.model.add_node(&root, node, &mut r.hex),
+                    Err(ModelError::SpineJoints(e)) if e == expected
+                ),
+                "add_node took {joints:?}"
+            );
+        }
+        assert_eq!(r.model.generation(), before, "a refused edit is no edit");
+        match &r.model.node(&spine).unwrap().kind {
+            ModelNodeKind::Spine(sp) => {
+                assert_eq!(sp.joints(), [[0.0, -50.0], [0.0, -100.0]])
+            }
+            other => panic!("not a spine: {other:?}"),
+        }
+
+        // What the mutators take, the reader takes.
+        r.model
+            .set_spine_joints(&spine, vec![[0.0, -10.0]])
+            .unwrap();
+        Model::from_clm_bytes(&r.model.to_clm_bytes().unwrap()).unwrap();
     }
 
     /// Undo snapshots a model by cloning it, and a puppet built against the

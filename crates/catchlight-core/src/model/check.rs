@@ -21,7 +21,6 @@
 use crate::formats::clm::ClmBindingValues;
 
 use super::*;
-use crate::model::binding::BindingTarget;
 
 #[derive(Debug, Clone)]
 pub struct CheckWarning {
@@ -92,23 +91,19 @@ impl Model {
             let Ok((w, h)) = self.binding_grid(b.key()) else {
                 continue;
             };
-            if let BindingTarget::Scalar(t) = b.target() {
-                if t.is_color()
-                    && matches!(
-                        self.node(b.node()).map(|n| &n.kind),
-                        Some(ModelNodeKind::MeshGroup(_))
-                    )
-                {
-                    out.push(CheckWarning {
-                        node: Some(b.node().clone()),
-                        message: format!(
-                            "param {:?}: {} binding targets a mesh group, which has no \
-                             colour (the runtime refuses to load this model)",
-                            p.name.as_str(),
-                            t.name()
-                        ),
-                    });
-                }
+            if let Some(Err(validate::BindingFault::ColorOnMeshGroup(t))) = self
+                .node(b.node())
+                .map(|n| validate::binding_target(&n.kind, b.target()))
+            {
+                out.push(CheckWarning {
+                    node: Some(b.node().clone()),
+                    message: format!(
+                        "param {:?}: {} binding targets a mesh group, which has no \
+                         colour (the runtime refuses to load this model)",
+                        p.name.as_str(),
+                        t.name()
+                    ),
+                });
             }
             let stray = cells_outside(b.values(), w, h);
             if stray > 0 {
@@ -140,10 +135,10 @@ impl Model {
                 });
             }
             let slots = ends.map(|end| self.slots(end));
-            for (end, carried) in ends.into_iter().zip(slots) {
+            for end in ends {
                 // In a fragment, an end on a node that is not here is a weld
                 // into the base: a requirement, not a broken weld.
-                if carried.is_none() && !(fragment && self.node(end).is_none()) {
+                if !self.weld_end(end, fragment).is_sound() {
                     out.push(CheckWarning {
                         node: Some(end.clone()),
                         message: format!(

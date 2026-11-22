@@ -716,9 +716,7 @@ impl Model {
             if node.children.iter().any(|c| removed.contains(c)) {
                 Arc::make_mut(&mut node.children).retain(|c| !removed.contains(c));
             }
-            if let ModelNodeKind::MotionResponse(r) = &mut node.kind {
-                r.inputs.retain(|t| !matches!(&t.source,crate::ResponseSource::PartSlot{part,..} if removed.contains(part)));
-            }
+            validate::drop_slot_inputs(&mut node.kind, |part, _| removed.contains(part));
             node.remove_masks(|id| removed.contains(id));
             if let ModelNodeKind::Part(p) = &mut node.kind {
                 if p.albedo

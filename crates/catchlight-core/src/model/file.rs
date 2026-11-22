@@ -318,11 +318,10 @@ impl Model {
             // file. A fragment's weld into a base part has one end this model
             // cannot see, and only the end it can see is checked.
             for end in [weld.a(), weld.b()] {
-                match self.node(end).map(|n| &n.kind) {
-                    Some(ModelNodeKind::Part(_)) => {}
-                    Some(_) => return Err(ModelError::WeldEndNotAPart),
-                    None if fragment => {}
-                    None => return Err(ModelError::UnknownNode),
+                match validate::WeldEnd::of(self.node(end).map(|n| &n.kind), fragment) {
+                    validate::WeldEnd::Part | validate::WeldEnd::Deferred => {}
+                    validate::WeldEnd::NotAPart(_) => return Err(ModelError::WeldEndNotAPart),
+                    validate::WeldEnd::Missing => return Err(ModelError::UnknownNode),
                 }
             }
             welds.push(ClmWeld {
@@ -687,12 +686,12 @@ impl Model {
 
         let mut bindings = Vec::with_capacity(doc.bindings.len());
         for b in &doc.bindings {
-            if !nodes.contains_key(&b.node) {
+            let Some(bound) = nodes.get(&b.node) else {
                 return Err(ClmLoadError::DanglingBindingNode {
                     id: b.node.to_string(),
                 }
                 .into());
-            }
+            };
             let owner = || format!("the binding on node {}", b.node);
             for p in &b.params {
                 if !params.contains_key(p) && !shape.allows_dangling() {
@@ -704,28 +703,27 @@ impl Model {
                 }
             }
             let target = target_of(&b.values);
-            let kind = nodes.get(&b.node).map(|n| &n.kind);
-            if let BindingTarget::Scalar(t) = target {
-                if t.is_color() && matches!(kind, Some(ModelNodeKind::MeshGroup(_))) {
+            // The rule `Model::add_binding` holds an authored binding to. A
+            // deform on a node with no mesh would otherwise slip past
+            // `check_deform_cells`, whose expected length for it is zero.
+            match validate::binding_target(&bound.kind, target) {
+                Ok(()) => {}
+                Err(validate::BindingFault::ColorOnMeshGroup(t)) => {
                     return Err(ClmLoadError::ColorOnMeshGroup {
                         node: b.node.to_string(),
                         target: t.name(),
                     }
-                    .into());
+                    .into())
+                }
+                Err(validate::BindingFault::DeformOnUnmeshed) => {
+                    return Err(ClmLoadError::DeformOnUnmeshed {
+                        node: b.node.to_string(),
+                        kind: bound.kind.name(),
+                    }
+                    .into())
                 }
             }
-            let mesh = nodes.get(&b.node).and_then(ModelNode::mesh);
-            // `Model::add_binding` refuses a deform on a node with no mesh to
-            // deform; without this the file slipped past `check_deform_cells`,
-            // whose expected length for such a node is zero.
-            if mesh.is_none() && matches!(target, BindingTarget::Deform) {
-                return Err(ClmLoadError::DeformOnUnmeshed {
-                    node: b.node.to_string(),
-                    kind: kind.map_or("node", ModelNodeKind::name),
-                }
-                .into());
-            }
-            let vertices = mesh.map_or(0, |m| m.verts.len());
+            let vertices = bound.mesh().map_or(0, |m| m.verts.len());
             check_deform_cells(&b.node, vertices, &b.values)?;
 
             let key_params = match b.params.as_slice() {
@@ -739,11 +737,12 @@ impl Model {
                     .into())
                 }
             };
-            binding::validate_binding_positions(b.params.len(), &b.key_positions).map_err(
-                |_| ClmLoadError::BindingPositions {
+            if !validate::binding_positions_are_valid(b.params.len(), &b.key_positions) {
+                return Err(ClmLoadError::BindingPositions {
                     node: b.node.to_string(),
-                },
-            )?;
+                }
+                .into());
+            }
             let width = b.key_positions[0].len();
             let height = b.key_positions.get(1).map_or(1, Vec::len);
             let mut occupied = HashSet::new();
@@ -793,21 +792,9 @@ impl Model {
         }
 
         let mut welds = Vec::with_capacity(doc.welds.len());
-        let mut welded: HashSet<(&NodeId, &NodeId)> = HashSet::with_capacity(doc.welds.len());
+        let mut welded = validate::Welded::with_capacity(doc.welds.len());
         for w in &doc.welds {
-            let key = if w.a < w.b {
-                (&w.a, &w.b)
-            } else {
-                (&w.b, &w.a)
-            };
-            if !welded.insert(key) {
-                return Err(ClmLoadError::DuplicateWeld {
-                    a: w.a.to_string(),
-                    b: w.b.to_string(),
-                }
-                .into());
-            }
-            welds.push(read_weld(w, &slots, &nodes, &declared, shape)?);
+            welds.push(read_weld(w, &slots, &nodes, &mut welded, shape)?);
         }
 
         for (i, animation) in doc.animations.iter().enumerate() {
@@ -1191,32 +1178,16 @@ fn model_spine(
     params: &HashMap<ParamId, ModelParam>,
     shape: Shape,
 ) -> Result<ModelSpine, ModelError> {
-    if sp.joints.is_empty() {
-        return Err(ClmLoadError::SpineNoJoints {
-            node: id.to_string(),
-        }
-        .into());
-    }
-    // The link above `joints[0]` starts at the node's own origin, so that is
-    // the point the first joint may not repeat.
-    let mut above = [0.0f32, 0.0];
-    for (i, joint) in sp.joints.iter().enumerate() {
-        if !joint[0].is_finite() || !joint[1].is_finite() {
-            return Err(ClmLoadError::SpineJointField {
-                node: id.to_string(),
-                joint: i,
+    validate::spine_joints(&sp.joints).map_err(|fault| {
+        let node = id.to_string();
+        match fault {
+            SpineJointError::NoJoints => ClmLoadError::SpineNoJoints { node },
+            SpineJointError::NonFinite(joint) => ClmLoadError::SpineJointField { node, joint },
+            SpineJointError::Coincident(joint) => {
+                ClmLoadError::SpineJointCoincident { node, joint }
             }
-            .into());
         }
-        if joint == &above {
-            return Err(ClmLoadError::SpineJointCoincident {
-                node: id.to_string(),
-                joint: i,
-            }
-            .into());
-        }
-        above = *joint;
-    }
+    })?;
     let mut spine = ModelSpine::new(sp.joints.clone());
     // `#[serde(default)]` gives an empty Vec, which is also what a file whose
     // links are all rigid writes; both mean the same thing, and the length the
@@ -1300,94 +1271,75 @@ fn read_slots(id: &NodeId, part: &ClmPart) -> Result<Vec<Slot>, ModelError> {
     Ok(out)
 }
 
-/// A weld, checked against the slots the file declares: the two ends have to
-/// be two different parts, each pair has to name a slot the part on its side
-/// carries, no slot twice, and each weight has to be a share within `0..=1`.
-/// Whether a slot is *filled* is not this check's business:
-/// [`ModelWeld::resolve`] skips the pairs that are not.
+/// A weld, held to the weld rule ([`validate::weld`]) against the slots the
+/// file declares: the two ends have to be two different parts welded once,
+/// each pair has to name a slot the part on its side carries, no slot twice,
+/// and each weight has to be a share within `0..=1`. Whether a slot is
+/// *filled* is not this check's business: [`ModelWeld::resolve`] skips the
+/// pairs that are not.
 ///
 /// A **fragment** may weld its own part to a base part, so an end naming a
 /// node the file does not carry is checked as far as it can be — the pairs on
 /// the resolvable side still have to name that part's slots — and
 /// [`Model::install`] finishes the job against the base.
-fn read_weld(
-    weld: &ClmWeld,
+fn read_weld<'a>(
+    weld: &'a ClmWeld,
     slots: &HashMap<&NodeId, SlotTable>,
     nodes: &HashMap<NodeId, ModelNode>,
-    declared: &HashSet<&NodeId>,
+    welded: &mut validate::Welded<'a>,
     shape: Shape,
 ) -> Result<ModelWeld, ModelError> {
-    if weld.a == weld.b {
-        return Err(ClmLoadError::WeldSelfPaired {
-            node: weld.a.to_string(),
-        }
-        .into());
-    }
-    let slots_of = |end: &NodeId| -> Result<Option<&SlotTable>, ModelError> {
-        match slots.get(end) {
-            Some(slots) => Ok(Some(slots)),
-            // The part is missing because it is not a part, or because the
-            // file does not carry it — in a fragment the latter is a
-            // requirement, not a broken reference.
-            None => match nodes.get(end) {
-                Some(node) => Err(ClmLoadError::WeldEndNotAPart {
-                    node: end.to_string(),
-                    kind: node.kind.name(),
-                }
-                .into()),
-                None if shape.allows_dangling() && !declared.contains(end) => Ok(None),
-                None => Err(ClmLoadError::DanglingWeldEnd {
-                    node: end.to_string(),
-                }
-                .into()),
+    validate::weld(
+        &weld.a,
+        &weld.b,
+        weld.pairs
+            .iter()
+            .map(|pair| (&pair.a, &pair.b, pair.weight)),
+        welded,
+        // An end the file does not carry is a requirement in a fragment and
+        // a broken reference in a complete model.
+        |end| validate::WeldEnd::of(nodes.get(end).map(|n| &n.kind), shape.allows_dangling()),
+        |part, slot| slots.get(part).is_some_and(|known| known.contains(slot)),
+    )
+    .map_err(|fault| {
+        let (a, b) = (weld.a.to_string(), weld.b.to_string());
+        match fault {
+            validate::WeldFault::SelfPaired => ClmLoadError::WeldSelfPaired { node: a },
+            validate::WeldFault::EndNotAPart { end, kind } => ClmLoadError::WeldEndNotAPart {
+                node: end.to_string(),
+                kind,
             },
-        }
-    };
-    let ends = [slots_of(&weld.a)?, slots_of(&weld.b)?];
-
-    let mut seen_a = HashSet::with_capacity(weld.pairs.len());
-    let mut seen_b = HashSet::with_capacity(weld.pairs.len());
-    let mut pairs = Vec::with_capacity(weld.pairs.len());
-    for pair in &weld.pairs {
-        if !(0.0..=1.0).contains(&pair.weight) {
-            return Err(ClmLoadError::WeldWeightOutOfRange {
-                a: weld.a.to_string(),
-                b: weld.b.to_string(),
-                slot: pair.a.to_string(),
-            }
-            .into());
-        }
-        for (carried, (slot, node)) in ends
-            .into_iter()
-            .zip([(&pair.a, &weld.a), (&pair.b, &weld.b)])
-        {
-            if carried.is_some_and(|known| !known.contains(slot)) {
-                return Err(ClmLoadError::WeldUnknownSlot {
-                    node: node.to_string(),
-                    slot: slot.to_string(),
+            validate::WeldFault::EndMissing { end } => ClmLoadError::DanglingWeldEnd {
+                node: end.to_string(),
+            },
+            validate::WeldFault::Duplicate => ClmLoadError::DuplicateWeld { a, b },
+            validate::WeldFault::WeightOutOfRange { slot } => ClmLoadError::WeldWeightOutOfRange {
+                a,
+                b,
+                slot: slot.to_string(),
+            },
+            validate::WeldFault::UnknownSlot { end, slot } => ClmLoadError::WeldUnknownSlot {
+                node: end.to_string(),
+                slot: slot.to_string(),
+            },
+            validate::WeldFault::SlotPairedTwice { end, slot } => {
+                ClmLoadError::WeldSlotPairedTwice {
+                    a,
+                    b,
+                    slot: format!("{end}/{slot}"),
                 }
-                .into());
             }
         }
-        for (seen, (slot, node)) in [&mut seen_a, &mut seen_b]
-            .into_iter()
-            .zip([(&pair.a, &weld.a), (&pair.b, &weld.b)])
-        {
-            if !seen.insert(slot) {
-                return Err(ClmLoadError::WeldSlotPairedTwice {
-                    a: weld.a.to_string(),
-                    b: weld.b.to_string(),
-                    slot: format!("{node}/{slot}"),
-                }
-                .into());
-            }
-        }
-        pairs.push(SlotPair {
+    })?;
+    let pairs = weld
+        .pairs
+        .iter()
+        .map(|pair| SlotPair {
             a: pair.a.clone(),
             b: pair.b.clone(),
             weight: pair.weight,
-        });
-    }
+        })
+        .collect();
     Ok(ModelWeld::new(weld.a.clone(), weld.b.clone(), pairs))
 }
 

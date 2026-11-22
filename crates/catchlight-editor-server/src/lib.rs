@@ -347,7 +347,7 @@ fn model_error_code(e: &ModelError) -> ErrorCode {
         ModelError::UnknownExtension(_) => ErrorCode::NoExtension,
         ModelError::ReservedExtension(_) => ErrorCode::ReservedExtension,
         ModelError::NotSpine | ModelError::NotMotionResponse => ErrorCode::BadTarget,
-        ModelError::SpineTargetArity { .. } => ErrorCode::BadTarget,
+        ModelError::SpineTargetArity { .. } | ModelError::SpineJoints(_) => ErrorCode::BadTarget,
         // The size cap has no code of its own: a client that hit it
         // has nothing to branch on, only a value to shrink.
         _ => ErrorCode::Edit,
@@ -1686,7 +1686,7 @@ impl Editor {
                 targets,
                 node: id,
             } => self.edit_session_captured(session, |s| {
-                let joints = spine_joints(joints)?;
+                check_spine_joints(&joints)?;
                 let node = ModelNode::new(
                     name.unwrap_or_else(|| "Spine".into()),
                     ModelNodeKind::Spine(ModelSpine::new(joints)),
@@ -1707,7 +1707,8 @@ impl Editor {
                 targets,
             } => self.edit_session_captured(session, |s| {
                 if let Some(joints) = joints {
-                    s.model.set_spine_joints(&node, spine_joints(joints)?)?;
+                    check_spine_joints(&joints)?;
+                    s.model.set_spine_joints(&node, joints)?;
                 }
                 if let Some(targets) = targets {
                     s.model.set_spine_targets(&node, targets)?;
@@ -1914,34 +1915,14 @@ fn binding_key(
     })
 }
 
-/// The joints of a spine the turn pass can compose, or the refusal that says
-/// which one is wrong.
+/// Refuse joints the turn pass cannot compose, as the `BadTarget` a spine
+/// command has always answered with.
 ///
-/// The same three rules the `.clm` reader keeps, checked here so a command
-/// never authors a model the file would refuse: at least one joint, every
-/// coordinate finite, and no joint repeating the point above it — the node's
-/// own origin for the first one.
-fn spine_joints(joints: Vec<[f32; 2]>) -> Result<Vec<[f32; 2]>, EditorError> {
-    if joints.is_empty() {
-        return Err(EditorError::BadTarget(
-            "a spine needs at least one joint".into(),
-        ));
-    }
-    let mut above = [0.0f32, 0.0];
-    for (i, joint) in joints.iter().enumerate() {
-        if !joint[0].is_finite() || !joint[1].is_finite() {
-            return Err(EditorError::BadTarget(format!(
-                "spine joint {i} has a coordinate that is not finite"
-            )));
-        }
-        if joint == &above {
-            return Err(EditorError::BadTarget(format!(
-                "spine joint {i} repeats the point above it"
-            )));
-        }
-        above = *joint;
-    }
-    Ok(joints)
+/// The rule is the core's ([`ModelSpine::check_joints`]) and the model's own
+/// mutators hold every spine to it; it is asked here first so a command is
+/// refused before it has minted a param or a node around the joints.
+fn check_spine_joints(joints: &[[f32; 2]]) -> Result<(), EditorError> {
+    ModelSpine::check_joints(joints).map_err(|e| EditorError::BadTarget(e.to_string()))
 }
 
 /// One authored transform as a matrix, through the core's own conversion so it
@@ -2045,7 +2026,7 @@ fn spine_fit(
             [v.x, v.y]
         })
         .collect();
-    let joints = spine_joints(joints)?;
+    check_spine_joints(&joints)?;
 
     // The params the spine being re-fitted already reads.
     let held_targets = match &existing {

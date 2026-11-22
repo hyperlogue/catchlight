@@ -29,7 +29,7 @@ pub use model::{
     ModelBinding, ModelBindingValues, ModelComposite, ModelError, ModelMask, ModelMesh,
     ModelMeshGroup, ModelNode, ModelNodeKind, ModelParam, ModelPart, ModelSpine, ModelTexture,
     ModelWeld, ModelWeldPair, NodeProperties, Pose, Required, Requirement, Requirements,
-    ScalarTarget, Slot, SlotPair, DEFAULT_SLOT_WEIGHT,
+    ScalarTarget, Slot, SlotPair, SpineJointError, DEFAULT_SLOT_WEIGHT,
 };
 pub use motion_response::*;
 pub use node::*;
