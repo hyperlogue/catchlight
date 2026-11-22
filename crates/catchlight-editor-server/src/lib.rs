@@ -314,6 +314,8 @@ impl EditorError {
                 },
                 InstallError::WeldUnknownSlot { .. } => ErrorCode::WeldUnknownSlot,
                 InstallError::WeldSlotPairedTwice { .. } => ErrorCode::WeldSlotPairedTwice,
+                InstallError::WeldEndNotAPart { .. } => ErrorCode::BadWeldEnd,
+                InstallError::DuplicateWeld { .. } => ErrorCode::DuplicateWeld,
                 // The model's own refusal, carried whole: it answers with the
                 // code the same refusal gets from an edit.
                 InstallError::Model(e) => model_error_code(e),

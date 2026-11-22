@@ -50,6 +50,15 @@
 //!   ([`InstallError::BindsOffAddon`]): a binding on a *base* node would be an
 //!   edit to the base with no Id of its own to collide on, so two addons could
 //!   silently fight over one node's deform.
+//! - **An addon welds its own parts, and install finishes the weld rule.** A
+//!   weld needs at least one end the addon provides
+//!   ([`InstallError::WeldsOffAddon`]): one between two base parts is an edit
+//!   to the base, as a binding on a base node is. A fragment can only check
+//!   the end it carries, so install — the first place both ends are visible —
+//!   holds every addon weld to the whole rule [`Model::set_welds`] and the
+//!   reader keep: each end a part, each pair naming a slot its part carries,
+//!   and each part pair welded once across the merged list. A merged model is
+//!   therefore one that saves and loads.
 //! - **Install is one edit.** Everything is checked against the merged model
 //!   before anything moves, so a refused install leaves the base untouched,
 //!   and the whole merge bumps [`Model::generation`] exactly once — a puppet
@@ -245,6 +254,18 @@ pub enum InstallError {
     WeldUnknownSlot { node: String, slot: String },
     #[error("the addon's weld between {a:?} and {b:?} pairs slot {slot:?} twice")]
     WeldSlotPairedTwice { a: String, b: String, slot: String },
+    #[error("the addon welds node {node:?}, which is a {kind}; a weld joins two parts")]
+    WeldEndNotAPart { node: String, kind: &'static str },
+    #[error(
+        "the addon welds {a:?} to {b:?}, which are already welded; one weld records a pair \
+         of parts"
+    )]
+    DuplicateWeld { a: String, b: String },
+    #[error(
+        "the addon welds {a:?} to {b:?}, neither of which it provides; an addon may only weld \
+         its own parts"
+    )]
+    WeldsOffAddon { a: String, b: String },
 }
 
 impl From<ModelError> for InstallError {
@@ -574,36 +595,72 @@ impl Model {
             }
         }
 
-        // Every pair of every weld resolves now: one side in the addon, the
-        // other in whichever of the two models carries it.
+        // Every weld is held to the weld rule now that both ends can be
+        // seen: one side in the addon, the other in whichever of the two
+        // models carries it, and the merged weld list as the one the rule's
+        // "once per part pair" is counted over. This is the rule
+        // `Model::set_welds` and the reader keep, so a merged model is one
+        // that saves and loads.
+        let mut welded = validate::Welded::with_capacity(self.welds.len() + addon.welds.len());
+        for w in &self.welds {
+            welded.insert(&w.a, &w.b);
+        }
+        let kind_of = |id: &NodeId| {
+            addon
+                .nodes
+                .get(id)
+                .or_else(|| self.nodes.get(id))
+                .map(|n| &n.kind)
+        };
         for w in &addon.welds {
-            let carries = |node: &NodeId, slot: &SlotId| {
-                addon.slot(node, slot).is_some() || self.slot(node, slot).is_some()
-            };
-            let mut seen_a = HashSet::with_capacity(w.pairs().len());
-            let mut seen_b = HashSet::with_capacity(w.pairs().len());
-            for pair in w.pairs() {
-                for (node, slot) in [(w.a(), &pair.a), (w.b(), &pair.b)] {
-                    if !carries(node, slot) {
-                        return Err(InstallError::WeldUnknownSlot {
-                            node: node.to_string(),
-                            slot: slot.to_string(),
-                        });
-                    }
-                }
-                for (seen, slot) in [&mut seen_a, &mut seen_b]
-                    .into_iter()
-                    .zip([&pair.a, &pair.b])
-                {
-                    if !seen.insert(slot) {
-                        return Err(InstallError::WeldSlotPairedTwice {
-                            a: w.a().to_string(),
-                            b: w.b().to_string(),
-                            slot: slot.to_string(),
-                        });
-                    }
-                }
+            let (a, b) = (w.a(), w.b());
+            // A weld between two base parts is an edit to the base, the same
+            // way a binding on a base node is: it has no addon node to be
+            // installed with or uninstalled after.
+            if !addon.nodes.contains_key(a) && !addon.nodes.contains_key(b) {
+                return Err(InstallError::WeldsOffAddon {
+                    a: a.to_string(),
+                    b: b.to_string(),
+                });
             }
+            validate::weld(
+                a,
+                b,
+                w.pairs().iter().map(|pair| (&pair.a, &pair.b, pair.weight)),
+                &mut welded,
+                |end| validate::WeldEnd::of(kind_of(end), false),
+                |part, slot| addon.slot(part, slot).is_some() || self.slot(part, slot).is_some(),
+            )
+            .map_err(|fault| match fault {
+                validate::WeldFault::SelfPaired => ModelError::WeldSelfPaired.into(),
+                validate::WeldFault::WeightOutOfRange { .. } => {
+                    ModelError::WeldWeightOutOfRange.into()
+                }
+                validate::WeldFault::EndNotAPart { end, kind } => InstallError::WeldEndNotAPart {
+                    node: end.to_string(),
+                    kind,
+                },
+                validate::WeldFault::EndMissing { end } => InstallError::Missing {
+                    id: Required::Part(end.clone()),
+                    field: "weld end",
+                    owner: if end == a { b } else { a }.to_string(),
+                },
+                validate::WeldFault::Duplicate => InstallError::DuplicateWeld {
+                    a: a.to_string(),
+                    b: b.to_string(),
+                },
+                validate::WeldFault::UnknownSlot { end, slot } => InstallError::WeldUnknownSlot {
+                    node: end.to_string(),
+                    slot: slot.to_string(),
+                },
+                validate::WeldFault::SlotPairedTwice { slot, .. } => {
+                    InstallError::WeldSlotPairedTwice {
+                        a: a.to_string(),
+                        b: b.to_string(),
+                        slot: slot.to_string(),
+                    }
+                }
+            })?;
         }
         Ok(())
     }
@@ -1156,6 +1213,82 @@ mod tests {
             .to_string()
         );
         composite
+            .to_clm_file()
+            .expect("a refused install leaves a model that still saves");
+    }
+
+    /// A fragment may hold a weld whose ends are both in the base — neither
+    /// can be checked until install. Install used to append it, so a base
+    /// that already welded those two parts held the pair twice: a model that
+    /// saved and that no reader would take back.
+    #[test]
+    fn a_weld_between_two_base_parts_is_not_the_addons_to_install() {
+        let mut b = base();
+        let arm =
+            b.m.add_node(
+                &b.root,
+                ModelNode::new("Arm", ModelNodeKind::Part(ModelPart::new(quad()))),
+                &mut b.hex,
+            )
+            .unwrap();
+        b.m.set_welds(vec![ModelWeld::new(
+            b.body.clone(),
+            arm.clone(),
+            Vec::new(),
+        )])
+        .unwrap();
+
+        let mut addon = author(&b, |m, hex| {
+            let hat = m
+                .add_node(
+                    &b.head,
+                    ModelNode::new("Hat", ModelNodeKind::Part(ModelPart::new(quad()))),
+                    hex,
+                )
+                .unwrap();
+            vec![hat]
+        });
+        addon
+            .set_welds(vec![ModelWeld::new(
+                arm.clone(),
+                b.body.clone(),
+                Vec::new(),
+            )])
+            .expect("a fragment cannot see either end, so it takes the weld");
+
+        let before = b.m.generation();
+        let err = b.m.install(&addon).unwrap_err();
+        assert!(
+            matches!(&err, InstallError::WeldsOffAddon { a, b: other }
+                if *a == arm.to_string() && *other == b.body.to_string()),
+            "{err:?}"
+        );
+        assert_eq!(b.m.generation(), before, "no half-install");
+        assert_eq!(b.m.welds().len(), 1);
+        Model::from_clm_bytes(&b.m.to_clm_bytes().unwrap())
+            .expect("the base still saves and loads");
+    }
+
+    /// Install holds an addon's own weld ends to the weld rule too, rather
+    /// than trusting the addon to have kept it: a welded end that is not a
+    /// part would merge into a model that cannot be written.
+    #[test]
+    fn an_addon_weld_end_that_is_not_a_part_is_refused() {
+        let b = base();
+        let mut addon = hat_addon(&b);
+        let hat = named(&addon, "Hat");
+        // No edit builds this state; it is what a kind swap used to leave.
+        addon.bindings.clear();
+        addon.nodes.get_mut(&hat).unwrap().kind = ModelNodeKind::Group;
+
+        let mut merged = b.m.clone();
+        let err = merged.install(&addon).unwrap_err();
+        assert!(
+            matches!(&err, InstallError::WeldEndNotAPart { node, kind: "group" }
+                if *node == hat.to_string()),
+            "{err:?}"
+        );
+        merged
             .to_clm_file()
             .expect("a refused install leaves a model that still saves");
     }
