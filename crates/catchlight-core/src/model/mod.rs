@@ -1382,8 +1382,10 @@ impl Model {
     /// Deep-copy `id`'s subtree as its next sibling, under fresh Ids. Mask
     /// references inside the subtree point at the copies; external ones stay
     /// shared. Each copied node also copies its param bindings, so the
-    /// duplicate deforms like the original. The copy's root is renamed
-    /// `"<name> copy"`.
+    /// duplicate deforms like the original, and a weld between two copied
+    /// parts is copied between their copies, so it holds together like the
+    /// original too. A weld to a part outside the subtree is not copied. The
+    /// copy's root is renamed `"<name> copy"`.
     pub fn duplicate_subtree(
         &mut self,
         id: &NodeId,
@@ -1489,6 +1491,24 @@ impl Model {
             })
             .collect();
         self.bindings.extend(copied);
+
+        // A weld between two copied parts is part of what was copied: the
+        // copies carry the same slots, so the same pairs hold them together.
+        // One that crosses the subtree's edge stays with the original — a
+        // second weld onto the same slots of the part left outside would pull
+        // it two ways.
+        let welded: Vec<ModelWeld> = self
+            .welds
+            .iter()
+            .filter_map(|w| {
+                Some(ModelWeld {
+                    a: map.get(&w.a)?.clone(),
+                    b: map.get(&w.b)?.clone(),
+                    pairs: w.pairs.clone(),
+                })
+            })
+            .collect();
+        self.welds.extend(welded);
 
         let new_root = map.get(id).ok_or(ModelError::UnknownNode)?.clone();
         let pos = self
@@ -4757,6 +4777,56 @@ mod tests {
         assert_eq!(m.bindings_of_param(&param).count(), 2);
         assert!(m.bindings().any(|b| b.node() == copy_masked));
         assert!(m.to_clm_bytes().is_ok());
+    }
+
+    /// A duplicate copied bindings and masks and dropped welds, so the copy
+    /// of a welded pair came apart at the seam the original held.
+    #[test]
+    fn duplicate_copies_the_welds_between_the_parts_it_copies() {
+        let mut hex = SeededHex::new(3);
+        let mut m = Model::new();
+        let root = m.root().unwrap().clone();
+        let group = m
+            .add_node(&root, ModelNode::new("g", ModelNodeKind::Group), &mut hex)
+            .unwrap();
+        let upper = m
+            .add_node(&group, ModelNode::new("upper", part_kind()), &mut hex)
+            .unwrap();
+        let lower = m
+            .add_node(&group, ModelNode::new("lower", part_kind()), &mut hex)
+            .unwrap();
+        let outside = m
+            .add_node(&root, ModelNode::new("outside", part_kind()), &mut hex)
+            .unwrap();
+        for part in [&upper, &lower, &outside] {
+            m.slot_add(part, slot("seam")).unwrap();
+            m.slot_fill(part, &slot("seam"), 1).unwrap();
+        }
+        m.set_welds(vec![
+            ModelWeld::new(upper.clone(), lower.clone(), vec![pair("seam", 0.25)]),
+            ModelWeld::new(upper.clone(), outside.clone(), vec![pair("seam", 0.5)]),
+        ])
+        .unwrap();
+
+        let copy = m.duplicate_subtree(&group, &mut hex).unwrap();
+        let copies = m.node(&copy).unwrap().children().to_vec();
+        let (upper_copy, lower_copy) = (&copies[0], &copies[1]);
+
+        assert_eq!(m.welds().len(), 3, "one weld came along, one stayed");
+        let weld = m
+            .welds()
+            .iter()
+            .find(|w| w.a() == upper_copy && w.b() == lower_copy)
+            .expect("the weld inside the subtree is copied between the copies");
+        assert_eq!(weld.pairs(), [pair("seam", 0.25)]);
+        assert_eq!(weld.resolve(&m).len(), 1, "and it resolves on their slots");
+        assert!(
+            !m.welds()
+                .iter()
+                .any(|w| copies.contains(w.a()) && w.b() == &outside),
+            "a weld that leaves the subtree stays with the original"
+        );
+        Model::from_clm_bytes(&m.to_clm_bytes().unwrap()).expect("the copy saves and loads");
     }
 
     #[test]

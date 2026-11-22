@@ -216,6 +216,8 @@ pub enum ClmLoadError {
         mask_source: String,
         kind: &'static str,
     },
+    #[error("node {node:?} names itself as a mask source; a node cannot mask itself")]
+    SelfMask { node: String },
     #[error("the mesh on node {node:?} is malformed: {reason}")]
     MalformedMesh { node: String, reason: &'static str },
     #[error("the weld between {a:?} and {b:?} pairs slot {slot:?} twice")]
@@ -668,6 +670,15 @@ impl Model {
         // `Model::install` kind-checks it against the base.
         for cn in &doc.nodes {
             for mask in clm_masks_of(&cn.kind) {
+                // `Model::mask_add` refuses a node as its own mask source: a
+                // drawable clipped by its own drawing has nothing to clip
+                // against. In either shape — the node is in the file.
+                if mask.source == cn.id {
+                    return Err(ClmLoadError::SelfMask {
+                        node: cn.id.to_string(),
+                    }
+                    .into());
+                }
                 let Some(source) = nodes.get(&mask.source) else {
                     continue;
                 };
@@ -1963,6 +1974,40 @@ mod tests {
                 node: face.to_string(),
                 mask_source: bend.to_string(),
                 kind: "mesh_group",
+            }
+        );
+    }
+
+    /// `Model::mask_add` refuses a node as its own mask source. The reader
+    /// took one — a part or a composite is a drawable, so the kind check
+    /// passed — and loaded a model no edit could have built.
+    #[test]
+    fn a_node_masking_itself_is_a_structured_error() {
+        let mut file = sample().to_clm_file().unwrap();
+        let face = node_named(&file, "Face").id.clone();
+        for node in &mut file.doc.nodes {
+            if let ClmNodeKind::Composite(c) = &mut node.kind {
+                c.masks[0].source = face.clone();
+            }
+        }
+        assert_eq!(
+            load_err(&file),
+            ClmLoadError::SelfMask {
+                node: face.to_string(),
+            }
+        );
+
+        // A fragment carries the node either way, so it is refused too.
+        let mut fragment = sample_fragment_file();
+        let upper = node_named(&fragment, "Upper").id.clone();
+        part_named(&mut fragment, "Upper").masks.push(ClmMask {
+            source: upper.clone(),
+            mode: MaskMode::Mask,
+        });
+        assert_eq!(
+            fragment_err(&fragment),
+            ClmLoadError::SelfMask {
+                node: upper.to_string(),
             }
         );
     }

@@ -22,12 +22,10 @@
 //!
 //! Two rules the commands here enforce that the Model API alone does not:
 //!
-//! - **A parentless node cannot be extracted.** `Model::extract` would
-//!   happily return it, but the result is a complete model rather than an
-//!   addon — its root names no parent, so nothing says where it attaches, and
-//!   `merge` would refuse it later with
-//!   [`InstallError::NotAnAddon`](catchlight_core::InstallError::NotAnAddon).
-//!   Refusing at the cut says so while the author can still act on it.
+//! - **A parentless node cannot be extracted.** `Model::extract` drops it —
+//!   a root names no parent, so nothing says where an addon cut from it would
+//!   attach — and would quietly hand back an addon without it. Refusing at
+//!   the cut, by name, says so while the author can still act on it.
 //! - **`merge`'s addon argument is read as a fragment, always.** The two wire
 //!   shapes are disjoint and neither reader guesses between them, so handing
 //!   `merge` a complete model has to report itself as one; reading it with the

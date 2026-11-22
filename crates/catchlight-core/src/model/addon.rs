@@ -666,16 +666,25 @@ impl Model {
     }
 
     /// Cut `roots` and their subtrees out as an addon: the nodes, the bindings
-    /// on them, the welds touching them, and the textures only they use.
+    /// on them, the welds touching them, and every texture their parts draw
+    /// — copied, not moved, when a part left behind draws it too.
     ///
-    /// This model is not changed. A root that is not here, or that sits inside
-    /// another one given, is dropped; the rest keep their `parent`, which is
-    /// what makes the result a fragment. Params and animations stay behind —
-    /// a lane addresses a param, so there is no animation "over" a subtree.
+    /// This model is not changed. A root that is not here, that has no parent
+    /// of its own, or that sits inside another one given, is dropped; the
+    /// rest keep their `parent`, which is what makes the result a fragment.
+    /// Params and animations stay behind — a lane addresses a param, so there
+    /// is no animation "over" a subtree.
+    ///
+    /// **A parentless node cannot be cut.** It is a complete model's root: it
+    /// names no parent, so nothing would say where the addon attaches, and
+    /// the result would be neither shape — a root with no parent is not a
+    /// fragment, and bindings with their params left behind are not a
+    /// complete model — so neither reader would take it back. Asking for one
+    /// yields what asking for nothing yields, an empty fragment.
     pub fn extract(&self, roots: &[NodeId]) -> Model {
         let given: HashSet<&NodeId> = roots
             .iter()
-            .filter(|r| self.nodes.contains_key(*r))
+            .filter(|r| self.nodes.get(*r).is_some_and(|n| n.parent.is_some()))
             .collect();
         let picked: Vec<NodeId> = self
             .nodes_in_order()
@@ -1679,6 +1688,33 @@ mod tests {
         assert!(b.m.texture(&b.tex).is_some());
     }
 
+    /// Cutting a complete model's root used to hand back a model that was
+    /// neither shape: its root named no parent, so the fragment reader
+    /// refused it, and its bindings named params that had stayed behind, so
+    /// the complete reader did too. A parentless node is dropped from the cut
+    /// like one that is not there.
+    #[test]
+    fn a_parentless_root_cannot_be_cut_into_a_model_no_reader_takes() {
+        let mut b = base();
+        let key = BindingKey::new(b.param.clone(), b.body.clone(), BindingTarget::Deform);
+        b.m.add_binding(&key).unwrap();
+
+        let cut = b.m.extract(std::slice::from_ref(&b.root));
+        assert_eq!(cut.node_count(), 0, "the root is not there to cut");
+        assert!(cut.roots().is_empty());
+        assert_eq!(cut.bindings().count(), 0);
+        let reopened = Model::from_clm_bytes_fragment(&cut.to_clm_bytes().unwrap())
+            .expect("what is left is an empty fragment, which reads back");
+        assert_eq!(reopened.node_count(), 0);
+
+        // Naming the root beside a node inside it does not hide that node
+        // behind an ancestor that was never going to be cut.
+        let cut = b.m.extract(&[b.root.clone(), b.body.clone()]);
+        assert_eq!(cut.roots(), std::slice::from_ref(&b.body));
+        assert_eq!(cut.bindings().count(), 1);
+        Model::from_clm_bytes_fragment(&cut.to_clm_bytes().unwrap()).unwrap();
+    }
+
     /// Cut, delete, install: the base that dropped the subtree dropped its
     /// texture with it, so the Id the addon now provides is free and the
     /// round trip closes.
@@ -1777,15 +1813,18 @@ mod tests {
         );
     }
 
-    /// Extracting from the root gives back a complete model, not a fragment:
-    /// the root's parent is `None`, which is the only thing that ever made it
-    /// one.
+    /// Extracting from the root used to give back the whole tree as a
+    /// "complete model" — complete only while nothing in it was bound or
+    /// animated, since params never travel. The root is not cut at all now
+    /// (`a_parentless_root_cannot_be_cut_into_a_model_no_reader_takes`), so
+    /// what comes back is always a fragment.
     #[test]
-    fn extracting_the_whole_tree_is_not_a_fragment() {
+    fn extracting_the_whole_tree_is_an_empty_fragment() {
         let b = base();
         let whole = b.m.extract(std::slice::from_ref(&b.root));
-        assert!(!whole.is_fragment());
-        assert_eq!(whole.root(), Some(&b.root));
+        assert!(whole.is_fragment());
+        assert_eq!(whole.root(), None);
+        assert_eq!(whole.node_count(), 0);
         assert!(whole.requirements().is_empty());
     }
 }
