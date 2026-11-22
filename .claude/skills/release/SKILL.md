@@ -1,5 +1,7 @@
 ---
 name: release
+metadata:
+  internal: true
 description: Prepare or cut a Catchlight release with changelog review, a shared Rust/npm version, and verified release-profile WASM packages.
 ---
 
