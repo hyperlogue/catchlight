@@ -438,6 +438,11 @@ impl ModelPart {
         &self.mesh
     }
 
+    /// A cheap immutable snapshot, sharing storage until the mesh is replaced.
+    pub fn shared_mesh(&self) -> ModelMesh {
+        self.mesh.clone()
+    }
+
     pub fn albedo(&self) -> Option<&TexId> {
         self.albedo.as_ref()
     }
@@ -4100,7 +4105,7 @@ mod tests {
         let model = r.model;
         let mut edited = model.clone();
         let mesh_arc = |m: &Model| match &m.node(&node).unwrap().kind {
-            ModelNodeKind::Part(part) => part.mesh.0.clone(),
+            ModelNodeKind::Part(part) => part.shared_mesh().0,
             _ => unreachable!(),
         };
         let cells_arc = |m: &Model| m.binding(&key).unwrap().values.0.clone();

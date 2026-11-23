@@ -123,6 +123,8 @@ fn a_rebuild_releases_the_slots_the_smaller_model_no_longer_names() {
         puppet.tick(&model, 0.0);
         cache.refresh(&mut ctx.renderer, &model, &puppet).unwrap();
         assert_eq!(cache.mesh_count(), 2);
+        assert_eq!(cache.stats().mesh_uploads, 3);
+        assert_eq!(cache.stats().meshes_kept, 2);
         assert_eq!(cache.texture_count(), 2);
         assert_eq!(
             ctx.renderer.live_mesh_slots(),

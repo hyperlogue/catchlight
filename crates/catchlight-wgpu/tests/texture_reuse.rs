@@ -161,6 +161,8 @@ async fn replica_sync(options: PrepareOptions) {
         "a push that changed no payload must decode and upload nothing",
     );
     assert_eq!(after.textures_kept - before.textures_kept, 2);
+    assert_eq!(after.mesh_uploads, before.mesh_uploads);
+    assert_eq!(after.meshes_kept - before.meshes_kept, 2);
     assert_eq!(cache.texture_count(), 2, "and both are still addressable");
 
     // Payloads are immutable under their Id, so a repaint is a new texture.
@@ -202,6 +204,8 @@ async fn replica_sync(options: PrepareOptions) {
         "only the payload that moved is decoded and uploaded",
     );
     assert_eq!(after.textures_kept - before.textures_kept, 1);
+    assert_eq!(after.mesh_uploads, before.mesh_uploads);
+    assert_eq!(after.meshes_kept - before.meshes_kept, 2);
 }
 
 /// Kept textures count against the decoded-texture limit too.
@@ -305,6 +309,8 @@ fn an_in_tab_handoff_keeps_every_gpu_texture() {
         assert_eq!(after.rebuilds, before.rebuilds + 1);
         assert_eq!(after.texture_uploads, before.texture_uploads);
         assert_eq!(after.textures_kept - before.textures_kept, 2);
+        assert_eq!(after.mesh_uploads, before.mesh_uploads);
+        assert_eq!(after.meshes_kept - before.meshes_kept, 2);
     });
 }
 

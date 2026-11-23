@@ -17,8 +17,8 @@ use catchlight_core::components::{NodeIdx, NodeKind};
 use catchlight_core::formats::clm::{ClmIndices, ClmMesh};
 use catchlight_core::load_budget::{LoadBudget, LoadLimits};
 use catchlight_core::{
-    Mesh, MeshIndices, Model, ModelNodeKind, ModelTexture, Node, NodeId, NodeTree, Puppet, TexId,
-    UvCrop, Vec2,
+    Mesh, MeshIndices, Model, ModelMesh, ModelNodeKind, ModelTexture, Node, NodeId, NodeTree,
+    Puppet, TexId, UvCrop, Vec2,
 };
 
 use crate::collect::{Collector, DrawSource, RenderList, NO_SLOT};
@@ -62,6 +62,16 @@ pub struct CacheStats {
     pub texture_uploads: u64,
     /// Same Id and pointer-equal payload `Arc` as the previous build.
     pub textures_kept: u64,
+    pub mesh_uploads: u64,
+    /// Same node, mesh contents, and UV crop as the previous build.
+    pub meshes_kept: u64,
+}
+
+struct UploadedMesh {
+    id: NodeId,
+    slot: u32,
+    mesh: ModelMesh,
+    uv_crop: Option<UvCrop>,
 }
 
 #[derive(Debug, Clone)]
@@ -92,6 +102,7 @@ pub struct RenderCache {
     texture_count: u32,
     /// In slot order.
     uploaded: Vec<UploadedTexture>,
+    meshes: Vec<UploadedMesh>,
     stats: CacheStats,
     collector: Collector,
 }
@@ -123,6 +134,7 @@ impl RenderCache {
             mesh_of_node: Vec::new(),
             texture_count: 0,
             uploaded: Vec::new(),
+            meshes: Vec::new(),
             stats: CacheStats::default(),
             collector: Collector::default(),
         };
@@ -350,7 +362,7 @@ impl RenderCache {
             renderer.validate_texture_upload(&prep.texture)?;
         }
 
-        renderer.release_for_rebuild(&moved);
+        renderer.retain_textures(&moved);
         for (&slot, prep) in fresh_slots.iter().zip(prepped.iter()) {
             renderer.upload_texture(slot as u32, &prep.texture)?;
         }
@@ -383,7 +395,11 @@ impl RenderCache {
 
         self.node_ids = model.nodes_in_order();
         self.mesh_of_node = vec![None; self.node_ids.len()];
-        let mut next_mesh = 0u32;
+        let previous: std::collections::HashMap<_, _> =
+            self.meshes.iter().map(|up| (&up.id, up)).collect();
+        let mut meshes = Vec::new();
+        let mut kept_meshes = Vec::new();
+        let mut fresh_meshes = Vec::new();
         for (slot, id) in self.node_ids.iter().enumerate() {
             let Some(node) = model.node(id) else {
                 continue;
@@ -400,25 +416,48 @@ impl RenderCache {
                 .and_then(|tex| tex_slot_of_id.get(tex))
                 .and_then(|&s| uv_crops.get(s as usize).copied())
                 .flatten();
+            let next_mesh = meshes.len() as u32;
+            // Serialized structure pushes have fresh storage for unchanged meshes.
+            if let Some(up) = previous.get(id).filter(|up| {
+                up.uv_crop == uv_crop
+                    && (std::ptr::eq::<ClmMesh>(&*up.mesh, authored) || *up.mesh == *authored)
+            }) {
+                kept_meshes.push((up.slot, next_mesh));
+            } else {
+                fresh_meshes.push((slot, next_mesh));
+            }
+            self.mesh_of_node[slot] = Some(MeshIdx(next_mesh));
+            meshes.push(UploadedMesh {
+                id: id.clone(),
+                slot: next_mesh,
+                mesh: part.shared_mesh(),
+                uv_crop,
+            });
+        }
+        renderer.retain_meshes(&kept_meshes, meshes.len());
+        self.stats.meshes_kept += kept_meshes.len() as u64;
+        for (node_slot, mesh_slot) in fresh_meshes {
+            let up = &meshes[mesh_slot as usize];
+            let authored = &up.mesh;
+            let uv_crop = up.uv_crop;
             let mesh = build_mesh(authored, uv_crop);
             if mesh.uvs.is_empty() {
                 tracing::warn!(
-                    node = %id,
+                    node = %up.id,
                     "part mesh has no uvs; substituting (0,0) for every vertex",
                 );
             }
             // One bad mesh must not blank every other part.
-            match renderer.upload_mesh(next_mesh, &mesh) {
-                Ok(()) => {
-                    self.mesh_of_node[slot] = Some(MeshIdx(next_mesh));
-                    next_mesh += 1;
+            match renderer.upload_mesh(mesh_slot, &mesh) {
+                Ok(()) => self.stats.mesh_uploads += 1,
+                Err(error) => {
+                    self.mesh_of_node[node_slot] = None;
+                    tracing::warn!(node = %up.id, "skipping mesh that failed upload: {error}");
                 }
-                Err(error) => tracing::warn!(
-                    node = %id,
-                    "skipping mesh that failed upload: {error}",
-                ),
             }
         }
+        meshes.retain(|up| renderer.has_mesh(up.slot));
+        self.meshes = meshes;
 
         self.generation = model.generation();
         Ok(())

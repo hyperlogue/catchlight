@@ -339,6 +339,31 @@ pub(crate) struct ScreenRect {
     height: u32,
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum ScreenBounds {
+    Empty,
+    Unbounded,
+    Rect(ScreenRect),
+}
+
+impl ScreenBounds {
+    fn from_pixels(bounds: Option<[f32; 4]>, width: u32, height: u32) -> Self {
+        match bounds {
+            None => Self::Unbounded,
+            Some(bounds) => {
+                pixels_to_scissor(bounds, width, height).map_or(Self::Empty, Self::Rect)
+            }
+        }
+    }
+
+    fn scissor(self) -> Option<ScreenRect> {
+        match self {
+            Self::Rect(rect) => Some(rect),
+            Self::Empty | Self::Unbounded => None,
+        }
+    }
+}
+
 /// Absorbs floor/ceil rounding and rasterization slack.
 const SCISSOR_PAD: f32 = 2.0;
 
@@ -362,7 +387,7 @@ fn project_aabb_to_pixels(
     let mut max_y = f32::NEG_INFINITY;
     for corner in corners {
         let clip = mvp * corner;
-        if clip.w.abs() < 1e-6 {
+        if !clip.w.is_finite() || clip.w <= 1e-6 {
             return None;
         }
         // NDC +Y is up; framebuffer y grows downward.
@@ -379,8 +404,7 @@ fn project_aabb_to_pixels(
     Some([min_x, min_y, max_x, max_y])
 }
 
-/// None for a degenerate or off-screen rect; the full viewport is then
-/// byte-identical.
+/// None when the padded bounds do not intersect the viewport.
 fn pixels_to_scissor(aabb: [f32; 4], width: u32, height: u32) -> Option<ScreenRect> {
     let w = width as f32;
     let h = height as f32;
@@ -1329,8 +1353,8 @@ impl Default for DeformSet {
 #[derive(Default)]
 struct DeformSetState {
     /// Mesh slots with active deform data, keyed to the `DeformStack`
-    /// generation that produced them.
-    uploaded: DenseMap<u64>,
+    /// generation that produced them. None rechecks bytes after a model rebake.
+    uploaded: DenseMap<Option<u64>>,
     still_active: DenseMap<()>,
     /// Per-mesh max absolute deform component. Deform is added in local
     /// space, so expanding the local AABB by this bounds the deformed geometry.
@@ -2094,18 +2118,52 @@ impl WgpuRenderer {
         )
     }
 
-    fn part_scissor_rect(
+    fn part_screen_bounds(
         &self,
         mesh_id: u32,
         model: glam::Mat4,
         width: u32,
         height: u32,
-    ) -> Option<ScreenRect> {
-        pixels_to_scissor(
-            self.part_pixel_aabb(mesh_id, model, width, height)?,
+    ) -> ScreenBounds {
+        ScreenBounds::from_pixels(
+            self.part_pixel_aabb(mesh_id, model, width, height),
             width,
             height,
         )
+    }
+
+    fn drawable_screen_bounds(
+        &mut self,
+        drawable: &crate::collect::DrawableInfo,
+        render_list: &crate::collect::RenderList,
+        width: u32,
+        height: u32,
+    ) -> ScreenBounds {
+        use crate::collect::DrawableInfo;
+        match drawable {
+            DrawableInfo::Part {
+                mesh_id, transform, ..
+            } => self.part_screen_bounds(*mesh_id, *transform, width, height),
+            DrawableInfo::Composite {
+                node_id,
+                blend_mode,
+                ..
+            } => {
+                if !render_list
+                    .composite_children
+                    .get(node_id)
+                    .is_some_and(|c| !c.is_empty())
+                {
+                    return ScreenBounds::Empty;
+                }
+                let bounds = self.composite_pixel_aabb(*node_id, render_list, width, height);
+                if blend_transparent_src_is_identity(*blend_mode) {
+                    ScreenBounds::from_pixels(bounds, width, height)
+                } else {
+                    ScreenBounds::Unbounded
+                }
+            }
+        }
     }
 
     /// Bounds the nontransparent contents, not the area a blend can affect.
@@ -2203,16 +2261,18 @@ impl WgpuRenderer {
                 );
                 continue;
             }
-            if state.uploaded.get(mesh_id as usize).copied() == Some(generation) {
+            if state.uploaded.get(mesh_id as usize).copied() == Some(Some(generation)) {
                 state.still_active.insert(mesh_id as usize, ());
                 continue;
             }
             let bytes: &[u8] = bytemuck::cast_slice(combined);
             let start = (base + buf.deform_offset) as usize;
             let end = start + bytes.len();
-            self.deform_upload_mirror[start..end].copy_from_slice(bytes);
-            ranges.push((start as u64, end as u64));
-            state.uploaded.insert(mesh_id as usize, generation);
+            if self.deform_upload_mirror[start..end] != *bytes {
+                self.deform_upload_mirror[start..end].copy_from_slice(bytes);
+                ranges.push((start as u64, end as u64));
+            }
+            state.uploaded.insert(mesh_id as usize, Some(generation));
             state.still_active.insert(mesh_id as usize, ());
             let max_abs = combined
                 .iter()
@@ -2285,12 +2345,8 @@ impl WgpuRenderer {
         self.reset_deform_buffer_layout();
     }
 
-    /// Release the GPU state a [`crate::RenderCache`] rebuild is about to
-    /// replace. `keep` is `(old slot, new slot)` for textures to move rather than
-    /// re-upload; every other texture slot, every mesh slot, and the deform atlas
-    /// are dropped. A moved texture keeps its first upload's debug label.
-    pub(crate) fn release_for_rebuild(&mut self, keep: &[(u32, u32)]) {
-        self.clear_meshes();
+    /// `keep` maps old slots to new slots; a moved resource keeps its debug label.
+    pub(crate) fn retain_textures(&mut self, keep: &[(u32, u32)]) {
         let mut moved: Vec<(u32, Texture)> = Vec::with_capacity(keep.len());
         for &(from, to) in keep {
             if let Some(texture) = self.textures.take(from as usize) {
@@ -2300,6 +2356,35 @@ impl WgpuRenderer {
         self.textures.clear();
         for (to, texture) in moved {
             self.textures.insert(to as usize, texture);
+        }
+    }
+
+    pub(crate) fn has_mesh(&self, slot: u32) -> bool {
+        self.mesh_buffers.contains(slot as usize)
+    }
+
+    pub(crate) fn retain_meshes(&mut self, keep: &[(u32, u32)], total: usize) {
+        if keep.len() == total
+            && total == self.mesh_buffers.live()
+            && keep.iter().all(|&(from, to)| from == to)
+        {
+            // Rebaking restarts stack generations even when geometry is unchanged.
+            // Keep residency and active slots, but compare their bytes on refresh.
+            for set in &mut self.deform_sets {
+                for generation in set.uploaded.slots.iter_mut().flatten() {
+                    *generation = None;
+                }
+            }
+            return;
+        }
+        let moved: Vec<_> = keep
+            .iter()
+            .filter_map(|&(from, to)| self.mesh_buffers.take(from as usize).map(|mesh| (to, mesh)))
+            .collect();
+        self.clear_meshes();
+        for (to, mut mesh) in moved {
+            mesh.deform_offset = self.reserve_deform_buffer(mesh.deform_size);
+            self.mesh_buffers.insert(to as usize, mesh);
         }
     }
 
@@ -2466,10 +2551,42 @@ impl WgpuRenderer {
         encoder: &mut wgpu::CommandEncoder,
         render_list: &crate::collect::RenderList,
         composites: &mut CompositePool,
+        width: u32,
+        height: u32,
     ) {
+        use crate::collect::{DrawableInfo, MaskSourceData};
         self.composite_mask_textures.clear();
-        let mut source_ids: Vec<_> = render_list.composite_mask_sources.keys().copied().collect();
+        if render_list.composite_mask_sources.is_empty() {
+            return;
+        }
+        let mut source_ids = Vec::new();
+        let mut pending: Vec<_> = render_list.root_drawables.iter().collect();
+        while let Some(drawable) = pending.pop() {
+            if self.drawable_screen_bounds(drawable, render_list, width, height)
+                == ScreenBounds::Empty
+            {
+                continue;
+            }
+            let masks = match drawable {
+                DrawableInfo::Part { mask_sources, .. } => mask_sources,
+                DrawableInfo::Composite {
+                    node_id,
+                    mask_sources,
+                    ..
+                } => {
+                    if let Some(children) = render_list.composite_children.get(node_id) {
+                        pending.extend(children);
+                    }
+                    mask_sources
+                }
+            };
+            source_ids.extend(masks.iter().filter_map(|mask| match mask {
+                MaskSourceData::Composite { node_id, .. } => Some(*node_id),
+                MaskSourceData::Part { .. } => None,
+            }));
+        }
         source_ids.sort_unstable();
+        source_ids.dedup();
 
         for node_id in source_ids {
             let Some(source) = render_list.composite_mask_sources.get(&node_id) else {
@@ -4098,7 +4215,7 @@ impl WgpuRenderer {
             s.ensure_size(width, height);
             s.reset();
         }
-        self.prepare_composite_mask_textures(encoder, render_list, composites);
+        self.prepare_composite_mask_textures(encoder, render_list, composites, width, height);
 
         // Root-composite flattening: OVER is associative, so an identity-blit
         // root composite whose children all blend OVER draws them straight to the
@@ -4133,15 +4250,18 @@ impl WgpuRenderer {
                 return None;
             }
             for c in children {
-                match c {
-                    DrawableInfo::Composite { .. } => return None,
+                let blocks_flattening = match c {
+                    DrawableInfo::Composite { .. } => true,
                     DrawableInfo::Part { blend_mode, .. } => {
-                        if !renders_as_over(*blend_mode)
+                        !renders_as_over(*blend_mode)
                             || (dst_in_shader_active && is_dst_in_shader(*blend_mode))
-                        {
-                            return None;
-                        }
                     }
+                };
+                if blocks_flattening
+                    && self.drawable_screen_bounds(c, render_list, width, height)
+                        != ScreenBounds::Empty
+                {
+                    return None;
                 }
             }
             Some(children.as_slice())
@@ -4156,17 +4276,24 @@ impl WgpuRenderer {
         let needs_explicit_clear = !has_stencil
             && flatten_children.is_none()
             && clear_color.is_some()
-            && render_list.root_drawables.first().is_some_and(|d| match d {
-                DrawableInfo::Composite { .. } => true,
-                DrawableInfo::Part {
-                    blend_mode,
-                    mask_sources,
-                    ..
-                } => {
-                    !mask_sources.is_empty()
-                        || (dst_in_shader_active && is_dst_in_shader(*blend_mode))
-                }
-            });
+            && render_list
+                .root_drawables
+                .iter()
+                .find(|d| {
+                    self.drawable_screen_bounds(d, render_list, width, height)
+                        != ScreenBounds::Empty
+                })
+                .is_some_and(|d| match d {
+                    DrawableInfo::Composite { .. } => true,
+                    DrawableInfo::Part {
+                        blend_mode,
+                        mask_sources,
+                        ..
+                    } => {
+                        !mask_sources.is_empty()
+                            || (dst_in_shader_active && is_dst_in_shader(*blend_mode))
+                    }
+                });
         if needs_explicit_clear {
             #[allow(clippy::expect_used)]
             let color = clear_color.expect("needs_explicit_clear implies clear_color is Some");
@@ -4191,7 +4318,7 @@ impl WgpuRenderer {
 
         // If every child filtered out, the fallback below still clears.
         if let Some(children) = flatten_children {
-            self.render_children_run(encoder, &mut sink, children)?;
+            self.render_children_run(encoder, &mut sink, children, width, height)?;
             self.end_sink_pass(encoder, &mut sink);
             if !has_stencil && !has_rendered_first {
                 if let Some(color) = clear_color {
@@ -4214,6 +4341,10 @@ impl WgpuRenderer {
         let mut pending_masked: Vec<PreparedMaskedPartDraw> = Vec::new();
 
         for drawable in &render_list.root_drawables {
+            let bounds = self.drawable_screen_bounds(drawable, render_list, width, height);
+            if bounds == ScreenBounds::Empty {
+                continue;
+            }
             match drawable {
                 DrawableInfo::Part {
                     mesh_id,
@@ -4240,10 +4371,14 @@ impl WgpuRenderer {
                         self.flush_pending_parts(encoder, &mut sink, &mut pending_parts)?;
                         self.flush_pending_masked(encoder, &mut sink, &mut pending_masked)?;
                         self.end_sink_pass(encoder, &mut sink);
+                        self.spend_pending_alpha_clear(
+                            encoder,
+                            &mut sink,
+                            "Root Parts Clear (barrier)",
+                        );
                         // One rect bounds the slot render and the snapshot copy+blit; the shader
                         // returns dst outside the part's content.
-                        let part_scissor =
-                            self.part_scissor_rect(*mesh_id, *transform, width, height);
+                        let part_scissor = bounds.scissor();
                         // Release both slots after the blit so the pools don't grow per part.
                         let composite_mark = composites.mark();
                         let snapshot_mark = snapshots_opt.as_ref().map(|s| s.mark());
@@ -4321,28 +4456,21 @@ impl WgpuRenderer {
                     }
                 }
                 DrawableInfo::Composite {
-                    node_id,
-                    ref mask_sources,
-                    ..
+                    ref mask_sources, ..
                 } => {
                     let _comp_span = tracing::trace_span!(
                         "render_composite",
                         masked = !mask_sources.is_empty(),
                     )
                     .entered();
-                    // An empty composite draws nothing, and must decide that
-                    // before the flush below so it never breaks a pending run.
-                    if !render_list
-                        .composite_children
-                        .get(node_id)
-                        .is_some_and(|c| !c.is_empty())
-                    {
-                        continue;
-                    }
-
                     self.flush_pending_parts(encoder, &mut sink, &mut pending_parts)?;
                     self.flush_pending_masked(encoder, &mut sink, &mut pending_masked)?;
                     self.end_sink_pass(encoder, &mut sink);
+                    self.spend_pending_alpha_clear(
+                        encoder,
+                        &mut sink,
+                        "Root Composite Clear (barrier)",
+                    );
 
                     if self.render_composite_drawable(
                         encoder,
@@ -4413,6 +4541,8 @@ impl WgpuRenderer {
         encoder: &mut wgpu::CommandEncoder,
         sink: &mut PartSink<'_, '_>,
         children: &[crate::collect::DrawableInfo],
+        width: u32,
+        height: u32,
     ) -> RendererResult<()> {
         use crate::collect::DrawableInfo;
 
@@ -4434,6 +4564,9 @@ impl WgpuRenderer {
             else {
                 continue;
             };
+            if self.part_screen_bounds(*mesh_id, *transform, width, height) == ScreenBounds::Empty {
+                continue;
+            }
             let part_uniform_offset =
                 self.write_part_uniform(*opacity, *tint, *screen_tint, *mask_threshold);
 
@@ -4536,9 +4669,11 @@ impl WgpuRenderer {
         };
 
         // Computed before the children render so the borrow doesn't collide.
-        let union = self
-            .composite_pixel_aabb(*node_id, render_list, width, height)
-            .and_then(|bounds| pixels_to_scissor(bounds, width, height));
+        let bounds = self.drawable_screen_bounds(drawable, render_list, width, height);
+        if bounds == ScreenBounds::Empty {
+            return Ok(false);
+        }
+        let union = bounds.scissor();
 
         let part_uniform_offset =
             self.write_part_uniform(*opacity, *tint, *screen_tint, *mask_threshold);
@@ -4755,7 +4890,7 @@ impl WgpuRenderer {
             }
         };
         if !children.iter().any(is_barrier) {
-            return self.render_children_run(encoder, sink, children);
+            return self.render_children_run(encoder, sink, children, width, height);
         }
 
         let mut run_start = 0;
@@ -4763,8 +4898,12 @@ impl WgpuRenderer {
             if !is_barrier(child) {
                 continue;
             }
+            let bounds = self.drawable_screen_bounds(child, render_list, width, height);
+            if bounds == ScreenBounds::Empty {
+                continue;
+            }
 
-            self.render_children_run(encoder, sink, &children[run_start..i])?;
+            self.render_children_run(encoder, sink, &children[run_start..i], width, height)?;
             run_start = i + 1;
             self.end_sink_pass(encoder, sink);
             self.spend_pending_alpha_clear(encoder, sink, "Composite Children Clear (barrier)");
@@ -4805,7 +4944,7 @@ impl WgpuRenderer {
                         self.write_part_uniform(*opacity, *tint, *screen_tint, *mask_threshold);
                     // Scratch slot and snapshot are re-acquired per child at one cursor;
                     // encoder order makes overwriting them safe.
-                    let child_scissor = self.part_scissor_rect(*mesh_id, *transform, width, height);
+                    let child_scissor = bounds.scissor();
                     let composite_mark = composites.mark();
                     let scratch = composites.acquire(&self.shared, &self.device);
                     self.render_part_to_composite_slot(
@@ -4848,7 +4987,7 @@ impl WgpuRenderer {
             }
         }
 
-        self.render_children_run(encoder, sink, &children[run_start..])
+        self.render_children_run(encoder, sink, &children[run_start..], width, height)
     }
 }
 
@@ -5284,6 +5423,11 @@ mod tests {
         );
         let off = [200.0, 200.0, 300.0, 300.0];
         assert_eq!(pixels_to_scissor(off, 100, 100), None);
+
+        // Projecting only corners is not conservative across the eye plane.
+        let mut crossing = glam::Mat4::IDENTITY;
+        crossing.x_axis.w = 4.0;
+        assert_eq!(project_aabb_to_pixels(local, crossing, 100.0, 100.0), None);
     }
 
     #[test]
