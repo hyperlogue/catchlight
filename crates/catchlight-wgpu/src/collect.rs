@@ -379,7 +379,9 @@ impl Collector {
                     if culled(composite.opacity, composite.blend_mode) {
                         // Mask-source collection reads the tree independently,
                         // so visible consumers can still use this subtree.
-                        self.enabled_cum[slot] = false;
+                        if slot < self.enabled_cum.len() {
+                            self.enabled_cum[slot] = false;
+                        }
                         return;
                     }
                     let mask_sources = collect_mask_sources(

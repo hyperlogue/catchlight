@@ -420,6 +420,7 @@ impl RenderCache {
             // Serialized structure pushes have fresh storage for unchanged meshes.
             if let Some(up) = previous.get(id).filter(|up| {
                 up.uv_crop == uv_crop
+                    && renderer.has_mesh(up.slot)
                     && (std::ptr::eq::<ClmMesh>(&*up.mesh, authored) || *up.mesh == *authored)
             }) {
                 kept_meshes.push((up.slot, next_mesh));

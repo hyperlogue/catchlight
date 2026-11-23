@@ -155,3 +155,30 @@ fn edits_reuse_geometry_and_keep_three_puppets_equal_to_fresh_uploads() {
         previous_pixels = actual;
     }
 }
+
+#[test]
+fn rebuild_reuploads_meshes_the_renderer_dropped() {
+    let mut ctx = pollster::block_on(RenderContext::new(96, 96)).unwrap();
+    let mut build = common::Build::new();
+    let root = build.root();
+    let red = build.texture(common::solid_texture(64, 64, [255, 0, 0, 255]));
+    let part = build.part(&root, "part", 0.0, common::quad(0.35, 0.35), &red, |_| {});
+    let mut model = build.model;
+    let mut cache =
+        RenderCache::prepare(&mut ctx.renderer, &model, PrepareOptions::default()).unwrap();
+    let sets = [DeformSet::FIRST];
+    let (expected, _) = render_poses(&mut ctx, &mut cache, &model, &sets, None);
+
+    ctx.renderer.clear_meshes();
+    model
+        .update_node(&part, |node| {
+            node.name = catchlight_core::Name::truncated("renamed")
+        })
+        .unwrap();
+    let uploads = cache.stats().mesh_uploads;
+    let (actual, stats) = render_poses(&mut ctx, &mut cache, &model, &sets, None);
+
+    assert_eq!(cache.stats().mesh_uploads - uploads, 1);
+    assert_eq!(stats.skipped_missing_mesh, 0);
+    assert_eq!(actual, expected);
+}

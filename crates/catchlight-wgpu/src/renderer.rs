@@ -71,6 +71,7 @@ pub struct RenderStats {
     pub drawn_parts: u32,
     pub drawn_composites: u32,
     pub skipped_missing_mesh: u32,
+    /// Counts visible parts only; offscreen parts are culled first.
     pub skipped_missing_texture: u32,
     pub skipped_missing_mask_mesh: u32,
     pub skipped_missing_mask_texture: u32,
