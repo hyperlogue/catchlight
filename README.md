@@ -69,9 +69,9 @@ catchlight = "0.1.0"
 
 Catchlight is heavily inspired by
 [inochi2d](https://github.com/Inochi2D/inochi2d) and
-[inox2d](https://github.com/Inochi2D/inox2d). Both serve as the reference for
-catchlight's model format and rendering semantics, and the project began as an
-attempt to show inochi2d models on WebGPU.
+[inox2d](https://github.com/Inochi2D/inox2d). The project began as an
+attempt to show inochi2d models on WebGPU and has since grown its own model
+format and semantics; `catchlight-importer` converts inochi2d models.
 
 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) lists which modules the
 derivation reaches, and retains the upstream licences.

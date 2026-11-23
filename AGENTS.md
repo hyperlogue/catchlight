@@ -80,9 +80,9 @@ and diff checks.
 - For browser integration checks, `apps/site/e2e/run.ts` and
   `apps/site/e2e/drive.ts` document the built-site, backend, browser, and
   GPU-tier requirements.
-- Tests needing the private model at `example_models/reference/` and timing
-  measurements are ignored with reasons in their attributes. Run a relevant
-  ignored test with `-- --ignored` when its prerequisites are available.
+- Tests needing external samples and timing measurements are ignored with
+  reasons in their attributes. Run a relevant ignored test with
+  `-- --ignored` when its prerequisites are available.
 
 ## Documentation
 

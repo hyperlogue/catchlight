@@ -396,8 +396,7 @@ impl ApplicationHandler for App {
                             control_output = Some(output);
                         }
                     } else if let Some(param) = &self.demo_param {
-                        // 0..0.5: a full 0..1 sweep over-deforms the reference
-                        // model.
+                        // 0..0.5: a full 0..1 sweep over-deforms some models.
                         let t = self.start.elapsed().as_secs_f32();
                         let v = 0.25 + 0.25 * (t * std::f32::consts::TAU * 0.3).sin();
                         self.puppet.set_param_value(param, v);
@@ -494,9 +493,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             path_arg = Some(arg);
         }
     }
-    let path = std::path::PathBuf::from(
-        path_arg.unwrap_or_else(|| "example_models/reference/reference.clm".to_string()),
-    );
+    let path =
+        std::path::PathBuf::from(path_arg.unwrap_or_else(|| "tests/models/lan.clm".to_string()));
 
     println!("Loading model: {}", path.display());
     let model = load_model_file(&path)?;

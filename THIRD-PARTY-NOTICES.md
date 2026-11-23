@@ -1,25 +1,24 @@
 # Third-party notices
 
-Catchlight's model semantics and rendering behaviour are derived from the
-projects listed here. Except for the explicitly listed LivLiv schemas and
-pose evaluator, Catchlight is not a port: it is written against their
-observable behaviour, informed by reading these permissively licensed
-implementations and by matching what
-they do, frame for frame, so that models authored for them look right. This
+Parts of Catchlight's model semantics and rendering behaviour were derived
+from the projects listed here. Except for the explicitly listed LivLiv
+schemas and pose evaluator, Catchlight is not a port: it was written against
+their observable behaviour, informed by reading these permissively licensed
+implementations. Catchlight has since diverged from them and no longer
+tracks their behaviour; only `catchlight-importer` reads their formats. This
 file retains their notices — as their licences ask where they reach, and as
 credit everywhere else.
 
 ## Where the derivation shows
 
-- `catchlight-core`'s `weld.rs` — welding follows nijilive's, the working
-  reference for it.
+- `catchlight-core`'s `weld.rs` — welding derives from nijilive's.
 - `catchlight-core`'s `interpolate.rs` — cubic interpolation matches
-  inmath's `cubic`, which the reference uses.
+  inmath's `cubic`, as inochi2d uses it.
 - `catchlight-core`'s `meshgroup.rs` and `fill.rs` — mesh-group descent and
-  cell fill match the reference's `isComposite`, `postProcessFilter` and
+  cell fill derive from inochi2d's `isComposite`, `postProcessFilter` and
   `axisPoint()`.
 - `catchlight-core`'s `puppet/mod.rs` and `animation.rs` —
-  tick order and keyframe timing match the reference's.
+  tick order and keyframe timing derive from inochi2d's.
 - `catchlight-importer`'s `to_clm.rs` — the reader is pinned to
   inochi2d v0.8.6 and v0.8.7 behaviour and cites its source files.
 

@@ -13,14 +13,8 @@ use std::path::{Path, PathBuf};
 const W: u32 = 320;
 const H: u32 = 533;
 
-fn find_reference() -> Option<PathBuf> {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../example_models/reference/reference.clm");
-    if path.is_file() {
-        Some(path)
-    } else {
-        None
-    }
+fn lan() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/models/lan.clm")
 }
 
 async fn render_with_test_deform(path: &Path, shift: Vec2) -> Vec<u8> {
@@ -31,7 +25,7 @@ async fn render_with_test_deform(path: &Path, shift: Vec2) -> Vec<u8> {
     let mut ctx = RenderContext::with_renderer(renderer, W, H).expect("render context");
     let mut scene = Scene::new(&mut ctx.renderer, model);
     ctx.renderer
-        .update_camera(create_orthographic_camera(5000.0, W as f32 / H as f32));
+        .update_camera(create_orthographic_camera(2200.0, W as f32 / H as f32));
 
     scene.puppet.compute_transforms();
     if shift != Vec2::ZERO {
@@ -58,9 +52,8 @@ async fn render_with_test_deform(path: &Path, shift: Vec2) -> Vec<u8> {
 }
 
 #[test]
-#[ignore = "needs the reference model at example_models/reference/"]
 fn deform_source_changes_pixels_end_to_end() {
-    let path = find_reference().expect("reference.clm missing or an unfetched LFS pointer");
+    let path = lan();
 
     let baseline = pollster::block_on(render_with_test_deform(&path, Vec2::ZERO));
     let shifted = pollster::block_on(render_with_test_deform(&path, Vec2::new(500.0, 0.0)));

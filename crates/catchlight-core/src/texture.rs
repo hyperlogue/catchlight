@@ -1,7 +1,7 @@
 //! A model's textures, from stored bytes to renderer-ready images.
 //!
 //! Crops use the *opaque* bbox rather than the UV bbox: on imported models the UV
-//! bbox is mostly transparent texels (~4x larger on the reference model).
+//! bbox is mostly transparent texels.
 
 use std::sync::Arc;
 

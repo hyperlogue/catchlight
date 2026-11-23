@@ -627,7 +627,6 @@ mod tests {
     use catchlight_core::model::{BindingTarget, ScalarTarget};
     use catchlight_core::texture::EncodedTexture;
     use serde_json::json;
-    use std::collections::HashSet;
     /// Authored in inochi2d's frame (Y-down, lower `zsort` in front). Values
     /// are asymmetric and non-zero so a missing and a doubled negation both
     /// change the result.
@@ -799,98 +798,6 @@ mod tests {
         assert_eq!(scalar(6, ScalarTarget::Ry), vec![0.75, -1.25]);
         assert_eq!(scalar(7, ScalarTarget::Sy), vec![2.0, 0.5]);
         assert_eq!(scalar(8, ScalarTarget::Opacity), vec![0.25, 0.75]);
-    }
-
-    fn load_reference() -> InxModel {
-        let path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../example_models/reference/reference.inx"
-        );
-        let bytes = std::fs::read(path).expect("read reference.inx");
-        InxModel::parse(std::io::Cursor::new(bytes.as_slice())).expect("parse reference.inx")
-    }
-
-    #[test]
-    #[ignore = "needs the reference model at example_models/reference/"]
-    fn reference_inx_roundtrips_through_clm() {
-        let file = from_inx_model(&load_reference()).unwrap();
-
-        let parts = file
-            .doc
-            .nodes
-            .iter()
-            .filter(|n| matches!(n.kind, ClmNodeKind::Part(_)))
-            .count();
-        assert_eq!(parts, 117, "expected 117 Part nodes");
-        assert_eq!(file.textures.len(), 87);
-
-        let bytes = Model::from_clm_file(&file).unwrap().to_clm_bytes().unwrap();
-        let reopened = Model::from_clm_bytes(&bytes)
-            .unwrap()
-            .to_clm_file()
-            .unwrap();
-        assert_eq!(
-            reopened.doc, file.doc,
-            "structure must round-trip through .clm"
-        );
-        assert_eq!(reopened.textures, file.textures, "textures must round-trip");
-    }
-
-    #[test]
-    #[ignore = "needs the reference model at example_models/reference/"]
-    fn the_structure_is_topologically_ordered_with_one_root() {
-        let file = from_inx_model(&load_reference()).unwrap();
-        let doc = &file.doc;
-        let nodes = &doc.nodes;
-
-        let roots = nodes.iter().filter(|n| n.parent.is_none()).count();
-        assert_eq!(roots, 1, "exactly one root");
-        let mut written: HashSet<&NodeId> = HashSet::new();
-        for n in nodes {
-            if let Some(p) = &n.parent {
-                assert!(
-                    written.contains(p),
-                    "parent {p} must precede child {}",
-                    n.id
-                );
-            }
-            assert!(written.insert(&n.id), "node {} is written twice", n.id);
-        }
-
-        let params: HashSet<&ParamId> = doc.params.iter().map(|p| &p.id).collect();
-        let textures: HashSet<&TexId> = file.textures.iter().map(|t| &t.id).collect();
-        for node in nodes {
-            match &node.kind {
-                ClmNodeKind::Part(part) => {
-                    assert!(part.masks.iter().all(|m| written.contains(&m.source)));
-                    if let Some(albedo) = &part.albedo {
-                        assert!(textures.contains(albedo), "albedo {albedo}");
-                    }
-                }
-                ClmNodeKind::Composite(c) => {
-                    assert!(c.masks.iter().all(|m| written.contains(&m.source)))
-                }
-                _ => {}
-            }
-        }
-        for binding in &doc.bindings {
-            assert!(written.contains(&binding.node));
-            assert!(binding.params.iter().all(|p| params.contains(p)));
-        }
-    }
-
-    #[test]
-    #[ignore = "needs the reference model at example_models/reference/"]
-    fn captures_authored_propagate_meshgroup() {
-        let doc = from_inx_model(&load_reference()).unwrap().doc;
-        assert!(
-            doc.nodes.iter().any(|n| matches!(
-                &n.kind,
-                ClmNodeKind::Composite(c) if !c.propagate_meshgroup
-            )),
-            "an authored propagate_meshgroup=false composite must be captured"
-        );
-        assert!(!doc.bindings.is_empty());
     }
 
     fn composite_fixture(propagate: Option<bool>) -> InxModel {

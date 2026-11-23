@@ -62,7 +62,7 @@ fn setup(mut commands: Commands, mut models: ResMut<Assets<CatchlightModel>>) {
 
     let path = std::env::args()
         .nth(1)
-        .unwrap_or_else(|| "example_models/reference/reference.clm".to_string());
+        .unwrap_or_else(|| "tests/models/lan.clm".to_string());
     let bytes = std::fs::read(&path).expect("read model");
     let format = ModelFormat::from_path(Path::new(&path)).expect("recognized model extension");
     let mut model = model_from_bytes(&bytes, format).expect("load model");
@@ -142,9 +142,8 @@ fn first_deform_param(model: &Model) -> Option<ParamId> {
         .cloned()
 }
 
-/// A blink over every param whose *name* contains "Blink" (the reference model:
-/// "Left Eye - Blink" and "Right Eye - Blink"), resolved to `ParamId`s against
-/// the model. value=0 -> open, value=1 -> closed.
+/// A blink over every param whose *name* contains "Blink", resolved to
+/// `ParamId`s against the model. value=0 -> open, value=1 -> closed.
 fn build_blink_animation(model: &Model) -> Option<ClmAnimation> {
     let blink_params: Vec<ParamId> = model
         .param_ids()
