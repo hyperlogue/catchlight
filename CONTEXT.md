@@ -4,15 +4,6 @@ Catchlight is a software stack for 2.5D character animation: a character is a
 tree of nodes whose textured 2D meshes are deformed and stacked in depth to
 suggest 3D movement.
 
-Two different things in this codebase are called the reference. **The
-reference** is inochi2d and nijilive: catchlight reads their models and
-matches their rendering semantics, so a comment saying a rule matches the
-reference is naming behaviour catchlight had to reproduce, not a rule it
-chose. [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) says where that
-reaches. **The reference model** is the private rig at
-`example_models/reference/`; no such rig ships here, so the tests that need
-one are ignored.
-
 ## Language
 
 ### The model
@@ -83,7 +74,7 @@ scene, so opacity, tint, blend mode and masks apply to the subtree as a whole.
 
 **Blend mode**:
 How a drawable's pixels combine with what is already drawn beneath it —
-normal, multiply, screen and the rest of the reference's set.
+normal, multiply, screen, overlay, the dodges and burns, and the rest.
 
 **Tint**:
 A colour a drawable's pixels are multiplied by. A **screen tint** is a
