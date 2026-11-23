@@ -17,12 +17,24 @@ pub mod spine;
 pub mod texture;
 pub mod weld;
 
-pub use components::*;
-pub use deform::*;
-pub use id::*;
-pub use interpolate::*;
-pub use load::*;
-pub use load_budget::*;
+// The root names the types a caller builds with, each listed: a module's
+// helpers stay behind its path, and a new `pub` item reaches the root only
+// by being added here.
+pub use components::{
+    BlendMode, CompositeData, DecodedTexture, Mask, MaskMode, Mesh, MeshGroupData, MeshIndices,
+    Node, NodeIdx, NodeKind, PartData, TextureIdx, Transform,
+};
+pub use deform::{DeformShapeError, DeformSource, DeformStack};
+pub use id::{
+    ExtensionKey, HexSource, IdError, Name, NodeId, NodeIdKind, ParamId, SeededHex, SlotId, TexId,
+    EXTENSION_RESERVED_PREFIX, MAX_NAME_BYTES,
+};
+pub use interpolate::InterpolateMode;
+pub use load::{load_model, ModelFormat};
+pub use load_budget::{
+    LoadBudget, LoadLimitError, LoadLimits, LoadResource, MAX_BINDING_GRID_CELLS,
+    MAX_TEXTURE_DIMENSION,
+};
 pub use model::{
     deform_cells, mask_mode_name, param_range_is_valid, scalar_cells, target_of, BindingKey,
     BindingParams, BindingTarget, CheckWarning, ExtensionValue, InstallError, Installed, Model,
@@ -31,9 +43,12 @@ pub use model::{
     ModelWeld, ModelWeldPair, NodeProperties, Pose, Required, Requirement, Requirements,
     ScalarTarget, Slot, SlotPair, SpineJointError, DEFAULT_SLOT_WEIGHT,
 };
-pub use motion_response::*;
-pub use node::*;
-pub use puppet::*;
+pub use motion_response::{MotionResponse, ResponseInput, ResponseSource};
+pub use node::{NodeTree, NodeTreeError};
+pub use puppet::{
+    AnimationSample, GlobalTransforms, Motion, Puppet, ResponseClock, ResponseInputSample,
+    ResponseTrace, ScratchTransform,
+};
 pub use spine::SpineData;
 pub use texture::{
     prepare_textures, EncodedTexture, PreppedTexture, TextureError, TextureFormat, UvCrop,

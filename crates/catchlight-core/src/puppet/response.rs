@@ -7,9 +7,9 @@
 use std::collections::{HashMap, HashSet};
 
 use super::Puppet;
+use crate::motion_response::SpringState;
 use crate::{
-    Mat4, Model, ModelNodeKind, MotionResponse, NodeId, NodeIdx, ParamId, ResponseSource,
-    SpringState, Vec2,
+    Mat4, Model, ModelNodeKind, MotionResponse, NodeId, NodeIdx, ParamId, ResponseSource, Vec2,
 };
 
 /// One term as actually sampled by the most recent tick. Unfilled slots

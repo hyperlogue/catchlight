@@ -81,8 +81,9 @@ use crate::formats::clm::{
     ClmSpine, ClmStructure, ClmTexture, ClmTextureRef, ClmWeld,
 };
 use crate::id::SlotId;
-use crate::load_budget::charge_decoded_clm;
-use crate::{charge_clm_file, charge_clm_structure, charge_texture_payloads, LoadBudget};
+use crate::load_budget::{
+    charge_clm_file, charge_clm_structure, charge_decoded_clm, charge_texture_payloads, LoadBudget,
+};
 
 use super::*;
 

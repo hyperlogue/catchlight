@@ -13,9 +13,8 @@ use catchlight_core::formats::clm::{
 use catchlight_core::formats::container::{self, Section};
 use catchlight_core::id::{ExtensionKey, ParamId};
 use catchlight_core::interpolate::InterpolateMode;
-use catchlight_core::{
-    charge_clm_structure, LoadBudget, LoadLimitError, LoadLimits, Model, ModelError,
-};
+use catchlight_core::load_budget::charge_clm_structure;
+use catchlight_core::{LoadBudget, LoadLimitError, LoadLimits, Model, ModelError};
 
 fn fixture(name: &str) -> Vec<u8> {
     // crates/catchlight-core/ -> crates/ -> workspace root.

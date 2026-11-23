@@ -1957,9 +1957,10 @@ fn rest_to_frame(model: &Model, id: &NodeId, frame: Option<&NodeId>) -> Result<M
         let Some(id) = cursor else {
             let Some(frame) = frame else { break };
             let world = rest_to_frame(model, frame, None)?;
-            let inverse = catchlight_core::checked_affine_inverse(world).ok_or_else(|| {
-                EditorError::BadTarget(format!("cannot fit in the singular frame of {frame}"))
-            })?;
+            let inverse =
+                catchlight_core::components::checked_affine_inverse(world).ok_or_else(|| {
+                    EditorError::BadTarget(format!("cannot fit in the singular frame of {frame}"))
+                })?;
             return Ok(inverse * matrix);
         };
         let node = model
