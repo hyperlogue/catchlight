@@ -419,6 +419,56 @@ fn patching_a_file_whose_textures_are_not_images() {
     );
 }
 
+/// A section this build has no name for is one a newer writer added. A patch
+/// rewrites the whole file, so it has to write that section back as it found
+/// it or the tool destroys what it cannot read.
+#[test]
+fn patching_a_file_keeps_a_section_this_build_does_not_recognise() {
+    use catchlight_core::formats::{clm, container};
+
+    let dir = tmp("patch-unknown-section");
+    let original = read(&common::fixture("mip_checker"));
+    let sections = container::read(&original, &clm::MAGIC).unwrap();
+    let future = b"written by a newer catchlight";
+    let bytes = container::write(
+        &clm::MAGIC,
+        clm::FORMAT_VERSION,
+        &[
+            container::Section {
+                kind: 0,
+                data: sections.section(0).unwrap(),
+            },
+            container::Section {
+                kind: 4242,
+                data: future,
+            },
+            container::Section {
+                kind: 1,
+                data: sections.section(1).unwrap(),
+            },
+        ],
+    )
+    .unwrap();
+    let file = dir.join("future.clm");
+    std::fs::write(&file, &bytes).unwrap();
+
+    let change = patch::run(&file, "node-1", "opacity", "0.5", None, None).unwrap();
+    assert!(change.changed());
+
+    let after = read(&file);
+    let after = container::read(&after, &clm::MAGIC).unwrap();
+    assert_eq!(
+        after.section(4242),
+        Some(&future[..]),
+        "the patch dropped a section it could not read"
+    );
+    assert_eq!(
+        after.section(1),
+        sections.section(1),
+        "and the texture table is untouched"
+    );
+}
+
 /// The size bound: a file whose textures are a hundred megabytes patches in
 /// the time it takes to copy it, because nothing looks inside them. A
 /// per-pixel pass over this much data would not fit in the bound.

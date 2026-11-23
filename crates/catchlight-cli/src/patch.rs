@@ -118,10 +118,12 @@ pub fn patch(
     let kind = resolve(clm, path, id, want)?;
     // Extensions are not a patchable field, so they are carried through
     // untouched: a patch of an unrelated field leaves them byte-identical.
+    // So are the sections this build does not recognise.
     let ClmFile {
         doc,
         textures,
         extensions: _,
+        unknown_sections: _,
     } = clm;
 
     let (before, after) = match kind {

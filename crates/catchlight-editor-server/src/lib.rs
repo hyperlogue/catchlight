@@ -2441,6 +2441,7 @@ fn clm_file_from_json(
         // has none; a marker with no bytes is refused by key when
         // the file is read. Set such an extension after the import.
         extensions: Vec::new(),
+        unknown_sections: Vec::new(),
     })
 }
 

@@ -440,6 +440,7 @@ impl Model {
             doc,
             textures,
             extensions: self.extension_blobs(),
+            unknown_sections: self.unknown_sections.clone(),
         })
     }
 
@@ -476,6 +477,7 @@ impl Model {
             &doc,
             &textures,
             &self.extension_blobs(),
+            &self.unknown_sections,
         )?)
     }
 
@@ -540,7 +542,9 @@ impl Model {
             };
             (t.id.clone(), texture)
         });
-        Self::assemble(&file.doc, textures, &file.extensions, shape)
+        let mut model = Self::assemble(&file.doc, textures, &file.extensions, shape)?;
+        model.unknown_sections = file.unknown_sections.clone();
+        Ok(model)
     }
 
     /// Read `.clm` bytes. Decoding charged the input whole, payloads
@@ -551,7 +555,11 @@ impl Model {
     /// Each payload is copied once, out of `bytes` and into the `Arc` the
     /// model keeps. Going through a [`ClmFile`] would copy it into a `Vec`
     /// first and hold both until the model was built.
-    fn read_bytes(bytes: &[u8], budget: &mut LoadBudget, shape: Shape) -> Result<Model, ModelError> {
+    fn read_bytes(
+        bytes: &[u8],
+        budget: &mut LoadBudget,
+        shape: Shape,
+    ) -> Result<Model, ModelError> {
         let file = clm::decode_borrowed(bytes, budget)?;
         charge_decoded_clm(&file.doc, file.textures.len(), budget)?;
         let textures = file.textures.into_iter().map(|t| {
@@ -562,7 +570,9 @@ impl Model {
             };
             (t.id, texture)
         });
-        Self::assemble(&file.doc, textures, &file.extensions, shape)
+        let mut model = Self::assemble(&file.doc, textures, &file.extensions, shape)?;
+        model.unknown_sections = file.unknown_sections;
+        Ok(model)
     }
 
     /// The reader past the budget. Charges nothing: its two callers charge
@@ -946,6 +956,9 @@ impl Model {
             bindings,
             animations: doc.animations.clone(),
             extensions,
+            // Not the structure's to say: whoever read a whole file sets
+            // them, and a structure push leaves the ones the model has.
+            unknown_sections: Vec::new(),
             binding_index: OnceLock::new(),
             bake: Default::default(),
         };
@@ -1081,7 +1094,10 @@ impl Model {
         charge_clm_structure(&structure.doc, budget)?;
 
         let extensions = extensions_of(&structure.doc, extension_bytes)?;
-        let next = Self::build(&structure.doc, table, order, extensions, Shape::Base)?;
+        let mut next = Self::build(&structure.doc, table, order, extensions, Shape::Base)?;
+        // A structure push carries no section this build cannot read, so the
+        // ones this model was loaded with stay where they are.
+        next.unknown_sections = std::mem::take(&mut self.unknown_sections);
         self.become_model(next);
         Ok(())
     }

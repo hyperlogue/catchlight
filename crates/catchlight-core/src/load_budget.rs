@@ -320,9 +320,9 @@ pub(crate) fn binding_grid_cells(
 /// This is the charge for a `ClmFile` that arrived *as* a `ClmFile`, built
 /// by hand or by an importer, so the payload bytes are charged here. A file
 /// read from bytes had all of them charged as part of the input, and its
-/// reader charges only what is left ([`charge_decoded_clm`]): charging the
-/// payloads a second time would count every texture byte twice and halve
-/// the file size `encoded_bytes` admits.
+/// reader charges only what is left — the texture count and the structure's
+/// counts: charging the payloads a second time would count every texture
+/// byte twice and halve the file size `encoded_bytes` admits.
 pub fn charge_clm_file(
     file: &crate::formats::clm::ClmFile,
     budget: &mut LoadBudget,
@@ -330,6 +330,9 @@ pub fn charge_clm_file(
     charge_texture_payloads(file.textures.iter().map(|t| t.data.len() as u64), budget)?;
     for blob in &file.extensions {
         budget.charge(LoadResource::EncodedBytes, blob.data.len() as u64)?;
+    }
+    for section in &file.unknown_sections {
+        budget.charge(LoadResource::EncodedBytes, section.data.len() as u64)?;
     }
     charge_clm_structure(&file.doc, budget)
 }

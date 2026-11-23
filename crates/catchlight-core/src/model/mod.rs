@@ -384,6 +384,10 @@ pub struct Model {
     /// catchlight reads them; they ride along so a tool built on top of the
     /// format has somewhere to keep what it knows.
     extensions: BTreeMap<ExtensionKey, ExtensionValue>,
+    /// Sections of the file this model was read from that this build does
+    /// not recognise, kept so a save writes them back unchanged. Nothing
+    /// edits them. See [`clm::ClmUnknownSection`].
+    unknown_sections: Vec<clm::ClmUnknownSection>,
     /// `bindings` by key. Derived, so it is built on the first lookup and
     /// dropped by [`Model::bump`] — every mutating path invalidates it
     /// without having to know it exists.
@@ -1014,6 +1018,7 @@ impl Model {
             bindings: Vec::new(),
             animations: Vec::new(),
             extensions: BTreeMap::new(),
+            unknown_sections: Vec::new(),
             binding_index: OnceLock::new(),
             bake: Default::default(),
         }
@@ -2424,6 +2429,14 @@ impl Model {
         self.extensions.get(key)
     }
 
+    /// The sections of this model's file that this build does not
+    /// recognise, in file order. Read-only: they are carried so a save does
+    /// not lose what a newer writer put there, and nothing here can say what
+    /// an edit to one would mean.
+    pub fn unknown_sections(&self) -> &[clm::ClmUnknownSection] {
+        &self.unknown_sections
+    }
+
     /// Set an extension, replacing whatever was under that key.
     ///
     /// A reserved key is refused: `catchlight.` is the format's own prefix,
@@ -2442,10 +2455,9 @@ impl Model {
         }
         let (size, max) = match &value {
             ExtensionValue::Bytes(data) => (data.len(), clm::MAX_EXTENSION_BYTES),
-            ExtensionValue::Json(json) => (
-                clm::extension_json_len(json),
-                clm::MAX_EXTENSION_JSON_BYTES,
-            ),
+            ExtensionValue::Json(json) => {
+                (clm::extension_json_len(json), clm::MAX_EXTENSION_JSON_BYTES)
+            }
         };
         if size > max {
             return Err(ModelError::ExtensionTooLarge {

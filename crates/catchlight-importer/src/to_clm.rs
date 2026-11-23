@@ -224,6 +224,7 @@ pub fn from_inx_model(model: &InxModel) -> Result<ClmFile, ImportError> {
         },
         textures,
         extensions: Vec::new(),
+        unknown_sections: Vec::new(),
     })
 }
 

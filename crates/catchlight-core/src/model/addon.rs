@@ -759,6 +759,8 @@ impl Model {
             // An extension annotates a whole model, so there is no telling
             // which of them a cut subtree is about; the base keeps them all.
             extensions: BTreeMap::new(),
+            // The same goes for sections nobody here can read.
+            unknown_sections: Vec::new(),
             binding_index: OnceLock::new(),
             bake: Default::default(),
         }

@@ -603,6 +603,7 @@ fn file(
                 ..ClmStructure::default()
             },
             extensions: Vec::new(),
+            unknown_sections: Vec::new(),
             textures: Vec::new(),
         },
         slots,

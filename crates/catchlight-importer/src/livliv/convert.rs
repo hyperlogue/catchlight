@@ -134,6 +134,7 @@ impl ValidatedPackage {
             doc: ClmStructure::default(),
             textures: Vec::new(),
             extensions: Vec::new(),
+            unknown_sections: Vec::new(),
         };
         let root = NodeId::new("root")?;
         file.doc.nodes.push(node(

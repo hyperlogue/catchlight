@@ -6,7 +6,9 @@
 //! bytes, never decoded or cropped). A third, `Extensions`, appears only when
 //! some extension carries bytes: one keyed array of blobs, laid out like
 //! `Textures` and read the same way, so a file with no byte extension is
-//! byte-identical to one written before the section existed.
+//! byte-identical to one written before the section existed. A section of
+//! any other kind is one a newer writer added: it is carried through a load
+//! and a save without being read ([`ClmUnknownSection`]).
 //!
 //! There is a second shape on the same wire: a **structure-only** container,
 //! `Structure` beside a `TextureManifest` — the texture table with every
@@ -85,7 +87,9 @@
 //!
 //! CBOR maps keyed by field name give additive evolution: a future field
 //! returns as `#[serde(default)]` and old/new readers interoperate. **Never**
-//! add `deny_unknown_fields`; a breaking change bumps [`FORMAT_VERSION`].
+//! add `deny_unknown_fields`; a breaking change bumps [`FORMAT_VERSION`], and
+//! has to bring a way to carry the previous version's files forward with it
+//! — [`crate::formats`] says what counts.
 //!
 //! The version is checked before reading a full file or a structure feed.
 //! Externally tagged node kinds also cause an unknown variant to fail decoding.
@@ -332,6 +336,11 @@ pub enum ClmError {
     NotAStructure,
     #[error(transparent)]
     LoadLimit(#[from] crate::load_budget::LoadLimitError),
+    #[error(
+        "section kind {0} is one this format defines, so it cannot be carried as a section \
+         the format does not recognise"
+    )]
+    ReservedSectionKind(u32),
 }
 
 /// The whole decoded `.clm`: the structure plus the texture table.
@@ -342,6 +351,55 @@ pub struct ClmFile {
     /// The bytes behind every `Bytes` marker in `doc.extensions`, in key
     /// order. Empty unless some extension carries bytes.
     pub extensions: Vec<ClmExtensionBlob>,
+    /// Every section whose kind this build has no name for, in file order.
+    /// See [`ClmUnknownSection`].
+    pub unknown_sections: Vec<ClmUnknownSection>,
+}
+
+impl ClmFile {
+    /// Serialize the whole file, the sections it does not recognise
+    /// included. This is the writer for a file that was read: [`encode`]
+    /// takes the three parts this build understands and writes nothing else.
+    pub fn encode(&self) -> Result<Vec<u8>, ClmError> {
+        let payloads = self.textures.iter().map(|t| t.data.len() as u64).sum();
+        encode_sections(
+            &self.doc,
+            &self.textures,
+            payloads,
+            &self.extensions,
+            &self.unknown_sections,
+        )
+    }
+}
+
+/// A section of a `.clm` whose kind this build does not recognise, kept
+/// exactly as the file held it.
+///
+/// The container is a table of numbered sections, and a newer writer may
+/// add one without changing what the existing ones mean — that is how
+/// `Extensions` arrived. A reader that dropped what it could not name would
+/// make every tool built on an older catchlight destructive: open, save,
+/// and the newer writer's data is gone. So an unrecognised section is
+/// carried: read into the [`ClmFile`], held by the
+/// [`Model`](crate::Model), and written back byte for byte.
+///
+/// What "carried" covers:
+///
+/// - **Order among themselves** is the file's. They are written after the
+///   sections this build knows, whatever order the file interleaved them in,
+///   so a save is byte-stable from the second one on.
+/// - **Only a complete file carries them.** A structure-only container —
+///   the push an editor server sends a replica — neither writes nor reads
+///   them; a replica keeps the ones it was loaded with.
+/// - **Nothing here reads them**, which is also why they do not survive
+///   being split or joined: an addon extracted from a model carries none,
+///   and installing one adds none.
+/// - A second section of a kind this build *does* know is not unknown, and
+///   is dropped as it always was: the first one is the section.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClmUnknownSection {
+    pub kind: u32,
+    pub data: std::sync::Arc<[u8]>,
 }
 
 /// A decoded *structure-only* container: the same `Structure` section a
@@ -641,6 +699,7 @@ pub(crate) struct ClmFileRef<'a> {
     pub doc: ClmStructure,
     pub textures: Vec<ClmTextureSpan<'a>>,
     pub extensions: Vec<ClmExtensionBlob>,
+    pub unknown_sections: Vec<ClmUnknownSection>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -887,24 +946,37 @@ pub fn check_extensions(doc: &ClmStructure, blobs: &[ClmExtensionBlob]) -> Resul
 /// Serialize to `.clm` bytes. Deterministic for a given input: ciborium writes
 /// struct fields in declaration order and the container lays sections out in
 /// order, so save→save is byte-stable.
+///
+/// Writes the sections this build defines and no others. To write back a
+/// file that was read, use [`ClmFile::encode`], which also carries the
+/// sections it did not recognise.
 pub fn encode(
     doc: &ClmStructure,
     textures: &[ClmTexture],
     extensions: &[ClmExtensionBlob],
 ) -> Result<Vec<u8>, ClmError> {
     let payloads = textures.iter().map(|t| t.data.len() as u64).sum();
-    encode_sections(doc, textures, payloads, extensions)
+    encode_sections(doc, textures, payloads, extensions, &[])
 }
 
-/// [`encode`] over textures whose payloads are borrowed from wherever they
-/// already live. The bytes written are the ones [`encode`] writes.
+/// [`ClmFile::encode`] over textures whose payloads are borrowed from
+/// wherever they already live. The bytes written are the same.
 pub fn encode_borrowed(
     doc: &ClmStructure,
     textures: &[ClmTextureBytes<'_>],
     extensions: &[ClmExtensionBlob],
+    unknown_sections: &[ClmUnknownSection],
 ) -> Result<Vec<u8>, ClmError> {
     let payloads = textures.iter().map(|t| t.data.len() as u64).sum();
-    encode_sections(doc, textures, payloads, extensions)
+    encode_sections(doc, textures, payloads, extensions, unknown_sections)
+}
+
+/// Whether `kind` is a section this build gives a meaning to.
+fn is_known_section(kind: u32) -> bool {
+    matches!(
+        kind,
+        SECTION_STRUCTURE | SECTION_TEXTURES | SECTION_TEXTURE_MANIFEST | SECTION_EXTENSIONS
+    )
 }
 
 /// Write a complete `.clm`. `textures` is whatever serializes as the texture
@@ -918,23 +990,43 @@ fn encode_sections<T: Serialize>(
     textures: &[T],
     payloads: u64,
     extensions: &[ClmExtensionBlob],
+    unknown_sections: &[ClmUnknownSection],
 ) -> Result<Vec<u8>, ClmError> {
     check_extensions(doc, extensions)?;
     // The payloads alone are a lower bound on the section that holds them,
     // so a table the container would refuse is refused here, before it is
     // serialized only to be thrown away.
     container::check_section_len(SECTION_TEXTURES, payloads)?;
+    // A carried section under a kind this format defines would be a second
+    // `Structure`, or a manifest that turns the file into a structure-only
+    // container: not something a file read by this crate can hold, so
+    // somebody built it by hand.
+    if let Some(reserved) = unknown_sections.iter().find(|s| is_known_section(s.kind)) {
+        return Err(ClmError::ReservedSectionKind(reserved.kind));
+    }
 
     // `Extensions` is absent unless it holds something, so a file with no
     // byte extension is byte-identical to one written before the section
     // existed.
-    let sections = 2 + usize::from(!extensions.is_empty());
+    let sections = 2 + usize::from(!extensions.is_empty()) + unknown_sections.len();
     let mut file = container::Writer::new(&MAGIC, FORMAT_VERSION, sections)?;
     file.section(SECTION_STRUCTURE, |out| cbor_into(doc, out))?;
-    file.reserve(usize::try_from(payloads).unwrap_or(0));
+    let carried: usize = unknown_sections.iter().map(|s| s.data.len()).sum();
+    file.reserve(
+        usize::try_from(payloads)
+            .unwrap_or(0)
+            .saturating_add(carried),
+    );
     file.section(SECTION_TEXTURES, |out| cbor_into(&textures, out))?;
     if !extensions.is_empty() {
         file.section(SECTION_EXTENSIONS, |out| cbor_into(&extensions, out))?;
+    }
+    // After everything this build knows, in the order the file had them.
+    for section in unknown_sections {
+        file.section(section.kind, |out| {
+            out.extend_from_slice(&section.data);
+            Ok::<(), ClmError>(())
+        })?;
     }
     Ok(file.finish())
 }
@@ -1027,6 +1119,7 @@ pub fn decode_with_budget(
             })
             .collect(),
         extensions: file.extensions,
+        unknown_sections: file.unknown_sections,
     })
 }
 
@@ -1056,10 +1149,23 @@ pub(crate) fn decode_borrowed<'a>(
         None => Vec::new(),
     };
     check_extensions(&doc, &extensions)?;
+    // Whatever this build has no name for is kept, not skipped: see
+    // `ClmUnknownSection`. Copied out because the model that holds them
+    // outlives `bytes`.
+    let unknown_sections = file
+        .sections
+        .iter()
+        .filter(|section| !is_known_section(section.kind))
+        .map(|section| ClmUnknownSection {
+            kind: section.kind,
+            data: section.data.into(),
+        })
+        .collect();
     Ok(ClmFileRef {
         doc,
         textures,
         extensions,
+        unknown_sections,
     })
 }
 
@@ -1353,7 +1459,7 @@ mod tests {
         let (doc, textures) = sample();
         let borrowed: Vec<ClmTextureBytes> = textures.iter().map(Into::into).collect();
         assert_eq!(
-            encode_borrowed(&doc, &borrowed, &[]).unwrap(),
+            encode_borrowed(&doc, &borrowed, &[], &[]).unwrap(),
             encode(&doc, &textures, &[]).unwrap()
         );
     }
@@ -1369,8 +1475,7 @@ mod tests {
         textures[0].data = (0..70_000u32).map(|i| i as u8).collect();
         let bytes = encode(&doc, &textures, &[]).unwrap();
 
-        let file =
-            decode_borrowed(&bytes, &mut crate::load_budget::LoadBudget::default()).unwrap();
+        let file = decode_borrowed(&bytes, &mut crate::load_budget::LoadBudget::default()).unwrap();
 
         assert_eq!(file.textures.len(), 1);
         let std::borrow::Cow::Borrowed(payload) = file.textures[0].data else {
@@ -1460,7 +1565,11 @@ mod tests {
             ("an id off the charset", table(vec![bad_id]), false),
             ("cut short", truncated, false),
             ("indefinite length", indefinite, false),
-            ("not an array", cbor_to_vec(&Value::Integer(3.into())).unwrap(), false),
+            (
+                "not an array",
+                cbor_to_vec(&Value::Integer(3.into())).unwrap(),
+                false,
+            ),
         ];
         for (name, section, walked) in cases {
             assert_eq!(

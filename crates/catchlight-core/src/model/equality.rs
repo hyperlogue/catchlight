@@ -39,6 +39,11 @@ impl Model {
         if self.texture_order != other.texture_order || self.extensions != other.extensions {
             return Ok(false);
         }
+        // Carried bytes are part of what a save writes, so two models that
+        // differ in them are two different files.
+        if self.unknown_sections != other.unknown_sections {
+            return Ok(false);
+        }
         for id in &self.texture_order {
             let a = self.textures.get(id).ok_or(ModelError::UnknownTexture)?;
             let b = other.textures.get(id).ok_or(ModelError::UnknownTexture)?;

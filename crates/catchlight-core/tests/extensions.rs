@@ -147,6 +147,7 @@ fn a_reserved_key_is_refused_to_an_author_and_accepted_from_a_file() {
         doc,
         textures: Vec::new(),
         extensions: Vec::new(),
+        unknown_sections: Vec::new(),
     })
     .expect("a reserved key loads");
     assert!(read.extensions().contains_key(&reserved));
@@ -366,8 +367,11 @@ fn a_float_that_is_not_finite_is_refused_rather_than_read_as_null() {
 
     let wrap = |value: Value| {
         let mut buf = Vec::new();
-        ciborium::into_writer(&Value::Map(vec![(Value::Text("json".into()), value)]), &mut buf)
-            .unwrap();
+        ciborium::into_writer(
+            &Value::Map(vec![(Value::Text("json".into()), value)]),
+            &mut buf,
+        )
+        .unwrap();
         buf
     };
     for (what, value) in [
