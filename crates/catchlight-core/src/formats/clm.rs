@@ -76,9 +76,10 @@
 //!   (`Opacity`, `Tint*`, `ScreenTint*`) on a mesh group has nowhere to land —
 //!   a mesh group is never drawn — and a deform cell holds one `[dx, dy]` per
 //!   mesh vertex, no more and no fewer. Both are refused on the way in, so a
-//!   model that loads is one every runtime evaluates the same way; the second
-//!   is refused on the way *out* too, so a bad refit is reported at save
-//!   rather than at the next open.
+//!   model that loads is one every runtime evaluates the same way. The second
+//!   is refused on the way *out* too, and before that by the edit that would
+//!   cause it: a refit that returns the wrong number of offsets is refused
+//!   where it is made, not at the next save.
 //!
 //! This module also holds the leaf value types that are the same in memory and
 //! on the wire — meshes, transforms, motion responses, binding cells — so a

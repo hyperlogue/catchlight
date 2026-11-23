@@ -17,7 +17,7 @@ use crate::update::update_puppets;
 /// changing it re-prepares every cache on the next frame.
 #[derive(Resource, Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CatchlightSettings {
-    /// Texture downsampling. See
+    /// Texture downsampling and the decoded-texture limit. See
     /// [`PrepareOptions`](catchlight_wgpu::PrepareOptions).
     pub prepare: PrepareOptions,
 }
