@@ -1,156 +1,21 @@
 //! Wire types for the catchlight editor.
 //!
-//! A client sends a [`Request`] (one JSON object per line); the server answers
-//! with a [`Reply`] — a correlated [`Reply::Ok`] / [`Reply::Err`], or an
-//! unsolicited [`Reply::Event`]. The types are transport-agnostic: the same
-//! messages travel over a Unix socket (native) or a WebSocket (web).
-//!
-//! Invariants this module carries:
-//!
-//! - **Ids are what the wire names things by.** A node, param, texture or
-//!   slot travels as its [`NodeId`] / [`ParamId`] / [`TexId`] / [`SlotId`] —
-//!   the same string the model file stores, not a per-session handle. A
-//!   [`SlotId`] is unique within its part rather than within the model, so it
-//!   always travels beside the node that carries it. So a reference survives
-//!   the session that minted it, an addon can be written against a model by
-//!   reading its tree, and two clients editing one session mean the same
-//!   node by the same word. The Id types validate on the way in, so a string
-//!   outside the charset
-//!   (`[A-Za-z0-9_./-]`, no leading `.`, `/` or `-`) never reaches the server: it
-//!   is refused as [`ErrorCode::BadRequest`] against the request's own `id`.
-//!   [`SessionId`] is the exception — a session is not part of any model, so
-//!   it stays an opaque `u64` the server allocates.
-//!
-//! - **An add may name the Id it makes**, under the same word the reply names
-//!   it back with: `node` on [`Command::NodeAdd`],
-//!   [`Command::SpineAdd`] and [`Command::SpineFit`], `param` on
-//!   [`Command::ParamAdd`], `texture` on [`Command::TextureAdd`],
-//!   `slot` on [`Command::SlotAdd`]. Absent, the editor draws a free
-//!   one; present, it is refused as [`ErrorCode::DuplicateId`] if the model
-//!   already carries it. Either way the reply says which Id was made. So a
-//!   script that authors a rig writes the Ids it means once, rather than
-//!   adding and then renaming — and [`Command::RenameId`] stays what it says
-//!   it is, an author's deliberate break. The field cannot be called `id`: a
-//!   [`Request`] flattens its command next to its own correlation `id`, and
-//!   serde reads two of those as a malformed request.
-//!
-//! - **[`Command::RenameId`] is a breaking change for addons**, and the only
-//!   command that is. An addon names what it needs in the base model by Id;
-//!   renaming one rewrites every reference *inside* this model and none of
-//!   the references outside it. There are no aliases. A client should treat
-//!   it the way it treats deleting a param: an author's deliberate act, not
-//!   an editing convenience.
-//!
-//! - **A texture belongs to a part.** [`Command::TextureAdd`] names the part
-//!   the image is for and the model gains both in one edit; there is no
-//!   command that adds a texture on its own. The rule holds on the way out,
-//!   so an edit that leaves a texture with no part drawing it deletes it, and
-//!   the reply says which ([`ResponseBody::Node::dropped`],
-//!   [`ResponseBody::Texture::dropped`]). Like [`Command::RenameId`] it is a
-//!   breaking change for an addon that named that Id — undo restores it in
-//!   the session, nothing restores it downstream.
-//!
-//! - **A closed set travels as itself.** A mask mode, a blend mode, a
-//!   response source, an interpolation, a node kind, a binding
-//!   target: each is an enum here, so serde parses it and a client reads a
-//!   union rather than a string. The spelling is exact — there is no case
-//!   folding and there are no aliases — and a word outside the set is
-//!   [`ErrorCode::BadRequest`] before any command runs, not a validation the
-//!   server does afterwards.
-//!
-//! - **A field with three states is a merge patch.** Absent leaves the value
-//!   alone, `null` sets it to nothing, and a value sets it to that. Today
-//!   [`NodePatch::texture`] is the only one: a part keeps its texture, draws
-//!   none, or draws the Id named. One field carries the whole change, so
-//!   there is no second field to disagree with it and no rule about which of
-//!   the two wins.
-//!
-//! - **A list of points is a list of points.** Mesh vertices, UVs and deform
-//!   offsets travel as `[[x, y], …]` and triangles as `[[a, b, c], …]`, never
-//!   as one flat run of numbers. A dangling coordinate or a triangle missing
-//!   a corner is then [`ErrorCode::BadRequest`] from serde, before any
-//!   command runs, rather than a length check the server has to remember to
-//!   write.
-//!
-//! - **Nothing is addressed by name.** [`Name`](catchlight_core::id::Name) is
-//!   a label a person reads; two nodes may share one. Commands that carry a
-//!   `name` are setting or reporting that label.
-//!
-//! - **Params are scalar inputs; bindings own positions.** A param has one
-//!   range and default. A binding names *one or two* params ([`BindingParams`])
-//!   and owns one normalized axis per input; their product is its grid. `cell` stays
-//!   `[x, y]` — the y index is 0 for a one-param binding. An XY pad is a view
-//!   over any two params, not a property of either.
-//!
-//! - **A session's model is always complete.** A fragment enters one way and
-//!   one way only: [`Command::ImportJson`] naming a required `parent`, which installs it under that node in a single
-//!   atomic edit and leaves a complete model behind. It never *becomes* the
-//!   session's model, there is no extract command to match it, and no reply
-//!   carries a multi-root tree — so every tree reply, the inspector and the
-//!   commit gate keep one shape.
-//!   `catchlight-cli` is where a fragment is cut, scanned and merged at the
-//!   file level, without a session at all. [`Command::NodeTree`] on a
-//!   fragment is [`ErrorCode::Fragment`], which nothing should see.
-//!
-//! - **A `path` field is an opaque storage key, and it is the server's own
-//!   store.** [`Command::SessionOpen`], [`Command::Save`] and
-//!   [`Command::ExportManifest`] each name a file with one string, and what
-//!   that string addresses is the server's store: a filesystem path natively,
-//!   an OPFS entry or a fetched URL in the browser, a blob key in the cloud.
-//!   Only one thing reads a key's shape — `/` separates segments. Bytes a
-//!   *client* holds never travel as a key: they are an attachment on the
-//!   command that uses them. A client that builds keys should not assume
-//!   more.
-//!
-//! - **An extension is carried, never interpreted.** A vendor files a value
-//!   under a dotted key ([`ExtensionKey`], vendor first) and catchlight reads
-//!   none of it: [`Command::ExtensionSet`] takes it, [`Command::Extensions`]
-//!   and [`Command::ExtensionGet`] give it back, and a save round-trips it
-//!   untouched. The two kinds differ in how they travel rather than in what
-//!   they mean — a JSON value is inline everywhere, including in a structure
-//!   feed, while bytes travel as a `{size, hash}` marker and are fetched by
-//!   that hash, so a thumbnail does not ride along with every unrelated edit.
-//!
-//! - **Bytes travel beside a command, never in it.** A command that needs
-//!   bytes declares the names they arrive under in [`COMMAND_BYTES`], and one
-//!   whose reply is bytes declares that there too; [`Command::bytes`] reads
-//!   the table by tag, so a command absent from it carries none. How the
-//!   names and the blobs are framed is each transport's business — the wire
-//!   types here are the same either way. A name the command did not declare,
-//!   and a declared [`Attachment::Fixed`] that did not arrive, are both
-//!   [`ErrorCode::BadRequest`] before the command runs; an
-//!   [`Attachment::Family`]'s suffixes are the command's own to check against
-//!   its fields.
-//!
-//! - **Every command says what it does, in one place.** [`COMMAND_KINDS`]
-//!   gives each one a [`CommandKind`], and that is what a client routes by.
-//!   `Edit` moves the session's revision, records undo and is saved.
-//!   `Presence` publishes shared view state and moves nothing. Scratch lives
-//!   on the local Puppet and has no wire command. `ReplicaQuery` is a pure
-//!   function of the [`Model`](catchlight_core::Model), so a client holding a
-//!   replica answers it without asking the editor. `ServerQuery` needs the
-//!   editor's own state, its store or its renderer, so only the editor can.
-//!
-//! - **A reply says which revision it reflects.** [`Reply::Ok`] carries the
-//!   revision captured under the addressed session's lock. New guarded reads
-//!   reject a mismatched `if_rev`; edits reject it before mutation. Clients
-//!   retain this revision with the data they read, then submit one guarded
-//!   edit or batch. A stale edit is never retried blindly.
+//! Ids travel as the strings the model file stores, never per-session
+//! handles, so [`Command::RenameId`] and texture drops break addons that
+//! named the old Id. An add names its new Id under the reply's word (`node`,
+//! `param`, …), never `id`: [`Request`] flattens its command beside its own
+//! correlation `id`.
 
 pub use catchlight_core::{MotionResponse, ResponseInput, ResponseSource};
 use serde::{Deserialize, Serialize};
 
 pub use catchlight_core::id::{ExtensionKey, NodeId, ParamId, SlotId, TexId};
 
-/// One open editing session (one model and its undo history). Opaque: a
-/// session is not part of any model, so it has no Id of its own.
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Hash, Debug)]
 #[serde(transparent)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct SessionId(pub u64);
 
-/// A client request. `id` correlates the reply; commands that target a session
-/// carry it in their own fields.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Request {
@@ -159,9 +24,8 @@ pub struct Request {
     pub command: Command,
 }
 
-/// Just the correlation id, for a request whose body did not parse — so a
-/// malformed command is still answered against the id the client is waiting
-/// on rather than against 0.
+/// The correlation id alone, so a request whose body did not parse is still
+/// answered against it.
 #[derive(Deserialize, Debug, Clone, Copy)]
 pub struct RequestId {
     pub id: u64,
@@ -179,10 +43,6 @@ pub enum Command {
         source: Option<SessionSource>,
     },
     /// Open the `.clm` the server's store holds at `path`.
-    ///
-    /// A file of the server's, and the session can save back over it. Bytes a
-    /// client holds use [`Command::SessionNew`] with a source and attachments.
-    /// That session has no storage path to save back to.
     SessionOpen {
         path: String,
     },
@@ -223,10 +83,6 @@ pub enum Command {
     NodeTree {
         session: SessionId,
     },
-    /// Everything an inspector shows for one node: what [`NodePatch`] can set,
-    /// under the same field names, plus the node's kind, its parent, its Id
-    /// and the size of the mesh it holds. What [`Command::NodeTree`] carries
-    /// is what a tree row draws; this is the rest.
     #[serde(rename = "node_get")]
     NodeInfo {
         session: SessionId,
@@ -262,8 +118,7 @@ pub enum Command {
         kind: NodeKindArg,
         #[serde(default)]
         name: Option<String>,
-        /// The Id to create it under. Absent generates one; an Id the model
-        /// already carries is [`ErrorCode::DuplicateId`].
+        /// Absent generates one; an existing Id is [`ErrorCode::DuplicateId`].
         #[serde(default, skip_serializing_if = "Option::is_none")]
         node: Option<NodeId>,
     },
@@ -285,25 +140,18 @@ pub enum Command {
         index: u32,
     },
 
-    /// Deep-copy a node's subtree as its next sibling (bindings and
-    /// subtree-internal mask references come along). The copies get fresh
-    /// generated Ids.
+    /// Deep-copy a node's subtree as its next sibling; copies get fresh Ids.
     NodeDuplicate {
         session: SessionId,
         node: NodeId,
     },
-    /// Change a node's, a param's or a texture's Id, rewriting every
-    /// reference this model holds to it.
-    ///
-    /// **Breaking for addons.** An addon reaches into a base model by Id, so
-    /// renaming one is exactly as breaking as deleting it: nothing outside
-    /// this model is rewritten and there is no alias left behind.
+    /// Change an Id and every reference this model holds to it. Breaks addons:
+    /// nothing outside the model is rewritten and no alias remains.
     #[serde(rename = "id_rename")]
     RenameId {
         session: SessionId,
         rename: Rename,
     },
-    /// Append a mask source to a Part/Composite.
     MaskAdd {
         session: SessionId,
         node: NodeId,
@@ -316,7 +164,6 @@ pub enum Command {
         node: NodeId,
         index: u32,
     },
-    /// Replace a motion response's complete authored configuration atomically.
     MotionResponseSet {
         session: SessionId,
         node: NodeId,
@@ -326,28 +173,20 @@ pub enum Command {
         session: SessionId,
         node: NodeId,
     },
-    /// Give an image to `node`, which has to be a part: a texture is added
-    /// and assigned in one edit. If that part was the last thing drawing
-    /// whatever it drew before, that texture goes with this edit — see
-    /// [`ResponseBody::Texture`].
-    ///
-    /// The bytes arrive as attachment `texture`, and `encoding` says how to
-    /// read them.
+    /// Add a texture from attachment `texture` and assign it to part `node` in
+    /// one edit, dropping the old texture if nothing else draws it.
     TextureAdd {
         session: SessionId,
         node: NodeId,
-        /// How to read the attached bytes. The field, never a sniff.
         #[serde(default)]
         encoding: TextureEncoding,
-        /// The Id to create it under. Absent generates one; an Id the model
-        /// already carries is [`ErrorCode::DuplicateId`].
+        /// Absent generates one; an existing Id is [`ErrorCode::DuplicateId`].
         #[serde(default, skip_serializing_if = "Option::is_none")]
         texture: Option<TexId>,
     },
     TextureList {
         session: SessionId,
     },
-    /// Create a scalar input with a range and default value.
     ParamAdd {
         session: SessionId,
         name: String,
@@ -357,8 +196,7 @@ pub enum Command {
         max: f32,
         #[serde(default)]
         default: f32,
-        /// The Id to create it under. Absent generates one; an Id the model
-        /// already carries is [`ErrorCode::DuplicateId`].
+        /// Absent generates one; an existing Id is [`ErrorCode::DuplicateId`].
         #[serde(default, skip_serializing_if = "Option::is_none")]
         param: Option<ParamId>,
     },
@@ -384,7 +222,6 @@ pub enum Command {
         param: ParamId,
     },
     /// Insert a distinct key position at normalized `value` in [0, 1].
-    /// Authored cells shift; the new row/column derives.
     BindingKeyInsert {
         session: SessionId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -393,12 +230,10 @@ pub enum Command {
         params: BindingParams,
         node: NodeId,
         target: BindingTarget,
-        /// Driving param whose binding-local axis changes.
         axis: ParamId,
         value: f32,
     },
     /// Remove a key position while retaining at least one position on the axis.
-    /// Its authored cells are dropped.
     BindingKeyDelete {
         session: SessionId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -407,7 +242,6 @@ pub enum Command {
         params: BindingParams,
         node: NodeId,
         target: BindingTarget,
-        /// Driving param whose binding-local axis changes.
         axis: ParamId,
         index: u32,
     },
@@ -421,7 +255,6 @@ pub enum Command {
         params: BindingParams,
         node: NodeId,
         target: BindingTarget,
-        /// Driving param whose binding-local axis changes.
         axis: ParamId,
         index: u32,
         value: f32,
@@ -499,26 +332,19 @@ pub enum Command {
         mode: Interpolate,
     },
 
-    /// Every binding on one node: what drives it, how it reads between its
-    /// cells, and the grid the author keyed.
-    ///
-    /// [`ParamInfo::bindings`] counts what a param drives and names none of
-    /// it, so this is the read a binding panel is drawn from.
     BindingList {
         session: SessionId,
         node: NodeId,
     },
 
-    /// Replace a Part/MeshGroup mesh; every deform binding on the node is
-    /// re-fitted onto the new topology in the same undoable step. Answers
-    /// with the slots the new mesh emptied.
+    /// Replace a Part/MeshGroup mesh, re-fitting its deform bindings in the same
+    /// step. Answers with the slots the new mesh emptied.
     MeshSet {
         session: SessionId,
         /// Refuse a stale draft or gesture while holding the session lock.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         if_rev: Option<u64>,
         node: NodeId,
-        /// One `[x, y]` per vertex.
         verts: Vec<[f32; 2]>,
         /// One `[u, v]` per vertex, as many as `verts`.
         uvs: Vec<[f32; 2]>,
@@ -528,14 +354,8 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         deform_mapping: Option<Vec<Vec<VertexWeight>>>,
     },
-    /// Derive a part's mesh from its own texture's alpha and apply it, with
-    /// the same deform re-fit and the same emptied-slot reply as
+    /// Trace a part's mesh from its texture's alpha and apply it like
     /// [`Command::MeshSet`].
-    ///
-    /// The editor does the tracing: it holds the texture bytes, and a client
-    /// that traced them itself would have to decode an image, agree on the
-    /// UV mapping, and send back a mesh — three chances to disagree with the
-    /// editor about what the part looks like.
     #[serde(rename = "mesh_generate")]
     MeshAuto {
         session: SessionId,
@@ -545,8 +365,6 @@ pub enum Command {
         mode: AutoMesh,
     },
 
-    /// Add a slot to a part. The slot lands unfilled and pairs nothing: a
-    /// weld is what pairs it with a slot on another part.
     SlotAdd {
         session: SessionId,
         node: NodeId,
@@ -555,7 +373,6 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         slot: Option<SlotId>,
     },
-    /// Point a slot at one of the part's vertices.
     SlotFill {
         session: SessionId,
         node: NodeId,
@@ -570,19 +387,16 @@ pub enum Command {
         slot: SlotId,
     },
     /// Remove a slot from a part, and with it the weld pairs that named it.
-    /// No other part's slots move.
     SlotDelete {
         session: SessionId,
         node: NodeId,
         slot: SlotId,
     },
-    /// The slots a part carries, with what fills each.
     #[serde(rename = "slot_list")]
     Slots {
         session: SessionId,
         node: NodeId,
     },
-    /// Every weld in the model.
     #[serde(rename = "weld_list")]
     Welds {
         session: SessionId,
@@ -598,20 +412,14 @@ pub enum Command {
         #[serde(default)]
         pairs: Vec<SlotPair>,
     },
-    /// Unmake the weld pairing two parts, named in either order. Both parts
-    /// and every slot on them stay; only the pairing goes.
-    /// [`ErrorCode::UnknownWeld`] if nothing pairs them.
+    /// Unmake the weld pairing two parts, named in either order.
     WeldDelete {
         session: SessionId,
         a: NodeId,
         b: NodeId,
     },
-    /// Add a spine node.
-    ///
-    /// The spine is `joints` links long and reads one bend param per link, in
-    /// link order. Empty `joints` is refused — a spine of no links has nothing
-    /// to turn about — as is a joint that repeats the point above it, which is
-    /// a link with no length.
+    /// Add a spine node. Empty `joints`, or a joint repeating the point above
+    /// it, is refused.
     SpineAdd {
         session: SessionId,
         parent: NodeId,
@@ -624,8 +432,7 @@ pub enum Command {
         /// Absent binds none; present, it must be exactly as long as `joints`.
         #[serde(default)]
         targets: Option<Vec<Option<ParamId>>>,
-        /// The Id to create it under. Absent generates one; an Id the model
-        /// already carries is [`ErrorCode::DuplicateId`].
+        /// Absent generates one; an existing Id is [`ErrorCode::DuplicateId`].
         #[serde(default, skip_serializing_if = "Option::is_none")]
         node: Option<NodeId>,
     },
@@ -641,30 +448,14 @@ pub enum Command {
         /// past the new end loses its param, a new link arrives rigid.
         #[serde(default)]
         joints: Option<Vec<[f32; 2]>>,
-        /// One param per link, exactly as long as the spine is after `joints`
-        /// is applied.
         #[serde(default)]
         targets: Option<Vec<Option<ParamId>>>,
     },
-    /// Rig a strand of art to a spine in one edit: the spine and the bend params
-    /// its links read.
-    ///
-    /// The editor measures the strand, because measuring it is reading the
-    /// part's rest mesh and deciding where each joint falls — the same reason
-    /// [`Command::MeshAuto`] traces here rather than in a client. What it
-    /// authors is ordinary: a spine [`Command::SpineSet`] can reshape and
-    /// params a [`Command::ParamSet`] can retune. It authors **no bindings**:
-    /// a spine turns the art by composing its joints, so there is nothing to
-    /// key.
-    ///
-    /// **The spine goes between the part and its parent**, and the part keeps
-    /// the world placement it had. Re-fitting through any intervening motion responses
-    /// re-measures the existing spine, retaining
-    /// the existing params for links that survive.
+    /// Rig a strand of art to a spine and its bend params in one edit, with no
+    /// bindings. The spine goes between the part and its parent, keeping the
+    /// part's world placement; a re-fit retains params of surviving links.
     SpineFit {
         session: SessionId,
-        /// The part whose rest mesh is measured. The fit reads its vertices
-        /// and nothing else — no pose, no binding.
         part: NodeId,
         /// How many links to divide the art into. Zero is refused.
         links: u32,
@@ -673,7 +464,6 @@ pub enum Command {
         /// normalise is refused.
         #[serde(default)]
         axis: Option<[f32; 2]>,
-        /// The Id to create the spine under, when one is being created.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         node: Option<NodeId>,
         #[serde(default)]
@@ -689,13 +479,11 @@ pub enum Command {
         session: SessionId,
         if_rev: u64,
     },
-    /// Restore a retained authored state and publish a new live revision.
     EditGoto {
         session: SessionId,
         if_rev: u64,
         revision: u64,
     },
-    /// Session-owned tree metadata, captured with its live revision.
     EditHistoryGet {
         session: SessionId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -713,12 +501,8 @@ pub enum Command {
         session: SessionId,
     },
 
-    /// Render one frame of a session and answer with the PNG as the reply's
-    /// payload.
-    ///
-    /// The camera is explicit: absent it is the default height at the origin,
-    /// and what a tab last looked at is never consulted, so a script's output
-    /// does not depend on anyone else's view.
+    /// Render one frame as the reply's PNG payload. An absent camera is the
+    /// default, never a tab's last view.
     #[serde(rename = "preview_render")]
     Preview {
         session: SessionId,
@@ -730,68 +514,36 @@ pub enum Command {
         camera: Option<Camera>,
     },
 
-    /// Import a `.clm` **structure as JSON**, with its textures
-    /// attached separately, into an open session.
-    ///
-    /// Installs imported roots under the required parent after checking the
-    /// required revision. It publishes one undoable edit. To construct a new
-    /// model, use `session_create` with its JSON source instead.
-    ///
-    /// Attachment `structure` is the structure as JSON, spelled exactly as
-    /// the `.clm` format's serde spells it. Each entry of `textures` names an
-    /// image arriving as `texture:<texture>`; an entry with no attachment,
-    /// and a `texture:` attachment no entry names, are both
-    /// [`ErrorCode::BadRequest`] naming the id. A texture the structure
-    /// *references* but `textures` does not list is the reader's own refusal,
-    /// the same one a `.clm` missing a payload gets.
-    ///
-    /// **A JSON import carries no extension bytes.** A byte extension is a
-    /// `{size, hash}` marker in the structure and its payload lives in a
-    /// section JSON has no room for, so a marker here is refused by key.
-    /// Import the structure, then set the extension.
+    /// Import a `.clm` structure as JSON under the required `parent`, as one
+    /// undoable edit. Attachment `structure` is the JSON; each `textures` entry
+    /// arrives as `texture:<texture>`. Byte-extension markers are refused.
     #[serde(rename = "structure_json_import")]
     ImportJson {
         session: SessionId,
         parent: NodeId,
         if_rev: u64,
-        /// Every texture the attachments carry, in any order.
         #[serde(default)]
         textures: Vec<ImportTexture>,
     },
-    /// Set the extension filed under `key`, replacing whatever was there.
-    ///
-    /// `Edit`: an extension is part of the model, so this moves the
-    /// revision and undo covers it. `catchlight.` is the format's own prefix
-    /// and is refused ([`ErrorCode::ReservedExtension`]); a byte value over
-    /// the format's cap is [`ErrorCode::Edit`].
+    /// Set the extension under `key`. The `catchlight.` prefix is
+    /// [`ErrorCode::ReservedExtension`].
     ExtensionSet {
         session: SessionId,
         key: ExtensionKey,
         value: ExtensionSet,
     },
-    /// Drop the extension filed under `key`.
-    ///
-    /// `Edit`, like [`Command::ExtensionSet`]. A key the model does not
-    /// carry is [`ErrorCode::NoExtension`] rather than a quiet no-op, so a
-    /// typo in a key says so.
+    /// Drop the extension under `key`; a missing key is
+    /// [`ErrorCode::NoExtension`].
     ExtensionDelete {
         session: SessionId,
         key: ExtensionKey,
     },
-    /// Every extension the model carries, in key order.
-    ///
-    /// `ReplicaQuery`: a pure read, so a tab holding a replica answers it
-    /// without asking. A byte value is reported as its size and hash, never
-    /// its bytes — [`Command::ExtensionGet`] is what fetches those.
+    /// Every extension in key order; a byte value as its size and hash.
     #[serde(rename = "extension_list")]
     Extensions {
         session: SessionId,
     },
-    /// One extension's value.
-    ///
-    /// `ServerQuery`, because a byte value comes back as the reply's payload
-    /// and a replica has no payload channel. A JSON value is inline in the
-    /// reply either way.
+    /// One extension's value; bytes come back as the reply's payload.
     ExtensionGet {
         session: SessionId,
         key: ExtensionKey,
@@ -799,40 +551,21 @@ pub enum Command {
 }
 
 /// What applying a [`Command`] does to the model it addresses.
-///
-/// This is the fact the whole notification story hangs on, and it is written
-/// down exactly once — in [`COMMAND_KINDS`]. `cargo xtask generate` splits the
-/// TypeScript `Command` union on it, so a client picks its send method by
-/// type rather than by remembering which calls are "quiet"; the editor server
-/// asserts against it in debug builds (see `Editor::handle`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandKind {
-    /// Changes the session's model, or which sessions exist. The session's
-    /// `rev` moves — or its saved/open state does, which a title bar reads the
-    /// same way — so every view has to re-read. The only kind that moves `rev`.
+    /// Changes the model or which sessions exist; the only kind that moves `rev`.
     Edit,
-    /// Publishes shared view state: pose, camera, selection. It goes to the
-    /// editor because other clients read it back, and it changes no model.
+    /// Publishes shared view state (pose, camera, selection); changes no model.
     Presence,
-    /// A read that is a pure function of the model. A client holding a replica
-    /// of the model answers it without a round trip; the editor answers it the
-    /// same way, from the same bytes.
+    /// A pure function of the model, so a replica answers it locally.
     ReplicaQuery,
-    /// A read that needs the editor itself: its session bookkeeping, its
-    /// store, or its renderer. A replica cannot answer one.
-    ///
-    /// `export_manifest` is here despite writing bytes: what it writes lands
-    /// in the store, not in the session, and no view of the model changes.
+    /// Needs the editor's sessions, store or renderer. `export_manifest` is here
+    /// because what it writes lands in the store, not the session.
     ServerQuery,
 }
 
-/// Every command's wire tag paired with its [`CommandKind`].
-///
-/// Hand-maintained, and held to the enum by two tests: `xtask generate` checks
-/// this list against the variants each emitter sees, so a new command cannot
-/// reach TypeScript or Python unclassified, and [`Command::kind`] resolves
-/// through here, so a tag missing from the list panics the first time it is
-/// dispatched.
+/// Every command's wire tag paired with its [`CommandKind`]. Hand-maintained;
+/// `xtask generate` checks it against the enum.
 pub const COMMAND_KINDS: &[(&str, CommandKind)] = &[
     ("model_export", CommandKind::ServerQuery),
     ("session_fork", CommandKind::Edit),
@@ -904,25 +637,16 @@ pub const COMMAND_KINDS: &[(&str, CommandKind)] = &[
     ("extension_get", CommandKind::ServerQuery),
 ];
 
-/// One name a command's bytes travel under.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Attachment {
-    /// Exactly this name, and the command needs it.
     Fixed(&'static str),
-    /// Any name of the form `<family>:<suffix>`, as many as the command's own
-    /// fields call for. What the suffixes have to be is the command's to
-    /// check: `Family("texture")` admits `texture:body.png` and says nothing
-    /// about whether the manifest asked for one.
+    /// `<family>:<suffix>`, any number; the command checks the suffixes.
     Family(&'static str),
-    /// Exactly this name, and the command may or may not need it — its own
-    /// fields decide. [`Command::ExtensionSet`] is the case: a `json` value
-    /// travels inline and a `bytes` one is attached, so neither "always" nor
-    /// "never" is the truth about the same command.
+    /// Exactly this name, needed or not as the command's own fields decide.
     Optional(&'static str),
 }
 
 impl Attachment {
-    /// Does `name` belong to this attachment?
     pub fn admits(&self, name: &str) -> bool {
         match self {
             Self::Fixed(fixed) | Self::Optional(fixed) => name == *fixed,
@@ -934,20 +658,13 @@ impl Attachment {
     }
 }
 
-/// What bytes one command carries in, and whether its reply carries bytes out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Bytes {
     pub attachments: &'static [Attachment],
     pub payload: bool,
 }
 
-/// Every command that carries bytes, and which ones.
-///
-/// The companion to [`COMMAND_KINDS`], written down once and checked from both
-/// ends the same way: `xtask generate` fails on a tag here that is not a
-/// command, and emits the table to TypeScript and Python so a client knows
-/// what to attach without a table of its own. A command absent from this list
-/// carries no bytes at all.
+/// Every command that carries bytes; a command absent here carries none.
 pub const COMMAND_BYTES: &[(&str, Bytes)] = &[
     (
         "texture_add",
@@ -1009,10 +726,7 @@ pub const COMMAND_BYTES: &[(&str, Bytes)] = &[
 ];
 
 impl Command {
-    /// The `cmd` tag this command carries on the wire.
-    ///
-    /// Exhaustive by construction: a new variant does not compile until it is
-    /// named here, which is what makes [`COMMAND_KINDS`] checkable.
+    /// The `cmd` tag. Exhaustive so [`COMMAND_KINDS`] stays checkable.
     pub fn tag(&self) -> &'static str {
         match self {
             Command::EditApply { .. } => "edit_apply",
@@ -1088,13 +802,8 @@ impl Command {
 
     /// What applying this command does to the session's model.
     ///
-    /// A tag missing from [`COMMAND_KINDS`] reads as [`CommandKind::Edit`].
-    /// That case is unreachable — `xtask generate` fails the build on it — but the
-    /// fallback still has to be the conservative one: calling an edit a
-    /// `Edit` costs a redundant redraw, while calling it any of the other
-    /// four loses the notification entirely and leaves a panel showing stale
-    /// data. It also sends the command to whoever owns the model, which is
-    /// the only place an unknown command can be safely applied.
+    /// A tag missing from [`COMMAND_KINDS`] reads as [`CommandKind::Edit`], the
+    /// conservative fallback: a spurious redraw beats a lost notification.
     pub fn kind(&self) -> CommandKind {
         let tag = self.tag();
         COMMAND_KINDS
@@ -1104,10 +813,6 @@ impl Command {
             .unwrap_or(CommandKind::Edit)
     }
 
-    /// What bytes this command carries, or `None` when it carries none.
-    ///
-    /// Resolved through [`COMMAND_BYTES`] by tag, the same way
-    /// [`Command::kind`] resolves through [`COMMAND_KINDS`].
     pub fn bytes(&self) -> Option<&'static Bytes> {
         let tag = self.tag();
         COMMAND_BYTES
@@ -1116,14 +821,8 @@ impl Command {
             .map(|(_, bytes)| bytes)
     }
 
-    /// What bytes *this* command carries, or `None` when it carries none.
-    ///
-    /// [`Command::bytes`] answers for the tag — what a command of this kind
-    /// *may* carry. This answers for the one in hand, which differs only
-    /// where an [`Attachment::Optional`] is declared: an `extension_set` of a
-    /// JSON value carries nothing at all, and a transport that cannot carry
-    /// bytes should take it rather than refuse it for a shape it does not
-    /// have. Every other command carries exactly what it declares.
+    /// What bytes *this* command carries. Differs from [`Command::bytes`] only
+    /// for an [`Attachment::Optional`], such as an `extension_set` of JSON.
     pub fn carries_bytes(&self) -> Option<&'static Bytes> {
         let carrying = match self {
             Command::SessionNew { source, .. } => source.is_some(),
@@ -1133,14 +832,7 @@ impl Command {
         self.bytes().filter(|_| carrying)
     }
 
-    /// The session this command addresses, if it addresses one.
-    ///
-    /// `None` for the editor-level commands: the ones that make a session
-    /// ([`Command::SessionNew`] and friends, which name it in their *reply*),
-    /// and the ones that read the editor rather than a model.
-    ///
-    /// Exhaustive by construction, like [`Command::tag`] — a new variant does
-    /// not compile until it says whether it names a session.
+    /// The session this command addresses; `None` for editor-level commands.
     pub fn session(&self) -> Option<SessionId> {
         match self {
             Command::SessionNew { .. } | Command::SessionOpen { .. } | Command::SessionList => None,
@@ -1213,7 +905,6 @@ impl Command {
     }
 }
 
-/// Which Id [`Command::RenameId`] changes, and to what.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -1291,7 +982,6 @@ pub struct IndexRange {
     pub count: u32,
 }
 
-/// Exact stored cell payload, shared by reads and writes.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -1328,7 +1018,6 @@ pub struct VertexWeight {
 }
 
 /// Model edits accepted by an atomic batch. Created IDs are always explicit.
-/// Every operation uses the same executor as its standalone command.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "op", rename_all = "snake_case")]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -1498,7 +1187,6 @@ pub struct BindingParams {
 }
 
 impl BindingParams {
-    /// A binding keyed by one param.
     pub fn one(param: ParamId) -> Self {
         Self {
             param,
@@ -1506,7 +1194,6 @@ impl BindingParams {
         }
     }
 
-    /// A binding whose grid spans two params.
     pub fn two(x: ParamId, y: ParamId) -> Self {
         Self {
             param: x,
@@ -1515,19 +1202,12 @@ impl BindingParams {
     }
 }
 
-/// How [`Command::MeshAuto`] derives a mesh from a part's alpha.
-///
-/// **Every knob is optional, and none of the defaults are written here.** They
-/// live in `catchlight-editor-core` beside the code that reads them, so the
-/// wire cannot drift from what the editor actually does; absent means "what
-/// the editor would have used". `{"mode": "contour"}` is the default trace.
+/// How [`Command::MeshAuto`] derives a mesh from a part's alpha. Absent knobs
+/// take `catchlight-editor-core`'s defaults.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(tag = "mode", rename_all = "snake_case")]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub enum AutoMesh {
-    /// Trace the alpha contours: one pinned boundary loop per connected
-    /// component, plus the free interior vertices `rings` and `spacing` ask
-    /// for.
     Contour {
         /// Alpha strictly above this counts as solid.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1542,42 +1222,29 @@ pub enum AutoMesh {
         /// Interior fill-point spacing in texels; 0 is boundary only.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         spacing: Option<u32>,
-        /// One ring of free vertices per factor, the traced outline scaled
-        /// about its own centroid: 0 is the centroid itself, 1 the outline.
-        /// A factor above 1 is clamped to 1 — `margin` already dilates the
-        /// mask before tracing, and a vertex outside the pinned loop would
-        /// only make triangles the alpha cull drops. Empty places no rings,
-        /// which is the default.
+        /// Ring scale factors about the outline's centroid: 0 the centroid, 1 the
+        /// outline; above 1 clamps to 1.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         rings: Option<Vec<f32>>,
-        /// Texels: a free vertex closer than this to one already placed is
-        /// dropped, so rings and fill do not crowd the outline. The pinned
-        /// outline itself is never thinned.
+        /// Texels: a free vertex closer than this to a placed one is dropped.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         min_distance: Option<f32>,
-        /// Texel x of a vertical mirror line: free vertices are generated
-        /// from `x <= mirror_x` and reflected across it, so a symmetric part
-        /// gets a symmetric interior. The outline is traced from the alpha
-        /// and is not mirrored.
+        /// Texel x of a vertical mirror line for free vertices; the outline is not
+        /// mirrored.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         mirror_x: Option<f32>,
     },
     /// A grid over the bounding box of the solid texels.
     Grid {
-        /// Alpha strictly above this counts as solid, and is what the
-        /// bounding box is measured from.
+        /// Alpha strictly above this counts as solid.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         threshold: Option<u8>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cols: Option<u32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         rows: Option<u32>,
-        /// Grid lines as fractions of the solid bounding box — 0 its left
-        /// edge, 1 its right — so the grid need not be uniform. Values
-        /// outside `0..=1` put a line outside the box. Present, it replaces
-        /// both `cols` and `margin` on this axis. A grid is mirrored by
-        /// asking for symmetric fractions, which is why there is no mirror
-        /// knob here.
+        /// Grid lines as fractions of the solid bounding box (0 left, 1 right);
+        /// present, replaces `cols` and `margin` on this axis.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         axes_x: Option<Vec<f32>>,
         /// The same, down, replacing `rows`.
@@ -1591,8 +1258,6 @@ pub enum AutoMesh {
 }
 
 impl Default for AutoMesh {
-    /// Contour, every knob the editor's own: what a client that asks for "an
-    /// automesh" and nothing more gets.
     fn default() -> Self {
         Self::Contour {
             threshold: None,
@@ -1606,8 +1271,6 @@ impl Default for AutoMesh {
     }
 }
 
-/// One slot of a model, named in full: a [`SlotId`] is unique within its part,
-/// so it travels beside the node carrying it.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct SlotAddr {
@@ -1615,8 +1278,7 @@ pub struct SlotAddr {
     pub slot: SlotId,
 }
 
-/// One pair a weld holds: a slot on its `a` part, a slot on its `b` part, and
-/// `a`'s share of the point the two vertices are pulled toward.
+/// `weight` is `a`'s share (`0..=1`) of the point both vertices are pulled to.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct SlotPair {
@@ -1650,7 +1312,6 @@ pub enum NodeKind {
 }
 
 impl NodeKind {
-    /// The word this travels under.
     pub fn wire_name(self) -> &'static str {
         match self {
             Self::Group => "group",
@@ -1662,7 +1323,6 @@ impl NodeKind {
         }
     }
 
-    /// The kind of a node the model holds.
     pub fn of(kind: &catchlight_core::ModelNodeKind) -> Self {
         use catchlight_core::ModelNodeKind as K;
         match kind {
@@ -1676,7 +1336,6 @@ impl NodeKind {
     }
 }
 
-/// What a mask source does to the drawable it is attached to.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -1686,7 +1345,6 @@ pub enum MaskMode {
 }
 
 impl MaskMode {
-    /// The word this travels under.
     pub fn wire_name(self) -> &'static str {
         match self {
             Self::Mask => "mask",
@@ -1713,7 +1371,6 @@ impl From<catchlight_core::components::MaskMode> for MaskMode {
     }
 }
 
-/// How a binding reads between the cells its author keyed.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -1725,7 +1382,6 @@ pub enum Interpolate {
 }
 
 impl Interpolate {
-    /// The word this travels under.
     pub fn wire_name(self) -> &'static str {
         match self {
             Self::Nearest => "nearest",
@@ -1735,7 +1391,6 @@ impl Interpolate {
         }
     }
 
-    /// Every mode, for a picker that offers them all.
     pub const ALL: [Self; 4] = [Self::Nearest, Self::Stepped, Self::Linear, Self::Cubic];
 }
 
@@ -1762,8 +1417,6 @@ impl From<catchlight_core::interpolate::InterpolateMode> for Interpolate {
     }
 }
 
-/// How to read a texture's bytes. The field a command carries beside its
-/// image, so nothing has to guess from a file name.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -1792,11 +1445,8 @@ impl From<catchlight_core::formats::clm::TextureEncoding> for TextureEncoding {
     }
 }
 
-/// What a texture's stored bytes mean by their alpha channel.
-///
-/// The bytes cannot say, so the command carrying them does. Straight is the
-/// default because it is what an editor writes and what every PNG a person
-/// exports holds; `.inx` textures are the premultiplied ones.
+/// What a texture's alpha channel means. Straight is the default; `.inx`
+/// textures are premultiplied.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -1825,7 +1475,6 @@ impl From<catchlight_core::formats::clm::TextureAlpha> for TextureAlpha {
     }
 }
 
-/// How a drawable composites onto what is already under it.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -1848,8 +1497,7 @@ pub enum BlendMode {
 }
 
 impl BlendMode {
-    /// The word this travels under. Snake_case, like everything else on this
-    /// wire — the model file spells the same modes in PascalCase.
+    /// Snake_case; the model file spells the same modes in PascalCase.
     pub fn wire_name(self) -> &'static str {
         match self {
             Self::Normal => "normal",
@@ -1870,7 +1518,6 @@ impl BlendMode {
         }
     }
 
-    /// Every mode, for a picker that offers them all.
     pub const ALL: [Self; 15] = [
         Self::Normal,
         Self::Multiply,
@@ -1936,8 +1583,6 @@ impl From<catchlight_core::components::BlendMode> for BlendMode {
 }
 
 /// A property a binding drives with one number per cell.
-///
-/// The colour channel names use the model file's spellings.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -1998,15 +1643,12 @@ pub enum BindingTarget {
 }
 
 impl ScalarTarget {
-    /// The word this travels under — the model's own, which is why it is
-    /// read out of the core table rather than spelled again here.
     pub fn wire_name(self) -> &'static str {
         catchlight_core::ScalarTarget::from(self).name()
     }
 }
 
 impl BindingTarget {
-    /// The word this travels under, under the same rule.
     pub fn wire_name(self) -> &'static str {
         catchlight_core::BindingTarget::from(self).name()
     }
@@ -2035,8 +1677,6 @@ macro_rules! scalar_targets {
         }
 
         impl BindingTarget {
-            /// The scalar this names, or `None` for the deform — which is
-            /// what the commands that take only a scalar are asking.
             pub fn scalar(self) -> Option<ScalarTarget> {
                 match self {
                     $(Self::$variant => Some(ScalarTarget::$variant),)*
@@ -2088,8 +1728,6 @@ scalar_targets!(
     ScreenTintB,
 );
 
-/// Every closed set prints as the word it travels under, so a tool shows a
-/// value its user could type straight back.
 macro_rules! display_as_wire {
     ($($t:ty),* $(,)?) => {$(
         impl std::fmt::Display for $t {
@@ -2119,14 +1757,11 @@ where
     T::deserialize(de).map(Some)
 }
 
-/// Fields to change on a node; every field is optional (absent = unchanged).
-/// Kind-specific fields are ignored on nodes of another kind: the colour fields
-/// (`opacity`, `blend_mode`, `tint`, `screen_tint`) reach parts and composites
-/// only, because a mesh group is never drawn and carries no colour.
+/// Fields to change on a node; absent = unchanged. Colour fields reach parts
+/// and composites only.
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct NodePatch {
-    /// The label a person reads. Free to repeat; nothing is addressed by it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2141,18 +1776,13 @@ pub struct NodePatch {
     pub opacity: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
-    /// The texture the part draws, in three states: absent leaves it as it
-    /// is, `null` draws none, an Id draws that one. Ignored on a node that is
-    /// not a part. Dropping the last part drawing a texture takes the texture
-    /// with it — see [`ResponseBody::Node::dropped`].
+    /// Merge patch: absent leaves it, `null` draws none, an Id draws that one.
     #[serde(
         default,
         deserialize_with = "present_as_some",
         skip_serializing_if = "Option::is_none"
     )]
-    // ts-rs would spell the double option `TexId | null | null`; the shape a
-    // client reads is the same one a plain `Option` has, `?` for absent and
-    // `null` for "draw none".
+    // ts-rs would otherwise spell the double option `TexId | null | null`.
     #[cfg_attr(feature = "ts", ts(as = "Option<TexId>"))]
     pub texture: Option<Option<TexId>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2172,8 +1802,6 @@ pub struct NodePatch {
     pub mg_translate_children: Option<bool>,
 }
 
-/// One param at one value — a pose is a list of these. Params are scalar, so
-/// there is one number.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ParamPose {
@@ -2181,13 +1809,8 @@ pub struct ParamPose {
     pub value: f32,
 }
 
-/// One texture an [`Command::ImportJson`] structure names, and how to read the
-/// bytes that came with it.
-///
-/// The bytes arrive as attachment `texture:<texture>`. Encoding and alpha are
-/// fields rather than a sniff or a file-name tail, because a JSON structure
-/// names no files: the client that has the image is the only thing that knows
-/// what it holds.
+/// One texture an [`Command::ImportJson`] structure names, arriving as
+/// attachment `texture:<texture>`.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ImportTexture {
@@ -2206,14 +1829,8 @@ pub struct ImportTexture {
 pub enum Reply {
     Ok {
         id: u64,
-        /// The addressed session's revision *after* this command, so a client
-        /// knows what its reply describes without a second round trip.
-        ///
-        /// Present whenever the command named a session — including one it
-        /// only read, and including the create/open/import commands, which
-        /// report the revision of the session they just made. Absent for the
-        /// editor-level commands that name no session at all, and for a
-        /// `session_close`, whose session is gone.
+        /// The addressed session's revision after this command; absent for
+        /// editor-level commands and `session_close`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         rev: Option<u64>,
         body: ResponseBody,
@@ -2231,29 +1848,22 @@ pub enum Reply {
     Event(Event),
 }
 
-/// Why a command was refused. A client that has to react — a commit gate
-/// waiting on unfilled slots, a mesh editor offering to refill a slot —
-/// branches on this rather than on the message text.
+/// Why a command was refused; clients branch on this, not the message.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub enum ErrorCode {
     /// The session changed after a draft or recording gesture began.
     RevisionConflict,
-    /// No open session with that [`SessionId`].
     NoSession,
-    /// The model carries no node with that [`NodeId`].
     NoNode,
-    /// The model carries no param with that [`ParamId`].
     NoParam,
-    /// The model carries no texture with that [`TexId`].
     NoTexture,
     /// The request did not parse: bad JSON, an unknown command, or a string
     /// that is not a valid Id.
     BadRequest,
-    /// A target that does not fit the thing it names: a response field on a
-    /// node that is not a driver, a `deform` where only a scalar can go. A
-    /// *misspelled* one never gets this far — it is [`Self::BadRequest`].
+    /// A target that does not fit what it names, such as `deform` where only a
+    /// scalar can go.
     BadTarget,
     NothingToUndo,
     NothingToRedo,
@@ -2262,15 +1872,10 @@ pub enum ErrorCode {
     LimitExceeded,
     /// A save with no path, on a session that has no file of its own.
     NoSavePath,
-    /// The part carries no such slot.
     UnknownSlot,
-    /// An add named an Id the model already carries.
     DuplicateId,
-    /// The part already carries a slot with that Id.
     DuplicateSlot,
-    /// A weld pairs a slot the part on that side does not carry.
     WeldUnknownSlot,
-    /// A weld pairs one slot twice.
     WeldSlotPairedTwice,
     /// A weld's two ends are the same node, or one of them is not a part.
     BadWeldEnd,
@@ -2278,22 +1883,15 @@ pub enum ErrorCode {
     DuplicateWeld,
     /// A weight is a share of a meeting point, so it must be within `0..=1`.
     WeldWeightOutOfRange,
-    /// No weld pairs the two parts named.
     UnknownWeld,
-    /// The texture carries no pixel above the alpha threshold, so there is no
-    /// shape to mesh. A client offers a lower threshold rather than an error.
+    /// The texture has no pixel above the alpha threshold.
     NothingToMesh,
     /// This needs a complete model and the session holds an addon fragment.
-    /// A session never opens one, so nothing should see this today.
     Fragment,
-    /// The model refused the edit for some other reason; read `message`.
     Edit,
-    /// A manifest could not be read or written.
     Manifest,
     Io,
-    /// An image could not be decoded.
     Image,
-    /// The preview renderer failed.
     Preview,
     /// The command needs a filesystem or a GPU and this build has neither
     /// (wasm).
@@ -2301,7 +1899,6 @@ pub enum ErrorCode {
     /// A command carrying bytes was sent over a transport that cannot carry
     /// them; send it over one that can.
     BulkOverHttp,
-    /// The model carries no extension under that key.
     NoExtension,
     /// `catchlight.` is the format's own prefix: a reader accepts a key under
     /// it, and nothing outside the format may author one.
@@ -2368,33 +1965,25 @@ pub enum ResponseBody {
     },
     Node {
         node: NodeId,
-        /// Textures the edit deleted, because no part draws them any more.
-        /// Every texture a model carries is drawn by a part, so repointing or
-        /// removing the last one takes the texture with it.
+        /// Textures the edit deleted because no part draws them any more.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         dropped: Vec<TexId>,
     },
     Param {
         param: ParamId,
     },
-    /// One slot, named in full: what [`Command::SlotAdd`] answers with, so a
-    /// client that let the editor draw the Id learns which one it drew.
     Slot {
         slot: SlotAddr,
     },
     Params {
         params: Vec<ParamInfo>,
     },
-    /// Every binding on one node, in the order the model holds them.
     Bindings {
         bindings: Vec<BindingInfo>,
     },
     Texture {
         texture: TexId,
-        /// Textures the edit deleted, because the part that had been drawing
-        /// them stopped and nothing else was. Every texture a model carries
-        /// is drawn by a part, so an upload that displaces the last user of
-        /// the old one takes it.
+        /// Textures the edit deleted because no part draws them any more.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         dropped: Vec<TexId>,
     },
@@ -2404,9 +1993,7 @@ pub enum ResponseBody {
     Tree {
         root: TreeNode,
     },
-    /// One node in full, as an inspector shows it. Boxed because it is far
-    /// the largest thing a reply carries, and every other reply would pay for
-    /// it in [`Reply`]'s size.
+    /// Boxed: by far the largest reply, and every reply pays [`Reply`]'s size.
     NodeInfo {
         node: Box<NodeInfo>,
     },
@@ -2436,9 +2023,7 @@ pub enum ResponseBody {
         node: NodeId,
         slots: Vec<SlotId>,
     },
-    /// What a [`Command::SpineFit`] authored.
     SpineFit {
-        /// The spine, whether this call made it or re-fitted one.
         node: NodeId,
         /// The param each link's bend is read from, in link order.
         params: Vec<ParamId>,
@@ -2446,8 +2031,7 @@ pub enum ResponseBody {
     Extensions {
         extensions: Vec<ExtensionInfo>,
     },
-    /// One extension's value. For a byte value the bytes are the reply's
-    /// payload; this says how big they are and what they hash to.
+    /// For a byte value the bytes are the reply's payload.
     Extension {
         key: ExtensionKey,
         value: ExtensionValueInfo,
@@ -2465,7 +2049,6 @@ pub struct EditHistoryEntry {
     pub revisions: Vec<u64>,
 }
 
-/// A machine-readable resource budget refusal.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct LimitInfo {
@@ -2477,8 +2060,8 @@ pub struct LimitInfo {
     pub requested: u64,
 }
 
-/// Ephemeral shared view state. Rides its own path — decoupled from the model
-/// so scrubbing/panning generate zero edit traffic and never persist.
+/// Ephemeral shared view state, kept off the model path: never an edit, never
+/// saved.
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Presence {
@@ -2490,37 +2073,26 @@ pub struct Presence {
     pub selection: Option<NodeId>,
 }
 
-/// What [`Command::ExtensionSet`] is setting: a JSON value inline, or bytes
-/// that arrive as the `value` attachment.
-///
-/// Tagged by `kind` rather than sniffed, because a byte extension's own
-/// marker is a JSON object and an untagged value could not tell the two
-/// apart. `kind: "bytes"` carries no value here — the bytes are attached —
-/// and an attachment on a `json` set is refused, so exactly one of the two
-/// says what the value is.
+/// What [`Command::ExtensionSet`] sets: inline JSON, or bytes attached as
+/// `value`. Tagged by `kind` because a byte marker is itself a JSON object.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub enum ExtensionSet {
     Json {
-        /// Whatever JSON the vendor wrote. Nothing here reads it.
         #[cfg_attr(feature = "ts", ts(type = "unknown"))]
         value: serde_json::Value,
     },
     Bytes,
 }
 
-/// What an extension holds, as a reply reports it.
-///
-/// A JSON value travels whole; bytes travel as the size and hash their marker
-/// carries, which is what a client compares to decide whether to fetch them.
-/// The bytes themselves come back as [`Command::ExtensionGet`]'s payload.
+/// What an extension holds; bytes are reported as their marker's size and
+/// hash.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub enum ExtensionValueInfo {
     Json {
-        /// Whatever JSON the vendor wrote. Nothing here reads it.
         #[cfg_attr(feature = "ts", ts(type = "unknown"))]
         value: serde_json::Value,
     },
@@ -2531,7 +2103,6 @@ pub enum ExtensionValueInfo {
     },
 }
 
-/// One extension, as [`Command::Extensions`] lists it.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ExtensionInfo {
@@ -2553,10 +2124,7 @@ pub enum Event {
     /// The model changed; `rev` is the session's new revision. Observers
     /// re-read when their last-seen rev is older.
     ModelChanged { session: SessionId, rev: u64 },
-    /// The set of open sessions changed: one was created, opened, imported or
-    /// closed. Carries nothing — an observer that cares re-reads
-    /// [`Command::SessionList`], which is the only answer that is not already
-    /// stale by the time it arrives.
+    /// The set of open sessions changed; re-read [`Command::SessionList`].
     SessionsChanged,
 }
 
@@ -2581,7 +2149,6 @@ pub struct StatusInfo {
     pub texture_count: u32,
     pub dirty: bool,
     pub rev: u64,
-    /// History belongs to the editor, so only this server query can answer it.
     #[serde(default)]
     pub undo_steps: u32,
     #[serde(default)]
@@ -2602,9 +2169,7 @@ pub struct TexInfo {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ParamInfo {
-    /// What the param is addressed by.
     pub id: ParamId,
-    /// What a person reads. Free to repeat.
     pub name: String,
     pub min: f32,
     pub max: f32,
@@ -2612,7 +2177,6 @@ pub struct ParamInfo {
     pub default: f32,
     /// Normalized keys a new binding on this axis starts with.
     pub initial_positions: Vec<f32>,
-    /// Number of bindings driven by this input.
     #[serde(default)]
     pub bindings: u32,
 }
@@ -2626,47 +2190,26 @@ pub enum BindingIdentity {
     Deform { offset: [f32; 2], vertex_count: u32 },
 }
 
-/// One binding, as a panel draws it: the params driving it, the property it
-/// drives, how it reads between cells, and the grid the author keyed.
+/// One binding as a panel draws it.
 ///
-/// **The grid is `[y][x]`** — the transpose of the `cell: [x, y]` every
-/// binding command takes, so `keys[cell[1]][cell[0]]` is the cell
-/// [`Command::BindingCellsSet`] would write. It is the full product of this
-/// binding's key positions, [`Self::width`] by [`Self::height`], with one row when
-/// there is no `param_y`.
-///
-/// **A `null` in `keys` is a cell nobody authored.** The model stores only the
-/// cells a rigger set and derives the rest at puppet build, and "unset" is a
-/// state they act on — it is not a zero. The exception is a `deform` binding,
-/// which authors per-vertex offsets rather than one number: every one of its
-/// cells reads `null` here and [`Self::authored`] is the only thing that says
-/// which are set. For every other target `authored[y][x]` is exactly
-/// `keys[y][x] != null`.
+/// The grid is `[y][x]`, the transpose of the `cell: [x, y]` binding commands
+/// take. A `null` in `keys` is an unauthored cell, not a zero; a `deform`
+/// binding's cells are all `null`, so read [`Self::authored`].
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct BindingInfo {
     /// One ordered normalized axis per input, owned only by this binding.
     pub key_positions: Vec<Vec<f32>>,
     pub identity: BindingIdentity,
-    /// The property driven — plus `deform`, which only the deform commands
-    /// author.
     pub target: BindingTarget,
-    /// The param along the grid's x axis.
     pub param: ParamId,
     /// The param along the grid's y axis. Absent when the grid is one row.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub param_y: Option<ParamId>,
-    /// How it reads between cells, as [`Command::BindingInterpolate`] takes
-    /// it back.
     pub interpolate: Interpolate,
-    /// Number of positions on this binding's `param` axis.
     pub width: u32,
-    /// Number of positions on this binding's `param_y` axis, or 1.
     pub height: u32,
-    /// The authored value at each cell, `[y][x]`, `null` where nothing was
-    /// authored.
     pub keys: Vec<Vec<Option<f32>>>,
-    /// Whether each cell was authored at all, `[y][x]`.
     pub authored: Vec<Vec<bool>>,
 }
 
@@ -2680,7 +2223,6 @@ pub struct SlotInfo {
     pub vertex: Option<u32>,
 }
 
-/// One weld: the two parts it joins, and the slot pairs between them.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct WeldInfo {
@@ -2696,9 +2238,7 @@ fn one() -> f32 {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct TreeNode {
-    /// What the node is addressed by, here and in the file.
     pub id: NodeId,
-    /// What a person reads. Free to repeat.
     pub name: String,
     pub kind: NodeKind,
     pub z_order: f32,
@@ -2711,32 +2251,17 @@ fn yes() -> bool {
     true
 }
 
-/// One node in full: what [`NodePatch`] can set, plus what it cannot — the
-/// node's Id, its kind, its parent, and the size of the mesh it holds.
-///
-/// **The settable fields carry [`NodePatch`]'s own names.** An inspector reads
-/// a value here, edits it, and sends it straight back in a
-/// [`Command::NodeSet`] under the same key; a field that spelled itself
-/// differently on the way out would be a rename nothing checks.
-///
-/// A field a node's kind does not carry is absent, the way it is ignored on
-/// the way in: the colour fields reach parts and composites only, `texture`
-/// only a part, `mg_*` only a mesh group, and the two mesh counts only the
-/// kinds that hold a mesh. `texture` is also absent on a part that draws
-/// none, which `kind` tells apart from a node that could not have one — a
-/// reply has nothing to undo, so it never carries the `null` a patch spells
-/// "draw none" with.
+/// One node in full. Settable fields carry [`NodePatch`]'s names so an
+/// inspector can send a value straight back; fields a node's kind lacks are
+/// absent.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct NodeInfo {
-    /// What the node is addressed by, here and in the file.
     pub id: NodeId,
-    /// The same kind [`TreeNode::kind`] carries.
     pub kind: NodeKind,
     /// Absent on the root, which is the one node with no parent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<NodeId>,
-    /// What a person reads. Free to repeat; nothing is addressed by it.
     pub name: String,
     pub translate: [f32; 3],
     pub rotate: [f32; 3],
@@ -2754,18 +2279,11 @@ pub struct NodeInfo {
     pub screen_tint: Option<[f32; 3]>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mask_threshold: Option<f32>,
-    /// The part's albedo texture, absent when it draws none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub texture: Option<TexId>,
-    /// How many vertices the node's mesh holds. Absent on a kind that carries
-    /// no mesh — a part and a mesh group carry one, nothing else does — so
-    /// `0` is a mesh with no vertices rather than a node that could not have
-    /// had any. A client asking "has this part been meshed" reads this rather
-    /// than [`Command::Check`], whose textured-but-untriangulated warning is a
-    /// message for a person.
+    /// Absent on kinds without a mesh, so `0` means an empty mesh.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vertex_count: Option<u32>,
-    /// How many triangles that mesh holds, absent under the same rule.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub triangle_count: Option<u32>,
     /// Composite: forward mesh-group deformation to children.
@@ -2778,7 +2296,6 @@ pub struct NodeInfo {
     /// The existing spine that fitting this mesh will remeasure, across any response chain.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fitted_spine: Option<NodeId>,
-    /// A spine's settings, absent on every other kind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spine: Option<SpineInfo>,
     /// Ordered clipping rules. Empty on nodes that do not draw.
@@ -2805,11 +2322,8 @@ pub struct MaskInfo {
     pub mode: MaskMode,
 }
 
-/// A spine in full, under the names [`Command::SpineSet`] sets them by.
-///
-/// `joints` and `targets` are always the same length: a spine reads one bend
-/// per link, and a rigid link is a `null` in `targets`. The whole pair travels
-/// back through [`Command::SpineSet`] unchanged.
+/// A spine; `joints` and `targets` are always the same length, `null` for a
+/// rigid link.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct SpineInfo {
@@ -2819,16 +2333,13 @@ pub struct SpineInfo {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-/// What a [`Command::Preview`] rendered. The pixels are the reply's payload;
-/// this says how to read them.
+/// The size of a [`Command::Preview`] PNG, which is the reply's payload.
 pub struct PreviewInfo {
     pub width: u32,
     pub height: u32,
 }
 
-/// `$XDG_RUNTIME_DIR/catchlight-editor/server.sock` (falling back to the temp
-/// dir). Whoever owns this path is the server; clients connect here. Lives in
-/// the protocol crate so server and clients cannot disagree about it.
+/// `$XDG_RUNTIME_DIR/catchlight-editor/server.sock`, else the temp dir.
 #[cfg(unix)]
 pub fn default_socket_path() -> std::path::PathBuf {
     let base = std::env::var_os("XDG_RUNTIME_DIR")
@@ -2837,15 +2348,9 @@ pub fn default_socket_path() -> std::path::PathBuf {
     base.join("catchlight-editor").join("server.sock")
 }
 
-/// Where a running editor's HTTP door is written down for local clients: a
-/// JSON [`Connection`]. Lives beside [`default_socket_path`] for the same
-/// reason. `CATCHLIGHT_EDITOR_CONNECTION` overrides it so a test or a second
-/// editor can keep its own.
-///
-/// The file holds a bearer token, so it lives in a directory only its user
-/// can write — `$XDG_RUNTIME_DIR`, then `$HOME/.cache`, `%LOCALAPPDATA%` on
-/// Windows — and never in a shared temp dir, where another user could plant
-/// a file naming a server of theirs.
+/// Where a running editor writes its [`Connection`] for local clients;
+/// `CATCHLIGHT_EDITOR_CONNECTION` overrides it. Never a shared temp dir: the
+/// file holds a bearer token.
 pub fn default_connection_path() -> Option<std::path::PathBuf> {
     use std::path::PathBuf;
     if let Some(path) = std::env::var_os("CATCHLIGHT_EDITOR_CONNECTION") {
@@ -2861,17 +2366,13 @@ pub fn default_connection_path() -> Option<std::path::PathBuf> {
     Some(base.join("catchlight-editor").join("connection.json"))
 }
 
-/// The contents of [`default_connection_path`]: how a local client reaches
-/// the editor that wrote it.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct Connection {
     /// `http://127.0.0.1:<port>`, the base every route hangs off.
     pub url: String,
-    /// The per-launch bearer token.
     pub token: String,
     /// The process that wrote the file, so it removes only its own.
     pub pid: u32,
-    /// The writer's crate version, for a client to notice skew.
     pub version: String,
 }
 
@@ -2879,9 +2380,6 @@ pub struct Connection {
 mod tests {
     use super::*;
 
-    /// The byte table is what a client reads to know what to attach, so its
-    /// tags have to be tags and its names have to match the way the server
-    /// matches them.
     #[test]
     fn a_command_finds_its_own_bytes_in_the_table() {
         for (tag, _) in COMMAND_BYTES {
@@ -2913,8 +2411,6 @@ mod tests {
         assert!(!Attachment::Fixed("model").admits("model:one"));
     }
 
-    /// A code a client branches on has to survive the wire under the word it
-    /// is written down as.
     #[test]
     fn the_new_refusals_travel_as_their_own_words() {
         for (code, word) in [
@@ -2963,9 +2459,6 @@ mod tests {
         ));
     }
 
-    /// An Id is the string the model file stores, not a per-session handle:
-    /// that is what lets an addon name a base model's node, and what makes a
-    /// recorded command replayable against a reopened session.
     #[test]
     fn ids_travel_as_the_plain_strings_a_model_file_stores() {
         let req = Request {
@@ -2997,8 +2490,6 @@ mod tests {
         }
     }
 
-    /// A one-param binding writes no `param_y` at all, so the common case
-    /// stays the shape it was.
     #[test]
     fn a_one_param_binding_leaves_the_second_param_off_the_wire() {
         let line = serde_json::to_string(&Request {
@@ -3020,10 +2511,6 @@ mod tests {
         }
     }
 
-    /// A [`Request`] flattens its command next to its own correlation `id`,
-    /// so an add that spelled its chosen Id `id` would send two fields of that
-    /// name and serde would refuse the whole request. Each add names the thing
-    /// it makes instead, under the word the reply names it back with.
     #[test]
     fn an_add_names_what_it_makes_rather_than_shadowing_the_requests_id() {
         let line = serde_json::to_string(&Request {
@@ -3047,8 +2534,6 @@ mod tests {
             other => panic!("{other:?}"),
         }
 
-        // And an add that names nothing leaves the field off entirely, so the
-        // common case is the shape it always was.
         let line = serde_json::to_string(&Request {
             id: 8,
             command: Command::ParamAdd {
@@ -3069,8 +2554,6 @@ mod tests {
         let line = r#"{"id":4,"cmd":"node_delete","session":1,"node":"a b"}"#;
         let err = serde_json::from_str::<Request>(line).unwrap_err();
         assert!(err.to_string().contains("invalid byte"), "{err}");
-        // ...but the correlation id is still readable, so the server can
-        // answer the request the client is actually waiting on.
         let RequestId { id } = serde_json::from_str(line).unwrap();
         assert_eq!(id, 4);
     }
@@ -3121,8 +2604,6 @@ mod tests {
         ));
     }
 
-    /// An editor-level command answers with no revision at all, rather than
-    /// with a zero a client could mistake for a fresh session.
     #[test]
     fn a_reply_that_names_no_session_carries_no_revision() {
         let s = serde_json::to_string(&Reply::Ok {
@@ -3138,8 +2619,6 @@ mod tests {
         assert!(matches!(back, Reply::Ok { rev: None, .. }));
     }
 
-    /// The kind table is what a client routes by, so the two reads that a
-    /// replica cannot answer must not drift into `ReplicaQuery`.
     #[test]
     fn a_read_that_needs_the_editor_is_not_a_replica_query() {
         let session = SessionId(1);
@@ -3158,8 +2637,6 @@ mod tests {
         .is_err());
     }
 
-    /// `Reply::rev` is filled from here, so a session-addressing command that
-    /// forgot to report one would answer with a revision of `None`.
     #[test]
     fn a_command_names_the_session_it_addresses() {
         assert_eq!(
@@ -3180,11 +2657,7 @@ mod tests {
         );
     }
 
-    /// The inspector's whole round trip: read a node, change one number, send
-    /// it back as a `node_set`. That only works while [`NodeInfo`] spells its
-    /// settable fields exactly as [`NodePatch`] reads them, so the reply is
-    /// parsed *as* a patch here — a field renamed on one side and not the
-    /// other stops arriving, and this test says which.
+    /// [`NodeInfo`] must parse as a [`NodePatch`] for the inspector round trip.
     #[test]
     fn a_node_info_reply_parses_as_the_patch_that_would_restore_it() {
         let info = NodeInfo {
@@ -3228,8 +2701,6 @@ mod tests {
         assert_eq!(patch.tint, Some([0.1, 0.2, 0.3]));
         assert_eq!(patch.screen_tint, Some([0.4, 0.5, 0.6]));
         assert_eq!(patch.mask_threshold, Some(0.75));
-        // A reply naming a texture parses as the patch state that points at
-        // it — a `Some(Some(..))`, not the `Some(None)` that would clear it.
         assert_eq!(
             patch
                 .texture
@@ -3237,20 +2708,14 @@ mod tests {
                 .map(|t| t.as_ref().map(TexId::as_str)),
             Some(Some("tex-1")),
         );
-        // The mesh counts are a read, not a setting: they ride the reply and
-        // a patch parsed from it simply has nowhere to put them.
         assert!(line.contains("\"vertex_count\":4"), "{line}");
         assert!(line.contains("\"triangle_count\":2"), "{line}");
-        // A field this node's kind does not carry stays off the wire, so
-        // sending the reply back sets nothing it should not.
         assert!(!line.contains("mg_translate_children"), "{line}");
         assert_eq!(patch.mg_translate_children, None);
         assert_eq!(patch.propagate_meshgroup, None);
         assert!(!line.contains("motion_response"), "{line}");
     }
 
-    /// A node's Id, kind and parent are not things a patch can set, so they
-    /// have to be on the reply itself rather than left for a second read.
     #[test]
     fn a_node_info_reply_names_the_node_its_kind_and_its_parent() {
         let body = ResponseBody::NodeInfo {
@@ -3285,7 +2750,6 @@ mod tests {
         assert!(s.contains("\"result\":\"node_info\""), "{s}");
         assert!(s.contains("\"id\":\"root/part-1\""), "{s}");
         assert!(s.contains("\"parent\":\"root\""), "{s}");
-        // An unmapped part says so by carrying no texture at all.
         assert!(!s.contains("texture"), "{s}");
 
         assert_eq!(
@@ -3298,10 +2762,7 @@ mod tests {
         );
     }
 
-    /// Every closed set has two tables — serde's, which the wire is parsed
-    /// and written by, and `wire_name`, which a CLI or a panel prints. They
-    /// have to be the same table, or a tool would show a word its user cannot
-    /// type back.
+    /// serde's spelling and `wire_name` must agree.
     #[test]
     fn what_a_closed_set_prints_is_what_it_travels_as() {
         fn same<T: Serialize + std::fmt::Display + Copy>(values: &[T]) {
@@ -3325,8 +2786,6 @@ mod tests {
         same(&BINDING_TARGETS);
     }
 
-    /// The scalar spellings are the model file's own, and a rigger types them
-    /// by hand, so they are pinned here rather than left to `rename_all`.
     #[test]
     fn a_binding_target_travels_under_the_models_own_spelling() {
         let words: Vec<String> = SCALAR_TARGETS.iter().map(|t| t.to_string()).collect();
@@ -3351,7 +2810,6 @@ mod tests {
                 "screentintb",
             ]
         );
-        // `deform` is the one target no scalar command takes.
         assert_eq!(BindingTarget::Deform.to_string(), "deform");
         assert_eq!(BindingTarget::from(ScalarTarget::Rz), BindingTarget::Rz);
     }
@@ -3395,8 +2853,6 @@ mod tests {
         BindingTarget::Deform,
     ];
 
-    /// A misspelled word in a closed set is a request that does not parse, so
-    /// it is answered before any command runs rather than validated after.
     #[test]
     fn a_word_outside_a_closed_set_does_not_parse() {
         let line =

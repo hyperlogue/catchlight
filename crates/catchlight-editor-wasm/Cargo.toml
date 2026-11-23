@@ -17,7 +17,6 @@ catchlight-core = { workspace = true }
 catchlight-editor-core = { workspace = true }
 catchlight-editor-server = { workspace = true }
 catchlight-editor-protocol = { workspace = true }
-# `ExtensionNeed` is answered as JSON, like every other list this hands JS.
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 
@@ -29,14 +28,10 @@ image = { workspace = true }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = { workspace = true }
 console_error_panic_hook = "0.1"
-# The GPU half: the device, the render cache and the viewport. Browser-only by
-# construction — a wgpu surface comes from a canvas — so it is not in the
-# crate's native build and neither is its cost.
+# Browser-only: a wgpu surface comes from a canvas.
 catchlight-wgpu = { workspace = true }
 # `webgl` so a browser with no WebGPU still draws. Under resolver 2 this
-# feature reaches wgpu only on wasm32 builds; a native `cargo test` still gets
-# a wgpu with no GL backend forced on, which is what keeps
-# `create_headless_context`'s `Backends::PRIMARY` note true.
+# reaches wgpu only on wasm32, so native tests get no forced GL backend.
 wgpu = { workspace = true, features = ["webgl"] }
 glam = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
@@ -45,8 +40,7 @@ web-sys = { workspace = true, features = [
     "Window",
     "HtmlCanvasElement",
     "console",
-    # The WebGL2 tier: a canvas made here rather than found, and a viewport
-    # that copies the frame into its element's 2d context and reads it back.
+    # The WebGL2 tier.
     "Document",
     "Element",
     "CanvasRenderingContext2d",

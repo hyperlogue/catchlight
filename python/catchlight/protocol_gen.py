@@ -233,8 +233,6 @@ def _decode_class(cls: Any, data: Mapping[str, Any]) -> Any:
     return cls(**kwargs)
 
 
-# One open editing session (one model and its undo history). Opaque: a
-# session is not part of any model, so it has no Id of its own.
 SessionId = int
 
 # The identity of a node. Unique within a model; generated as `<parent id>/<kind>-<8 hex>` by [`NodeId::generate`].
@@ -267,12 +265,7 @@ class SessionNew:
 
 @dataclass(frozen=True, kw_only=True)
 class SessionOpen:
-    """Open the `.clm` the server's store holds at `path`.
-
-    A file of the server's, and the session can save back over it. Bytes a
-    client holds use [`Command::SessionNew`] with a source and attachments.
-    That session has no storage path to save back to.
-    """
+    """Open the `.clm` the server's store holds at `path`."""
 
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "session_open"
@@ -417,12 +410,6 @@ class NodeTree:
 
 @dataclass(frozen=True, kw_only=True)
 class CommandNodeInfo:
-    """Everything an inspector shows for one node: what [`NodePatch`] can set,
-    under the same field names, plus the node's kind, its parent, its Id
-    and the size of the mesh it holds. What [`Command::NodeTree`] carries
-    is what a tree row draws; this is the rest.
-    """
-
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "node_get"
     CMD: ClassVar[str] = TAG
@@ -498,8 +485,7 @@ class NodeAdd:
     parent: NodeId
     kind: NodeKindArg
     name: str | None = None
-    # The Id to create it under. Absent generates one; an Id the model
-    # already carries is [`ErrorCode::DuplicateId`].
+    # Absent generates one; an existing Id is [`ErrorCode::DuplicateId`].
     node: NodeId | None = None
 
     def to_wire(self) -> dict[str, Any]:
@@ -516,7 +502,6 @@ class NodeSet:
 
     session: SessionId
     node: NodeId
-    # The label a person reads. Free to repeat; nothing is addressed by it.
     name: str | None = None
     translate: tuple[float, float, float] | None = None
     rotate: tuple[float, float, float] | None = None
@@ -524,10 +509,7 @@ class NodeSet:
     z_order: float | None = None
     opacity: float | None = None
     enabled: bool | None = None
-    # The texture the part draws, in three states: absent leaves it as it
-    # is, `null` draws none, an Id draws that one. Ignored on a node that is
-    # not a part. Dropping the last part drawing a texture takes the texture
-    # with it — see [`ResponseBody::Node::dropped`].
+    # Merge patch: absent leaves it, `null` draws none, an Id draws that one.
     texture: TexId | Clear | None = None
     lock_to_root: bool | None = None
     blend_mode: BlendMode | None = None
@@ -579,10 +561,7 @@ class NodeReorder:
 
 @dataclass(frozen=True, kw_only=True)
 class NodeDuplicate:
-    """Deep-copy a node's subtree as its next sibling (bindings and
-    subtree-internal mask references come along). The copies get fresh
-    generated Ids.
-    """
+    """Deep-copy a node's subtree as its next sibling; copies get fresh Ids."""
 
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "node_duplicate"
@@ -599,12 +578,8 @@ class NodeDuplicate:
 
 @dataclass(frozen=True, kw_only=True)
 class RenameId:
-    """Change a node's, a param's or a texture's Id, rewriting every
-    reference this model holds to it.
-
-    **Breaking for addons.** An addon reaches into a base model by Id, so
-    renaming one is exactly as breaking as deleting it: nothing outside
-    this model is rewritten and there is no alias left behind.
+    """Change an Id and every reference this model holds to it. Breaks addons:
+    nothing outside the model is rewritten and no alias remains.
     """
 
     TAG_FIELD: ClassVar[str] = "cmd"
@@ -622,8 +597,6 @@ class RenameId:
 
 @dataclass(frozen=True, kw_only=True)
 class MaskAdd:
-    """Append a mask source to a Part/Composite."""
-
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "mask_add"
     CMD: ClassVar[str] = TAG
@@ -657,8 +630,6 @@ class MaskDelete:
 
 @dataclass(frozen=True, kw_only=True)
 class MotionResponseSet:
-    """Replace a motion response's complete authored configuration atomically."""
-
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "motion_response_set"
     CMD: ClassVar[str] = TAG
@@ -690,13 +661,8 @@ class NodeDelete:
 
 @dataclass(frozen=True, kw_only=True)
 class TextureAdd:
-    """Give an image to `node`, which has to be a part: a texture is added
-    and assigned in one edit. If that part was the last thing drawing
-    whatever it drew before, that texture goes with this edit — see
-    [`ResponseBody::Texture`].
-
-    The bytes arrive as attachment `texture`, and `encoding` says how to
-    read them.
+    """Add a texture from attachment `texture` and assign it to part `node` in
+    one edit, dropping the old texture if nothing else draws it.
     """
 
     TAG_FIELD: ClassVar[str] = "cmd"
@@ -706,10 +672,8 @@ class TextureAdd:
 
     session: SessionId
     node: NodeId
-    # How to read the attached bytes. The field, never a sniff.
     encoding: TextureEncoding | None = None
-    # The Id to create it under. Absent generates one; an Id the model
-    # already carries is [`ErrorCode::DuplicateId`].
+    # Absent generates one; an existing Id is [`ErrorCode::DuplicateId`].
     texture: TexId | None = None
 
     def to_wire(self) -> dict[str, Any]:
@@ -733,8 +697,6 @@ class TextureList:
 
 @dataclass(frozen=True, kw_only=True)
 class ParamAdd:
-    """Create a scalar input with a range and default value."""
-
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "param_add"
     CMD: ClassVar[str] = TAG
@@ -745,8 +707,7 @@ class ParamAdd:
     min: float = 0.0
     max: float = 1.0
     default: float = 0.0
-    # The Id to create it under. Absent generates one; an Id the model
-    # already carries is [`ErrorCode::DuplicateId`].
+    # Absent generates one; an existing Id is [`ErrorCode::DuplicateId`].
     param: ParamId | None = None
 
     def to_wire(self) -> dict[str, Any]:
@@ -808,9 +769,7 @@ class ParamDelete:
 
 @dataclass(frozen=True, kw_only=True)
 class BindingKeyInsert:
-    """Insert a distinct key position at normalized `value` in [0, 1].
-    Authored cells shift; the new row/column derives.
-    """
+    """Insert a distinct key position at normalized `value` in [0, 1]."""
 
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "binding_key_insert"
@@ -823,7 +782,6 @@ class BindingKeyInsert:
     param_y: ParamId | None = None
     node: NodeId
     target: BindingTarget
-    # Driving param whose binding-local axis changes.
     axis: ParamId
     value: float
 
@@ -834,9 +792,7 @@ class BindingKeyInsert:
 
 @dataclass(frozen=True, kw_only=True)
 class BindingKeyDelete:
-    """Remove a key position while retaining at least one position on the axis.
-    Its authored cells are dropped.
-    """
+    """Remove a key position while retaining at least one position on the axis."""
 
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "binding_key_delete"
@@ -849,7 +805,6 @@ class BindingKeyDelete:
     param_y: ParamId | None = None
     node: NodeId
     target: BindingTarget
-    # Driving param whose binding-local axis changes.
     axis: ParamId
     index: int
 
@@ -875,7 +830,6 @@ class BindingKeyMove:
     param_y: ParamId | None = None
     node: NodeId
     target: BindingTarget
-    # Driving param whose binding-local axis changes.
     axis: ParamId
     index: int
     value: float
@@ -1042,13 +996,6 @@ class BindingInterpolate:
 
 @dataclass(frozen=True, kw_only=True)
 class BindingList:
-    """Every binding on one node: what drives it, how it reads between its
-    cells, and the grid the author keyed.
-
-    [`ParamInfo::bindings`] counts what a param drives and names none of
-    it, so this is the read a binding panel is drawn from.
-    """
-
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "binding_list"
     CMD: ClassVar[str] = TAG
@@ -1064,9 +1011,8 @@ class BindingList:
 
 @dataclass(frozen=True, kw_only=True)
 class MeshSet:
-    """Replace a Part/MeshGroup mesh; every deform binding on the node is
-    re-fitted onto the new topology in the same undoable step. Answers
-    with the slots the new mesh emptied.
+    """Replace a Part/MeshGroup mesh, re-fitting its deform bindings in the same
+    step. Answers with the slots the new mesh emptied.
     """
 
     TAG_FIELD: ClassVar[str] = "cmd"
@@ -1078,7 +1024,6 @@ class MeshSet:
     # Refuse a stale draft or gesture while holding the session lock.
     if_rev: int | None = None
     node: NodeId
-    # One `[x, y]` per vertex.
     verts: list[tuple[float, float]]
     # One `[u, v]` per vertex, as many as `verts`.
     uvs: list[tuple[float, float]]
@@ -1094,14 +1039,8 @@ class MeshSet:
 
 @dataclass(frozen=True, kw_only=True)
 class MeshAuto:
-    """Derive a part's mesh from its own texture's alpha and apply it, with
-    the same deform re-fit and the same emptied-slot reply as
+    """Trace a part's mesh from its texture's alpha and apply it like
     [`Command::MeshSet`].
-
-    The editor does the tracing: it holds the texture bytes, and a client
-    that traced them itself would have to decode an image, agree on the
-    UV mapping, and send back a mesh — three chances to disagree with the
-    editor about what the part looks like.
     """
 
     TAG_FIELD: ClassVar[str] = "cmd"
@@ -1121,10 +1060,6 @@ class MeshAuto:
 
 @dataclass(frozen=True, kw_only=True)
 class SlotAdd:
-    """Add a slot to a part. The slot lands unfilled and pairs nothing: a
-    weld is what pairs it with a slot on another part.
-    """
-
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "slot_add"
     CMD: ClassVar[str] = TAG
@@ -1143,8 +1078,6 @@ class SlotAdd:
 
 @dataclass(frozen=True, kw_only=True)
 class SlotFill:
-    """Point a slot at one of the part's vertices."""
-
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "slot_fill"
     CMD: ClassVar[str] = TAG
@@ -1182,9 +1115,7 @@ class SlotClear:
 
 @dataclass(frozen=True, kw_only=True)
 class SlotDelete:
-    """Remove a slot from a part, and with it the weld pairs that named it.
-    No other part's slots move.
-    """
+    """Remove a slot from a part, and with it the weld pairs that named it."""
 
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "slot_delete"
@@ -1202,8 +1133,6 @@ class SlotDelete:
 
 @dataclass(frozen=True, kw_only=True)
 class Slots:
-    """The slots a part carries, with what fills each."""
-
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "slot_list"
     CMD: ClassVar[str] = TAG
@@ -1219,8 +1148,6 @@ class Slots:
 
 @dataclass(frozen=True, kw_only=True)
 class Welds:
-    """Every weld in the model."""
-
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "weld_list"
     CMD: ClassVar[str] = TAG
@@ -1257,10 +1184,7 @@ class WeldSet:
 
 @dataclass(frozen=True, kw_only=True)
 class WeldDelete:
-    """Unmake the weld pairing two parts, named in either order. Both parts
-    and every slot on them stay; only the pairing goes.
-    [`ErrorCode::UnknownWeld`] if nothing pairs them.
-    """
+    """Unmake the weld pairing two parts, named in either order."""
 
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "weld_delete"
@@ -1278,12 +1202,8 @@ class WeldDelete:
 
 @dataclass(frozen=True, kw_only=True)
 class SpineAdd:
-    """Add a spine node.
-
-    The spine is `joints` links long and reads one bend param per link, in
-    link order. Empty `joints` is refused — a spine of no links has nothing
-    to turn about — as is a joint that repeats the point above it, which is
-    a link with no length.
+    """Add a spine node. Empty `joints`, or a joint repeating the point above
+    it, is refused.
     """
 
     TAG_FIELD: ClassVar[str] = "cmd"
@@ -1300,8 +1220,7 @@ class SpineAdd:
     # One param per link, in link order, `None` where a link is rigid.
     # Absent binds none; present, it must be exactly as long as `joints`.
     targets: list[ParamId | None] | None = None
-    # The Id to create it under. Absent generates one; an Id the model
-    # already carries is [`ErrorCode::DuplicateId`].
+    # Absent generates one; an existing Id is [`ErrorCode::DuplicateId`].
     node: NodeId | None = None
 
     def to_wire(self) -> dict[str, Any]:
@@ -1328,8 +1247,6 @@ class SpineSet:
     # The whole spine, root to tip. Targets follow the new length: a link
     # past the new end loses its param, a new link arrives rigid.
     joints: list[tuple[float, float]] | None = None
-    # One param per link, exactly as long as the spine is after `joints`
-    # is applied.
     targets: list[ParamId | None] | None = None
 
     def to_wire(self) -> dict[str, Any]:
@@ -1339,21 +1256,9 @@ class SpineSet:
 
 @dataclass(frozen=True, kw_only=True)
 class SpineFit:
-    """Rig a strand of art to a spine in one edit: the spine and the bend params
-    its links read.
-
-    The editor measures the strand, because measuring it is reading the
-    part's rest mesh and deciding where each joint falls — the same reason
-    [`Command::MeshAuto`] traces here rather than in a client. What it
-    authors is ordinary: a spine [`Command::SpineSet`] can reshape and
-    params a [`Command::ParamSet`] can retune. It authors **no bindings**:
-    a spine turns the art by composing its joints, so there is nothing to
-    key.
-
-    **The spine goes between the part and its parent**, and the part keeps
-    the world placement it had. Re-fitting through any intervening motion responses
-    re-measures the existing spine, retaining
-    the existing params for links that survive.
+    """Rig a strand of art to a spine and its bend params in one edit, with no
+    bindings. The spine goes between the part and its parent, keeping the
+    part's world placement; a re-fit retains params of surviving links.
     """
 
     TAG_FIELD: ClassVar[str] = "cmd"
@@ -1362,8 +1267,6 @@ class SpineFit:
     KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
-    # The part whose rest mesh is measured. The fit reads its vertices
-    # and nothing else — no pose, no binding.
     part: NodeId
     # How many links to divide the art into. Zero is refused.
     links: int
@@ -1371,7 +1274,6 @@ class SpineFit:
     # straight down; the vector is normalised, and one too short to
     # normalise is refused.
     axis: tuple[float, float] | None = None
-    # The Id to create the spine under, when one is being created.
     node: NodeId | None = None
     name: str | None = None
 
@@ -1412,8 +1314,6 @@ class Redo:
 
 @dataclass(frozen=True, kw_only=True)
 class EditGoto:
-    """Restore a retained authored state and publish a new live revision."""
-
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "edit_goto"
     CMD: ClassVar[str] = TAG
@@ -1430,8 +1330,6 @@ class EditGoto:
 
 @dataclass(frozen=True, kw_only=True)
 class EditHistoryGet:
-    """Session-owned tree metadata, captured with its live revision."""
-
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "edit_history_get"
     CMD: ClassVar[str] = TAG
@@ -1484,12 +1382,8 @@ class PresenceGet:
 
 @dataclass(frozen=True, kw_only=True)
 class Preview:
-    """Render one frame of a session and answer with the PNG as the reply's
-    payload.
-
-    The camera is explicit: absent it is the default height at the origin,
-    and what a tab last looked at is never consulted, so a script's output
-    does not depend on anyone else's view.
+    """Render one frame as the reply's PNG payload. An absent camera is the
+    default, never a tab's last view.
     """
 
     TAG_FIELD: ClassVar[str] = "cmd"
@@ -1509,25 +1403,9 @@ class Preview:
 
 @dataclass(frozen=True, kw_only=True)
 class ImportJson:
-    """Import a `.clm` **structure as JSON**, with its textures
-    attached separately, into an open session.
-
-    Installs imported roots under the required parent after checking the
-    required revision. It publishes one undoable edit. To construct a new
-    model, use `session_create` with its JSON source instead.
-
-    Attachment `structure` is the structure as JSON, spelled exactly as
-    the `.clm` format's serde spells it. Each entry of `textures` names an
-    image arriving as `texture:<texture>`; an entry with no attachment,
-    and a `texture:` attachment no entry names, are both
-    [`ErrorCode::BadRequest`] naming the id. A texture the structure
-    *references* but `textures` does not list is the reader's own refusal,
-    the same one a `.clm` missing a payload gets.
-
-    **A JSON import carries no extension bytes.** A byte extension is a
-    `{size, hash}` marker in the structure and its payload lives in a
-    section JSON has no room for, so a marker here is refused by key.
-    Import the structure, then set the extension.
+    """Import a `.clm` structure as JSON under the required `parent`, as one
+    undoable edit. Attachment `structure` is the JSON; each `textures` entry
+    arrives as `texture:<texture>`. Byte-extension markers are refused.
     """
 
     TAG_FIELD: ClassVar[str] = "cmd"
@@ -1538,7 +1416,6 @@ class ImportJson:
     session: SessionId
     parent: NodeId
     if_rev: int
-    # Every texture the attachments carry, in any order.
     textures: list[ImportTexture] = field(default_factory=list)
 
     def to_wire(self) -> dict[str, Any]:
@@ -1548,12 +1425,8 @@ class ImportJson:
 
 @dataclass(frozen=True, kw_only=True)
 class CommandExtensionSet:
-    """Set the extension filed under `key`, replacing whatever was there.
-
-    `Edit`: an extension is part of the model, so this moves the
-    revision and undo covers it. `catchlight.` is the format's own prefix
-    and is refused ([`ErrorCode::ReservedExtension`]); a byte value over
-    the format's cap is [`ErrorCode::Edit`].
+    """Set the extension under `key`. The `catchlight.` prefix is
+    [`ErrorCode::ReservedExtension`].
     """
 
     TAG_FIELD: ClassVar[str] = "cmd"
@@ -1572,11 +1445,8 @@ class CommandExtensionSet:
 
 @dataclass(frozen=True, kw_only=True)
 class ExtensionDelete:
-    """Drop the extension filed under `key`.
-
-    `Edit`, like [`Command::ExtensionSet`]. A key the model does not
-    carry is [`ErrorCode::NoExtension`] rather than a quiet no-op, so a
-    typo in a key says so.
+    """Drop the extension under `key`; a missing key is
+    [`ErrorCode::NoExtension`].
     """
 
     TAG_FIELD: ClassVar[str] = "cmd"
@@ -1594,12 +1464,7 @@ class ExtensionDelete:
 
 @dataclass(frozen=True, kw_only=True)
 class Extensions:
-    """Every extension the model carries, in key order.
-
-    `ReplicaQuery`: a pure read, so a tab holding a replica answers it
-    without asking. A byte value is reported as its size and hash, never
-    its bytes — [`Command::ExtensionGet`] is what fetches those.
-    """
+    """Every extension in key order; a byte value as its size and hash."""
 
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "extension_list"
@@ -1615,12 +1480,7 @@ class Extensions:
 
 @dataclass(frozen=True, kw_only=True)
 class ExtensionGet:
-    """One extension's value.
-
-    `ServerQuery`, because a byte value comes back as the reply's payload
-    and a replica has no payload channel. A JSON value is inline in the
-    reply either way.
-    """
+    """One extension's value; bytes come back as the reply's payload."""
 
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "extension_get"
@@ -2034,15 +1894,11 @@ class NodeKind(StrEnum):
 
 
 class MaskMode(StrEnum):
-    """What a mask source does to the drawable it is attached to."""
-
     MASK = "mask"
     DODGE = "dodge"
 
 
 class Interpolate(StrEnum):
-    """How a binding reads between the cells its author keyed."""
-
     NEAREST = "nearest"
     STEPPED = "stepped"
     LINEAR = "linear"
@@ -2050,8 +1906,6 @@ class Interpolate(StrEnum):
 
 
 class BlendMode(StrEnum):
-    """How a drawable composites onto what is already under it."""
-
     NORMAL = "normal"
     MULTIPLY = "multiply"
     COLOR_DODGE = "color_dodge"
@@ -2070,20 +1924,13 @@ class BlendMode(StrEnum):
 
 
 class TextureEncoding(StrEnum):
-    """How to read a texture's bytes. The field a command carries beside its
-    image, so nothing has to guess from a file name.
-    """
-
     PNG = "png"
     TGA = "tga"
 
 
 class TextureAlpha(StrEnum):
-    """What a texture's stored bytes mean by their alpha channel.
-
-    The bytes cannot say, so the command carrying them does. Straight is the
-    default because it is what an editor writes and what every PNG a person
-    exports holds; `.inx` textures are the premultiplied ones.
+    """What a texture's alpha channel means. Straight is the default; `.inx`
+    textures are premultiplied.
     """
 
     STRAIGHT = "straight"
@@ -2091,10 +1938,7 @@ class TextureAlpha(StrEnum):
 
 
 class ScalarTarget(StrEnum):
-    """A property a binding drives with one number per cell.
-
-    The colour channel names use the model file's spellings.
-    """
+    """A property a binding drives with one number per cell."""
 
     TX = "tx"
     TY = "ty"
@@ -2140,13 +1984,10 @@ class BindingTarget(StrEnum):
 
 @dataclass(frozen=True, kw_only=True)
 class NodePatch:
-    """Fields to change on a node; every field is optional (absent = unchanged).
-    Kind-specific fields are ignored on nodes of another kind: the colour fields
-    (`opacity`, `blend_mode`, `tint`, `screen_tint`) reach parts and composites
-    only, because a mesh group is never drawn and carries no colour.
+    """Fields to change on a node; absent = unchanged. Colour fields reach parts
+    and composites only.
     """
 
-    # The label a person reads. Free to repeat; nothing is addressed by it.
     name: str | None = None
     translate: tuple[float, float, float] | None = None
     rotate: tuple[float, float, float] | None = None
@@ -2154,10 +1995,7 @@ class NodePatch:
     z_order: float | None = None
     opacity: float | None = None
     enabled: bool | None = None
-    # The texture the part draws, in three states: absent leaves it as it
-    # is, `null` draws none, an Id draws that one. Ignored on a node that is
-    # not a part. Dropping the last part drawing a texture takes the texture
-    # with it — see [`ResponseBody::Node::dropped`].
+    # Merge patch: absent leaves it, `null` draws none, an Id draws that one.
     texture: TexId | Clear | None = None
     lock_to_root: bool | None = None
     blend_mode: BlendMode | None = None
@@ -2171,11 +2009,6 @@ class NodePatch:
 
 @dataclass(frozen=True, kw_only=True)
 class AutoMeshContour:
-    """Trace the alpha contours: one pinned boundary loop per connected
-    component, plus the free interior vertices `rings` and `spacing` ask
-    for.
-    """
-
     TAG_FIELD: ClassVar[str] = "mode"
     TAG: ClassVar[str] = "contour"
 
@@ -2188,21 +2021,13 @@ class AutoMeshContour:
     margin: int | None = None
     # Interior fill-point spacing in texels; 0 is boundary only.
     spacing: int | None = None
-    # One ring of free vertices per factor, the traced outline scaled
-    # about its own centroid: 0 is the centroid itself, 1 the outline.
-    # A factor above 1 is clamped to 1 — `margin` already dilates the
-    # mask before tracing, and a vertex outside the pinned loop would
-    # only make triangles the alpha cull drops. Empty places no rings,
-    # which is the default.
+    # Ring scale factors about the outline's centroid: 0 the centroid, 1 the
+    # outline; above 1 clamps to 1.
     rings: list[float] | None = None
-    # Texels: a free vertex closer than this to one already placed is
-    # dropped, so rings and fill do not crowd the outline. The pinned
-    # outline itself is never thinned.
+    # Texels: a free vertex closer than this to a placed one is dropped.
     min_distance: float | None = None
-    # Texel x of a vertical mirror line: free vertices are generated
-    # from `x <= mirror_x` and reflected across it, so a symmetric part
-    # gets a symmetric interior. The outline is traced from the alpha
-    # and is not mirrored.
+    # Texel x of a vertical mirror line for free vertices; the outline is not
+    # mirrored.
     mirror_x: float | None = None
 
     def to_wire(self) -> dict[str, Any]:
@@ -2217,17 +2042,12 @@ class AutoMeshGrid:
     TAG_FIELD: ClassVar[str] = "mode"
     TAG: ClassVar[str] = "grid"
 
-    # Alpha strictly above this counts as solid, and is what the
-    # bounding box is measured from.
+    # Alpha strictly above this counts as solid.
     threshold: int | None = None
     cols: int | None = None
     rows: int | None = None
-    # Grid lines as fractions of the solid bounding box — 0 its left
-    # edge, 1 its right — so the grid need not be uniform. Values
-    # outside `0..=1` put a line outside the box. Present, it replaces
-    # both `cols` and `margin` on this axis. A grid is mirrored by
-    # asking for symmetric fractions, which is why there is no mirror
-    # knob here.
+    # Grid lines as fractions of the solid bounding box (0 left, 1 right);
+    # present, replaces `cols` and `margin` on this axis.
     axes_x: list[float] | None = None
     # The same, down, replacing `rows`.
     axes_y: list[float] | None = None
@@ -2240,12 +2060,8 @@ class AutoMeshGrid:
         return _wire_fields(self)
 
 
-# How [`Command::MeshAuto`] derives a mesh from a part's alpha.
-#
-# **Every knob is optional, and none of the defaults are written here.** They
-# live in `catchlight-editor-core` beside the code that reads them, so the
-# wire cannot drift from what the editor actually does; absent means "what
-# the editor would have used". `{"mode": "contour"}` is the default trace.
+# How [`Command::MeshAuto`] derives a mesh from a part's alpha. Absent knobs
+# take `catchlight-editor-core`'s defaults.
 AutoMesh = (
     AutoMeshContour
     | AutoMeshGrid
@@ -2335,7 +2151,6 @@ class RenameSlot:
         return _wire_fields(self)
 
 
-# Which Id [`Command::RenameId`] changes, and to what.
 Rename = (
     RenameNode
     | RenameParam
@@ -2381,7 +2196,6 @@ class EditOpNodeSet:
     TAG: ClassVar[str] = "node_set"
 
     node: NodeId
-    # The label a person reads. Free to repeat; nothing is addressed by it.
     name: str | None = None
     translate: tuple[float, float, float] | None = None
     rotate: tuple[float, float, float] | None = None
@@ -2389,10 +2203,7 @@ class EditOpNodeSet:
     z_order: float | None = None
     opacity: float | None = None
     enabled: bool | None = None
-    # The texture the part draws, in three states: absent leaves it as it
-    # is, `null` draws none, an Id draws that one. Ignored on a node that is
-    # not a part. Dropping the last part drawing a texture takes the texture
-    # with it — see [`ResponseBody::Node::dropped`].
+    # Merge patch: absent leaves it, `null` draws none, an Id draws that one.
     texture: TexId | Clear | None = None
     lock_to_root: bool | None = None
     blend_mode: BlendMode | None = None
@@ -2690,7 +2501,6 @@ class EditOpWeldDelete:
 
 
 # Model edits accepted by an atomic batch. Created IDs are always explicit.
-# Every operation uses the same executor as its standalone command.
 EditOp = (
     EditOpNodeAdd
     | EditOpNodeSet
@@ -2778,7 +2588,6 @@ class BindingCellValueOffsets:
     offsets: list[tuple[float, float]]
 
 
-# Exact stored cell payload, shared by reads and writes.
 BindingCellValue = (
     BindingCellValueScalar
     | BindingCellValueOffsets
@@ -2926,8 +2735,6 @@ class SessionOrigin:
 
 @dataclass(frozen=True, kw_only=True)
 class LimitInfo:
-    """A machine-readable resource budget refusal."""
-
     # Stable budget name, such as request_bytes or derived_cell_vertices.
     resource: str
     # Maximum permitted count in the resource's units.
@@ -2949,23 +2756,14 @@ class BindingParams:
 
 @dataclass(frozen=True, kw_only=True)
 class ParamPose:
-    """One param at one value — a pose is a list of these. Params are scalar, so
-    there is one number.
-    """
-
     param: ParamId
     value: float
 
 
 @dataclass(frozen=True, kw_only=True)
 class ImportTexture:
-    """One texture an [`Command::ImportJson`] structure names, and how to read the
-    bytes that came with it.
-
-    The bytes arrive as attachment `texture:<texture>`. Encoding and alpha are
-    fields rather than a sniff or a file-name tail, because a JSON structure
-    names no files: the client that has the image is the only thing that knows
-    what it holds.
+    """One texture an [`Command::ImportJson`] structure names, arriving as
+    attachment `texture:<texture>`.
     """
 
     texture: TexId
@@ -2975,19 +2773,13 @@ class ImportTexture:
 
 @dataclass(frozen=True, kw_only=True)
 class SlotAddr:
-    """One slot of a model, named in full: a [`SlotId`] is unique within its part,
-    so it travels beside the node carrying it.
-    """
-
     node: NodeId
     slot: SlotId
 
 
 @dataclass(frozen=True, kw_only=True)
 class SlotPair:
-    """One pair a weld holds: a slot on its `a` part, a slot on its `b` part, and
-    `a`'s share of the point the two vertices are pulled toward.
-    """
+    """`weight` is `a`'s share (`0..=1`) of the point both vertices are pulled to."""
 
     a: SlotId
     b: SlotId
@@ -2996,8 +2788,8 @@ class SlotPair:
 
 @dataclass(frozen=True, kw_only=True)
 class Presence:
-    """Ephemeral shared view state. Rides its own path — decoupled from the model
-    so scrubbing/panning generate zero edit traffic and never persist.
+    """Ephemeral shared view state, kept off the model path: never an edit, never
+    saved.
     """
 
     pose: list[ParamPose] = field(default_factory=list)
@@ -3010,14 +2802,7 @@ class Camera:
     center: tuple[float, float]
     height: float
 
-# The key an extension is filed under: the Id charset plus a required
-# interior dot, vendor first (`acme.camera`).
-#
-# Hand-written rather than one of the `string_id!` types because it is the
-# one Id-shaped string with a rule of its own ([`validate_extension_key`]),
-# and because a key that fails on the way in is worth naming in the error —
-# a file names its extensions in one flat map, so "which key" is the whole
-# question.
+# An extension key: the Id charset plus a required interior dot, vendor first (`acme.camera`).
 ExtensionKey = str
 
 
@@ -3026,7 +2811,6 @@ class ExtensionSetJson:
     TAG_FIELD: ClassVar[str] = "kind"
     TAG: ClassVar[str] = "json"
 
-    # Whatever JSON the vendor wrote. Nothing here reads it.
     value: Any
 
     def to_wire(self) -> dict[str, Any]:
@@ -3044,14 +2828,8 @@ class ExtensionSetBytes:
         return _wire_fields(self)
 
 
-# What [`Command::ExtensionSet`] is setting: a JSON value inline, or bytes
-# that arrive as the `value` attachment.
-#
-# Tagged by `kind` rather than sniffed, because a byte extension's own
-# marker is a JSON object and an untagged value could not tell the two
-# apart. `kind: "bytes"` carries no value here — the bytes are attached —
-# and an attachment on a `json` set is refused, so exactly one of the two
-# says what the value is.
+# What [`Command::ExtensionSet`] sets: inline JSON, or bytes attached as
+# `value`. Tagged by `kind` because a byte marker is itself a JSON object.
 ExtensionSet = (
     ExtensionSetJson
     | ExtensionSetBytes
@@ -3077,7 +2855,6 @@ class ExtensionValueInfoJson:
     TAG_FIELD: ClassVar[str] = "kind"
     TAG: ClassVar[str] = "json"
 
-    # Whatever JSON the vendor wrote. Nothing here reads it.
     value: Any
 
     def to_wire(self) -> dict[str, Any]:
@@ -3099,11 +2876,8 @@ class ExtensionValueInfoBytes:
         return _wire_fields(self)
 
 
-# What an extension holds, as a reply reports it.
-#
-# A JSON value travels whole; bytes travel as the size and hash their marker
-# carries, which is what a client compares to decide whether to fetch them.
-# The bytes themselves come back as [`Command::ExtensionGet`]'s payload.
+# What an extension holds; bytes are reported as their marker's size and
+# hash.
 ExtensionValueInfo = (
     ExtensionValueInfoJson
     | ExtensionValueInfoBytes
@@ -3126,8 +2900,6 @@ def parse_extension_value_info(message: Mapping[str, Any]) -> ExtensionValueInfo
 
 @dataclass(frozen=True, kw_only=True)
 class ExtensionInfo:
-    """One extension, as [`Command::Extensions`] lists it."""
-
     key: ExtensionKey
     value: ExtensionValueInfo
 
@@ -3138,14 +2910,8 @@ class ReplyOk:
     TAG: ClassVar[str] = "ok"
 
     id: int
-    # The addressed session's revision *after* this command, so a client
-    # knows what its reply describes without a second round trip.
-    #
-    # Present whenever the command named a session — including one it
-    # only read, and including the create/open/import commands, which
-    # report the revision of the session they just made. Absent for the
-    # editor-level commands that name no session at all, and for a
-    # `session_close`, whose session is gone.
+    # The addressed session's revision after this command; absent for
+    # editor-level commands and `session_close`.
     rev: int | None = None
     body: ResponseBody
 
@@ -3210,27 +2976,19 @@ def parse_reply(message: Mapping[str, Any]) -> Reply:
 
 
 class ErrorCode(StrEnum):
-    """Why a command was refused. A client that has to react — a commit gate
-    waiting on unfilled slots, a mesh editor offering to refill a slot —
-    branches on this rather than on the message text.
-    """
+    """Why a command was refused; clients branch on this, not the message."""
 
     # The session changed after a draft or recording gesture began.
     REVISION_CONFLICT = "revision_conflict"
-    # No open session with that [`SessionId`].
     NO_SESSION = "no_session"
-    # The model carries no node with that [`NodeId`].
     NO_NODE = "no_node"
-    # The model carries no param with that [`ParamId`].
     NO_PARAM = "no_param"
-    # The model carries no texture with that [`TexId`].
     NO_TEXTURE = "no_texture"
     # The request did not parse: bad JSON, an unknown command, or a string
     # that is not a valid Id.
     BAD_REQUEST = "bad_request"
-    # A target that does not fit the thing it names: a response field on a
-    # node that is not a driver, a `deform` where only a scalar can go. A
-    # *misspelled* one never gets this far — it is [`Self::BadRequest`].
+    # A target that does not fit what it names, such as `deform` where only a
+    # scalar can go.
     BAD_TARGET = "bad_target"
     NOTHING_TO_UNDO = "nothing_to_undo"
     NOTHING_TO_REDO = "nothing_to_redo"
@@ -3239,15 +2997,10 @@ class ErrorCode(StrEnum):
     LIMIT_EXCEEDED = "limit_exceeded"
     # A save with no path, on a session that has no file of its own.
     NO_SAVE_PATH = "no_save_path"
-    # The part carries no such slot.
     UNKNOWN_SLOT = "unknown_slot"
-    # An add named an Id the model already carries.
     DUPLICATE_ID = "duplicate_id"
-    # The part already carries a slot with that Id.
     DUPLICATE_SLOT = "duplicate_slot"
-    # A weld pairs a slot the part on that side does not carry.
     WELD_UNKNOWN_SLOT = "weld_unknown_slot"
-    # A weld pairs one slot twice.
     WELD_SLOT_PAIRED_TWICE = "weld_slot_paired_twice"
     # A weld's two ends are the same node, or one of them is not a part.
     BAD_WELD_END = "bad_weld_end"
@@ -3255,22 +3008,15 @@ class ErrorCode(StrEnum):
     DUPLICATE_WELD = "duplicate_weld"
     # A weight is a share of a meeting point, so it must be within `0..=1`.
     WELD_WEIGHT_OUT_OF_RANGE = "weld_weight_out_of_range"
-    # No weld pairs the two parts named.
     UNKNOWN_WELD = "unknown_weld"
-    # The texture carries no pixel above the alpha threshold, so there is no
-    # shape to mesh. A client offers a lower threshold rather than an error.
+    # The texture has no pixel above the alpha threshold.
     NOTHING_TO_MESH = "nothing_to_mesh"
     # This needs a complete model and the session holds an addon fragment.
-    # A session never opens one, so nothing should see this today.
     FRAGMENT = "fragment"
-    # The model refused the edit for some other reason; read `message`.
     EDIT = "edit"
-    # A manifest could not be read or written.
     MANIFEST = "manifest"
     IO = "io"
-    # An image could not be decoded.
     IMAGE = "image"
-    # The preview renderer failed.
     PREVIEW = "preview"
     # The command needs a filesystem or a GPU and this build has neither
     # (wasm).
@@ -3278,7 +3024,6 @@ class ErrorCode(StrEnum):
     # A command carrying bytes was sent over a transport that cannot carry
     # them; send it over one that can.
     BULK_OVER_HTTP = "bulk_over_http"
-    # The model carries no extension under that key.
     NO_EXTENSION = "no_extension"
     # `catchlight.` is the format's own prefix: a reader accepts a key under
     # it, and nothing outside the format may author one.
@@ -3441,9 +3186,7 @@ class ResponseBodyNode:
     TAG: ClassVar[str] = "node"
 
     node: NodeId
-    # Textures the edit deleted, because no part draws them any more.
-    # Every texture a model carries is drawn by a part, so repointing or
-    # removing the last one takes the texture with it.
+    # Textures the edit deleted because no part draws them any more.
     dropped: list[TexId] = field(default_factory=list)
 
     def to_wire(self) -> dict[str, Any]:
@@ -3465,10 +3208,6 @@ class ResponseBodyParam:
 
 @dataclass(frozen=True, kw_only=True)
 class ResponseBodySlot:
-    """One slot, named in full: what [`Command::SlotAdd`] answers with, so a
-    client that let the editor draw the Id learns which one it drew.
-    """
-
     TAG_FIELD: ClassVar[str] = "result"
     TAG: ClassVar[str] = "slot"
 
@@ -3493,8 +3232,6 @@ class ResponseBodyParams:
 
 @dataclass(frozen=True, kw_only=True)
 class ResponseBodyBindings:
-    """Every binding on one node, in the order the model holds them."""
-
     TAG_FIELD: ClassVar[str] = "result"
     TAG: ClassVar[str] = "bindings"
 
@@ -3511,10 +3248,7 @@ class ResponseBodyTexture:
     TAG: ClassVar[str] = "texture"
 
     texture: TexId
-    # Textures the edit deleted, because the part that had been drawing
-    # them stopped and nothing else was. Every texture a model carries
-    # is drawn by a part, so an upload that displaces the last user of
-    # the old one takes it.
+    # Textures the edit deleted because no part draws them any more.
     dropped: list[TexId] = field(default_factory=list)
 
     def to_wire(self) -> dict[str, Any]:
@@ -3548,10 +3282,7 @@ class ResponseBodyTree:
 
 @dataclass(frozen=True, kw_only=True)
 class ResponseBodyNodeInfo:
-    """One node in full, as an inspector shows it. Boxed because it is far
-    the largest thing a reply carries, and every other reply would pay for
-    it in [`Reply`]'s size.
-    """
+    """Boxed: by far the largest reply, and every reply pays [`Reply`]'s size."""
 
     TAG_FIELD: ClassVar[str] = "result"
     TAG: ClassVar[str] = "node_info"
@@ -3664,12 +3395,9 @@ class ResponseBodyEmptied:
 
 @dataclass(frozen=True, kw_only=True)
 class ResponseBodySpineFit:
-    """What a [`Command::SpineFit`] authored."""
-
     TAG_FIELD: ClassVar[str] = "result"
     TAG: ClassVar[str] = "spine_fit"
 
-    # The spine, whether this call made it or re-fitted one.
     node: NodeId
     # The param each link's bend is read from, in link order.
     params: list[ParamId]
@@ -3693,9 +3421,7 @@ class ResponseBodyExtensions:
 
 @dataclass(frozen=True, kw_only=True)
 class ResponseBodyExtension:
-    """One extension's value. For a byte value the bytes are the reply's
-    payload; this says how big they are and what they hash to.
-    """
+    """For a byte value the bytes are the reply's payload."""
 
     TAG_FIELD: ClassVar[str] = "result"
     TAG: ClassVar[str] = "extension"
@@ -3805,11 +3531,7 @@ class EventModelChanged:
 
 @dataclass(frozen=True, kw_only=True)
 class EventSessionsChanged:
-    """The set of open sessions changed: one was created, opened, imported or
-    closed. Carries nothing — an observer that cares re-reads
-    [`Command::SessionList`], which is the only answer that is not already
-    stale by the time it arrives.
-    """
+    """The set of open sessions changed; re-read [`Command::SessionList`]."""
 
     TAG_FIELD: ClassVar[str] = "event"
     TAG: ClassVar[str] = "sessions_changed"
@@ -3857,16 +3579,13 @@ class StatusInfo:
     texture_count: int
     dirty: bool
     rev: int
-    # History belongs to the editor, so only this server query can answer it.
     undo_steps: int = 0
     redo_steps: int = 0
 
 
 @dataclass(frozen=True, kw_only=True)
 class TreeNode:
-    # What the node is addressed by, here and in the file.
     id: NodeId
-    # What a person reads. Free to repeat.
     name: str
     kind: NodeKind
     z_order: float
@@ -3876,30 +3595,15 @@ class TreeNode:
 
 @dataclass(frozen=True, kw_only=True)
 class NodeInfo:
-    """One node in full: what [`NodePatch`] can set, plus what it cannot — the
-    node's Id, its kind, its parent, and the size of the mesh it holds.
-
-    **The settable fields carry [`NodePatch`]'s own names.** An inspector reads
-    a value here, edits it, and sends it straight back in a
-    [`Command::NodeSet`] under the same key; a field that spelled itself
-    differently on the way out would be a rename nothing checks.
-
-    A field a node's kind does not carry is absent, the way it is ignored on
-    the way in: the colour fields reach parts and composites only, `texture`
-    only a part, `mg_*` only a mesh group, and the two mesh counts only the
-    kinds that hold a mesh. `texture` is also absent on a part that draws
-    none, which `kind` tells apart from a node that could not have one — a
-    reply has nothing to undo, so it never carries the `null` a patch spells
-    "draw none" with.
+    """One node in full. Settable fields carry [`NodePatch`]'s names so an
+    inspector can send a value straight back; fields a node's kind lacks are
+    absent.
     """
 
-    # What the node is addressed by, here and in the file.
     id: NodeId
-    # The same kind [`TreeNode::kind`] carries.
     kind: NodeKind
     # Absent on the root, which is the one node with no parent.
     parent: NodeId | None = None
-    # What a person reads. Free to repeat; nothing is addressed by it.
     name: str
     translate: tuple[float, float, float]
     rotate: tuple[float, float, float]
@@ -3912,16 +3616,9 @@ class NodeInfo:
     tint: tuple[float, float, float] | None = None
     screen_tint: tuple[float, float, float] | None = None
     mask_threshold: float | None = None
-    # The part's albedo texture, absent when it draws none.
     texture: TexId | None = None
-    # How many vertices the node's mesh holds. Absent on a kind that carries
-    # no mesh — a part and a mesh group carry one, nothing else does — so
-    # `0` is a mesh with no vertices rather than a node that could not have
-    # had any. A client asking "has this part been meshed" reads this rather
-    # than [`Command::Check`], whose textured-but-untriangulated warning is a
-    # message for a person.
+    # Absent on kinds without a mesh, so `0` means an empty mesh.
     vertex_count: int | None = None
-    # How many triangles that mesh holds, absent under the same rule.
     triangle_count: int | None = None
     # Composite: forward mesh-group deformation to children.
     propagate_meshgroup: bool | None = None
@@ -3929,7 +3626,6 @@ class NodeInfo:
     motion_response: MotionResponse | None = None
     # The existing spine that fitting this mesh will remeasure, across any response chain.
     fitted_spine: NodeId | None = None
-    # A spine's settings, absent on every other kind.
     spine: SpineInfo | None = None
     # Ordered clipping rules. Empty on nodes that do not draw.
     masks: list[MaskInfo] = field(default_factory=list)
@@ -4030,11 +3726,8 @@ class MotionResponse:
 
 @dataclass(frozen=True, kw_only=True)
 class SpineInfo:
-    """A spine in full, under the names [`Command::SpineSet`] sets them by.
-
-    `joints` and `targets` are always the same length: a spine reads one bend
-    per link, and a rigid link is a `null` in `targets`. The whole pair travels
-    back through [`Command::SpineSet`] unchanged.
+    """A spine; `joints` and `targets` are always the same length, `null` for a
+    rigid link.
     """
 
     joints: list[tuple[float, float]]
@@ -4053,60 +3746,36 @@ class TexInfo:
 
 @dataclass(frozen=True, kw_only=True)
 class ParamInfo:
-    # What the param is addressed by.
     id: ParamId
-    # What a person reads. Free to repeat.
     name: str
     min: float
     max: float
     default: float = 0.0
     # Normalized keys a new binding on this axis starts with.
     initial_positions: list[float]
-    # Number of bindings driven by this input.
     bindings: int = 0
 
 
 @dataclass(frozen=True, kw_only=True)
 class BindingInfo:
-    """One binding, as a panel draws it: the params driving it, the property it
-    drives, how it reads between cells, and the grid the author keyed.
+    """One binding as a panel draws it.
 
-    **The grid is `[y][x]`** — the transpose of the `cell: [x, y]` every
-    binding command takes, so `keys[cell[1]][cell[0]]` is the cell
-    [`Command::BindingCellsSet`] would write. It is the full product of this
-    binding's key positions, [`Self::width`] by [`Self::height`], with one row when
-    there is no `param_y`.
-
-    **A `null` in `keys` is a cell nobody authored.** The model stores only the
-    cells a rigger set and derives the rest at puppet build, and "unset" is a
-    state they act on — it is not a zero. The exception is a `deform` binding,
-    which authors per-vertex offsets rather than one number: every one of its
-    cells reads `null` here and [`Self::authored`] is the only thing that says
-    which are set. For every other target `authored[y][x]` is exactly
-    `keys[y][x] != null`.
+    The grid is `[y][x]`, the transpose of the `cell: [x, y]` binding commands
+    take. A `null` in `keys` is an unauthored cell, not a zero; a `deform`
+    binding's cells are all `null`, so read [`Self::authored`].
     """
 
     # One ordered normalized axis per input, owned only by this binding.
     key_positions: list[list[float]]
     identity: BindingIdentity
-    # The property driven — plus `deform`, which only the deform commands
-    # author.
     target: BindingTarget
-    # The param along the grid's x axis.
     param: ParamId
     # The param along the grid's y axis. Absent when the grid is one row.
     param_y: ParamId | None = None
-    # How it reads between cells, as [`Command::BindingInterpolate`] takes
-    # it back.
     interpolate: Interpolate
-    # Number of positions on this binding's `param` axis.
     width: int
-    # Number of positions on this binding's `param_y` axis, or 1.
     height: int
-    # The authored value at each cell, `[y][x]`, `null` where nothing was
-    # authored.
     keys: list[list[float | None]]
-    # Whether each cell was authored at all, `[y][x]`.
     authored: list[list[bool]]
 
 
@@ -4122,8 +3791,6 @@ class SlotInfo:
 
 @dataclass(frozen=True, kw_only=True)
 class WeldInfo:
-    """One weld: the two parts it joins, and the slot pairs between them."""
-
     a: NodeId
     b: NodeId
     pairs: list[SlotPair]
@@ -4131,9 +3798,7 @@ class WeldInfo:
 
 @dataclass(frozen=True, kw_only=True)
 class PreviewInfo:
-    """What a [`Command::Preview`] rendered. The pixels are the reply's payload;
-    this says how to read them.
-    """
+    """The size of a [`Command::Preview`] PNG, which is the reply's payload."""
 
     width: int
     height: int
