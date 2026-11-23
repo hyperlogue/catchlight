@@ -64,6 +64,11 @@ impl SharedHarness {
 
     pub fn with_models(models: Vec<ModelSpec>) -> Result<Self> {
         let (device, queue) = shared_context()?;
+        let thresholds = if device.adapter_info().device_type == wgpu::DeviceType::Cpu {
+            Thresholds::default()
+        } else {
+            Thresholds::hardware()
+        };
         let pipelines = Arc::new(Pipelines::new(&device, TARGET_FORMAT));
         let mut models_map = HashMap::new();
         for m in models {
@@ -76,7 +81,7 @@ impl SharedHarness {
                 queue,
                 contexts: HashMap::new(),
                 models: models_map,
-                thresholds: Thresholds::default(),
+                thresholds,
             }),
         })
     }

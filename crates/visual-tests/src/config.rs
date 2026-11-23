@@ -68,6 +68,19 @@ impl Default for Thresholds {
     }
 }
 
+impl Thresholds {
+    /// Baselines are rendered on lavapipe. A hardware rasterizer differs from
+    /// it only in pixels along part edges, which the defaults do not allow.
+    pub fn hardware() -> Self {
+        Self {
+            mean: 0.75,
+            p99: 8,
+            max: 64,
+            pct_above_threshold: 1.0,
+        }
+    }
+}
+
 pub fn default_models(repo_root: &Path) -> Vec<ModelSpec> {
     let repro = repo_root.join("tests").join("models");
     vec![
