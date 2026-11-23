@@ -898,6 +898,7 @@ impl Model {
             animations: doc.animations.clone(),
             extensions,
             binding_index: OnceLock::new(),
+            bake: Default::default(),
         };
         model.validate_responses()?;
         Ok(model)

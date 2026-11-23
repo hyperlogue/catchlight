@@ -388,6 +388,9 @@ pub struct Model {
     /// dropped by [`Model::bump`] — every mutating path invalidates it
     /// without having to know it exists.
     binding_index: OnceLock<HashMap<BindingKey, usize>>,
+    /// What a puppet bakes from this state. Derived, and dropped by
+    /// [`Model::bump`] like the index above.
+    bake: crate::puppet::BakeMemo,
 }
 
 /// The share of the meeting point a slot pair starts at: the two sides meet
@@ -1012,6 +1015,7 @@ impl Model {
             animations: Vec::new(),
             extensions: BTreeMap::new(),
             binding_index: OnceLock::new(),
+            bake: Default::default(),
         }
     }
 
@@ -1046,6 +1050,12 @@ impl Model {
         // The binding index is derived from `bindings`, and this is the one
         // place every edit passes through.
         self.binding_index.take();
+        self.bake.clear();
+    }
+
+    /// The memo [`crate::puppet::Puppet`] bakes this model through.
+    pub(crate) fn bake_memo(&self) -> &crate::puppet::BakeMemo {
+        &self.bake
     }
 
     // ---- tree ----

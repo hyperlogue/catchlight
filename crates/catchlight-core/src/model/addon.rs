@@ -760,6 +760,7 @@ impl Model {
             // which of them a cut subtree is about; the base keeps them all.
             extensions: BTreeMap::new(),
             binding_index: OnceLock::new(),
+            bake: Default::default(),
         }
     }
 

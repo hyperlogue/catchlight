@@ -52,6 +52,7 @@ pub use response::{ResponseClock, ResponseInputSample, ResponseTrace};
 pub use arena::GlobalTransforms;
 
 pub(crate) use arena::Arena;
+pub(crate) use bake::BakeMemo;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -274,7 +275,11 @@ pub struct AnimationSample<'a> {
 }
 
 impl Puppet {
-    /// Bake `model` and record the generation it was baked at.
+    /// A puppet of `model` at rest, recording the generation it was baked at.
+    ///
+    /// The model keeps what the first puppet of a generation bakes, so this
+    /// bakes once per generation however many puppets are built: the others
+    /// share the baked tables and pay only for a frame of their own.
     pub fn new(model: &Model) -> Self {
         let mut puppet = Self {
             model_identity: model.identity(),
@@ -305,7 +310,7 @@ impl Puppet {
             scratch_transforms: HashMap::new(),
             located: Vec::new(),
         };
-        puppet.install(bake::bake(model));
+        puppet.install(model.bake_memo().get_or_bake(model));
         puppet.responses = response::Responses::bake(&puppet, model, Default::default());
         puppet
     }
@@ -359,7 +364,7 @@ impl Puppet {
             .collect();
 
         let previous = std::mem::take(&mut self.responses);
-        self.install(bake::bake(model));
+        self.install(model.bake_memo().get_or_bake(model));
         self.responses = response::Responses::bake(self, model, previous);
         self.baked_generation = model.generation();
 
@@ -1619,6 +1624,76 @@ mod tests {
             puppet.param_contributions.len(),
             "every claim is indexed exactly once",
         );
+    }
+
+    /// One bake per generation, however many puppets: the model keeps the
+    /// first puppet's bake and the next is built from it. An edit drops it,
+    /// and the puppets that follow the edit share the new one.
+    #[test]
+    fn puppets_of_one_generation_share_a_bake() {
+        use crate::id::SeededHex;
+        use crate::model::ScalarTarget;
+        use crate::model::{BindingKey, BindingTarget, ModelNode, ModelNodeKind, ModelParam};
+        use crate::Name;
+
+        let mut hex = SeededHex::new(5);
+        let mut model = Model::new();
+        let param = model
+            .add_param(
+                ModelParam {
+                    name: Name::truncated("slide"),
+                    min: 0.0,
+                    max: 1.0,
+                    default: 0.0,
+                },
+                &mut hex,
+            )
+            .expect("add param");
+        let root = model.root().expect("a fresh model has one root").clone();
+        let group = model
+            .add_node(&root, ModelNode::new("g", ModelNodeKind::Group), &mut hex)
+            .expect("add group");
+        let key = BindingKey::new(
+            param.clone(),
+            group.clone(),
+            BindingTarget::Scalar(ScalarTarget::Tx),
+        );
+        model.set_binding_key(&key, [0, 0], 0.0).expect("key");
+        model.set_binding_key(&key, [1, 0], 40.0).expect("key");
+
+        let shared = |a: &Puppet, b: &Puppet| {
+            Arc::ptr_eq(&a.bindings, &b.bindings)
+                && Arc::ptr_eq(&a.arena.tree, &b.arena.tree)
+                && Arc::ptr_eq(&a.node_of_id, &b.node_of_id)
+        };
+        let mut first = Puppet::new(&model);
+        let mut second = Puppet::new(&model);
+        assert!(shared(&first, &second));
+        // A snapshot is the same state, and brings the bake with it.
+        let snapshot = model.clone();
+        assert!(shared(&first, &Puppet::new(&snapshot)));
+
+        // The frame is each puppet's own.
+        let idx = first.node_idx(&group).expect("group baked");
+        let tx = |p: &Puppet| p.get(idx).expect("node").transform.translation.x;
+        first.set_param_value(&param, 1.0);
+        first.tick(&model, 0.0);
+        second.tick(&model, 0.0);
+        assert_eq!((tx(&first), tx(&second)), (40.0, 0.0));
+
+        // An edit is a new state: nothing baked before it is handed out.
+        model.set_binding_key(&key, [1, 0], 10.0).expect("key");
+        let after = Puppet::new(&model);
+        assert!(!shared(&first, &after));
+        first.sync(&model);
+        assert!(shared(&first, &after));
+        first.tick(&model, 0.0);
+        assert_eq!(tx(&first), 10.0, "the pose crossed the rebake");
+        // The snapshot still answers for the state it was taken from.
+        let mut old = Puppet::new(&snapshot);
+        old.set_param_value(&param, 1.0);
+        old.tick(&snapshot, 0.0);
+        assert_eq!(tx(&old), 40.0);
     }
 
     /// A clone forks the animation: it shares what the bake derived from the

@@ -8,7 +8,7 @@
 //! across a rebake itself.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use glam::{Vec2, Vec3};
 
@@ -74,6 +74,7 @@ impl BakedBinding {
 ///
 /// Every table here is fixed until the next bake, so each sits behind an
 /// `Arc`: a puppet clones the handles and owns only its frame.
+#[derive(Clone)]
 pub(super) struct Baked {
     pub(super) arena: Arena,
     pub(super) node_of_id: Arc<HashMap<NodeId, NodeIdx>>,
@@ -84,7 +85,42 @@ pub(super) struct Baked {
     pub(super) spine_targets: Arc<Vec<Vec<Option<u32>>>>,
 }
 
-pub(super) fn bake(model: &Model) -> Baked {
+/// A model's bake, held by the model it was baked from.
+///
+/// Baking is the expensive half of building a puppet and reads nothing but
+/// the model, so every puppet of one generation derives the same tables. The
+/// model keeps the first one's and the rest take a copy: the handles to what
+/// is fixed, and the frame at rest. A query that builds a puppet to answer
+/// one question and drops it pays for the frame, not for the bake.
+///
+/// [`Model::bump`] clears it, as it does every derived memo, so it never
+/// describes a state the model has left; a clone of the model carries it,
+/// because a clone is the same state.
+#[derive(Clone, Default)]
+pub(crate) struct BakeMemo(OnceLock<Arc<Baked>>);
+
+impl BakeMemo {
+    pub(crate) fn clear(&mut self) {
+        self.0.take();
+    }
+
+    /// `model`'s bake: derived on the first call of a generation, copied out
+    /// of the memo on every one. `self` must be `model`'s own memo.
+    pub(super) fn get_or_bake(&self, model: &Model) -> Baked {
+        Baked::clone(self.0.get_or_init(|| Arc::new(bake(model))))
+    }
+}
+
+impl std::fmt::Debug for BakeMemo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self.0.get() {
+            Some(_) => "BakeMemo(baked)",
+            None => "BakeMemo(empty)",
+        })
+    }
+}
+
+fn bake(model: &Model) -> Baked {
     let mut arena = Arena::new();
     let mut node_of_id = HashMap::with_capacity(model.node_count());
     let mut id_of_node = Vec::with_capacity(model.node_count());
