@@ -1,13 +1,10 @@
 #!/usr/bin/env bash
-# Publish the `v<version>` GitHub release with the editor app's release files,
-# its notes taken from that version's CHANGELOG.md section.
+# Publish the `v<version>` GitHub release with the editor app's release files.
 #
 #   attach-release-assets.sh <dir>
 #
-# Needs `gh` authenticated (GH_TOKEN) and GITHUB_REPOSITORY. Releases here are
-# immutable: once published, nothing can be attached or replaced. `gh release
-# create` with files keeps the release a draft until every upload lands, then
-# publishes it, so an interrupted run leaves a draft that a rerun finishes.
+# Releases are immutable once published. `gh release create` with files stays a
+# draft until every upload lands, so a rerun finishes an interrupted draft.
 set -euo pipefail
 
 dir=${1:?usage: attach-release-assets.sh <dir>}

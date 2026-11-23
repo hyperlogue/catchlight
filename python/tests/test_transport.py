@@ -1,10 +1,5 @@
-"""Both doors' one hard rule: reconnect before a request, never after one.
-
-The editor closes a connection idle for 30 s, and answers every HTTP request
-with `Connection: close` besides. A client that discovered either half way
-through a `node_add` could not tell whether the node was added, so a transport
-remakes a connection *before* a request and lets a mid-request failure raise.
-"""
+"""Transports reconnect before a request, never after one: a mid-request
+failure cannot tell whether the command applied."""
 
 from __future__ import annotations
 
@@ -35,7 +30,6 @@ def test_a_fresh_connection_is_reused_across_requests(server: LaunchedServer) ->
 def test_a_connection_past_the_window_is_remade_before_the_request(
     server: LaunchedServer,
 ) -> None:
-    """A window of zero makes every request the one after a long gap."""
     with UnixSocketTransport(server.socket_path, reconnect_after=0.0) as transport:
         client = Client(transport)
         session = client.new()
@@ -44,8 +38,6 @@ def test_a_connection_past_the_window_is_remade_before_the_request(
 
 
 def test_a_closed_connection_is_remade_on_the_next_request(server: LaunchedServer) -> None:
-    """Sessions are the editor's, not the connection's, so a client survives
-    losing one."""
     with UnixSocketTransport(server.socket_path) as transport:
         client = Client(transport)
         session = client.new()
@@ -57,14 +49,12 @@ def test_a_closed_connection_is_remade_on_the_next_request(server: LaunchedServe
 def test_a_request_over_the_editors_cap_is_refused_before_it_is_sent(
     server: LaunchedServer,
 ) -> None:
-    """The editor answers a line this long by closing the connection, so the
-    transport stops it here, where the error still names the request."""
+    """The editor would close the connection; refusing here names the request."""
     client = server.client()
     session = client.new()
     with pytest.raises(TransportError) as raised:
         client.add_part(session, name="x" * MAX_REQUEST_BYTES)
     assert str(MAX_REQUEST_BYTES) in str(raised.value)
-    # Nothing reached the wire, so the next request is fine.
     assert client.send(SessionList())
 
 
@@ -80,9 +70,6 @@ def test_no_editor_at_the_path_is_a_transport_error(tmp_path: Path) -> None:
 def test_every_post_dials_because_the_editor_closes_every_response(
     served: LaunchedServer,
 ) -> None:
-    """`Connection: close` on every answer is the door's own rule, so a command
-    never reuses a socket. The transport dials again rather than writing into
-    the one the editor just hung up."""
     with HttpTransport(served.http_url or "", served.token or "") as transport:
         client = Client(transport)
         client.send(SessionList())
@@ -93,8 +80,6 @@ def test_every_post_dials_because_the_editor_closes_every_response(
 def test_a_closed_http_transport_is_remade_on_the_next_request(
     served: LaunchedServer,
 ) -> None:
-    """Sessions are the editor's here too, so closing the transport under a
-    client loses the connection and not the work."""
     with HttpTransport(served.http_url or "", served.token or "") as transport:
         client = Client(transport)
         session = client.new()
@@ -106,8 +91,6 @@ def test_a_closed_http_transport_is_remade_on_the_next_request(
 def test_a_post_over_the_editors_cap_is_refused_before_it_is_sent(
     over_http: Client,
 ) -> None:
-    """The door answers a body this long with a 413. Refusing it here instead
-    keeps the error naming the request rather than the status."""
     session = over_http.new()
     with pytest.raises(TransportError) as raised:
         over_http.add_part(session, name="x" * MAX_REQUEST_BYTES)
@@ -116,8 +99,6 @@ def test_a_post_over_the_editors_cap_is_refused_before_it_is_sent(
 
 
 def test_no_editor_at_the_address_is_a_transport_error(served: LaunchedServer) -> None:
-    """The door is gone but the URL is still loopback, so this is the failure a
-    request meets rather than one the constructor could have caught."""
     url, token = served.http_url or "", served.token or ""
     served.stop()
     with HttpTransport(url, token) as transport:
@@ -129,11 +110,7 @@ def test_no_editor_at_the_address_is_a_transport_error(served: LaunchedServer) -
 def test_the_socket_survives_a_gap_longer_than_the_editors_idle_timeout(
     server: LaunchedServer,
 ) -> None:
-    """The one test that actually waits out `SOCKET_IO_TIMEOUT` (30 s).
-
-    Everything else about the reconnect is checked by shrinking the window,
-    which proves the rule holds and not that the rule is the right one.
-    """
+    """Actually waits out the editor's 30 s idle timeout."""
     client = server.client()
     session = client.new()
     time.sleep(31.0)

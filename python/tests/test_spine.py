@@ -1,10 +1,4 @@
-"""Authoring a spine through the editor, and reopening the file it wrote.
-
-A spine is the one deforming node that carries no cells: a polyline of joints
-and one bend param per link. What the test grades is that both survive a save
-and a reopen under the names `spine_set` takes them by, and that a spine the
-file would refuse never reaches the model.
-"""
+"""Authoring a spine and reopening the file it wrote."""
 
 from __future__ import annotations
 

@@ -26,7 +26,6 @@ jobs:
       - uses: DeterminateSystems/magic-nix-cache-action@v14
       - uses: Swatinem/rust-cache@v2
       - uses: actions/configure-pages@v6
-      # Release: this is the bundle a visitor downloads.
       - run: nix develop -c cargo xtask build-wasm
       - run: nix develop -c bun install --frozen-lockfile
       # Pages serves under /<repo>/, which every asset URL has to carry.

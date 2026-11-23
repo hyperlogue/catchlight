@@ -245,7 +245,6 @@ def run(client: Client, out: Path, cli: Path) -> dict:
                         "--out-dir", str(out / name)], check=True, capture_output=True)
         if not json.loads((out / name / "run.json").read_text())["complete"]:
             raise AssertionError(f"render did not complete: {name}")
-    # Publication stays a separate caller decision after geometry and renders pass.
     client.apply(source, edits, if_rev=base_revision)
     if client.export_model(source) != candidate_bytes:
         raise AssertionError("replay differs from the reviewed candidate")

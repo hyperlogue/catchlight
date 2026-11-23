@@ -1,19 +1,10 @@
 name: Release
 
-# One release for crates.io, npm and the GitHub release, from the `v<version>`
-# tag. Pushing the tag publishes; a manual run defaults to a dry run, and a
-# live manual run from the tag resumes a partial release.
-#
-# Everything is verified before anything is published: the crates, the npm
-# tarballs, and the editor app built on every platform. One `publish` job
-# (one approval of the `release` environment) then publishes in order: the
-# GitHub release first, since it is immutable once published and the step most
-# likely to fail, then npm, then crates.io. Each step skips what a previous
-# attempt already published.
+# Pushing the `v<version>` tag publishes; a manual run defaults to a dry run.
+# The GitHub release publishes first because it is immutable once published.
 #
 # Trusted publishing on npm and crates.io names this file and the `release`
-# environment; renaming either breaks publishing until they are re-registered
-# (.claude/skills/release/SKILL.md).
+# environment; renaming either breaks publishing until they are re-registered.
 on:
   push:
     tags: ['v*']
@@ -47,7 +38,6 @@ jobs:
           LIVE: ${{ inputs.dry_run != true }}
         run: |
           version=$(python3 scripts/release/check.py)
-          # The GitHub release body.
           python3 scripts/release/check.py --notes > /dev/null
           # @catchlight/editor below 0.2.0 is the component library.
           [[ "$version" != 0.0.* && "$version" != 0.1.* ]] || {
@@ -103,7 +93,6 @@ jobs:
             dist/npm/releases.json
           if-no-files-found: error
 
-  # Platform binaries, their archives, and the npm launcher and platform packages.
   app:
     needs: check
     uses: ./.github/workflows/editor-app.yml
@@ -130,7 +119,6 @@ jobs:
         with:
           name: npm-release
           path: dist/npm
-      # The page the app's binaries embed, which `catchlight-editor` packages.
       - uses: actions/download-artifact@v4
         with:
           name: editor-ui

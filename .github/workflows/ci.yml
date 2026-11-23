@@ -8,11 +8,7 @@ on:
 env:
   RUST_BACKTRACE: 1
 
-# Every Linux job runs its cargo through `nix develop -c`, so the toolchain,
-# the linker and the runtime libraries are exactly the ones `nix/shell.nix`
-# pins for local development. The editor tools also run on macOS and Windows,
-# where Nix is unavailable or unneeded; `editor-native` covers them there and
-# `editor-app.yml` builds the downloadable binaries.
+# Linux jobs run cargo through `nix develop -c` to match local development.
 jobs:
   release-version:
     name: shared release version
@@ -58,15 +54,11 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@v22
       - uses: DeterminateSystems/magic-nix-cache-action@v14
       - uses: Swatinem/rust-cache@v2
-      # The editor runs in a browser, so everything under it has to keep
-      # compiling for wasm32. The editor server is on this list because the
-      # storage seam is what put it there: a `path` is a storage key rather
-      # than a filesystem path, and nothing may quietly reintroduce a
-      # filesystem call that only builds natively.
+      # The editor runs in a browser, so everything under it must keep
+      # compiling for wasm32, including the editor server's storage seam.
       - run: nix develop -c cargo build --target wasm32-unknown-unknown -p catchlight --features catchlight/wgpu -p catchlight-core -p catchlight-wgpu -p catchlight-importer -p catchlight-editor-server -p catchlight-editor-wasm
-      # `xtask` turns the protocol crate's `ts` feature on, and Cargo unifies
-      # features across a build — so this asserts the unification stops at the
-      # workspace boundary and no shipped artifact links the code generator.
+      # Cargo unifies features, so check the protocol's `ts` feature (enabled
+      # by xtask) does not leak into a shipped artifact.
       - name: the browser bundle carries no codegen dependency
         run: |
           if nix develop -c cargo tree --target wasm32-unknown-unknown \
@@ -85,16 +77,9 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@v22
       - uses: DeterminateSystems/magic-nix-cache-action@v14
       - uses: Swatinem/rust-cache@v2
-      # The TypeScript wire types are generated from the Rust enums and
-      # committed. The generator's own tests regenerate and byte-compare, and
-      # hold the command classification to the enum; they are the one guard,
-      # run here as the same `cargo test` a contributor runs locally. The
-      # fixture tests are skipped because they belong to the model fixtures
-      # rather than to the generator, and `cargo test --workspace` owns them.
+      # Fixture tests are skipped: `cargo test --workspace` owns them.
       - name: protocol types are current
         run: nix develop -c cargo test -p xtask -- --skip 'fixtures::'
-      # The site imports `@catchlight/wasm`, so the generated package has to
-      # exist before anything typechecks or builds against it.
       - run: nix develop -c cargo xtask build-wasm --release
       - run: nix develop -c bun install --frozen-lockfile
       - run: nix develop -c bun run typecheck
@@ -104,14 +89,8 @@ jobs:
           nix develop -c bun run npm:pack
           nix develop -c bun run npm:verify
       - run: nix develop -c bun run --filter catchlight-demo build
-      # Python integration tests launch the native editor server and CLI.
       - run: nix develop -c cargo build -p catchlight-editor-server -p catchlight-editor-cli
-      # The Python client launches that server binary once per test and saves a
-      # model the editor's own reader opens back, so it runs here, not in a job
-      # of its own.
       - run: nix develop -c bash -c 'cd python && uv run pytest -q'
-      # The downloadable editor: its page compiled in, a tab watching while an
-      # agent drives the session through the same binary.
       - run: nix develop -c cargo xtask bundle-ui
       - run: nix develop -c cargo build -p catchlight-editor
       - name: launcher E2E
@@ -133,8 +112,7 @@ jobs:
       - uses: actions/checkout@v7
       - run: rustup toolchain install stable --profile minimal --no-self-update
       - uses: Swatinem/rust-cache@v2
-      # The launcher builds without its page here; the HTTP door, the
-      # connection file and the cli's transport are what differ per OS.
+      # The HTTP door, connection file and cli transport differ per OS.
       - run: cargo +stable test --locked -p catchlight-editor-cli -p catchlight-editor
       # Previews need a GPU adapter, which these runners do not promise.
       - run: cargo +stable test --locked -p catchlight-editor-server --bin catchlight-editor-server --test http_ws -- --skip payload
@@ -149,6 +127,4 @@ jobs:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@v22
       - uses: DeterminateSystems/magic-nix-cache-action@v14
-      # The shipped binaries, built from the flake so the packaging
-      # cannot rot while the workspace moves under it.
       - run: nix build --print-build-logs .#catchlight-editor-server .#catchlight-cli .#catchlight-editor-cli .#catchlight-importer

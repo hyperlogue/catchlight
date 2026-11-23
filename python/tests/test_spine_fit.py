@@ -1,14 +1,4 @@
-"""Rigging a strand of hair to a spine, through the editor.
-
-`fit_spine` is one command that authors two kinds of thing at once — the bend
-params and the spine node between the part and its parent — so the test that
-matters is the one that reads both back out of a *reopened* file rather than
-out of the session that wrote them. Everything here follows `test_builder.py`
-in that: build, save, open, ask.
-
-It authors no bindings, which is the point of the kind: a spine composes its
-joints itself, so there is nothing to key.
-"""
+"""Fitting a strand to a spine, checked on a reopened file."""
 
 from __future__ import annotations
 
@@ -52,7 +42,6 @@ def _bindings(client: Client, session: SessionId, node: str) -> ResponseBodyBind
 
 
 def _strand(tmp_path: Path) -> Path:
-    """A tall, narrow image: art a strand can be fitted to."""
     return write_png(tmp_path / "hair.png", width=16, height=64)
 
 
@@ -70,7 +59,6 @@ def test_a_fitted_spine_reopens_as_what_was_fitted(
     saved = built.save_to(tmp_path / "doll.clm")
     reopened = client.open(saved)
 
-    # Three input params, named after the part, with half-turn ranges.
     params = _params(client, reopened).params
     assert [p.id for p in params] == fit.params
     assert [p.name for p in params] == ["Hair bend 1", "Hair bend 2", "Hair bend 3"]
@@ -78,10 +66,8 @@ def test_a_fitted_spine_reopens_as_what_was_fitted(
         assert (param.min, param.max, param.default) == (-1.0, 1.0, 0.0)
         assert param.bindings == 0, "a spine keys nothing"
 
-    # No bindings at all on the part.
     assert _bindings(client, reopened, part).bindings == []
 
-    # The spine, between the part and the parent the part used to have.
     spine = _info(client, reopened, fit.node)
     assert spine.kind == "spine"
     assert spine.name == "Hair spine"
@@ -108,7 +94,6 @@ def test_a_refit_reuses_the_spine_and_keeps_its_params(
 def test_a_spine_added_by_hand_reads_the_params_it_names(
     client: Client, tmp_path: Path
 ) -> None:
-    """`spine` is the plain half: the joints, their targets."""
     built = Builder.new(client)
     sway = built.param("Sway", min=-1.0, max=1.0)
     node = built.spine(
@@ -122,6 +107,5 @@ def test_a_spine_added_by_hand_reads_the_params_it_names(
     assert held is not None
     assert held.targets == [sway, None]
 
-    # An add may name the Id it makes, as every other add here may.
     plain = built.spine("root", [(0.0, -20.0)], node="root/tail")
     assert plain == "root/tail"

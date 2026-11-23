@@ -1,47 +1,7 @@
-"""One blocking client over one transport: send a command, get its body.
+"""A blocking client over one transport.
 
-Every command in the protocol goes through [`Client.send`]. What differs
-between commands is what sending one *means*, and the protocol writes that down
-as `CommandKind` — so this client routes on the kind it is given rather than
-offering a method per kind that a caller could pick wrong.
-
-Invariants this module enforces:
-
-- **One send, routed by kind.** An `edit` command moves the session's
-  revision when authored content changes. Presence publishes view state,
-  while the query kinds read. `send` records each captured reply revision,
-  including reads, without inferring a newer revision from another request.
-
-- **A refused command raises, a broken connection raises differently.** An
-  editor that answered `err` is working — the command was wrong — so that is a
-  [`ProtocolError`] carrying the `ErrorCode` a caller branches on. A connection
-  that failed is a `TransportError` from the transport.
-
-- **The revision is what this client last saw.** It comes from replies and
-  from nothing else. Neither door this client speaks hears an event — those go
-  to the browser tab's WebSocket — so a blocking caller acts on the answer to
-  its own command.
-
-- **A path is absolute before it is sent.** The wire carries a storage key, and
-  what a relative one resolves against is the *server's* store root, not this
-  script's directory. Every convenience method here makes the path absolute, so
-  the two agree without either having to know the other's working directory.
-
-- **Bytes go where the store is.** A *stored* file is still the store's: over
-  the socket the editor reads the very filesystem this script is on, so a save
-  is a save and `open` names a file it can read; over HTTP the store is
-  somewhere else, so a save is the model fetched back and written here.
-
-- **Bytes a command needs travel with it.** An image, a `.clm`, a manifest and
-  its textures are read here and handed to `send_with`, which puts them beside
-  the command whichever door is underneath. Nothing is staged first, so there
-  is no key to name, no upload to clean up, and the same call works over both
-  transports.
-
-- **An extension's kind is its Python type.** `extension_set` files `bytes` as
-  a byte extension and anything else as JSON, and `extension_get` gives back
-  what was written. Catchlight reads neither: a value goes in, the same value
-  comes out of the next save, and nothing here interprets it.
+Paths are made absolute before they are sent, because a relative key would
+resolve against the server's store root rather than this script's directory.
 """
 
 from __future__ import annotations
@@ -132,7 +92,6 @@ class ProtocolError(RuntimeError):
 
 
 class Client:
-    """An editing session's worth of commands, over one transport."""
 
     def __init__(self, transport: Transport) -> None:
         self._transport = transport
@@ -150,10 +109,7 @@ class Client:
     # -- the one send
 
     def send(self, command: Command) -> ResponseBody:
-        """Send any command and return the body of its reply.
-
-        Raises [`ProtocolError`] if the editor refused it.
-        """
+        """Raises `ProtocolError` if the editor refused the command."""
         reply = parse_reply(self._transport.request(command.to_wire()))
         if isinstance(reply, ReplyErr):
             raise ProtocolError(
@@ -172,12 +128,6 @@ class Client:
         command: Command,
         attachments: Mapping[str, bytes] | None = None,
     ) -> tuple[ResponseBody, bytes | None]:
-        """[`Client.send`] for a command that carries bytes.
-
-        The attachments go beside the command and the payload comes back beside
-        the reply, whichever door the transport is; what the framing looks like
-        is [`catchlight.transport`]'s business and differs between the two.
-        """
         wire, payload = self._transport.request_with(command.to_wire(), attachments)
         reply = parse_reply(wire)
         if isinstance(reply, ReplyErr):
@@ -193,15 +143,10 @@ class Client:
         return reply.body, payload
 
     def revision(self, session: SessionId) -> int | None:
-        """The revision this client's last reply reported for `session`."""
         return self._revisions.get(session)
 
     def _record(self, command: Command, reply: ReplyOk) -> None:
-        """Remember the exact captured revision on every successful model read.
-
-        A fork's outer revision belongs to its new session; its source remains
-        at the independently captured revision named in the response body.
-        """
+        """A fork's outer revision belongs to the new session, not its source."""
         if isinstance(command, SessionClose):
             self._revisions.pop(command.session, None)
             return
@@ -218,11 +163,9 @@ class Client:
             self._revisions[session] = reply.rev
 
     def require_revision(self, session: SessionId, if_rev: int | None = None) -> int:
-        """Choose an explicit guard or the last captured revision.
+        """An explicit guard, else the last captured revision.
 
-        A session this client has not read is queried once. A stale known
-        revision is preserved so the server refuses the write; no command is
-        automatically retried against someone else's newer work.
+        A stale known revision is kept so the server refuses the write.
         """
         if if_rev is not None:
             return if_rev
@@ -236,39 +179,24 @@ class Client:
     # -- sessions
 
     def new(self, name: str | None = None) -> SessionId:
-        """An empty session. `name` is a title only; nothing addresses it."""
+        """`name` is a title only; nothing addresses it."""
         return _session(self.send(SessionNew(name=name)))
 
     def open(self, path: str | os.PathLike[str]) -> SessionId:
-        """Open a `.clm` into a session.
-
-        `path` is made absolute, so it names the same file to the editor as it
-        does here — as long as the editor is on this filesystem. Over HTTP it
-        is a key in the server's own store instead.
-        """
+        """Over HTTP `path` is a key in the server's own store instead."""
         return _session(self.send(SessionOpen(path=_absolute(path))))
 
     def close_session(self, session: SessionId) -> None:
-        """Discard a session and its undo history. Unsaved edits are lost."""
+        """Unsaved edits are lost."""
         self.send(SessionClose(session=session))
 
     # -- output
 
     def save(self, session: SessionId, key: str | None = None) -> str:
-        """Write the model into the editor's store and return the key.
-
-        `key` absent saves back over what the session was opened from, which a
-        session created from an upload does not have.
-        """
         return _saved(self.send(Save(session=session, path=key)))
 
     def save_to(self, session: SessionId, path: str | os.PathLike[str]) -> str:
-        """Write the model to a local file and return its path.
-
-        Over the socket that is a save, because the editor's store is this
-        filesystem. Over HTTP the editor's store is somewhere else, so the
-        model is fetched and written here.
-        """
+        """Over HTTP the model is fetched and written locally."""
         target = _absolute(path)
         transport = self._transport
         if isinstance(transport, ByteTransport):
@@ -284,7 +212,6 @@ class Client:
         parent: NodeId = "root",
         name: str | None = None,
     ) -> NodeId:
-        """Add a part under `parent` and return the Id the editor minted."""
         body = self.send(
             NodeAdd(session=session, parent=parent, kind=NodeKindArg.PART, name=name)
         )
@@ -298,10 +225,6 @@ class Client:
         node: NodeId,
         path: str | os.PathLike[str],
     ) -> TexId:
-        """Give `node` the image at `path`, and return the texture's Id.
-
-        Sends the file bytes with an explicit encoding selected from its suffix.
-        """
         source = Path(_absolute(path))
         body, _ = self.send_with(
             TextureAdd(
@@ -320,11 +243,7 @@ class Client:
     def from_file(
         self, path: str | os.PathLike[str], *, name: str | None = None,
     ) -> SessionId:
-        """Create a clean revision-zero session from local `.clm` bytes.
-
-        The new session has no save path. `open` instead reads a store-owned
-        file and remembers that path for later saves.
-        """
+        """The new session has no save path, unlike `open`."""
         body, _ = self.send_with(
             SessionNew(name=name, source=SessionSourceClm()),
             {"model": Path(_absolute(path)).read_bytes()},
@@ -340,11 +259,7 @@ class Client:
         name: str | None = None,
         alpha: TextureAlpha = TextureAlpha.STRAIGHT,
     ) -> SessionId:
-        """Create a session from a complete CLM structure and local images.
-
-        Binary extensions need a CLM source, because JSON contains their
-        markers without their payloads. Construction failure creates no session.
-        """
+        """Binary extensions need a CLM source; JSON lacks their payloads."""
         declared, attachments = _structure_attachments(structure, textures, alpha)
         body, _ = self.send_with(
             SessionNew(name=name, source=SessionSourceJson(textures=declared)),
@@ -355,7 +270,6 @@ class Client:
     def from_manifest(
         self, manifest_path: str | os.PathLike[str], *, name: str | None = None,
     ) -> SessionId:
-        """Create a session from a manifest and its images in one request."""
         source = Path(_absolute(manifest_path))
         manifest = source.read_bytes()
         attachments: dict[str, bytes] = {"manifest": manifest}
@@ -377,11 +291,7 @@ class Client:
         if_rev: int | None = None,
         alpha: TextureAlpha = TextureAlpha.STRAIGHT,
     ) -> None:
-        """Install structure roots beneath `parent` as one guarded edit.
-
-        Existing IDs must not collide. Use `from_json` for a complete new
-        session; this operation always installs into an existing model.
-        """
+        """Existing IDs must not collide with the installed roots."""
         declared, attachments = _structure_attachments(structure, textures, alpha)
         self.send_with(
             ImportJson(
@@ -395,7 +305,6 @@ class Client:
         self, session: SessionId, *, name: str | None = None,
         if_rev: int | None = None,
     ) -> SessionId:
-        """Copy one captured authored state into an independent clean session."""
         body = self.send(SessionFork(
             session=session, if_rev=self.require_revision(session, if_rev), name=name,
         ))
@@ -404,7 +313,6 @@ class Client:
         return body.session
 
     def export_model(self, session: SessionId, *, if_rev: int | None = None) -> bytes:
-        """Return a guarded CLM snapshot without changing save state or history."""
         body, payload = self.send_with(ModelExport(
             session=session, if_rev=self.require_revision(session, if_rev),
         ))
@@ -420,11 +328,7 @@ class Client:
         self, session: SessionId, edits: Sequence[EditOp], *,
         if_rev: int | None = None, validate: bool = False,
     ) -> ResponseBodyEditResults:
-        """Apply one atomic edit list, or validate it without publication.
-
-        `ProtocolError.op_index` identifies a failed operation. No preceding
-        operation in a refused list is published.
-        """
+        """`ProtocolError.op_index` identifies a failed operation."""
         command = EditValidate if validate else EditApply
         body = self.send(command(
             session=session, if_rev=self.require_revision(session, if_rev),
@@ -464,12 +368,7 @@ class Client:
         camera: Camera | None = None,
         out: str | os.PathLike[str] | None = None,
     ) -> bytes:
-        """Render one frame of `session` and return the PNG.
-
-        `camera` absent frames the editor's default; what any tab is looking at
-        is never consulted, so this answers the same whoever else is connected.
-        `out` writes the bytes here as well as returning them.
-        """
+        """`camera` absent frames the editor's default, not any tab's view."""
         body, payload = self.send_with(
             Preview(
                 session=session,
@@ -489,14 +388,9 @@ class Client:
     # -- extensions
 
     def extension_set(self, session: SessionId, key: ExtensionKey, value: Any) -> None:
-        """File `value` under `key`, replacing whatever was there.
+        """`bytes` becomes a byte extension; anything else is JSON.
 
-        `bytes` (or a `bytearray`) is a byte extension and travels attached;
-        anything else is JSON and travels inline. The Python type decides,
-        because that is the distinction a caller already made when it built
-        the value.
-
-        `catchlight.` is the format's own prefix and is refused.
+        The `catchlight.` prefix is reserved and refused.
         """
         if isinstance(value, (bytes, bytearray)):
             self.send_with(
@@ -511,11 +405,6 @@ class Client:
             )
 
     def extension_get(self, session: SessionId, key: ExtensionKey) -> Any:
-        """The value filed under `key`: the JSON it holds, or its `bytes`.
-
-        The same split as `extension_set`, in reverse — so a value written
-        here comes back as what was written.
-        """
         body, payload = self.send_with(ExtensionGet(session=session, key=key))
         if not isinstance(body, ResponseBodyExtension):
             raise ProtocolError(ErrorCode.BAD_REQUEST, f"extension_get answered {body!r}")
@@ -528,16 +417,10 @@ class Client:
         return payload
 
     def extension_delete(self, session: SessionId, key: ExtensionKey) -> None:
-        """Drop the extension filed under `key`. A key the model does not
-        carry raises, rather than quietly doing nothing."""
+        """Raises if the model does not carry `key`."""
         self.send(ExtensionDelete(session=session, key=key))
 
     def extensions(self, session: SessionId) -> list[ExtensionInfo]:
-        """Every extension the model carries, in key order.
-
-        A byte value is reported as its size and hash — the marker a feed
-        compares — never its bytes; `extension_get` is what fetches those.
-        """
         body = self.send(Extensions(session=session))
         if not isinstance(body, ResponseBodyExtensions):
             raise ProtocolError(ErrorCode.BAD_REQUEST, f"extensions answered {body!r}")
@@ -564,20 +447,13 @@ def _structure_attachments(
 
 
 def _encoding_of(path: Path) -> TextureEncoding:
-    """How to read an image, from its suffix. The client's call now: the
-    command carries the encoding as a field."""
     if path.suffix.lower() == ".tga":
         return TextureEncoding.TGA
     return TextureEncoding.PNG
 
 
 def _texture_references(manifest: bytes, source: Path) -> list[str]:
-    """Every `path` the manifest's textures name, verbatim.
-
-    Verbatim is the point: the editor matches an attachment to a reference by
-    the string the manifest spells, so normalising one here would name a
-    texture the manifest never asked for.
-    """
+    """Verbatim: the editor matches attachments by the manifest's spelling."""
     try:
         parsed = json.loads(manifest)
     except ValueError as err:

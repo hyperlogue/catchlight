@@ -1,10 +1,4 @@
-"""The placement file, read and written.
-
-The round trip is the contract with the pipeline step upstream: whatever it
-writes with `write_layers` is what `read_layers` hands the builder, mesh modes
-and all. Everything else here is a way for that step to be wrong, and the check
-is always that the message names the layer to go and look at.
-"""
+"""The placement file, read and written."""
 
 from __future__ import annotations
 
@@ -65,7 +59,6 @@ def test_a_layer_with_no_file_is_a_group_and_has_no_path(tmp_path: Path) -> None
 
 
 def test_defaults_are_left_out_and_read_back_in(tmp_path: Path) -> None:
-    """A layer that took every default writes two keys, and reads as itself."""
     write_png(tmp_path / "hair.png")
     plain = Layer(name="Hair", file="hair.png")
     where = write_layers(Placement(root=tmp_path, layers=(plain,)), tmp_path / "l.json")
@@ -106,7 +99,6 @@ def test_a_file_that_is_not_there_is_refused_by_name(tmp_path: Path) -> None:
 
 
 def test_a_file_outside_the_placement_is_refused(tmp_path: Path) -> None:
-    """A placement travels with its directory, so it may not name a path off it."""
     for escape in ("/etc/passwd", "../face.png"):
         with pytest.raises(LayersError, match="not below the placement"):
             read_layers(_write(tmp_path, {"name": "Face", "file": escape}))

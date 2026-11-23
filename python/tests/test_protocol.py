@@ -1,11 +1,6 @@
-"""The generated protocol module, held to the wire it describes.
+"""The generated protocol module checked against hand-written wire shapes.
 
-`protocol_gen.py` is written by `cargo xtask generate python`, so what is worth
-testing is not that the generator ran but that what it produced says the same
-thing the Rust types do. The expected dicts here are written by hand, from the
-protocol crate's own definitions; the same shapes are asserted against `serde`
-in `crates/xtask/src/generate/python.rs`, so the two languages are anchored to
-one written-down answer rather than to each other.
+The same shapes are asserted against serde in the xtask generator tests.
 """
 
 from __future__ import annotations
@@ -51,7 +46,6 @@ from catchlight import protocol_gen
 
 
 def command_classes() -> list[type]:
-    """Every class the `Command` union is made of."""
     import typing
 
     return list(typing.get_args(Command))
@@ -70,7 +64,6 @@ def test_every_command_class_is_classified() -> None:
 
 
 def test_every_command_is_reachable_through_its_kind() -> None:
-    """A client picks a send method by kind, so no command may sit outside one."""
     import typing
 
     reached: set[str] = set()
@@ -135,8 +128,6 @@ def test_a_command_of_each_kind_encodes_to_the_wire(kind, command, expected) -> 
 
 
 def test_an_absent_option_is_left_off_rather_than_sent_as_null() -> None:
-    """Every optional field on this wire has a serde default, so absent says
-    "unchanged" and is shorter than null."""
     assert NodeAdd(session=1, parent="root", kind=NodeKindArg.GROUP).to_wire() == {
         "cmd": "node_add",
         "session": 1,
@@ -146,8 +137,6 @@ def test_an_absent_option_is_left_off_rather_than_sent_as_null() -> None:
 
 
 def test_a_flattened_struct_is_flat_on_the_wire() -> None:
-    """`NodeSet` carries a `NodePatch` under `#[serde(flatten)]`, and
-    exact binding-cell commands carry their params the same way."""
     assert NodeSet(session=1, node="hair", opacity=0.5, texture="tex-1").to_wire() == {
         "cmd": "node_set",
         "session": 1,
@@ -158,10 +147,7 @@ def test_a_flattened_struct_is_flat_on_the_wire() -> None:
 
 
 def test_a_merge_patch_field_says_which_of_its_three_states_it_means() -> None:
-    """`texture` is the one field with three of them: `None` leaves the part
-    drawing what it drew, `CLEAR` makes it draw none, and a `TexId` points it
-    at that texture. Absent and null are the two a two-state field cannot tell
-    apart, which is why `CLEAR` exists."""
+    """`None` leaves the texture, `CLEAR` removes it, a `TexId` replaces it."""
     absent = NodeSet(session=1, node="hair").to_wire()
     assert "texture" not in absent
 
@@ -181,9 +167,6 @@ def test_a_merge_patch_field_says_which_of_its_three_states_it_means() -> None:
 
 
 def test_a_mesh_travels_as_lists_of_points() -> None:
-    """A vertex is a pair and a triangle is a triple, so a flat run that lost
-    half a coordinate is refused by the editor's parser rather than by a length
-    check it had to remember to write."""
     assert MeshSet(
         session=1,
         node="hair",
@@ -263,8 +246,7 @@ def test_an_err_reply_parses_to_a_code_a_client_can_branch_on() -> None:
 
 
 def test_an_event_arrives_flattened_into_its_reply() -> None:
-    """`Reply::Event` is a newtype variant of an internally tagged enum, so the
-    event's own fields sit beside the `reply` tag rather than under a key."""
+    """An event's fields sit beside the `reply` tag (internally tagged enum)."""
     line = {"reply": "event", "event": "model_changed", "session": 3, "rev": 9}
     reply = parse_reply(line)
     assert isinstance(reply, ReplyEvent)
@@ -319,9 +301,7 @@ def test_an_unknown_tag_is_refused() -> None:
 
 
 def test_a_command_is_frozen_and_keyword_only() -> None:
-    """Frozen because a command is a message, not a builder; keyword-only
-    because `session`, `node` and `slot` are all strings and positional
-    arguments would let two of them swap silently."""
+    """Keyword-only because several string fields could silently swap."""
     command = Status(session=1)
     with pytest.raises(dataclasses.FrozenInstanceError):
         command.session = 2  # type: ignore[misc]

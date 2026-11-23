@@ -1,10 +1,4 @@
-"""Bytes beside a command, over both doors.
-
-The point of these is that the *wrapper* is the same call whichever transport
-is underneath: the socket writes temporary files and names them, HTTP builds a
-multipart body, and a caller writes neither. So almost everything here runs
-twice, once against `client` (the socket) and once against `over_http`.
-"""
+"""Bytes beside a command, exercised over both transports."""
 
 from __future__ import annotations
 
@@ -29,7 +23,6 @@ from support import minimal_structure, png_size, write_manifest, write_png
 def either(
     request: pytest.FixtureRequest, served: LaunchedServer
 ) -> Client:
-    """The same editor reached both ways, so a test is written once."""
     if request.param == "socket":
         return served.client()
     return served.connect()
@@ -53,8 +46,6 @@ def test_a_preview_writes_the_file_it_is_asked_for(
 def test_a_camera_is_the_commands_and_nobody_elses(
     either: Client, tmp_path: Path
 ) -> None:
-    """Two heights are two pictures, and neither depends on what a tab is
-    looking at."""
     session = either.from_manifest(write_manifest(tmp_path))
     near = either.preview(
         session, size=(64, 64), camera=Camera(center=(0.0, 0.0), height=48.0)
@@ -68,8 +59,6 @@ def test_a_camera_is_the_commands_and_nobody_elses(
 def test_a_model_imports_into_a_fresh_session(
     either: Client, served: LaunchedServer, tmp_path: Path
 ) -> None:
-    """The bytes are read here and travel with the command, so this works over
-    a door the editor cannot read files through."""
     authored = either.new()
     either.add_part(authored, name="Body")
     source = Path(served.client().save(authored, str(tmp_path / "authored.clm")))
@@ -93,8 +82,6 @@ def test_a_failed_source_creates_no_session(either: Client, tmp_path: Path) -> N
 def test_a_json_structure_and_its_images_import_over_either_door(
     either: Client, tmp_path: Path
 ) -> None:
-    """A client that authored a structure sends it with its images, and never
-    builds a container to do it."""
     into = either.from_json(
         minimal_structure(),
         {"tex-0": write_png(tmp_path / "face.png")},
@@ -108,8 +95,6 @@ def test_a_json_structure_and_its_images_import_over_either_door(
 def test_a_json_import_that_leaves_out_a_texture_is_refused(
     either: Client, tmp_path: Path
 ) -> None:
-    """The structure names a texture nobody attached, so the model never
-    builds — and the refusal says which one."""
     with pytest.raises(ProtocolError) as raised:
         either.from_json(minimal_structure(), {})
     assert "tex-0" in str(raised.value)
@@ -118,19 +103,16 @@ def test_a_json_import_that_leaves_out_a_texture_is_refused(
 def test_a_json_structure_installs_under_a_parent(
     either: Client, tmp_path: Path
 ) -> None:
-    """`parent` present is the install path, the same one a file takes."""
     into = either.from_json(
         minimal_structure(),
         {"tex-0": write_png(tmp_path / "face.png")},
     )
-    # A second copy, renamed so nothing collides, under the root.
     structure = minimal_structure(texture="tex-1")
     structure["nodes"][0]["id"] = "copy-root"
     structure["nodes"][1]["id"] = "copy-node-1"
     structure["nodes"][1]["parent"] = "copy-root"
     structure["nodes"][1]["name"] = "Copy"
-    # The root now names a parent the structure does not carry, which is what
-    # makes it a fragment; the command's `parent` overrides it anyway.
+        # The command's `parent` overrides the root's own parent.
     structure["nodes"] = structure["nodes"][1:]
     either.import_json(
         into,
@@ -147,8 +129,6 @@ def test_a_json_structure_installs_under_a_parent(
 def test_a_manifest_and_its_images_travel_with_the_command(
     either: Client, tmp_path: Path
 ) -> None:
-    """The texture reference has a separator in it, and the attachment name
-    carries it verbatim."""
     manifest = write_manifest(tmp_path)
     session = either.from_manifest(manifest)
 
@@ -156,8 +136,6 @@ def test_a_manifest_and_its_images_travel_with_the_command(
     assert isinstance(body, ResponseBodyTree)
     assert len(body.root.children) == 1
 
-    # The image arrived: an import whose reference went unattached is refused
-    # outright, and the texture it built is in the model.
     textures = either.send(TextureList(session=session))
     assert isinstance(textures, ResponseBodyTextures)
     assert len(textures.textures) == 1
@@ -166,15 +144,11 @@ def test_a_manifest_and_its_images_travel_with_the_command(
 def test_a_texture_travels_with_the_command_over_either_door(
     either: Client, served: LaunchedServer, tmp_path: Path
 ) -> None:
-    """Nothing is staged first, so a `texture_add` is one round trip on both
-    transports and the editor holds exactly the bytes that were sent."""
     source = write_png(tmp_path / "body.png")
     session = either.new()
     part = either.add_part(session, name="Body")
     texture = either.add_texture(session, part, source)
 
-    # Read back through the door that hands out bytes, whichever door the
-    # command went in through.
     reader = HttpTransport(served.http_url or "", served.token or "")
     with Client(reader):
         assert reader.get_texture(session, texture) == source.read_bytes()

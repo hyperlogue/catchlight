@@ -1,9 +1,4 @@
-"""The client against a real editor: one send, routed by kind.
-
-The round trip at the end is the point of the whole package — a model authored
-from Python, written by the editor, and read back by the editor's own reader,
-which is the only validation a client that never links Rust can have.
-"""
+"""The client against a real editor."""
 
 from __future__ import annotations
 
@@ -60,7 +55,6 @@ def test_a_query_command_leaves_the_revision_alone(client: Client) -> None:
 
 
 def test_a_presence_command_is_legal_and_moves_no_revision(client: Client) -> None:
-    """Presence publishes view state; a panel never repaints for it."""
     session = client.new()
     before = client.revision(session)
     client.send(
@@ -116,8 +110,6 @@ def test_a_model_authored_here_is_read_back_by_the_editors_own_reader(
 
 
 def _names(node: TreeNode) -> list[str]:
-    """Every name below the root, which is named for the file rather than by
-    the author."""
     return [child.name for child in node.children] + [
         name for child in node.children for name in _names(child)
     ]

@@ -1,16 +1,8 @@
 name: Editor app
 
-# The downloadable `catchlight-editor`: one binary per platform with the editor
-# page compiled in, archived for GitHub releases and packaged for npm.
-#
-# The page is built once, on Linux under Nix, and handed to every platform as
-# an artifact: it is the same bytes everywhere, and only Linux has the wasm
-# toolchain. The binaries are built with rustup on stock runners rather than
-# under Nix, whose glibc and loader paths a downloaded Linux binary cannot
-# carry; ubuntu-22.04 keeps the glibc floor at 2.35.
-#
-# Pull requests build and smoke-test every platform; `release.yml` calls this
-# workflow and publishes what it assembles.
+# Binaries are built with rustup on stock runners, not Nix, whose glibc and
+# loader paths a downloaded Linux binary cannot carry; ubuntu-22.04 keeps the
+# glibc floor at 2.35. The page is built once on Linux (the only wasm toolchain).
 on:
   pull_request:
     paths:

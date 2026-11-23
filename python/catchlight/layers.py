@@ -1,9 +1,4 @@
-"""The reference-image pipeline's handoff: cut-out PNGs, and where each one goes.
-
-A step outside this package turns a few reference images into one RGBA PNG per
-part and one placement file beside them. This module reads that file and
-nothing else — it decodes no image, segments nothing, and knows no more about a
-layer than the name of its bytes and where the part belongs.
+"""The placement file that pairs cut-out part PNGs with where each goes.
 
     {
       "catchlight_layers": 1,
@@ -15,36 +10,9 @@ layer than the name of its bytes and where the part belongs.
       ]
     }
 
-`name` and `z` are the only required fields. `z` is draw order the way
-`TreeNode.z_order` and the node patch mean it — higher draws in front, and it
-accumulates down the tree. `offset` is the part's translation in the model's
-space, `opacity` defaults to 1, and `mesh` is an `AutoMesh` exactly as
-`to_wire()` emits it; absent, the editor traces the alpha with its own
-defaults.
-
-Invariants this module enforces:
-
-- **A layer with no `file` is a group.** There is no `kind` field: a part is a
-  layer that has bytes and a group is a layer that has none, so a placement
-  cannot name a part with nothing to draw.
-
-- **A `file` is a sibling of the placement, not a path.** It resolves against
-  the placement file's own directory, and one that is absolute or that climbs
-  out with `..` is refused. A placement is a thing to hand somebody along with
-  the directory it names, so it must not carry a path off this machine.
-
-- **A parent is declared before its children.** The order in `layers` is the
-  order the builder adds nodes, and a parent that appears later would be a node
-  added under one that does not exist yet. Absent means the model's root.
-
-- **Every error names the layer it is about.** A placement comes out of a
-  pipeline step nobody watched, so the one thing an error has to carry is which
-  of the layers to go and look at.
-
-- **Reading validates, writing does not.** [`read_layers`] refuses a placement
-  whose files are not there; [`write_layers`] is the pipeline's own side of the
-  handoff and writes what it is given, because the step that writes the
-  placement may not have written the PNGs yet.
+A layer without `file` is a group. `z` is draw order (higher in front,
+accumulating down the tree); `offset` is in model space. `file` is relative
+to the placement's directory, and parents must be declared before children.
 """
 
 from __future__ import annotations
@@ -67,11 +35,8 @@ __all__ = [
     "write_layers",
 ]
 
-# The one version of the placement file this module reads and writes.
 LAYERS_VERSION = 1
 
-# The key the version travels under, which is also what tells a placement from
-# any other JSON object somebody points this at.
 _VERSION_KEY = "catchlight_layers"
 
 
@@ -81,7 +46,7 @@ class LayersError(ValueError):
 
 @dataclass(frozen=True)
 class Layer:
-    """One part, or one group when it has no `file`."""
+    """A part, or a group when it has no `file`."""
 
     name: str
     z: float = 0.0
@@ -93,11 +58,9 @@ class Layer:
 
     @property
     def is_group(self) -> bool:
-        """A layer with no bytes is a group; it draws nothing."""
         return self.file is None
 
     def to_wire(self) -> dict[str, Any]:
-        """This layer as the placement carries it, leaving defaults off."""
         out: dict[str, Any] = {"name": self.name, "z": self.z}
         if self.file is not None:
             out["file"] = self.file
@@ -114,24 +77,17 @@ class Layer:
 
 @dataclass(frozen=True)
 class Placement:
-    """Every layer in the order to add it, and the directory its files are in."""
 
     root: Path
     layers: tuple[Layer, ...]
 
     def path_of(self, layer: Layer) -> Path:
-        """Where `layer`'s image is. A group has none, and asking is an error."""
         if layer.file is None:
             raise LayersError(f"layer {layer.name!r} is a group and has no file")
         return self.root / PurePosixPath(layer.file)
 
 
 def read_layers(path: str | os.PathLike[str]) -> Placement:
-    """Read a placement, refusing one the builder could not walk.
-
-    Files resolve against `path`'s own directory, which is the placement's
-    root.
-    """
     source = Path(os.fspath(path))
     try:
         placement = json.loads(source.read_bytes())
@@ -171,11 +127,7 @@ def read_layers(path: str | os.PathLike[str]) -> Placement:
 
 
 def write_layers(placement: Placement, path: str | os.PathLike[str]) -> Path:
-    """Write a placement and return where it went. The root is not written.
-
-    The root is where the file *is*, so writing it would be a second answer to
-    a question the file's own location already settles.
-    """
+    """The root is not written: it is wherever the file lands."""
     target = Path(os.fspath(path))
     placement = {
         _VERSION_KEY: LAYERS_VERSION,
@@ -186,7 +138,6 @@ def write_layers(placement: Placement, path: str | os.PathLike[str]) -> Path:
 
 
 def _layer(entry: Any, index: int) -> Layer:
-    """One entry of `layers`, checked. `index` names it until its name is read."""
     where = f"layer {index}"
     if not isinstance(entry, Mapping):
         raise LayersError(f"{where} is not an object")
@@ -244,7 +195,7 @@ def _layer(entry: Any, index: int) -> Layer:
 
 
 def _number(value: Any, where: str, field: str) -> float:
-    """A JSON number as a float. `True` is not one, however much Python agrees."""
+    """`True` is rejected even though Python treats it as an int."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise LayersError(f"{where} has a {field} that is not a number: {value!r}")
     return float(value)

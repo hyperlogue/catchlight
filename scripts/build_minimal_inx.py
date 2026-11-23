@@ -2,31 +2,16 @@
 # dependencies = ["numpy", "Pillow"]
 # ///
 """
-Build a minimal .inx puppet for cross-engine rendering tests.
+Build minimal .inx puppets for cross-engine rendering tests.
 
-The sample model isolation configs (yp_11_lip_only, yp_11_inner_only, etc.) tried to
-narrow the diff source by zeroing parts' opacities. That doesn't work cleanly
-because inochi2d's Drawable.draw early-returns on enabled/visibility, so
-opacity=0 effectively disables the whole subtree — masking the diff we want
-to study.
-
-Instead, build a tiny puppet from scratch: one root + one or two textured
-quads with no params, no physics, no masking. Anything the two engines
-disagree on must come from the rendering pipeline alone.
-
-Outputs:
-  tests/models/single_alpha_quad.inx     (one Part, soft-alpha disk)
-  tests/models/quad_over_bg.inx          (BG quad + soft-alpha disk on top)
-
-Inx layout (see crates/catchlight-core/src/formats/inx.rs):
+Inx layout:
   8-byte magic "TRNSRTS\0"
   4-byte BE payload length, then JSON
   8-byte "TEX_SECT", 4-byte BE texture count, then per-texture:
     4-byte BE length, 1-byte encoding (0=PNG), raw bytes
 
-Texture bytes follow inochi2d's premultiplied-in-sRGB convention so the file
-plays cleanly with both engines without storage-side translation getting in
-the way of the cross-engine comparison.
+Texture bytes use inochi2d's premultiplied-in-sRGB convention so storage-side
+translation stays out of the cross-engine comparison.
 """
 
 from __future__ import annotations
@@ -44,16 +29,13 @@ OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def soft_disk_premul_srgb(size=256, color=(220, 30, 60), feather_px=24) -> bytes:
-    """Soft-alpha red disk on transparent background, premultiplied in sRGB
-    byte space (inochi2d's storage convention)."""
+    """Premultiplied in sRGB byte space (inochi2d's storage convention)."""
     cx, cy = size / 2 - 0.5, size / 2 - 0.5
     yy, xx = np.indices((size, size), dtype=np.float32)
     d = np.sqrt((xx - cx) ** 2 + (yy - cy) ** 2)
     radius = size / 2 - feather_px
-    # alpha=1 for d<=radius, ramps linearly to 0 over feather_px, then 0
     alpha = np.clip((radius + feather_px - d) / feather_px, 0.0, 1.0)
     rgb = np.stack([np.full_like(alpha, c, dtype=np.float32) for c in color], axis=-1)
-    # Premultiply in sRGB byte space: rgb_byte * alpha (no gamma conversion).
     rgb_premul = (rgb * alpha[..., None]).round().clip(0, 255).astype(np.uint8)
     a = (alpha * 255).round().clip(0, 255).astype(np.uint8)
     rgba = np.concatenate([rgb_premul, a[..., None]], axis=-1)
@@ -76,10 +58,7 @@ def solid_quad_premul_srgb(size=256, rgb=(80, 120, 200)) -> bytes:
 
 
 def gradient_quad_premul_srgb(size=256) -> bytes:
-    """Opaque 2D gradient: R ramps left→right, B ramps top→bottom, G held
-    mid. Every blend mode then sees a backdrop that spans dark↔bright across
-    each foreground cell, so modes like Multiply/Screen/Darken/Lighten produce
-    visibly different output instead of collapsing on a flat color."""
+    """A 2D gradient backdrop so blend modes differ visibly from each other."""
     yy, xx = np.indices((size, size), dtype=np.float32)
     r = 40 + (xx / (size - 1)) * 190
     b = 40 + (yy / (size - 1)) * 190
@@ -112,8 +91,6 @@ def quad_part(
     masks: list[dict] | None = None,
     blend_mode: str = "Normal",
 ) -> dict:
-    """A single Part rendering a centred quad of side 2*half_size, mapped
-    to the full UV [0,1]² of the given texture. Two triangles, four verts."""
     h = half_size
     p = {
         "uuid": uuid(),
@@ -224,10 +201,7 @@ def build_quad_over_bg():
 
 
 def build_disk_masked_by_disk():
-    """Mimic the sample model's Mouth Inner ← masked by ← Face arrangement: a soft red
-    disk masked by a soft (slightly smaller) blue disk that lives only in the
-    stencil pass. Should reproduce any mask-discard / stencil-vs-alpha-mask
-    discrepancy without any params, physics, opacity overrides."""
+    """A soft disk masked by a smaller disk drawn only in the stencil pass."""
     NEXT_UUID[0] = 3000
     bg_png = solid_quad_premul_srgb(size=64, rgb=(245, 235, 220))
     mask_png = soft_disk_premul_srgb(size=512, color=(120, 200, 230), feather_px=32)
@@ -251,9 +225,7 @@ def build_disk_masked_by_disk():
 
 
 def build_multiply_blend():
-    """A red disk with Multiply blend over a cream background — Multiply is
-    the blend mode that's been historically tricky to get pixel-identical
-    between OpenGL and wgpu (premul vs straight alpha + sRGB encode)."""
+    """Multiply is historically hard to match between OpenGL and wgpu."""
     NEXT_UUID[0] = 4000
     bg_png = solid_quad_premul_srgb(size=64, rgb=(245, 235, 220))
     fg_png = soft_disk_premul_srgb(size=512, color=(220, 30, 60), feather_px=48)
@@ -269,13 +241,8 @@ def build_multiply_blend():
 
 
 def build_blend_modes_grid():
-    """One puppet exercising every blend mode the renderer implements, so a
-    regression in any blend-state branch or blend shader (fs_overlay,
-    fs_color_burn, fs_linear_burn) shows up as a localized cell in the diff
-    heatmap. A 2D-gradient background sits under a 4×4 grid of feathered
-    disks; each disk is a Part with one distinct blend_mode. Cell order is
-    row-major and matches BLEND_GRID_ORDER below — keep the two in sync so a
-    failing cell maps back to a mode by position."""
+    """A 4×4 grid, one blend mode per disk. Cell order is row-major and must
+    match BLEND_GRID_ORDER so a failing cell maps back to a mode."""
     NEXT_UUID[0] = 5000
     bg_png = gradient_quad_premul_srgb(size=512)
     fg_png = soft_disk_premul_srgb(size=256, color=(210, 175, 70), feather_px=20)
@@ -319,14 +286,8 @@ def build_blend_modes_grid():
 
 
 def build_blend_modes_composite():
-    """Dst-in-shader disks (Overlay/ColorBurn/LinearBurn) as children of a
-    Composite, pinning the reference semantics (inochi2d KHR advanced
-    blending inside inBeginComposite): each disk blends against the
-    composite's own buffer — the gray pad where it overlaps it, plain disk
-    color where the composite is transparent — never against the root
-    gradient behind the composite. Each disk straddles a pad edge so both
-    halves are visible in one cell; a root-level ColorBurn disk over the
-    gradient gives in-image contrast with the nested ones."""
+    """Dst-in-shader disks inside a Composite blend against the composite's
+    own buffer, never the root gradient (inochi2d KHR advanced blending)."""
     NEXT_UUID[0] = 6000
     bg_png = gradient_quad_premul_srgb(size=512)
     pad_png = solid_quad_premul_srgb(size=64, rgb=(200, 200, 200))
@@ -388,22 +349,10 @@ def build_blend_modes_composite():
 
 
 def build_nested_composite():
-    """An isolating Composite inside another Composite — the case inochi2d
-    supports (`Composite.scanPartsRecurse` appends a nested Composite to the
-    enclosing one's `toRender`, and `Composite.draw` draws it inside the
-    enclosing beginComposite/endComposite scope) and catchlight used to get
-    wrong by hoisting it to the root.
+    """A Composite nested in another must render inside the outer's scope.
 
-    The inner composite isolates on opacity (0.65, so not a pass-through
-    group) rather than on a blend mode, keeping the check independent of
-    per-mode blend state: its slot blits into the OUTER's slot, and the
-    outer then fades the whole group by its own 0.5 — so the inner disk
-    lands at a net 0.325 and `Front` (lower source zsort) paints over it inside
-    the group.
-
-    Escaping to the root instead is loud here: the disk would land at 0.65
-    straight on the framebuffer, unfaded by the outer, and sorted against
-    the root's drawables rather than the outer's children."""
+    The inner isolates on opacity 0.65 under the outer's 0.5, so the inner disk
+    lands at a net 0.325; hoisting it to the root would show 0.65."""
     NEXT_UUID[0] = 7000
     bg_png = gradient_quad_premul_srgb(size=512)
     pad_png = solid_quad_premul_srgb(size=64, rgb=(210, 210, 210))

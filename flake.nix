@@ -28,9 +28,7 @@
         ...
       }: let
         releaseVersion = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).workspace.package.version;
-        # `wasm32-unknown-unknown` is not optional tooling here: the editor is
-        # required to run on the web, so a plain `cargo check` of the editor
-        # crates needs the target's `rust-std` present in the same toolchain.
+        # The editor must build for the web, so `cargo check` needs this target.
         rustToolchain = fenix.packages.${system}.combine [
           (fenix.packages.${system}.stable.withComponents [
             "cargo"
@@ -42,10 +40,8 @@
           fenix.packages.${system}.targets.wasm32-unknown-unknown.stable.rust-std
         ];
 
-        # The system side of the build, in one place: the packages link
-        # against these and `nix/shell.nix` puts them on the loader path.
-        # wgpu, winit and bevy reach them through `dlopen` at run time, so
-        # linking alone is not enough for a `cargo run` out of the shell.
+        # wgpu, winit and bevy `dlopen` these at run time, so linking alone is
+        # not enough for a `cargo run` out of the shell.
         nativeBuildInputs = [pkgs.pkg-config];
         runtimeLibs = lib.optionals pkgs.stdenv.hostPlatform.isLinux (with pkgs; [
           vulkan-loader
@@ -67,7 +63,6 @@
           name = "catchlight-source";
           filter = path: type:
             lib.hasSuffix ".wgsl" path
-            # Public crate notice links resolve to these shared originals.
             || lib.hasSuffix "/LICENSE-MIT" path
             || lib.hasSuffix "/LICENSE-APACHE" path
             || path == toString ./THIRD-PARTY-NOTICES.md
@@ -82,15 +77,12 @@
           inherit src nativeBuildInputs;
           strictDeps = true;
           buildInputs = runtimeLibs;
-          # The Rust test suite is local-only: it wants the LFS fixtures and a
-          # GPU adapter. These derivations build binaries and nothing else.
+          # Tests need LFS fixtures and a GPU, so they run locally only.
           doCheck = false;
         };
 
         binaries = ["catchlight-editor-server" "catchlight-cli" "catchlight-editor-cli"];
 
-        # One dependency build behind the shipped binaries, so nothing compiles
-        # the dependency graph repeatedly.
         cargoArtifacts = craneLib.buildDepsOnly (commonArgs
           // {
             pname = "catchlight-binaries";
@@ -106,8 +98,7 @@
               version = releaseVersion;
               cargoExtraArgs = "-p ${name}";
             });
-        # The importer needs neither the editor's dependency build nor GPU
-        # system libraries. Keep its optional CLI feature local to this package.
+        # The importer needs neither the editor's dependency build nor GPU libs.
         importerArgs = {
           inherit src;
           pname = "catchlight-importer";

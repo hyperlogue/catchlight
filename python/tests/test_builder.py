@@ -1,10 +1,4 @@
-"""The builder against a real editor, graded by the editor's own reader.
-
-Every assertion here is made on a *reopened* file rather than on the session
-that wrote it. A builder that only ever agreed with itself would pass a suite
-that never left the session, so each test saves, opens the saved file, and asks
-the editor what it reads back.
-"""
+"""Builder tests assert on a reopened saved file, not on the session."""
 
 from __future__ import annotations
 
@@ -88,8 +82,6 @@ def test_a_built_model_reopens_as_what_was_built(client: Client, tmp_path: Path)
     assert group.name == "Head" and group.kind == "group" and group.z_order == 1.0
     assert [(c.name, c.z_order) for c in group.children] == [("Body", 1.0), ("Hair", 5.0)]
 
-    # Every part carries a mesh: the editor's own lint is what says so, and it
-    # is the same lint that fires below on a part that was never meshed.
     assert _warnings(client, reopened) == []
 
     behind = _info(client, reopened, back)
@@ -117,12 +109,6 @@ def test_a_built_model_reopens_as_what_was_built(client: Client, tmp_path: Path)
 def test_the_lint_that_stands_for_a_mesh_fires_on_a_part_without_one(
     client: Client, tmp_path: Path
 ) -> None:
-    """What the empty warning list above is worth.
-
-    `check` is the editor's prose about a half-built part, and a caller that
-    reads it has to see it fire for a part the builder did not mesh. The count
-    behind the lint is asserted separately, on the node itself.
-    """
     session = client.new()
     body = client.send(
         NodeAdd(session=session, parent="root", kind=NodeKindArg.PART, name="Bare")
@@ -139,14 +125,11 @@ def test_the_lint_that_stands_for_a_mesh_fires_on_a_part_without_one(
 def test_a_part_reports_the_mesh_it_was_built_with(
     client: Client, tmp_path: Path
 ) -> None:
-    """The count behind the lint, read off the node rather than off `check`."""
     built = Builder.new(client)
     part = built.part("Body", write_png(tmp_path / "body.png"))
     verts, tris = built.mesh_size(part)
     assert verts > 0 and tris > 0
 
-    # A part nobody meshed carries an empty mesh, which is the state the
-    # "no triangles" lint is about — and the same read says so.
     body = client.send(
         NodeAdd(
             session=built.session, parent="root", kind=NodeKindArg.PART, name="Bare"
@@ -155,7 +138,6 @@ def test_a_part_reports_the_mesh_it_was_built_with(
     assert isinstance(body, ResponseBodyNode)
     assert built.mesh_size(body.node) == (0, 0)
 
-    # A group holds no mesh at all, which is not a count of zero.
     group = built.group("Head")
     with pytest.raises(BuilderError, match="no mesh"):
         built.mesh_size(group)
@@ -189,8 +171,6 @@ def test_a_key_outside_the_params_range_names_the_param(
 def test_a_deform_binding_authors_a_cell_per_key(
     client: Client, tmp_path: Path
 ) -> None:
-    """A deform grid is keyed by key index, and the first cell authored is
-    what creates the binding."""
     built = Builder.new(client)
     part = built.part("Body", write_png(tmp_path / "body.png"))
     built.mesh(part)
@@ -211,7 +191,6 @@ def test_a_deform_binding_authors_a_cell_per_key(
 def test_a_deform_cell_of_the_wrong_length_is_refused(
     client: Client, tmp_path: Path
 ) -> None:
-    """Every cell is the whole mesh, so a short one is not a partial edit."""
     built = Builder.new(client)
     part = built.part("Body", write_png(tmp_path / "body.png"))
     built.mesh(part)
@@ -266,9 +245,7 @@ def test_a_placement_can_be_built_from_the_object_as_well_as_the_file(
     built = build_from_layers(client, _placement(tmp_path))
     assert [c.name for c in _tree(client, built.session).children] == ["Head", "Body"]
 
-    # `save` writes into the editor's store, not here, and answers with the key
-    # rather than a path — the fixture's store is this test's directory, which
-    # is the only reason the two can be compared at all.
+        # Comparable only because the fixture's store is this test's directory.
     assert (tmp_path / built.save("from-layers.clm")).is_file()
 
 

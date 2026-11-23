@@ -1,25 +1,7 @@
-"""The catchlight editor protocol, and a blocking client that speaks it.
+"""The Catchlight editor protocol and a blocking client that speaks it.
 
-The protocol half comes from `protocol_gen.py`, which `cargo xtask generate
-python` writes from the Rust wire types. Re-exported with a star import rather
-than a hand-written list on purpose: a list would be a second roster of the
-protocol to keep in step, which is the drift the generator exists to stop.
-
-The client half is written by hand and named here: `launch` starts an editor
-and owns it, `connect` attaches to one somebody else runs, and both hand back a
-`Client` whose `send` takes any command in the protocol.
-
-    with catchlight.launch() as server:
-        client = server.client()
-        session = client.new()
-        part = client.add_part(session, name="Body")
-        client.add_texture(session, part, "body.png")
-        client.send(catchlight.MeshAuto(session=session, node=part))
-        client.save_to(session, "body.clm")
-
-Over that sits the authoring half: `Builder` says a group, a part, a param and
-a binding in one call each, and `read_layers` reads the placement file the
-reference-image pipeline hands over, so a whole model is one `build_from_layers`.
+The protocol is star-imported from the generated `protocol_gen.py` so there is
+no second hand-kept roster to drift.
 
     with catchlight.launch() as server:
         built = catchlight.build_from_layers(server.client(), "layers.json")

@@ -1,9 +1,4 @@
-"""What `launch` owes its caller: a server that answers, and no leftovers.
-
-Every assertion about cleanup is made from outside the launch — the process id
-after the process is gone, the temp directories in `$TMPDIR` — because a launch
-that failed halfway has no object left to ask.
-"""
+"""Cleanup is asserted from outside the launch: a failed launch leaves no object."""
 
 from __future__ import annotations
 
@@ -88,8 +83,7 @@ def test_an_exited_server_drains_pending_stderr_before_reporting(
         release.set()
         original_stop(tail)
 
-    # Hold the reader until its owner joins it. The actual child has already
-    # printed and exited; process exit alone cannot guarantee the reader ran.
+        # Process exit alone cannot guarantee the stderr reader ran.
     monkeypatch.setattr(server._StderrTail, "_drain", delayed_drain)
     monkeypatch.setattr(server._StderrTail, "stop", finish_pending_output)
     before = launched_directories()
@@ -102,8 +96,6 @@ def test_an_exited_server_drains_pending_stderr_before_reporting(
 
 
 def test_a_launch_opens_the_model_it_is_given(tmp_path: Path, client: Client) -> None:
-    """The saved file is opened by the Rust reader, which is the only
-    validation this client has."""
     session = client.new()
     saved = client.save_to(session, tmp_path / "opened.clm")
     with launch(store=tmp_path, model=saved) as reopened:

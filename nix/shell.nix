@@ -1,5 +1,3 @@
-# `nativeBuildInputs` and `runtimeLibs` come from `flake.nix`, which shares
-# them with the packages it builds.
 {
   pkgs,
   rustToolchain,
@@ -30,19 +28,15 @@ in
         cargo-edit
         cargo-watch
 
-        # The web editor. `bun` is the package manager and test runner; `nodejs`
-        # is here because Vite's plugin ecosystem still shells out to it.
-        # `wasm-bindgen-cli` must match the `wasm-bindgen` crate version the
-        # workspace pins — a mismatch fails loudly with both versions named.
+        # Vite's plugins still shell out to `nodejs`. `wasm-bindgen-cli` must
+        # match the workspace's `wasm-bindgen` crate version.
         bun
         nodejs
         wasm-bindgen-cli
 
         uv
-        # numpy is for the filming skill's compositing scripts.
         (python3.withPackages (ps: [ps.numpy]))
 
-        # `catchlight-cli render` pipes frames to ffmpeg for video output.
         ffmpeg-headless
       ])
       ++ lib.optionals stdenv.hostPlatform.isLinux [
@@ -50,17 +44,12 @@ in
         # picked when a headless render fails to find an adapter.
         pkgs.vulkan-tools
 
-        # Mesa, for its CPU Vulkan ICD (lavapipe). Its share/ lands on
-        # XDG_DATA_DIRS, so the loader finds lavapipe beside any real driver --
-        # no VK_ICD_FILENAMES needed. The browser test needs it too: headless
-        # Chromium reaches a WebGPU device through this same ICD.
+        # Mesa's lavapipe CPU Vulkan ICD, found via XDG_DATA_DIRS; headless
+        # Chromium reaches WebGPU through it too.
         pkgs.mesa
 
-        # The browser `bun run --filter catchlight-demo e2e` drives. Playwright's
-        # own download is a prebuilt binary that does not run here, so the test
-        # takes the executable as an argument and this is what it finds on PATH.
-        # The largest closure in the shell, and in the one shell on purpose: a
-        # second shell only the smoke test entered was one more thing to know.
+        # Playwright's downloaded browser does not run on NixOS, so the e2e
+        # test takes this executable from PATH.
         pkgs.chromium
         # WebGPU presentation tests need an X11 compositor surface.
         pkgs.xvfb-run

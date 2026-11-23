@@ -1,9 +1,4 @@
-"""Extensions from Python: carried, never interpreted.
-
-The kind is the Python type — `bytes` in, `bytes` out; anything else is JSON —
-and the transport under it is not the caller's business, so every case here
-runs twice, once over the socket and once over HTTP.
-"""
+"""Extensions are carried, never interpreted; each case runs over both doors."""
 
 from __future__ import annotations
 
@@ -15,7 +10,6 @@ from catchlight.protocol_gen import ExtensionValueInfoBytes, ExtensionValueInfoJ
 
 @pytest.fixture(params=["socket", "http"])
 def either(request: pytest.FixtureRequest, served: LaunchedServer) -> Client:
-    """The same editor reached both ways, so a test is written once."""
     if request.param == "socket":
         return served.client()
     return served.connect()
@@ -53,7 +47,6 @@ def test_the_listing_reports_a_marker_rather_than_the_bytes(either: Client) -> N
     marker = listed[1].value
     assert isinstance(marker, ExtensionValueInfoBytes)
     assert marker.size == len(b"a thumbnail")
-    # The hash is what a feed compares; the bytes are not in the listing.
     assert len(marker.hash) == 64
 
 
@@ -78,8 +71,6 @@ def test_the_formats_own_prefix_is_refused(either: Client) -> None:
 def test_an_extension_survives_a_save_and_an_open(
     either: Client, served: LaunchedServer, tmp_path
 ) -> None:
-    """The whole point: a vendor's value is carried across a round trip through
-    the format, byte for byte."""
     session = either.new()
     either.extension_set(session, "acme.camera", {"rig": "v2"})
     either.extension_set(session, "acme.thumb", b"a thumbnail")

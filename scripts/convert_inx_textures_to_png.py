@@ -4,22 +4,10 @@
 # ///
 """Transcode the inline textures of an inochi2d .inx/.inp file from TGA to PNG.
 
-The .inx/.inp container is: `TRNSRTS\\0` magic, a BE-u32-length-prefixed JSON
-payload, a `TEX_SECT` block of length-prefixed textures (each with a 1-byte
-encoding: 0=PNG, 1=TGA, 2=BC7), then an optional `EXT_SECT` vendor block.
-
-Textures are stored barely-compressed (RLE TGA). PNG is lossless on the same
-pixels and typically ~3x smaller, so this is a pure asset-packaging win — the
-catchlight loader decodes any encoding to RGBA8 before its premultiply/bleed
-passes, so a pixel-identical re-encode leaves the render untouched.
-
-This rewrite copies the JSON payload and the vendor section *verbatim* (the
-float-heavy param data is never re-serialized) and only swaps each TGA blob
-(encoding 1) for a PNG blob (encoding 0). PNG/BC7 blobs are passed through.
-
-By default it re-decodes every PNG it writes and asserts the pixels match the
-source TGA, aborting on any mismatch — the only way the conversion could alter
-the render is if the two codecs disagreed on the source bytes.
+The JSON payload and vendor section are copied verbatim; only TGA blobs
+(encoding 1) become PNG (encoding 0). The loader decodes every encoding to
+RGBA8, so a pixel-identical re-encode leaves the render untouched; each PNG is
+verified against its source by default.
 """
 
 import argparse

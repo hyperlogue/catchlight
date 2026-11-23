@@ -1,42 +1,7 @@
-"""Starting an editor, and attaching to one somebody else started.
+"""Launching an editor server, or connecting to one already running.
 
-[`launch`] runs `catchlight-editor-server` on a socket of its own and hands
-back a [`LaunchedServer`] that owns the process; [`connect`] opens a
-[`Client`](catchlight.client.Client) onto a server already running and owns
-nothing. Both end at a client — this module is only about who is responsible
-for the process behind it.
-
-Invariants this module enforces:
-
-- **A launched server is private.** The socket lives in a fresh `0700` temp
-  directory, which is the whole of its access control: nothing else on the
-  machine can reach into the directory, so nothing else can reach the socket,
-  and there is no token to check. It also means a launched server never
-  collides with the editor a person is already running on the canonical
-  socket.
-
-- **Nothing is left behind.** The process is terminated, given a grace period,
-  killed if it has not gone, and the temp directory removed — on a clean exit,
-  on an exception, and on a launch that never came up at all.
-
-- **Ready means answered.** The launch waits until a `session_list` over the
-  socket comes back, not until the file appears and not for a line on stderr.
-  A server that exits first fails the launch immediately, with what it printed.
-
-- **The installed client prefers its matching server.** Explicit arguments
-  and the environment may override it; an unrelated executable on `PATH`
-  cannot shadow the server bundled in a platform wheel.
-
-- **Sessions live in the process, not the connection.** So [`restart`] loses
-  every open session, and a client held across one is talking to a new editor
-  with an empty session list.
-
-- **[`connect`] never stops anything.** It did not start the server, and a
-  script that attaches to the editor a person has open must not take it down
-  when it finishes.
-
-Unix-only, because the socket is: a Windows launch waits for an HTTP-only
-`main` in the server itself.
+A launched server's socket lives in a fresh `0700` temp directory, which is
+its only access control. Unix-only, because the socket is.
 """
 
 from __future__ import annotations
@@ -56,21 +21,17 @@ from .transport import HttpTransport, TransportError, UnixSocketTransport
 
 __all__ = ["LaunchedServer", "ServerError", "connect", "launch"]
 
-# The binary this package drives, and the environment variable that overrides
-# where it is found.
 BINARY_NAME = "catchlight-editor-server"
 BINARY_ENV = "CATCHLIGHT_EDITOR_SERVER"
 
-# Every line the server prints starts with its own name.
 _PREFIX = f"{BINARY_NAME}: "
-# How often the launch asks whether the socket answers yet.
 _POLL = 0.05
-# How long a terminated server has to exit before it is killed.
+# Seconds a terminated server has to exit before it is killed.
 _GRACE = 3.0
 
 
 class ServerError(RuntimeError):
-    """A server could not be started, or did not come up, or is not there."""
+    """A server could not be started, did not come up, or is not there."""
 
 
 def launch(
@@ -83,24 +44,9 @@ def launch(
 ) -> LaunchedServer:
     """Start an editor on a private socket and wait until it answers.
 
-    `binary` is the server to run; absent, it is `$CATCHLIGHT_EDITOR_SERVER`,
-    then the server bundled with this package, then `catchlight-editor-server`
-    on `PATH`, then this workspace's own
-    `target/debug` build — the last of those so the tests in this repository
-    need no setup beyond `cargo build`.
-
-    `store` is what a relative storage key resolves against, the current
-    directory unless it is named. The client sends absolute paths, so the root
-    matters only to a raw `send` that does not.
-
-    `model` is a `.clm` to open into a first session.
-
-    `http` is an address like `127.0.0.1:0` to serve the browser door on beside
-    the socket, for a client that wants [`LaunchedServer.connect`]; port 0 asks
-    the OS for a free one and [`LaunchedServer.http_url`] says which.
-
-    Use it as a context manager — `with catchlight.launch() as server:` — so
-    the process and its directory go away however the block ends.
+    `binary` absent: `$CATCHLIGHT_EDITOR_SERVER`, the bundled server, `PATH`,
+    then this workspace's `target/debug` build. `http` like `127.0.0.1:0`
+    also serves the HTTP door; port 0 picks a free port.
     """
     argv = [_find_binary(binary)]
     directory = Path(tempfile.mkdtemp(prefix="catchlight-server-"))
@@ -125,18 +71,11 @@ def launch(
 
 
 def connect(url: str, token: str) -> Client:
-    """A client onto a server something else is running, over its HTTP door.
-
-    The caller owns the connection and nothing else: closing this client leaves
-    the editor exactly as it found it. Nothing is sent here either — a command
-    is one POST, so a wrong token or an editor that has gone away surfaces on
-    the first `send` rather than on this call.
-    """
+    """Connect over HTTP to a server someone else runs; never stops it."""
     return Client(HttpTransport(url, token))
 
 
 class LaunchedServer:
-    """A running editor and the temp directory its socket lives in."""
 
     def __init__(
         self,
@@ -167,15 +106,10 @@ class LaunchedServer:
 
     @property
     def pid(self) -> int | None:
-        """The server's process id, or `None` once it has been stopped."""
         return None if self._process is None else self._process.pid
 
     def client(self) -> Client:
-        """The client onto this server, made on first use and reused after.
-
-        One client per server so its revisions are one running account of what
-        this script has done, rather than one per call.
-        """
+        """One client per server, so its revisions are one running account."""
         if self._process is None:
             raise ServerError("this server has been stopped")
         if self._client is None:
@@ -183,18 +117,12 @@ class LaunchedServer:
         return self._client
 
     def connect(self) -> Client:
-        """A second client onto the same editor, over its HTTP door.
-
-        Only when [`launch`] was given an `http` address; a socket-only server
-        has no door to connect to. Like [`connect`], it sends nothing until the
-        first command.
-        """
+        """A second client over the HTTP door; requires `launch(http=...)`."""
         if self.http_url is None or self.token is None:
             raise ServerError("this server was launched without an http address")
         return Client(HttpTransport(self.http_url, self.token))
 
     def healthy(self) -> bool:
-        """Whether a `session_list` comes back."""
         if self._process is None or self._process.poll() is not None:
             return False
         try:
@@ -204,22 +132,16 @@ class LaunchedServer:
         return True
 
     def stderr(self) -> str:
-        """What the server has printed, most recent lines last."""
         return self._stderr.text()
 
     def stop(self) -> None:
-        """Terminate the server, kill it if it lingers, and remove its
-        directory. Calling it twice is not an error."""
+        """Idempotent; also removes the socket directory."""
         self._release_client()
         self._end_process()
         shutil.rmtree(self.directory, ignore_errors=True)
 
     def restart(self) -> None:
-        """Stop the process and start another on the same socket.
-
-        The new editor holds no sessions: they lived in the process that just
-        went away.
-        """
+        """The new process holds none of the old sessions."""
         self._release_client()
         self._end_process()
         self._start()
@@ -229,7 +151,6 @@ class LaunchedServer:
     def _start(self) -> None:
         self._stderr = _StderrTail()
         try:
-            # argv is built in `launch`, never a string and never a shell.
             process = subprocess.Popen(
                 self._argv,
                 stdin=subprocess.DEVNULL,
@@ -254,9 +175,8 @@ class LaunchedServer:
         while True:
             code = self._process.poll() if self._process else None
             if code is not None:
-                # Exit closes the child's pipe, but its reader may still be
-                # scheduled behind this thread. Collect its final diagnostic
-                # before freezing the startup error message.
+                # The stderr reader may lag the exit; collect its final
+                # diagnostic before building the error.
                 self._stderr.stop()
                 raise ServerError(self._died(f"exited with status {code}"))
             if _answers(self.socket_path):
@@ -266,11 +186,7 @@ class LaunchedServer:
             time.sleep(_POLL)
 
     def _await_http(self) -> None:
-        """The address and token the server printed once it bound the door.
-
-        Parsed from stderr because that is where the server says it: the
-        address is only known after a `--http` port of 0 is resolved.
-        """
+        """Parsed from stderr: the address is known only after binding port 0."""
         deadline = time.monotonic() + self._timeout
         url = self._stderr.wait_for(f"{_PREFIX}http://", deadline)
         token = self._stderr.wait_for(f"{_PREFIX}token: ", deadline)
@@ -306,12 +222,7 @@ class LaunchedServer:
 
 
 def _answers(socket_path: Path) -> bool:
-    """Whether a `session_list` over the socket comes back.
-
-    A connection of its own, thrown away after: this runs before the client
-    exists, and a probe that failed must leave nothing for the client to
-    inherit.
-    """
+    """Probe on a throwaway connection so a failed probe leaves no state."""
     try:
         with UnixSocketTransport(socket_path, timeout=2.0) as transport:
             return transport.request(SessionList().to_wire()).get("reply") == "ok"
@@ -331,8 +242,6 @@ def _find_binary(explicit: str | os.PathLike[str] | None) -> str:
     on_path = shutil.which(BINARY_NAME)
     if on_path:
         return on_path
-    # This workspace's own debug build, so its tests need nothing on PATH
-    # beyond what `cargo build -p catchlight-editor-server` already made.
     local = Path(__file__).resolve().parents[2] / "target" / "debug" / BINARY_NAME
     if local.is_file():
         return str(local)
@@ -353,13 +262,7 @@ def _runnable(path: str | os.PathLike[str], what: str) -> str:
 
 
 class _StderrTail:
-    """The server's stderr, drained by a thread and kept as its last lines.
-
-    Drained rather than left in the pipe because a server nobody reads blocks
-    once the pipe buffer fills, and kept rather than forwarded because the one
-    thing a failed launch owes its caller is what the server said on the way
-    down.
-    """
+    """Drained so a full pipe cannot block the server; kept for launch errors."""
 
     def __init__(self, limit: int = 400) -> None:
         self._lines: collections.deque[str] = collections.deque(maxlen=limit)
@@ -398,8 +301,6 @@ class _StderrTail:
             return "\n".join(self._lines)
 
     def wait_for(self, prefix: str, deadline: float) -> str | None:
-        """The first line starting with `prefix`, waiting for it until
-        `deadline`. Lines already read count."""
         with self._changed:
             while True:
                 for line in self._lines:
