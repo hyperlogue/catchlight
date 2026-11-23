@@ -18,7 +18,6 @@ _Avoid_: rig, document
 
 **Model file**:
 A model as stored on disk, in `.clm`, the only format catchlight loads.
-Sections a reader does not recognise are carried through a save unchanged.
 _Avoid_: document
 
 **Generation**:
@@ -53,11 +52,12 @@ cannot be removed or moved.
 
 **Enabled**:
 A node setting: a disabled node, and everything beneath it, is not drawn.
+A disabled motion response stops responding, and so do the responses that
+follow it; a disabled part is left out of its welds.
 _Avoid_: visible, hidden
 
 **Kind**:
 What a node is — group, part, composite, mesh group, motion response or spine.
-Fixed when the node is created.
 
 **Group**:
 A node with no geometry of its own; it exists to position its children.
@@ -95,7 +95,9 @@ A driver node whose scalar spring follows a weighted combination of
 response — and writes the lag (followed value minus target) to an optional
 **output** param. A child reads the parent's unclipped followed value. The
 lag returns to zero at a held pose. A param that is a response's output
-belongs to the response: animations do not write it.
+belongs to the response: animations do not write it, and every binding it
+drives holds its target's identity at zero lag, so the response changes
+nothing at rest.
 
 **Spine**:
 A node holding a chain of joints drawn on the art, with a bend param for each
@@ -161,7 +163,8 @@ posed one; the authored transform is never changed by posing.
 A number every node carries; higher draws in front. A node's z order adds to
 its parent's, and the total orders drawables among their siblings in the
 draw: a composite is ordered as one unit, and its children only among
-themselves. Ties keep sibling order.
+themselves. Ties keep sibling order. On a node that is not drawn, z order
+only offsets its descendants.
 _Avoid_: zsort
 
 **Mesh**:
@@ -228,11 +231,6 @@ deform binding's cell holds an offset for every vertex.
 **Keypoint**:
 A cell whose value the author set. Cells that are not keypoints are derived
 from the keypoints around them.
-
-**Corrective binding**:
-A binding driven by a motion response's output. Its cells at zero lag hold
-the target's identity, so the binding changes nothing while the response is
-at rest.
 
 **Interpolation mode**:
 How values between keys are read: nearest, linear, stepped or cubic.
