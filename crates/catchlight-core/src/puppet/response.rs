@@ -18,16 +18,17 @@ pub struct ResponseInputSample {
     pub contribution: Option<f64>,
 }
 
-/// Fixed stepping interpolates emitted art by the accumulator fraction;
-/// dependency edges always read solver values.
+// Doc comments here become `render --schema` descriptions.
+/// Time is supplied by the caller. Fixed stepping interpolates emitted art
+/// by the accumulator fraction; dependency edges always read solver values.
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ResponseClock {
     #[default]
     InputIntervals,
-    /// An interval over one minute is treated as a discontinuity to bound
-    /// catch-up work.
+    /// A continuous 60 Hz timeline for playback and export. An interval over
+    /// one minute is treated as a discontinuity to bound catch-up work.
     Fixed60,
 }
 
