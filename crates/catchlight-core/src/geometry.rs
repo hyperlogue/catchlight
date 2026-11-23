@@ -1,28 +1,13 @@
 //! Geometry observed from a frame the caller has already evaluated.
 //!
-//! This module never poses, ticks, synchronizes or mutates a Puppet. The caller
-//! chooses the pose, motion responses, animation and scratch policy, then evaluates the
-//! frame before borrowing it here. A model identity/generation check prevents
-//! mixing authored geometry with a different or outdated bake; a frame without
-//! computed transforms is rejected. Changes to pose or scratch still require
-//! the caller's normal evaluation before observation.
-//!
-//! Vertex and triangle indices remain in authored mesh order. Local positions
-//! are `rest - origin + combined_deform`; world positions apply the evaluated
-//! node matrix, including the caller's root transform. The combined deform is
-//! the runtime's final result, including inherited MeshGroup/spine deforms and
-//! welds. World positions retain all three coordinates of the runtime matrix.
-//!
+//! Local positions are `rest - origin + combined_deform`; world positions
+//! apply the evaluated node matrix, including the caller's root transform.
 //! Bounds enclose the XY projection of triangle-referenced world vertices.
-//! They do not inspect texture alpha, enabled ancestry, opacity, masks or
-//! occlusion. Selection and union of Part bounds belong to callers; a
-//! MeshGroup's lattice is inspectable geometry but is not Part artwork.
 
 use glam::{Mat4, Vec2, Vec3};
 
 use crate::{Mesh, Model, NodeId, NodeKind, Puppet};
 
-/// An observation cannot mix model versions or invent a missing frame.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum GeometryError {
@@ -41,9 +26,6 @@ pub enum GeometryError {
 }
 
 /// A read-only view of one evaluated frame, sharing its mesh and deform data.
-///
-/// Construction and individual mesh lookup allocate nothing. The borrow keeps
-/// both the model and the Puppet fixed for the lifetime of all returned views.
 pub struct EvaluatedGeometry<'a> {
     puppet: &'a Puppet,
 }
@@ -62,7 +44,7 @@ impl<'a> EvaluatedGeometry<'a> {
         Ok(Self { puppet })
     }
 
-    /// Select one Part or MeshGroup by authored Id. Empty meshes are valid.
+    /// Empty meshes are valid.
     pub fn mesh(&self, node: &NodeId) -> Result<EvaluatedMesh<'a>, GeometryError> {
         let idx = self
             .puppet
@@ -91,7 +73,6 @@ impl<'a> EvaluatedGeometry<'a> {
     }
 }
 
-/// Authored mesh data paired with its evaluated transform and deformation.
 #[derive(Debug, Clone, Copy)]
 pub struct EvaluatedMesh<'a> {
     node: &'a NodeId,
@@ -101,14 +82,12 @@ pub struct EvaluatedMesh<'a> {
     is_part: bool,
 }
 
-/// One vertex, retaining its authored index even when read independently.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EvaluatedVertex {
     pub index: usize,
     pub rest: Vec2,
     pub local: Vec2,
     pub world: Vec3,
-    /// `None` when the authored mesh has no UV array.
     pub uv: Option<Vec2>,
 }
 
@@ -117,17 +96,15 @@ impl<'a> EvaluatedMesh<'a> {
         self.node
     }
 
-    /// Whether this mesh belongs to Part artwork, rather than a MeshGroup.
     pub fn is_part(&self) -> bool {
         self.is_part
     }
 
-    /// Stored mesh coordinates, before subtracting the origin.
+    /// Before subtracting the origin.
     pub fn rest(&self) -> &'a [Vec2] {
         &self.mesh.vertices
     }
 
-    /// Authored UVs, empty when the mesh does not carry them.
     pub fn uvs(&self) -> &'a [Vec2] {
         &self.mesh.uvs
     }
@@ -148,13 +125,10 @@ impl<'a> EvaluatedMesh<'a> {
         self.mesh.indices.len() / 3
     }
 
-    /// Read a vertex without visiting earlier vertices, for bounded pages.
-    /// Returns `None` exactly when the index is outside the authored mesh.
     pub fn vertex(&self, index: usize) -> Option<EvaluatedVertex> {
         (index < self.vertex_count()).then(|| self.vertex_at(index))
     }
 
-    /// All vertices in authored order, including those unused by triangles.
     pub fn vertices(
         &self,
     ) -> impl DoubleEndedIterator<Item = EvaluatedVertex> + ExactSizeIterator + '_ {
@@ -162,8 +136,7 @@ impl<'a> EvaluatedMesh<'a> {
     }
 
     fn vertex_at(&self, index: usize) -> EvaluatedVertex {
-        // Baking preserves the validated mesh's vertex order and sizes its
-        // deform stack to that same count. No fallback may hide a broken bake.
+        // Baking sizes the deform stack to the validated mesh's vertex count.
         let rest = self.mesh.vertices[index];
         let local = rest - self.mesh.origin + self.combined[index];
         EvaluatedVertex {
@@ -175,7 +148,6 @@ impl<'a> EvaluatedMesh<'a> {
         }
     }
 
-    /// Read one triangle's original vertex indices without renumbering them.
     pub fn triangle(&self, index: usize) -> Option<[u32; 3]> {
         if index >= self.triangle_count() {
             return None;
@@ -188,7 +160,6 @@ impl<'a> EvaluatedMesh<'a> {
         ])
     }
 
-    /// Complete triangles in authored order, paired with their original index.
     /// A trailing partial triangle contributes nothing, as in the renderer.
     pub fn triangles(
         &self,
@@ -206,11 +177,7 @@ impl<'a> EvaluatedMesh<'a> {
         })
     }
 
-    /// Conservative XY bounds of the triangles, or `None` for no triangles.
-    ///
-    /// An unreferenced vertex never expands the bounds. Degenerate triangles
-    /// still contribute their vertices. Non-finite positions return an error
-    /// instead of silently producing an incomplete envelope.
+    /// `None` for no triangles. Non-finite positions return an error.
     pub fn world_bounds(&self) -> Result<Option<Bounds2>, GeometryError> {
         let mut bounds: Option<Bounds2> = None;
         for (_, triangle) in self.triangles() {
@@ -238,8 +205,7 @@ impl<'a> EvaluatedMesh<'a> {
     }
 }
 
-/// An axis-aligned two-dimensional envelope. An absent envelope is `None`,
-/// rather than an infinity sentinel that cannot be represented in JSON.
+/// `None` (not an infinity sentinel) for an absent envelope, so it fits JSON.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Bounds2 {
     pub min: Vec2,
@@ -252,7 +218,6 @@ impl Bounds2 {
         self.max = self.max.max(point);
     }
 
-    /// Union already selected envelopes; no visibility policy is applied.
     pub fn union(self, other: Self) -> Self {
         Self {
             min: self.min.min(other.min),

@@ -1,16 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! The spine as a node the puppet ticks.
-//!
-//! The claim a spine exists to make is that its joints *compose*: a vertex
-//! at the tip lands where the rigid rotations compose. Internal joints are
-//! controls for a rounded surface, and cannot introduce an outward curl.
-//! Summed per-link deform bindings do not preserve that composed path.
-//! The rest is wiring — that the
-//! bends come off the params, that a vertex above the root stays put, that a
-//! turned part and a group above the spine both still work.
-//!
-//! Every model here is built through `Model`'s own API rather than through a
-//! `.clm`, so a failure is the runtime's and not the reader's.
 
 use catchlight_core::formats::clm::{ClmIndices, ClmMesh};
 use catchlight_core::id::SeededHex;
@@ -20,15 +9,12 @@ use catchlight_core::model::{
 use catchlight_core::{Mat4, Model, Name, NodeId, ParamId, Puppet, Vec2};
 
 const DT: f32 = 1.0 / 60.0;
-/// A sixth of a turn, in the half turns a bend is measured in.
+/// In half turns.
 const THIRTY_DEGREES: f32 = 1.0 / 6.0;
 
 #[test]
 fn a_strand_turning_vertical_does_not_bulge_past_its_joint_path() {
     let f = Fixture::new(3, 100.0, 301);
-    // A supported upper link leans with the scalp; the two lower links hang
-    // vertically. The rendered centre line must not curl out and back while
-    // the joint path has already become vertical.
     let posed = f.bend(&[0.1, -0.1, 0.0]);
     let hanging_x = 100.0 * (0.1 * std::f32::consts::PI).sin();
     for row in 0..301 {
@@ -45,8 +31,7 @@ fn a_strand_turning_vertical_does_not_bulge_past_its_joint_path() {
 fn a_bent_strip_has_no_tangent_jump_at_a_joint() {
     let f = Fixture::new(2, 100.0, 2001);
     let posed = f.bend(&[0.08, -0.03]);
-    // Check both visible edges where the links meet.
-    // Their two one-sided tangents must approach the same direction.
+    // One-sided tangents at each link join must approach the same direction.
     for row in [500, 1000, 1500] {
         for column in 0..2 {
             let index = 2 * row + column;
@@ -65,8 +50,7 @@ fn a_bent_strip_has_no_tangent_jump_at_a_joint() {
     }
 }
 
-/// A strip two columns wide running down from the origin, `rows` rows deep
-/// over `length` model pixels. Row 0 sits on the spine's root.
+/// Row 0 sits on the spine's root.
 fn strip(rows: usize, length: f32) -> ClmMesh {
     let mut verts = Vec::with_capacity(rows * 4);
     let mut uvs = Vec::with_capacity(rows * 4);
@@ -89,8 +73,6 @@ fn strip(rows: usize, length: f32) -> ClmMesh {
     }
 }
 
-/// A spine hanging straight down with `links` links of `length` each, and one
-/// bend param per link ready to be aimed at.
 struct Fixture {
     model: Model,
     hex: SeededHex,
@@ -152,8 +134,6 @@ impl Fixture {
         }
     }
 
-    /// Pose every bend and tick once, then report the part's deformed vertex
-    /// positions in its own space.
     fn bend(&self, bends: &[f32]) -> Vec<Vec2> {
         let mut puppet = Puppet::new(&self.model);
         for (param, &b) in self.params.iter().zip(bends) {
@@ -179,8 +159,6 @@ impl Fixture {
     }
 }
 
-/// The rigid position of a point under a chain of turns about moving hinges —
-/// the answer a spine is claiming to produce, computed here the long way.
 fn composed(joints: &[Vec2], bends: &[f32], link: usize, ramp: f32, p: Vec2) -> Vec2 {
     let rotate = |pivot: Vec2, angle: f32, q: Vec2| {
         let (sin, cos) = angle.sin_cos();
@@ -191,7 +169,6 @@ fn composed(joints: &[Vec2], bends: &[f32], link: usize, ramp: f32, p: Vec2) -> 
     let hinges: Vec<Vec2> = (0..joints.len())
         .map(|k| if k == 0 { Vec2::ZERO } else { joints[k - 1] })
         .collect();
-    // Carry each hinge through the turns above it, exactly as the pass does.
     let mut moved: Vec<Vec2> = Vec::new();
     for (k, &hinge) in hinges.iter().enumerate() {
         let mut h = hinge;
@@ -210,13 +187,8 @@ fn composed(joints: &[Vec2], bends: &[f32], link: usize, ramp: f32, p: Vec2) -> 
     )
 }
 
-/// Two links bent a sixth of a turn each put the tip exactly where the two
-/// rotations compose, with a rounded surface between the endpoints.
-///
-/// This is the whole reason the kind exists. Two summed per-link deform
-/// bindings authored at the same bends miss that point by a visible margin and
-/// stretch the lower link along the way, because a sum of two rotations of the
-/// rest shape is not the rotation of a rotation.
+/// Two summed per-link deform bindings miss this point: a sum of rotations
+/// is not a composed rotation.
 #[test]
 fn two_bent_links_land_on_the_composed_position() {
     let f = Fixture::new(2, 50.0, 3);
@@ -224,7 +196,6 @@ fn two_bent_links_land_on_the_composed_position() {
     let posed = f.bend(&bends);
     let joints = [Vec2::new(0.0, -50.0), Vec2::new(0.0, -100.0)];
 
-    // Row 2 is the tip: 100 px down, at the far end of the second link.
     let tip = 0.5 * (posed[4] + posed[5]);
     let want = composed(&joints, &bends, 1, 1.0, Vec2::new(0.0, -100.0));
     assert!(
@@ -232,7 +203,6 @@ fn two_bent_links_land_on_the_composed_position() {
         "tip at {tip:?}, composed rigid answer {want:?}"
     );
 
-    // The surface rounds the internal joint inside the control polygon.
     let root = 0.5 * (posed[0] + posed[1]);
     let knee = 0.5 * (posed[2] + posed[3]);
     let joint = composed(&joints, &bends, 0, 1.0, joints[0]);
@@ -240,8 +210,6 @@ fn two_bent_links_land_on_the_composed_position() {
     assert!(knee.distance(rounded) < 1e-4);
 }
 
-/// The same claim, one link deeper and at two different bends, so a test that
-/// only happened to work for equal angles would fail.
 #[test]
 fn three_unequal_bends_round_the_composed_joint_path() {
     let f = Fixture::new(3, 40.0, 4);
@@ -267,8 +235,6 @@ fn three_unequal_bends_round_the_composed_joint_path() {
     }
 }
 
-/// A single link has no internal joint to round: its centre line follows
-/// the rigid link, rather than spiralling away from it.
 #[test]
 fn a_single_link_has_no_artificial_curl_or_length_inflation() {
     let f = Fixture::new(1, 100.0, 101);
@@ -283,20 +249,15 @@ fn a_single_link_has_no_artificial_curl_or_length_inflation() {
     }
 }
 
-/// A vertex above the spine's root does not move, however hard the spine
-/// bends: it projects onto the root, and the transform there is the identity.
 #[test]
 fn art_above_the_root_stays_where_it_was_drawn() {
     let mut f = Fixture::new(2, 50.0, 3);
-    // Push the art up so its first row sits 30 px above the spine's origin.
     f.model
         .update_node(&f.part, |n| {
             n.transform.translation = [0.0, 30.0, 0.0];
         })
         .expect("move the art");
     let posed = f.bend(&[0.4, -0.25]);
-    // Rows 0 and 1 of a 3-row, 100 px strip shifted up by 30 sit at +30 and
-    // -20 in spine space; only the first is above the root.
     let root_row = 0.5 * (posed[0] + posed[1]);
     assert!(
         (root_row - Vec2::new(0.0, 0.0)).length() < 1e-5,
@@ -304,8 +265,6 @@ fn art_above_the_root_stays_where_it_was_drawn() {
     );
 }
 
-/// Every bend at zero is the art as drawn, to the bit: the pass writes
-/// nothing and the deform stack stays empty.
 #[test]
 fn an_unbent_spine_is_exactly_the_art() {
     let f = Fixture::new(3, 40.0, 4);
@@ -356,14 +315,9 @@ fn art_and_its_posed_guide_are_visible_through_a_response_chain() {
     assert_eq!(observe(&f), expected);
 }
 
-/// A part turned under its spine still bends about the spine's own joints:
-/// the mapping is rebuilt from the current globals every frame, exactly as a
-/// mesh group's is.
 #[test]
 fn a_part_rotated_under_its_spine_still_turns_with_it() {
     let mut f = Fixture::new(1, 100.0, 3);
-    // A quarter turn on the part sends its own -Y down the spine's +X, so the
-    // spine is laid along +X to run down the art where the rotation puts it.
     f.model
         .update_node(&f.part, |n| {
             n.transform.rotation = [0.0, 0.0, std::f32::consts::FRAC_PI_2];
@@ -373,9 +327,6 @@ fn a_part_rotated_under_its_spine_still_turns_with_it() {
         .set_spine_joints(&f.spine, vec![[100.0, 0.0]])
         .expect("lay the spine along the art");
     let posed = f.bend(&[0.5]);
-    // The part's own (0, -100) is spine (100, 0); a quarter turn of the spine
-    // about its root sends that to (0, 100), which is (100, 0) back in the
-    // part's frame.
     let tip = 0.5 * (posed[4] + posed[5]);
     assert!(
         (tip - Vec2::new(100.0, 0.0)).length() < 1e-3,
@@ -383,21 +334,13 @@ fn a_part_rotated_under_its_spine_still_turns_with_it() {
     );
 }
 
-/// A mesh group above a spine warps the art the spine bent, rather than
-/// stopping at the spine node.
-///
-/// The proof is that the two do not merely add: the spine runs first and the
-/// group folds from the position it left, so bending and warping together is
-/// not the same as bending plus warping. A lattice that shifts only its lower
-/// edge is what makes the difference visible — where a vertex sits when the
-/// group samples it decides how much of the shift it gets.
+/// Bending and warping together is not bending plus warping: the group folds
+/// from the position the spine left.
 #[test]
 fn a_mesh_group_above_a_spine_warps_what_the_spine_bent() {
     let mut hex = SeededHex::new(9);
     let mut model = Model::new();
     let root = model.root().expect("root").clone();
-    // A lattice covering the whole strip, so every art vertex sits in a
-    // triangle of it.
     let lattice = ClmMesh {
         verts: vec![-160.0, 60.0, 160.0, 60.0, -160.0, -160.0, 160.0, -160.0],
         uvs: vec![0.0; 8],
@@ -449,7 +392,6 @@ fn a_mesh_group_above_a_spine_warps_what_the_spine_bent() {
     model
         .set_spine_targets(&spine, vec![Some(bend.clone())])
         .expect("aim the spine");
-    // The lower edge of the lattice slides +X; the upper edge stays.
     let key = catchlight_core::BindingKey::new(
         warp.clone(),
         group.clone(),
@@ -471,10 +413,8 @@ fn a_mesh_group_above_a_spine_warps_what_the_spine_bent() {
     let warped = posed(0.0, 1.0);
     let both = posed(0.5, 1.0);
 
-    // Each acts on its own.
     assert!(bent[4].length() > 1.0, "the spine moved nothing");
     assert!(warped[4].length() > 1.0, "the group moved nothing");
-    // And together they are not a sum: the group sampled the bent position.
     let sum = bent[4] + warped[4];
     assert!(
         (both[4] - sum).length() > 1.0,
@@ -485,9 +425,7 @@ fn a_mesh_group_above_a_spine_warps_what_the_spine_bent() {
 }
 
 /// A spine reads a param's value, not its normalized position along the
-/// range: a bend of 0.5 is a quarter turn whatever `min` and `max` are. Read
-/// as a position, 0.5 on a `-4..4` param would be 0.5625 of the way along and
-/// the tip would land somewhere else entirely.
+/// range: a bend of 0.5 is a quarter turn whatever `min` and `max` are.
 #[test]
 fn a_bend_is_the_params_value_and_not_its_position() {
     let mut f = Fixture::new(1, 100.0, 2);
@@ -496,15 +434,12 @@ fn a_bend_is_the_params_value_and_not_its_position() {
         .expect("widen the range");
     let posed = f.bend(&[0.5]);
     let tip = 0.5 * (posed[2] + posed[3]);
-    // A quarter turn about the root sends (0, -100) to (100, 0).
     assert!(
         (tip - Vec2::new(100.0, 0.0)).length() < 1e-3,
         "tip at {tip:?} on a param ranging -4..4"
     );
 }
 
-/// A rebake keeps the spine turning: the assignment is derived again from the
-/// same rest geometry, so an edit elsewhere in the model does not disturb it.
 #[test]
 fn an_edit_elsewhere_leaves_the_turn_alone() {
     let mut f = Fixture::new(2, 50.0, 3);
@@ -526,9 +461,7 @@ fn an_edit_elsewhere_leaves_the_turn_alone() {
     }
 }
 
-/// The pass reads the world transform of the spine and the part, so a model
-/// rendered under a root fold turns the same: the root cancels out of the
-/// spine-to-child mapping.
+/// The root transform cancels out of the spine-to-child mapping.
 #[test]
 fn the_render_root_does_not_change_the_turn() {
     let f = Fixture::new(2, 50.0, 3);

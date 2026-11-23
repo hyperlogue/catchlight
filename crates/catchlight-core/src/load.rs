@@ -1,20 +1,4 @@
 //! Loading a model file into a [`Model`].
-//!
-//! **The load path is `.clm` bytes -> [`Model`], and there is no other.**
-//! `.clm` is catchlight's own format and the only one this crate reads: an
-//! inochi2d `.inx` / `.inp` is converted once, by `catchlight-importer`
-//! (`catchlight-importer`), and the `.clm` is what ships. Nothing here
-//! knows that format exists.
-//!
-//! The file is only ever read into a Model — that is where the format's Ids,
-//! scalar params and slots are checked — and whatever animates or draws it is
-//! derived from there: [`crate::Puppet::new`] bakes the runtime's dense arena,
-//! and a render cache is prepared alongside it. So there is one reader to
-//! keep honest.
-//!
-//! These functions are byte-based (no filesystem), so they work on wasm too;
-//! callers read the bytes and tag the format from the file extension or the
-//! magic.
 
 use std::path::Path;
 
@@ -23,14 +7,11 @@ use crate::model::{Model, ModelError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelFormat {
-    /// catchlight's editable source-of-truth format — the only one there is.
     Clm,
 }
 
 impl ModelFormat {
-    /// Infer the format from a path's extension (case-insensitive). `None` for
-    /// any other extension, including `.inx` / `.inp`: those are imported, not
-    /// loaded.
+    /// Case-insensitive. `.inx` / `.inp` are imported, not loaded.
     pub fn from_path(path: &Path) -> Option<ModelFormat> {
         match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
             "clm" => Some(ModelFormat::Clm),
@@ -38,9 +19,6 @@ impl ModelFormat {
         }
     }
 
-    /// Detect the format from a file's leading magic bytes, for callers that
-    /// only have bytes and no path (a `fetch()` in the wasm host, a hand-in
-    /// from JS).
     pub fn sniff(bytes: &[u8]) -> Option<ModelFormat> {
         bytes
             .starts_with(&clm::MAGIC[..])
@@ -48,18 +26,7 @@ impl ModelFormat {
     }
 }
 
-/// Read model-file `bytes` of the given `format` into a [`Model`].
-///
-/// Textures arrive source-encoded, exactly as the file stores them — a render
-/// cache is what decodes and downsamples them, so there is no texture budget
-/// here.
-///
-/// A cache decodes them at their full authored size by default. A host that
-/// wants them smaller — a phone, a thumbnail, a browser tab holding several
-/// models — asks for that when it prepares the cache, not here: in
-/// `catchlight-wgpu`, `PrepareOptions::texture_halvings` halves every texture
-/// that many times on the way to the GPU. Nothing in this crate can name that
-/// type, so this is the pointer rather than a link.
+/// Textures stay source-encoded; a render cache decodes and downsamples them.
 pub fn load_model(bytes: &[u8], format: ModelFormat) -> Result<Model, ModelError> {
     match format {
         ModelFormat::Clm => Model::from_clm_bytes(bytes),

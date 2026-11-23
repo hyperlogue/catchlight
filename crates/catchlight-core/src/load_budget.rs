@@ -1,12 +1,8 @@
 //! The shared budget a load charges what it is about to allocate against.
 //!
-//! [`LoadLimits`] and [`LoadResource`] are `#[non_exhaustive]`: every new
-//! thing a file can make large gets a resource and a limit here, and that
-//! has to stay an additive change. A caller outside this crate starts from
-//! [`LoadLimits::default`] and assigns the fields it wants to move.
+//! [`LoadLimits`] and [`LoadResource`] are `#[non_exhaustive]` so adding a
+//! resource stays an additive change.
 
-/// One thing a load counts. Each has a limit of the same name in
-/// [`LoadLimits`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum LoadResource {
@@ -22,17 +18,11 @@ pub enum LoadResource {
     ManifestGridCells,
     ResponseInputs,
     Slots,
-    /// The encoded `Structure` section, charged before it is parsed. See
-    /// [`LoadLimits::structure_bytes`].
     StructureBytes,
-    /// Every spine's joints and bend targets.
     SpineJoints,
-    /// Welds, and the slot pairs they hold.
     WeldPairs,
-    /// Animations, their lanes, and the lanes' keyframes.
     Keyframes,
-    /// Extension values: a JSON value's length as compact JSON text, a byte
-    /// value's size.
+    /// Bytes: a JSON value's compact-text length, a byte value's size.
     ExtensionBytes,
 }
 
@@ -62,7 +52,6 @@ impl LoadResource {
     }
 }
 
-/// The most of each [`LoadResource`] one load may use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct LoadLimits {
@@ -78,20 +67,9 @@ pub struct LoadLimits {
     pub manifest_grid_cells: u64,
     pub response_inputs: u64,
     pub slots: u64,
-    /// The most bytes the encoded `Structure` section may be, checked before
-    /// any of it is parsed.
-    ///
-    /// Every other limit here is a count read *out of* a decoded structure,
-    /// which is too late to bound what decoding it allocates: a null is one
-    /// byte on the wire and a pointer-sized `Option` in memory, a two-key
-    /// node map is a few hundred bytes of struct, so a section decodes to as
-    /// much as ~30x its size. `encoded_bytes` bounds the whole file, textures
-    /// and all, and is far too large to be that bound — hence this one, on
-    /// the one section that is parsed into a tree.
-    ///
-    /// The default is 64 MiB: about 8x the largest structure among the
-    /// committed models (7.6 MB), and a worst case of roughly 2 GiB decoded.
-    /// A host with less room than that lowers it.
+    /// Checked before parsing: a section decodes to as much as ~30x its size,
+    /// and the counts below are read too late to bound that. Default 64 MiB,
+    /// about 8x the largest committed model's structure.
     pub structure_bytes: u64,
     pub spine_joints: u64,
     pub weld_pairs: u64,
@@ -282,7 +260,6 @@ impl LoadBudget {
 
 pub const MAX_BINDING_GRID_CELLS: u64 = 65_536;
 
-/// Bound an individual binding grid before allocating its dense values or axes.
 pub(crate) fn binding_grid_cells(
     mut axis_lengths: impl Iterator<Item = u64>,
 ) -> Result<u64, LoadLimitError> {
@@ -296,23 +273,9 @@ pub(crate) fn binding_grid_cells(
         })
 }
 
-/// Charge a decoded `.clm` against the shared budget before any of it is
-/// turned into a [`Model`](crate::Model): the counts and products a hostile
-/// file could make enormous are all here, and each is checked against its
-/// limit before a `Model` or a puppet sizes anything from it.
-///
-/// It does not bound the decode that produced `file` — that has already
-/// happened. What bounds it is the two charges
-/// [`decode_with_budget`](crate::formats::clm::decode_with_budget) makes on
-/// the encoded bytes before parsing them: `encoded_bytes` for the whole
-/// input and `structure_bytes` for the section that becomes a tree.
-///
-/// This is the charge for a `ClmFile` that arrived *as* a `ClmFile`, built
-/// by hand or by an importer, so the payload bytes are charged here. A file
-/// read from bytes had all of them charged as part of the input, and its
-/// reader charges only what is left — the texture count and the structure's
-/// counts: charging the payloads a second time would count every texture
-/// byte twice and halve the file size `encoded_bytes` admits.
+/// Charges payload bytes too, for a `ClmFile` built in memory; a file read
+/// from bytes already charged them as `encoded_bytes` and must use
+/// `charge_decoded_clm` instead, or every texture byte counts twice.
 pub fn charge_clm_file(
     file: &crate::formats::clm::ClmFile,
     budget: &mut LoadBudget,
@@ -327,9 +290,6 @@ pub fn charge_clm_file(
     charge_clm_structure(&file.doc, budget)
 }
 
-/// What is left to charge for a `.clm` whose encoded bytes were charged
-/// whole when they were decoded: how many textures it holds, and the
-/// structure's counts. See [`charge_clm_file`] for why not the payloads.
 pub(crate) fn charge_decoded_clm(
     doc: &crate::formats::clm::ClmStructure,
     textures: usize,
@@ -339,9 +299,6 @@ pub(crate) fn charge_decoded_clm(
     charge_clm_structure(doc, budget)
 }
 
-/// The texture half of [`charge_clm_file`], over payload sizes alone —
-/// so a replica applying a structure charges the payloads it sourced from its
-/// own store rather than ones it read out of a file.
 pub fn charge_texture_payloads(
     sizes: impl Iterator<Item = u64>,
     budget: &mut LoadBudget,
@@ -354,8 +311,6 @@ pub fn charge_texture_payloads(
     budget.charge(LoadResource::Textures, count)
 }
 
-/// The structure half of [`charge_clm_file`]: everything a hostile file
-/// could make enormous that is not a texture payload.
 pub fn charge_clm_structure(
     doc: &crate::formats::clm::ClmStructure,
     budget: &mut LoadBudget,

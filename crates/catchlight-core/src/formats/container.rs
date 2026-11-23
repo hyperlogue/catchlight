@@ -1,37 +1,19 @@
-//! Shared low-level framing for catchlight's binary model container
-//! (`.clm`). A fixed header — 8-byte magic, `format_version: u16`,
-//! `section_count: u32` — followed by a section table of
-//! `{ kind: u32, offset: u64, len: u32 }`, then the section payloads, all
-//! little-endian. Every count, length, and offset read from the file is
-//! validated against the buffer size before use, so a malformed or hostile
-//! file errors instead of panicking or over-allocating.
+//! Framing for the `.clm` container; all fields little-endian.
 //!
-//! **Whatever [`write()`] returns, [`read`] accepts.** The writer holds its
-//! input to the reader's caps — [`MAX_SECTION_COUNT`] sections, each at most
-//! [`MAX_SECTION_LEN`] bytes — and refuses what is over them, rather than
-//! truncating a length into the table's `u32` and leaving a file that only
-//! fails, or silently misreads, at the next open.
-//!
-//! Section *meaning* — which `kind` is Structure, Textures, TextureManifest
-//! or Extensions — lives in the `.clm` layer; this module frames opaque byte
-//! sections and owns only the version word that layer branches on.
+//! Every count, length, and offset read from the file is validated against
+//! the buffer before use. The writer refuses input over the reader's caps
+//! rather than truncating a length into the table's `u32`.
 
 use thiserror::Error;
 
 const HEADER_LEN: usize = 8 + 2 + 4;
 const SECTION_ENTRY_LEN: usize = 4 + 8 + 4;
 
-/// The most sections one container may frame. A cap on an untrusted count
-/// read from the file, and on what [`write()`] will frame.
 pub const MAX_SECTION_COUNT: u32 = 4096;
-/// The most bytes one section may hold. A section can hold a whole texture
-/// atlas, so the cap is generous; on the way in it turns a corrupt `u32::MAX`
-/// length into an error rather than an allocation, and on the way out it is
-/// what keeps a length from being truncated into the table's `u32`.
+/// A cap generous enough for a texture atlas; turns a corrupt `u32::MAX`
+/// length into an error rather than an allocation.
 pub const MAX_SECTION_LEN: u64 = 512 * 1024 * 1024;
 
-/// Hold one section's length to [`MAX_SECTION_LEN`], the same test on the
-/// way in and on the way out. Returns the length as the table stores it.
 pub fn check_section_len(kind: u32, len: u64) -> Result<u32, ContainerError> {
     u32::try_from(len)
         .ok()
@@ -67,8 +49,6 @@ pub enum ContainerError {
     },
 }
 
-/// One framed byte range. Used both as write input (borrowing the caller's
-/// bytes) and as the read view (borrowing the parsed file buffer).
 #[derive(Debug)]
 pub struct Section<'a> {
     pub kind: u32,
@@ -82,8 +62,7 @@ pub struct Container<'a> {
 }
 
 impl<'a> Container<'a> {
-    /// The first section with this `kind`, or `None`. Section kinds are
-    /// expected unique per file; duplicates resolve to the first.
+    /// Duplicate kinds resolve to the first.
     pub fn section(&self, kind: u32) -> Option<&'a [u8]> {
         self.sections
             .iter()
@@ -107,12 +86,7 @@ fn le_u64(bytes: &[u8], at: usize) -> Option<u64> {
     Some(u64::from_le_bytes(b))
 }
 
-/// Serialize `magic` + `version` + the section table + the payloads. Section
-/// offsets are absolute from the file start and laid out in `sections` order
-/// directly after the table; the result is deterministic for a given input.
-///
-/// Refuses what [`read`] would refuse — too many sections, or one too long —
-/// before copying a byte, so the error costs nothing.
+/// Offsets are absolute from the file start; output is deterministic.
 pub fn write(
     magic: &[u8; 8],
     version: u16,
@@ -132,14 +106,8 @@ pub fn write(
     Ok(file.finish())
 }
 
-/// Builds a container in place: each section's payload is produced straight
-/// into the file's buffer, where [`write()`] needs every section finished in a
-/// buffer of its own and then copies it in. For a section that is mostly
-/// texture payloads that copy is the size of the file.
-///
-/// The table is reserved up front, so the section count is fixed when the
-/// writer is made; each section's entry is filled in once its length is
-/// known. Holds to the same caps as [`write()`].
+/// Writes each payload straight into the file's buffer, avoiding the
+/// file-sized copy [`write()`] makes. The section count is fixed up front.
 pub struct Writer {
     out: Vec<u8>,
     declared: usize,
@@ -147,7 +115,6 @@ pub struct Writer {
 }
 
 impl Writer {
-    /// Start a container that will hold exactly `sections` sections.
     pub fn new(magic: &[u8; 8], version: u16, sections: usize) -> Result<Self, ContainerError> {
         let count = check_section_count(sections)?;
         let mut out = Vec::with_capacity(HEADER_LEN + sections * SECTION_ENTRY_LEN);
@@ -162,17 +129,10 @@ impl Writer {
         })
     }
 
-    /// Make room for `bytes` more of payload, when the caller knows roughly
-    /// what is coming.
     pub fn reserve(&mut self, bytes: usize) {
         self.out.reserve(bytes);
     }
 
-    /// Append the next section, its payload written by `fill`.
-    ///
-    /// A section over [`MAX_SECTION_LEN`] is refused once `fill` has
-    /// produced it; a caller that can tell beforehand should ask
-    /// [`check_section_len`] first and skip the work.
     pub fn section<E: From<ContainerError>>(
         &mut self,
         kind: u32,
@@ -194,11 +154,9 @@ impl Writer {
         Ok(())
     }
 
-    /// The finished file.
+    /// # Panics
     ///
-    /// Panics if fewer sections were written than declared: the table would
-    /// hold entries of zeros, and that is a bug in the caller, not an input
-    /// to report.
+    /// If fewer sections were written than declared.
     pub fn finish(self) -> Vec<u8> {
         assert_eq!(
             self.written, self.declared,
@@ -208,8 +166,6 @@ impl Writer {
     }
 }
 
-/// The payload of the section a [`Writer`] is appending. Append-only, so a
-/// section cannot reach back into the header, the table or another section.
 pub struct SectionWriter<'a>(&'a mut Vec<u8>);
 
 impl SectionWriter<'_> {
@@ -234,8 +190,6 @@ impl std::io::Write for SectionWriter<'_> {
     }
 }
 
-/// Parse a container, checking `magic` and bounds-checking the table against
-/// `bytes`. The returned sections borrow `bytes`.
 pub fn read<'a>(
     bytes: &'a [u8],
     expected_magic: &[u8; 8],
@@ -328,8 +282,6 @@ mod tests {
         assert!(c.sections.is_empty());
     }
 
-    /// The writer refuses what the reader would: a count over the cap never
-    /// reaches the header, and the largest count the reader takes round-trips.
     #[test]
     fn write_refuses_more_sections_than_read_accepts() {
         let at_cap: Vec<Section> = (0..MAX_SECTION_COUNT)
@@ -350,10 +302,6 @@ mod tests {
         );
     }
 
-    /// A section over the cap used to be written with its length truncated
-    /// to the table's `u32` — or, under 4 GiB, written whole into a file the
-    /// reader then refused. Refused before a byte is copied, so the test's
-    /// zero pages are never touched.
     #[test]
     fn write_refuses_a_section_longer_than_read_accepts() {
         let over = vec![0u8; MAX_SECTION_LEN as usize + 1];
@@ -376,7 +324,6 @@ mod tests {
         );
     }
 
-    /// The in-place writer lays a file out exactly as [`write`] does.
     #[test]
     fn the_in_place_writer_writes_the_same_file() {
         let a = vec![1u8, 2, 3, 4, 5];
@@ -398,7 +345,6 @@ mod tests {
         let mut file = Writer::new(MAGIC, 3, 3).unwrap();
         let ok = Ok::<(), ContainerError>(());
         file.section(7, |out| {
-            // In pieces, as a serializer writes.
             out.extend_from_slice(&a[..2]);
             std::io::Write::write_all(out, &a[2..]).unwrap();
             ok

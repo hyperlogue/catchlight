@@ -1,8 +1,7 @@
 //! Measure the solver alone, its art outputs and the final geometry fold.
 //! Pass a scenario substring to select individual workloads.
 
-// A bench is not a test, so the workspace deny on these does not lift by
-// itself; a build helper that cannot build has nothing to measure.
+// A bench is not a test, so the workspace deny on these does not lift.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::f32::consts::{PI, TAU};
@@ -17,47 +16,35 @@ use catchlight_core::{
     ResponseSource, ScalarTarget,
 };
 
-/// Seconds a tick advances: one frame at 60 Hz.
+/// One frame at 60 Hz.
 const DT: f32 = 1.0 / 60.0;
-/// Ticks timed per scenario, and untimed ticks run first so the caches the
-/// tick keeps (fold memos and scratch allocations) are warm.
+/// Untimed warm-up ticks keep fold memos and scratch allocations warm.
 const TICKS: usize = 600;
 const WARMUP: usize = 60;
 
-/// Rows of vertices on a strand's strip, two vertices wide.
 const ROWS: usize = 250;
-/// The strip in model pixels: half its width, its top edge and its bottom.
+/// In model pixels.
 const HALF_W: f32 = 12.0;
 const TOP: f32 = 80.0;
 const BOTTOM: f32 = -80.0;
-/// Model pixels between one strand and the next, so a scenario is a row of
-/// distinct strands rather than one drawn many times.
 const SPACING: f32 = 40.0;
 
-/// The bend values a link's deform binding is keyed at, in half turns, and
-/// the range they span: a quarter turn each way, in thirds. The editor's own
-/// keyform list, repeated here so the bench needs no editor crate.
+/// In half turns: a quarter turn each way, in thirds. Mirrors the editor's
+/// keyform list so the bench needs no editor crate.
 const BEND_KEYS: [f32; 7] = [-0.5, -1.0 / 3.0, -1.0 / 6.0, 0.0, 1.0 / 6.0, 1.0 / 3.0, 0.5];
 const BEND_MIN: f32 = -0.5;
 const BEND_MAX: f32 = 0.5;
 
-/// How far `turn` slides the strands at either end of its range, in model
-/// pixels.
+/// In model pixels.
 const TURN_SHIFT: f32 = 120.0;
-/// One measured configuration.
 struct Scenario {
     name: &'static str,
     strands: usize,
     links: usize,
-    /// Build each strand's strip part and the per-link deform bindings on it.
     parts: bool,
-    /// Drive consecutive links with a cascade of motion responses.
     responses: bool,
-    /// Publish each response to its bend parameter.
     outputs: bool,
-    /// Hang the strip off the spine, so the spine's own composition moves the
-    /// art. Mutually exclusive with `parts`, which is the historical path that
-    /// binds per-link deform grids instead.
+    /// Mutually exclusive with `parts`.
     spines: bool,
 }
 
@@ -177,12 +164,8 @@ fn main() {
     }
 }
 
-/// Build the scenario, settle it, then time `TICKS` ticks of it. Returns the
-/// minimum, median and p90 tick in microseconds.
-///
-/// Posing sits outside the timed region in every scenario, so what a response
-/// costs to write its params is inside the number and what the harness costs
-/// to stand in for one is not.
+/// Returns min, median and p90 tick in microseconds. Posing sits outside the
+/// timed region.
 fn run(s: &Scenario) -> (f64, f64, f64) {
     let built = Built::new(s);
     let mut puppet = Puppet::new(&built.model);
@@ -200,8 +183,7 @@ fn run(s: &Scenario) -> (f64, f64, f64) {
         black_box(motion);
         if frame >= WARMUP {
             samples.push(elapsed.as_nanos());
-            // Outside the timed window: a scenario whose rig sits still is
-            // measuring nothing, and a number off one is worse than none.
+            // A scenario whose rig sits still measures nothing.
             moving |= responses_moving;
             if let Some(v) = puppet.param_value(&built.bends[0]) {
                 (lo, hi) = (lo.min(v), hi.max(v));
@@ -232,20 +214,12 @@ fn run(s: &Scenario) -> (f64, f64, f64) {
     (at(0.0), at(0.5), at(0.9))
 }
 
-/// A scenario's model and the params the bench poses on it.
 struct Built {
     model: Model,
-    /// Feeds the root of each response cascade.
     turn: ParamId,
-    /// One per link per strand. A response writes these; without one the bench
-    /// does.
     bends: Vec<ParamId>,
-    /// Whether the bench poses `bends` itself.
     pose_bends: bool,
-    /// Whether anything writes the bends this run — the bench or a response.
     bends_move: bool,
-    /// The first strand's strip, when the scenario has parts: what the
-    /// post-run check reads to see the fold produced offsets.
     first_part: Option<NodeId>,
 }
 
@@ -266,8 +240,6 @@ impl Built {
                 &mut hex,
             )
             .unwrap();
-        // Every strand hangs off this group, so one scalar binding on it is
-        // what puts the whole scenario in motion.
         let head = model
             .add_node(
                 &root,
@@ -337,8 +309,7 @@ impl Built {
                             )
                             .unwrap();
                     }
-                    // Cubic, because a bend lands between keys nearly always
-                    // and the keys are samples of a rotation.
+                    // Cubic: the keys are samples of a rotation.
                     model
                         .set_binding_interpolate(&key, InterpolateMode::Cubic)
                         .unwrap();
@@ -373,8 +344,7 @@ impl Built {
                 }
             }
             if s.spines {
-                // The joints are in the spine's own space, and the spine sits
-                // on the strip's top edge.
+                // The joints are in the spine's own space, on the strip's top edge.
                 let spine = ModelSpine::new(
                     (0..s.links)
                         .map(|l| [0.0, -link_len * (l + 1) as f32])
@@ -406,9 +376,7 @@ impl Built {
         }
     }
 
-    /// Pose the frame: a one-hertz sinusoid on `turn`, and on each bend param
-    /// when no response is writing it. The bends are spread in phase so no two
-    /// bindings fold the same value.
+    /// Bends are spread in phase so no two bindings fold the same value.
     fn pose(&self, puppet: &mut Puppet, frame: usize) {
         let t = frame as f32 * DT;
         puppet.set_param_value(&self.turn, (t * TAU).sin());
@@ -420,8 +388,6 @@ impl Built {
     }
 }
 
-/// The strip a strand is drawn on: two columns either side of x = 0, `ROWS`
-/// rows from [`TOP`] down to [`BOTTOM`], top row first.
 fn strip_mesh() -> ClmMesh {
     let mut verts = Vec::with_capacity(ROWS * 4);
     let mut uvs = Vec::with_capacity(ROWS * 4);
@@ -444,10 +410,7 @@ fn strip_mesh() -> ClmMesh {
     }
 }
 
-/// One link's deform keyform: the strip past the link's joint swung about it
-/// by `bend` half turns, ramped in across the link's own span. The shape the
-/// editor bakes for a strand, in the amount of arithmetic that matters here —
-/// a non-identity cell the fold cannot skip.
+/// A non-identity cell the fold cannot skip.
 fn keyform(verts: &[f32], link: usize, link_len: f32, bend: f32) -> Vec<f32> {
     let joint_s = link as f32 * link_len;
     let joint_y = TOP - joint_s;

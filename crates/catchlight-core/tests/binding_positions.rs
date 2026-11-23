@@ -168,7 +168,6 @@ fn invalid_axes_and_key_edits_leave_authored_state_unchanged() {
     assert!(model.key_move(&tx, &param, usize::MAX, 0.4).is_err());
     assert!(model.key_insert(&tx, &param, 0.5).is_err());
     assert!(model.authored_eq(&before).unwrap());
-    // Exact creation is idempotent and cannot replace an existing grid.
     model
         .add_binding_with_positions(&tx, vec![vec![0.0, 1.0]])
         .unwrap();

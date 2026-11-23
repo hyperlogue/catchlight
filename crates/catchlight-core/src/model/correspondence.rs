@@ -1,11 +1,7 @@
 //! Convex correspondence for replacing a mesh without guessing vertex identity.
 //!
-//! Each destination row names weighted source indices. Validation precedes all
-//! model mutation; duplicate source entries accumulate in supplied order in f64,
-//! then sort by source index. Zero weights disappear, and valid weights are never
-//! renormalized. The same canonical map applies to every authored deform cell;
-//! holes, interpolation and binding order are retained. Slots follow ordinary
-//! mesh replacement: their old indices are cleared and returned for explicit refill.
+//! Duplicate source entries accumulate in supplied order in f64; zero weights
+//! disappear and valid weights are never renormalized.
 
 use std::collections::BTreeMap;
 
@@ -44,7 +40,6 @@ pub enum MeshMappingError {
     Model(#[from] ModelError),
 }
 
-/// Validated correspondence reusable across authored cells or external fields.
 #[derive(Debug, Clone)]
 pub struct DeformMapping {
     source_vertices: usize,
@@ -126,7 +121,6 @@ impl DeformMapping {
 }
 
 impl Model {
-    /// Replace rest geometry and map exactly the existing authored deforms.
     /// Invalid geometry, correspondence or mapped values leave this model intact.
     pub fn set_node_mesh_mapped(
         &mut self,
@@ -152,8 +146,6 @@ impl Model {
             }
         }
         let mut at = 0;
-        // set_node_mesh_with visits the same cells in the same order. All
-        // fallible validation and arithmetic completed before it mutates anything.
         Ok(self.set_node_mesh_with(node, mesh, |_, _, _| {
             let offsets = std::mem::take(&mut mapped[at]);
             at += 1;

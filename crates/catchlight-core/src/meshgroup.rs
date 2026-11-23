@@ -1,20 +1,7 @@
 //! Mesh groups: vertex-level deforms applied to a subtree.
 //!
-//! **A group's effect on what is beneath it includes every outer group's,
-//! parent first.** One pre-order pass runs the groups
-//! (`propagate_mesh_group_deforms`): each combines its stack — its own Param
-//! sources plus what outer groups pushed onto its lattice earlier in the same
-//! pass — then shifts its `translate_children` targets by that combined
-//! deform and pushes it to its meshed children. A shifted node's subtree gets
-//! its globals recomputed on the spot, so the meshed children below it and
-//! every inner group later in the pass read the shifted place.
-//!
-//! A spine has no mesh and does not hand a group's deform down — it only adds its own turn — so
-//! `descendant_meshed_nodes` walks straight past it to the meshed nodes below
-//! and `translate_children_targets` leaves it alone. That is what makes a
-//! group above a spine warp the art the spine bent (`crate::spine` runs
-//! first); shifting the spine node bodily *and* warping the same vertices
-//! would move them twice.
+//! A spine passes no group deform down, so the walks skip past it: shifting
+//! the spine node and warping the same vertices would move them twice.
 
 use glam::swizzles::Vec4Swizzles;
 use glam::{Affine2, Mat2, Mat4, Vec2, Vec4};
@@ -27,18 +14,12 @@ use crate::{
 };
 use std::collections::HashMap;
 
-/// Per-vertex triangle hints baked at load time: the MG triangle that
-/// covered the child vertex at its base position, `0` for a vertex no
-/// triangle covered. Propagation looks the triangle up again against the
-/// vertex's *current* position and only starts from the hint, so a stale
-/// one costs a scan, never a wrong answer. Neither the barycentric weights
-/// nor the MG↔child transforms are baked: both are recomputed per frame
-/// from current globals (see `propagate_mesh_group_deforms`), because
-/// params that drive transforms would make load-time values stale.
+/// Per-vertex triangle hints baked at load time, `0` for an uncovered vertex.
+/// A hint is only a starting point, so a stale one costs a scan, never a
+/// wrong answer.
 #[derive(Debug, Clone)]
 pub(crate) struct ChildPins {
     pub(crate) vertices: Vec<u32>,
-    /// A partial geometry observation only consumes these child indices.
     observed_vertices: Option<Box<[usize]>>,
 }
 
@@ -47,35 +28,21 @@ pub(crate) struct MeshGroupPins {
     pub(crate) per_child: HashMap<NodeIdx, ChildPins>,
 }
 
-/// Spatial triangle candidates over one mesh group's rest lattice, derived
-/// once per bake.
+/// Spatial triangle candidates over one mesh group's rest lattice.
 ///
-/// **`find` is an exact accelerator of [`find_triangle_strict_hint`]**: the
-/// same triangle for the same point and hint, reached without visiting the
-/// triangles whose padded bounds miss the point's bin. Nothing here decides
-/// containment on its own — the hint and every candidate are checked against
-/// the exact point — so a vertex on a fractional coordinate never jumps at a
-/// bin boundary and one near a mesh edge never loses its deformation.
-///
-/// **It holds no per-pixel data.** An earlier form rasterised every triangle
-/// into a pixel grid of hints; that cost the lattice's area in memory per
-/// puppet and triangles x area in time per bake, for a first guess the
-/// per-vertex hint in [`ChildPins`] already supplies. What is left is sized by
-/// the triangle count alone, so a lattice of any extent gets one.
+/// `find` returns exactly what [`find_triangle_strict_hint`] does; bins only
+/// skip triangles, containment is always decided against the exact point.
 #[derive(Debug, Clone)]
 pub(crate) struct MgTriangleBins {
-    /// The lattice's lower corner in its own local space, floored.
+    /// Lower corner in the lattice's local space, floored.
     bounds_min: Vec2,
-    /// The lattice's extent from `bounds_min`, at least one unit a side; the
-    /// bins divide it evenly.
+    /// At least one unit a side.
     extent: Vec2,
-    /// Coarse spatial bins bound the work when a hint misses.
-    /// Well-conditioned triangles appear in every bin their padded bounds
-    /// touch, in index order. Exact containment remains authoritative.
+    /// Well-conditioned triangles, in every bin their padded bounds touch, in
+    /// index order.
     candidates: Vec<Vec<u32>>,
-    /// Nearly collinear triangles cannot be culled by geometric bounds: the
-    /// existing f32 containment calculation can accept points beyond them.
-    /// Keep these in triangle order and test them regardless of the query bin.
+    /// Nearly collinear triangles cannot be culled by bounds: the f32
+    /// containment test can accept points beyond them.
     unculled: Vec<u32>,
 }
 
@@ -118,8 +85,8 @@ impl MgTriangleBins {
             let lo = Self::bin(a.min(b).min(c) - padding, bounds_min, extent);
             let hi = Self::bin(a.max(b).max(c) + padding, bounds_min, extent);
             candidate_count += (hi.0 - lo.0 + 1) * (hi.1 - lo.1 + 1);
-            // Highly overlapping input must not turn the acceleration cache
-            // into an unbounded allocation. The caller retains the exact scan.
+            // Bound the allocation on highly overlapping input; the caller keeps the
+            // exact scan.
             if candidate_count > 1_048_576 {
                 return None;
             }
@@ -145,9 +112,6 @@ impl MgTriangleBins {
         )
     }
 
-    /// The triangle [`find_triangle_strict_hint`] returns for `p` and `hint`:
-    /// the hint when it holds `p`, else the first triangle in index order
-    /// that does.
     fn find(&self, vertices: &[Vec2], indices: &MeshIndices, p: Vec2, hint: u32) -> Option<u32> {
         let contains = |tri| {
             triangle_vertices_raw(vertices, indices, tri)
@@ -161,8 +125,7 @@ impl MgTriangleBins {
             .iter()
             .copied()
             .find(|&tri| tri != hint && contains(tri));
-        // Preserve the full scan's first-match order when both lists hold a
-        // triangle containing the point.
+        // Preserve the full scan's first-match order.
         self.unculled
             .iter()
             .copied()
@@ -172,10 +135,8 @@ impl MgTriangleBins {
     }
 }
 
-/// Bound edge rounding only where the dot-product containment solve is well
-/// conditioned. Its determinant subtracts two nearly equal products on thin
-/// triangles; a fixed geometric epsilon does not cover that cancellation.
-/// Such triangles retain the original predicate without any spatial culling.
+/// The containment determinant cancels catastrophically on thin triangles,
+/// which a fixed epsilon does not cover; those keep the unculled predicate.
 fn triangle_padding(a: Vec2, b: Vec2, c: Vec2) -> Option<Vec2> {
     let v0 = b - a;
     let v1 = c - a;
@@ -191,9 +152,6 @@ fn triangle_padding(a: Vec2, b: Vec2, c: Vec2) -> Option<Vec2> {
     }
     let extent = a.max(b).max(c) - a.min(b).min(c);
     let magnitude = a.abs().max(b.abs()).max(c.abs());
-    // Widen with the cancellation factor, in addition to the predicate's
-    // edge tolerance and coordinate rounding. Clamped edge bins also retain
-    // points just outside the lattice's rectangle.
     Some(
         extent * (1e-4 + 128.0 * f32::EPSILON * scale / determinant)
             + magnitude * (16.0 * f32::EPSILON)
@@ -241,14 +199,8 @@ fn triangle_count(indices: &MeshIndices) -> u32 {
     (indices.len() / 3) as u32
 }
 
-/// Strict variant: returns the triangle only when `p` is INSIDE one, so
-/// vertices outside the MG mesh are passed through unchanged.
-///
-/// `hint` is checked first; correct in the common small-deform case
-/// (the triangle that covered the base position usually still covers
-/// the small-perturbed position) and saves the linear scan over all
-/// MG triangles. On a large Body MG (~2000 child verts over dozens of
-/// triangles) this is ~10× faster than the unhinted scan.
+/// `None` when `p` is outside every triangle, so such vertices pass through
+/// unchanged. `hint` is checked first (~10x faster on large groups).
 fn find_triangle_strict_hint(
     vertices: &[Vec2],
     indices: &MeshIndices,
@@ -283,10 +235,6 @@ fn find_triangle_strict_hint(
     None
 }
 
-/// Collect parts and nested mesh groups. Descend through parts, participating
-/// composites, spines and motion responses. A nested mesh group carries the
-/// deform to its own children. With `translateChildren`, a group carries its
-/// subtree through a single translation.
 fn descendant_meshed_nodes(tree: &NodeTree, root: NodeIdx, arena: &Arena) -> Vec<NodeIdx> {
     let mut out = Vec::new();
     let mut stack: Vec<NodeIdx> = tree.get_children(root);
@@ -296,9 +244,7 @@ fn descendant_meshed_nodes(tree: &NodeTree, root: NodeIdx, arena: &Arena) -> Vec
                 out.push(id);
                 stack.extend(tree.get_children(id));
             }
-            // A Composite propagates only when `propagate_mesh_group` is
-            // set, so a
-            // Composite that opts out halts the walk.
+            // A Composite propagates only when `propagate_mesh_group` is set.
             Some(NodeKind::Composite(c)) => {
                 if c.propagate_mesh_group {
                     stack.extend(tree.get_children(id));
@@ -307,7 +253,6 @@ fn descendant_meshed_nodes(tree: &NodeTree, root: NodeIdx, arena: &Arena) -> Vec
             Some(NodeKind::MeshGroup(_)) => {
                 out.push(id);
             }
-            // Both kinds pass the deform through to their meshed descendants.
             Some(NodeKind::Spine(_) | NodeKind::MotionResponse) => {
                 stack.extend(tree.get_children(id));
             }
@@ -349,31 +294,14 @@ fn transform_point(m: Mat4, p: Vec2) -> Vec2 {
     Vec2::new(r.x, r.y)
 }
 
-/// 2D-affine projection of a Mat4. Keeps the upper-left 2x2 from the
-/// X/Y columns and the XY of the W column as the 2D translation. The
-/// previous `Mat3::from_mat4` + `Affine2::from_mat3` round-trip silently
-/// dropped the translation: `Mat3::from_mat4` keeps columns 0..2 (X/Y/Z
-/// basis) and discards W, while `Affine2::from_mat3` then reads the
-/// translation out of the Mat3's *Z* column — which on a 3D-style Mat4
-/// is `(0, 0, 1)`, not the actual translation. Result: every child→MG
-/// and MG→child transform used by the propagation path applied
-/// rotation/scale only, putting parts whose local frame has any
-/// translation offset relative to their MG (e.g. an eyelash Part
-/// inside an Eye MG) at the wrong MG-local point and looking up the
-/// wrong triangle.
+/// Not `Mat3::from_mat4` + `Affine2::from_mat3`: that round-trip reads the
+/// translation from the Z column and drops it.
 pub(crate) fn affine2_from_mat4(m: Mat4) -> Affine2 {
     Affine2::from_cols(m.x_axis.xy(), m.y_axis.xy(), m.w_axis.xy())
 }
 
-/// Project child vertices into MG-local space using the global
-/// transforms before looking up their triangle, and stash the reverse
-/// 2x2 so `propagate_mesh_group_deforms` can apply MG-local offsets as
-/// child-local offsets the renderer can add to child vertices in
-/// child-local space. Without this, any MG whose children don't share
-/// its local frame produces misplaced pins and offsets applied in
-/// the wrong basis, which shows up as dramatic distortion when a deform
-/// param drives those MGs. `transforms` is the arena's load-time
-/// GlobalTransforms; callers should compute it immediately before baking.
+/// Pins are found in MG-local space; `transforms` must be the arena's
+/// globals computed immediately before baking.
 pub(crate) fn bake_mesh_group_pins(
     arena: &Arena,
     transforms: &GlobalTransforms,
@@ -397,8 +325,6 @@ pub(crate) fn bake_mesh_group_pins(
 
     let mg_mesh = &mg.mesh;
     let mg_local = local_positions(mg_mesh);
-    // The bins answer exactly what the strict scan does, without the scan:
-    // without them a bake is child vertices x group triangles.
     let rest_triangle = |p: Vec2| match &mg.bins {
         Some(bins) => bins.find(&mg_local, &mg_mesh.indices, p, 0),
         None => find_triangle_strict_hint(&mg_local, &mg_mesh.indices, p, 0),
@@ -412,11 +338,8 @@ pub(crate) fn bake_mesh_group_pins(
         let child_global = transforms.get(child_id);
         let child_to_mg = mg_global_inv * child_global;
 
-        // Strict inside-only lookup leaves vertices outside every MG triangle
-        // unchanged. A closest-edge fallback smears edge deformation and
-        // causes feature drift at extreme poses.
-        //
-        // GPU draws `v - origin`; lookups must use the same local space.
+        // A closest-edge fallback smears edge deformation and drifts features at
+        // extreme poses. GPU draws `v - origin`; lookups use the same space.
         let mut vertices = Vec::with_capacity(child_verts.len());
         for &v in child_verts {
             let v_in_mg = transform_point(child_to_mg, v - child_origin);
@@ -436,14 +359,9 @@ pub(crate) fn bake_mesh_group_pins(
     out
 }
 
-/// Descendants without a mesh, reached from a `translateChildren=true` MG.
-/// Motion responses pass deformation through to drawable descendants. Groups
-/// receive a single transform shift for their subtree. Nested MGs
-/// receive vertex deformation through `descendant_meshed_nodes`; applying a
-/// Node-level shift to them too would double the deform.
+/// Mesh-less descendants of a `translateChildren` MG. Nested MGs are excluded:
+/// they already receive vertex deformation, and a shift would double it.
 fn translate_children_targets(tree: &NodeTree, mg_id: NodeIdx, arena: &Arena) -> Vec<NodeIdx> {
-    // Walk through parts, participating composites, spines and motion
-    // responses. A group carries its subtree with its own translation.
     let descends = |id: NodeIdx| match arena.get(id).map(|n| &n.kind) {
         Some(NodeKind::Part(_)) => true,
         Some(NodeKind::Composite(c)) => c.propagate_mesh_group,
@@ -464,8 +382,7 @@ fn translate_children_targets(tree: &NodeTree, mg_id: NodeIdx, arena: &Arena) ->
 }
 
 impl Arena {
-    /// Restore the previous group pass after a fold changed only unrelated
-    /// inputs. Spines have already run and welds will read these same sources.
+    /// Valid only when a fold changed inputs unrelated to the group pass.
     pub(super) fn restore_mesh_group_deforms(
         &mut self,
         transforms: &mut GlobalTransforms,
@@ -494,8 +411,6 @@ impl Arena {
         }
     }
 
-    /// Limit geometry passes to the nodes used by a pose-only observation.
-    /// The existing hierarchy and arena indices continue to locate transforms.
     pub(super) fn retain_geometry(
         &mut self,
         needed: &std::collections::HashSet<NodeIdx>,
@@ -523,8 +438,7 @@ impl Arena {
             indices.sort_unstable();
             indices.dedup();
         }
-        // Keep transform slots stable. Unobserved branches can release their
-        // meshes, deformation stacks and spine data from the pose copy.
+        // Keep transform slots stable; unobserved branches release their meshes.
         for (slot, node) in self.nodes.iter_mut().enumerate() {
             if !needed.contains(&NodeIdx(slot as u32)) {
                 node.kind = NodeKind::Group;
@@ -537,16 +451,11 @@ impl Arena {
         let groups: std::collections::HashSet<_> = order.iter().copied().collect();
         for &id in &order {
             if let Some(NodeKind::MeshGroup(group)) = self.get_mut(id).map(|n| &mut n.kind) {
-                // A copy of this group's pins alone: the render puppet keeps
-                // the full set.
                 std::sync::Arc::make_mut(&mut group.pins)
                     .per_child
                     .retain(|child, pins| {
                         pins.observed_vertices =
                             vertices.get(child).map(|v| v.clone().into_boxed_slice());
-                        // Spines have already read their guide geometry by this
-                        // pass. Only observed vertices and intermediate lattices
-                        // need an inherited mesh group deform.
                         pins.observed_vertices.is_some() || groups.contains(child)
                     });
             }
@@ -555,11 +464,8 @@ impl Arena {
     }
 }
 
-/// Pre-order (root-to-leaf among MeshGroups). The order is load-
-/// bearing for nested MGs: an outer MG pushes into a nested MG's
-/// stack, so the outer must propagate before the inner combines and
-/// pushes to its own children — deform flows outer → inner → Part in
-/// a single pass.
+/// Pre-order: an outer MG must push into a nested MG's stack before the
+/// inner combines.
 fn mesh_group_pre_order(arena: &Arena) -> Vec<NodeIdx> {
     arena.tree.with_dfs_order(|dfs| {
         dfs.iter()
@@ -574,10 +480,8 @@ fn mesh_group_pre_order(arena: &Arena) -> Vec<NodeIdx> {
     })
 }
 
-// Ensure the cache is populated, then hand ownership to the caller.
-// Caller is responsible for putting the Vec back via
-// `restore_mg_pre_order_cache`. This avoids a per-frame clone while
-// keeping the hot-path borrow of the arena mutable.
+// Caller must return the Vec via `restore_mg_pre_order_cache`; avoids a
+// per-frame clone.
 fn take_mg_pre_order(arena: &mut Arena) -> Vec<NodeIdx> {
     if arena.mg_pre_order_cache.is_none() {
         arena.mg_pre_order_cache = Some(mesh_group_pre_order(arena));
@@ -585,22 +489,9 @@ fn take_mg_pre_order(arena: &mut Arena) -> Vec<NodeIdx> {
     arena.mg_pre_order_cache.take().unwrap_or_default()
 }
 
-/// Per-MeshGroup: combine its own stack (Param sources targeting the
-/// MG's lattice, plus Node sources pushed by an outer MG), shift its
-/// `translate_children` targets by that combined deform
-/// (`shift_translate_children`), then push it to each child in
-/// `per_child` via `DeformSource::Node(mg_id)` — Parts and nested MGs
-/// alike (see `mesh_group_pre_order` for the ordering that makes the
-/// nested chain compose).
-///
-/// One path, per child: map the child's CURRENT position
-/// (`base + cur_deform`, where `cur_deform` excludes any prior
-/// Node(mg_id) source) into MG-local, find the triangle at runtime,
-/// sample the deformed MG triangle there, transform back to
-/// child-local, and emit the absolute-replacement delta. Sampling at
-/// the current rather than the base position is what keeps a child's
-/// own Param deltas and the MG's deltas from double-pulling at extreme
-/// param values.
+/// Children are sampled at their current position (`base + cur_deform`,
+/// excluding this MG's prior source), not the base: sampling at the base
+/// double-pulls against the child's own Param deltas at extreme values.
 pub(crate) fn propagate_mesh_group_deforms(
     arena: &mut Arena,
     transforms: &mut GlobalTransforms,
@@ -611,9 +502,6 @@ pub(crate) fn propagate_mesh_group_deforms(
     arena.mg_shifts.clear();
     let order = take_mg_pre_order(arena);
 
-    // Pull the arena-owned scratch out so we can interleave borrows of
-    // the MG (read) and of each child (write) without building a
-    // per-child Vec<Vec2> or an outer (NodeIdx, Vec<Vec2>) Vec.
     let mut scratch = std::mem::take(&mut arena.mg_propagate_scratch);
     let mut cur_deform_scratch = std::mem::take(&mut arena.mg_cur_deform_scratch);
     let mut deformed_mg_vertices = std::mem::take(&mut arena.mg_deformed_vertices_scratch);
@@ -621,8 +509,6 @@ pub(crate) fn propagate_mesh_group_deforms(
     let mut child_ids: smallvec::SmallVec<[NodeIdx; 8]> = smallvec::SmallVec::new();
 
     for &mg_id in &order {
-        // The lattice's rest positions in its own space, once per group:
-        // the shift and every child below read the same ones.
         mg_local.clear();
         if let Some(node) = arena.get_mut(mg_id) {
             if let NodeKind::MeshGroup(mg) = &mut node.kind {
@@ -631,8 +517,7 @@ pub(crate) fn propagate_mesh_group_deforms(
             }
         }
 
-        // The shift goes before this MG pushes anything, so its targets move
-        // by the stack just combined — own Params plus every outer MG's push.
+        // Shift before pushing, so targets move by own Params plus every outer push.
         let translate_children = matches!(
             arena.get(mg_id).map(|n| &n.kind),
             Some(NodeKind::MeshGroup(mg)) if mg.translate_children
@@ -641,9 +526,7 @@ pub(crate) fn propagate_mesh_group_deforms(
             shift_translate_children(arena, mg_id, &mg_local, transforms, root);
         }
 
-        // Gather child ids. Propagation still runs when the MG has zero
-        // deform but a child has its own non-zero prior deform; the
-        // per-child step handles that zero check.
+        // Propagation still runs at zero MG deform: a child may have its own.
         child_ids.clear();
         {
             let Some(node) = arena.get(mg_id) else {
@@ -654,10 +537,6 @@ pub(crate) fn propagate_mesh_group_deforms(
             };
             child_ids.extend(mg.pins.per_child.keys().copied());
 
-            // Pre-compute mg_vertices[i] + mg_combined[i] once per MG;
-            // reused across every child of this MG. Several children
-            // typically hit the same MG triangle, so this avoids
-            // re-doing the add per child-vert.
             let mg_combined = mg.deform_stack.combined();
             let mg_vertices = &mg.mesh.vertices;
             let mg_origin = mg.mesh.origin;
@@ -672,11 +551,8 @@ pub(crate) fn propagate_mesh_group_deforms(
             }
         }
 
-        // Invert the MG's current global transform every frame. Without this, any
-        // param that drives transforms (Yaw-Pitch on Eye/LIP MGs, Mouth
-        // Shape t.y on Mouth Inner, etc.) puts children at the wrong MG-
-        // local point because catchlight's load-time `child_to_mg_2d` is
-        // stale relative to runtime globals.
+        // Per frame: params that drive transforms make load-time
+        // `child_to_mg_2d` stale.
         let mg_global = transforms.get(mg_id);
         let Some(mg_global_inv) = checked_affine_inverse(mg_global) else {
             continue;
@@ -709,18 +585,13 @@ pub(crate) fn propagate_mesh_group_deforms(
     arena.mg_cur_deform_scratch = cur_deform_scratch;
     arena.mg_deformed_vertices_scratch = deformed_mg_vertices;
     arena.mg_local_scratch = mg_local;
-    // Put the cache back unless invalidated during propagate (no caller
-    // in the hot path mutates the tree, but check to be safe).
     if arena.mg_pre_order_cache.is_none() {
         arena.mg_pre_order_cache = Some(order);
     }
 }
 
-/// Shift one MG's `translate_children` targets — its descendants without a
-/// mesh (groups) — as a Node-level transform shift,
-/// then bring the globals under each shifted node up to date.
-///
-/// For each target:
+/// Shift one MG's `translate_children` targets, then recompute the globals
+/// under each.
 ///
 ///   centerMatrix = MG.global.inverse * parent.global
 ///   cVertex      = centerMatrix * local_translation
@@ -728,16 +599,8 @@ pub(crate) fn propagate_mesh_group_deforms(
 ///   delta        = (parent.global.inv * MG.global)_linear * (newPos - cVertex)
 ///   transform.translation += delta
 ///
-/// `node.transform.translation` — the base plus whatever this frame's params
-/// already shifted — is the vertex, and the resulting delta is added back
-/// into it.
-///
-///
-/// Runs from inside `propagate_mesh_group_deforms`, which has combined the
-/// MG's stack, so the deform read here carries every outer MG's same-frame
-/// push as well as this MG's own Param sources. One MG's targets are disjoint
-/// subtrees — the target walk stops at each one — so a shift never moves an
-/// earlier target's parent, and the MG's own global cannot move under it.
+/// One MG's targets are disjoint subtrees, so a shift never moves an earlier
+/// target's parent.
 fn shift_translate_children(
     arena: &mut Arena,
     mg_id: NodeIdx,
@@ -782,10 +645,8 @@ fn shift_translate_children(
     }
 }
 
-/// One `translate_children` target's shift, in the target's parent space.
-/// `Vec2::ZERO` whenever the shift does not apply — the target sits outside
-/// the MG lattice, a transform will not invert, or the warp there is nil —
-/// which is also the value the caller records for it.
+/// In the target's parent space; `Vec2::ZERO` whenever the shift does not
+/// apply.
 fn translate_children_delta(
     arena: &Arena,
     mg_id: NodeIdx,
@@ -800,9 +661,7 @@ fn translate_children_delta(
     };
     let parent_global = transforms.get(parent_id);
 
-    // Project the target's CURRENT position (= base plus the transform
-    // delta) into MG-local space: transform.translation already includes
-    // any param shift this frame (apply_params has run).
+    // transform.translation already includes this frame's param shift.
     let Some(node) = arena.get(target_id) else {
         return Vec2::ZERO;
     };
@@ -811,14 +670,11 @@ fn translate_children_delta(
     let cvertex_full = mg_global_inv * world_cur;
     let cvertex_proj = Vec2::new(cvertex_full.x, cvertex_full.y);
 
-    // Outside the lattice the warp is the identity there: delta = 0.
     let Some(delta_mg) = warp_at(arena, mg_id, cvertex_proj, mg_local) else {
         return Vec2::ZERO;
     };
 
-    // mg_to_parent linear: (parent.global.inverse * MG.global) upper-left
-    // 2x2. Translation is stripped because this maps a displacement vector
-    // rather than a point.
+    // Linear part only: this maps a displacement, not a point.
     let Some(parent_global_inv) = checked_affine_inverse(parent_global) else {
         return Vec2::ZERO;
     };
@@ -826,10 +682,8 @@ fn translate_children_delta(
     linear_mat2(mg_to_parent) * delta_mg
 }
 
-/// The group's combined deform at `p` in its own local space: the
-/// barycentric blend over the rest triangle covering `p`, or `None` outside
-/// the lattice (where the warp is the identity). `mg_local` is the lattice's
-/// rest positions in that space.
+/// `None` outside the lattice, where the warp is the identity. `mg_local` is
+/// the lattice's rest positions in its own space.
 fn warp_at(arena: &Arena, mg_id: NodeIdx, p: Vec2, mg_local: &[Vec2]) -> Option<Vec2> {
     let Some(NodeKind::MeshGroup(mg)) = arena.get(mg_id).map(|n| &n.kind) else {
         return None;
@@ -876,13 +730,8 @@ fn propagate_to_child(
     child_to_mg_2d: Affine2,
     mg_to_child_2d: Affine2,
 ) {
-    // Phase 0: read `cur_deform` (the child's deform MINUS any prior
-    // Node(mg_id) source) into cur_deform_scratch. Deactivating the
-    // Node source first (a flag flip) keeps every early-return below
-    // correct — a path that bails leaves the stale contribution
-    // dropped, exactly as if this MG never propagated. The read-only
-    // sum replaces a full combine + copy, so the stack's combined /
-    // generation stay untouched until the final combine_deforms.
+    // Deactivate the prior Node(mg_id) source first, so every early return
+    // leaves it dropped, as if this MG never propagated.
     let cur_len = {
         let Some(child) = arena.get_mut(child_id) else {
             return;
@@ -898,7 +747,6 @@ fn propagate_to_child(
         cur_deform_scratch.len()
     };
 
-    // Phase 1: read MG + child mesh, fill scratch with offsets.
     let ok = {
         let Some(mg_node) = arena.get(mg_id) else {
             return;
@@ -924,12 +772,8 @@ fn propagate_to_child(
             return;
         }
 
-        // Identity-pass shortcut: if both the MG and the child have zero
-        // deform, propagation emits all-zero deltas. Skipping the
-        // per-vert triangle scan + the dirty-marking source_buf_mut
-        // saves ~1ms per frame on a complex model (a large Body MG has
-        // many child verts and many MG triangles; per-vert find_triangle
-        // is O(triangles) per vert without the bins).
+        // Zero deform on both sides emits all-zero deltas; skipping saves ~1ms per
+        // frame on a complex model.
         let mg_zero = mg_combined.iter().all(|v| *v == Vec2::ZERO);
         let child_zero = cur_deform_scratch.iter().all(|v| *v == Vec2::ZERO);
         if mg_zero && child_zero {
@@ -938,8 +782,6 @@ fn propagate_to_child(
         }
 
         let mg_indices = &mg.mesh.indices;
-        // `mg_local` and `deformed_mg_vertices` are both exactly the group's
-        // vertex count long; the corners below are bounded by it.
         let vert_count = mg_local.len().min(deformed_mg_vertices.len());
         let bins = mg.bins.as_ref();
         let n = child_verts.len();
@@ -949,10 +791,7 @@ fn propagate_to_child(
             let cv_child_local = base_v - child_origin + cur_deform_scratch[i];
             let cv_mg_local = child_to_mg_2d.transform_point2(cv_child_local);
 
-            // The hint is where the vertex sat at rest; it may have left
-            // that triangle since. Validate it at the exact point; only a
-            // strict containment test may decide to leave an outside vertex
-            // alone.
+            // Only strict containment may decide to leave an outside vertex alone.
             let hint = pins.vertices.get(i).copied().unwrap_or(0);
             let tri_idx = match bins {
                 Some(bins) => bins.find(mg_local, mg_indices, cv_mg_local, hint),
@@ -1010,7 +849,6 @@ fn propagate_to_child(
         return;
     }
 
-    // Phase 2: write scratch into the child's pooled deform slot.
     let Some(child) = arena.get_mut(child_id) else {
         return;
     };
@@ -1066,10 +904,6 @@ mod tests {
         assert!(translate_children_targets(&arena.tree, group, &arena).is_empty());
     }
 
-    /// A Composite with `propagate_mesh_group` unset does not propagate, so
-    /// the MeshGroup must not bind the Parts
-    /// beneath it. With the flag ignored, both Parts get bound and the whole
-    /// subtree is warped by a lattice it opted out of.
     #[test]
     fn non_propagating_composite_halts_mesh_group_descent() {
         use crate::components::{CompositeData, Node};
@@ -1155,14 +989,10 @@ mod tests {
         );
         let bins = MgTriangleBins::build(&mesh).expect("bins");
         for p in [
-            // Inside tri 0 (0,1,2): a point clearly to the right edge.
             Vec2::new(8.0, 1.0),
-            // Inside tri 1 (0,2,3): clearly upper-left.
             Vec2::new(1.0, 8.0),
             // On the shared diagonal, where the hint decides.
             Vec2::new(5.0, 5.0),
-            // Outside the quad: `None`, the strict scan's
-            // identity-passthrough convention.
             Vec2::new(-5.0, -5.0),
             Vec2::new(100.0, 100.0),
         ] {
@@ -1180,9 +1010,6 @@ mod tests {
         );
     }
 
-    /// The bins are sized by the triangle count, never by the lattice's
-    /// extent: a lattice far larger than any pixel grid could cover still
-    /// gets them, and they still answer exactly what the scan does.
     #[test]
     fn bins_cover_a_lattice_of_any_extent() {
         let side = 2.0e6;
@@ -1211,8 +1038,6 @@ mod tests {
         }
     }
 
-    /// Slivers cannot be culled by their bounds, and there may be many: they
-    /// are listed once each, not spread over the area they span.
     #[test]
     fn slivers_cost_one_entry_each_whatever_they_span() {
         let mut vertices = Vec::new();
@@ -1244,8 +1069,6 @@ mod tests {
 
     #[test]
     fn spatial_candidates_preserve_strict_lookup_at_fractional_edges() {
-        // Narrow disconnected triangles leave holes both within pixel cells
-        // and between bins. Include epsilon-inside points beyond their bounds.
         let mut vertices = Vec::new();
         let mut indices = Vec::new();
         for y in 0..16 {
@@ -1277,7 +1100,6 @@ mod tests {
                 }
             }
         }
-        // A failed hint must examine nearby triangles, not all 256 triangles.
         assert!(bins.candidates.iter().all(|bin| bin.len() <= 4));
     }
 
@@ -1291,8 +1113,6 @@ mod tests {
                 Vec2::new(6.1465526, 3.4940288),
                 Vec2::new(25.191957, 15.446337),
                 Vec2::new(21.09729, 12.879735),
-                // This ordinary triangle also contains the query. Triangle 1
-                // must still win a full scan.
                 Vec2::new(37.3, 23.04),
                 Vec2::new(37.4, 23.04),
                 Vec2::new(37.3, 23.14),
@@ -1495,7 +1315,6 @@ mod tests {
     fn a_fractional_point_decides_its_own_surface_membership() {
         for bins in [false, true] {
             let p = Vec2::splat(0.3);
-            // A small triangle well inside one bin.
             let (warped, shifted) = fractional_fixture(
                 vec![Vec2::splat(0.2), Vec2::new(0.8, 0.2), Vec2::new(0.2, 0.8)],
                 vec![0, 1, 2],
@@ -1505,7 +1324,6 @@ mod tests {
             );
             assert!((warped[0] - p - Vec2::X).length() < 1e-5);
             assert!((shifted[0] - p - Vec2::X).length() < 1e-5);
-            // The point shares a bin with the triangle but lies outside it.
             let p = Vec2::splat(1.9);
             let (warped, shifted) = fractional_fixture(
                 vec![Vec2::ZERO, Vec2::new(2., 0.), Vec2::new(0., 2.)],
@@ -1578,7 +1396,6 @@ mod tests {
             },
         );
 
-        // Bake the pins and install them.
         let mut tx = GlobalTransforms::new();
         arena.compute_transforms(&mut tx);
         let pins = bake_mesh_group_pins(&arena, &tx, mg_id);
@@ -1589,9 +1406,7 @@ mod tests {
             }
         }
 
-        // Synthetic deform on MG: move vertex 2 (10,10) by (+4, 0). A
-        // child vertex at (5,5) sits in triangle 0 (0,1,2) with baryc
-        // (0, 0.5, 0.5). Expected child offset = 0.5 * (4,0) = (2,0).
+        // Vertex 2 moves (+4,0); the child at (5,5) has baryc (0, 0.5, 0.5).
         if let Some(node) = arena.get_mut(mg_id) {
             if let NodeKind::MeshGroup(mg) = &mut node.kind {
                 mg.deform_stack
@@ -1619,11 +1434,6 @@ mod tests {
         }
     }
 
-    /// When the child has its own non-zero deform before propagation
-    /// (e.g. a Param-driven offset), the MG deform is evaluated at the
-    /// CURRENT child position and REPLACES the child's Node deform with
-    /// `newPos - base`. Evaluating at the BASE position and adding would
-    /// double-pull at extreme params.
     #[test]
     fn mg_deform_is_sampled_at_the_child_current_position() {
         use crate::components::{Mesh, MeshGroupData, MeshIndices, Node, NodeKind, PartData};
@@ -1680,7 +1490,6 @@ mod tests {
                 if let NodeKind::MeshGroup(mg) = &mut node.kind {
                     mg.bins = MgTriangleBins::build(&mg.mesh).map(Into::into);
                     mg.pins = pins.into();
-                    // Non-linear MG deform: vertex 1 +(2,0), vertex 2 +(4,0).
                     mg.deform_stack
                         .set(
                             DeformSource::Param(0),
@@ -1695,9 +1504,6 @@ mod tests {
                 }
             }
 
-            // Child has its own Param-source delta of (2, 0) — so the
-            // child's "current" position is (5+2, 5) = (7, 5), which
-            // changes which barycentric weights are used.
             if let Some(node) = arena.get_mut(child_id) {
                 if let NodeKind::Part(p) = &mut node.kind {
                     p.deform_stack
@@ -1709,15 +1515,8 @@ mod tests {
             (arena, child_id)
         }
 
-        // Barycentric of (7,5) in tri 0 is (0.3, 0.2, 0.5).
-        //   mg_local_pos = 0.3*(0,0) + 0.2*((10,0)+(2,0)) + 0.5*((10,10)+(4,0))
-        //                = (2.4, 0) + (7, 5) = (9.4, 5).
-        //   delta from MG = (9.4, 5) - (5, 5) - (2, 0) = (2.4, 0).
-        // Combined = Param(2,0) + Node(2.4, 0) = (4.4, 0).
-        //
-        // Sampling at the BASE position instead would take the weights of
-        // (5,5) — (0.5, 0, 0.5) — for an offset of (2,0), and a combined
-        // (4.0, 0): the double pull this avoids.
+        // Baryc of (7,5) in tri 0 is (0.3, 0.2, 0.5): MG gives (2.4,0), combined
+        // (4.4,0). Sampling at the base would give (4.0,0).
         let (mut puppet, child_id) = build();
         let mut tx = GlobalTransforms::new();
         puppet.compute_transforms(&mut tx);
@@ -1736,12 +1535,6 @@ mod tests {
     fn nested_mesh_groups_compose_via_post_order() {
         use crate::components::{Mesh, MeshGroupData, MeshIndices, Node, NodeKind, PartData};
 
-        // The outer MG's lattice covers the inner's — wherever the
-        // inner's own deform carries its vertices, they stay inside a
-        // triangle of the outer — and a Part sits under the inner.
-        // Driving both MGs must compose: the outer pushes into the
-        // inner's stack, and the inner pushes its combined (own +
-        // outer) deform to the Part.
         let mut arena = Arena::new();
 
         let quad = |size: f32| {
@@ -1803,9 +1596,6 @@ mod tests {
             },
         );
 
-        // Descent stops at the nested MG but binds it: the outer holds
-        // the inner MG, the inner holds the Part — the outer never
-        // binds the grandchild Part directly.
         let mut tx = GlobalTransforms::new();
         arena.compute_transforms(&mut tx);
         let outer_pins = bake_mesh_group_pins(&arena, &tx, outer_id);
@@ -1825,14 +1615,8 @@ mod tests {
             }
         }
 
-        // Drive the outer as a uniform (+4,0) — every point inside it
-        // shifts by that — and the inner by (+4,0) on its vertex 2
-        // alone. The outer pushes Node(outer) = (4,0) onto all four of
-        // the inner's vertices, so the inner's combined is (4,0)
-        // everywhere and (8,0) at vertex 2. The part at (5,5) sits in
-        // the inner's tri 0 with weights (0.5, 0, 0.5), so it lands at
-        // 0.5*(4,0) + 0.5*((10,10)+(8,0)) = (11,5): an offset of (6,0),
-        // the outer's 4 and the inner's own 2 composed.
+        // Outer pushes (4,0) everywhere on the inner; inner adds (+4,0) at vertex 2.
+        // The part at (5,5) lands at (11,5): offset (6,0).
         if let Some(node) = arena.get_mut(outer_id) {
             if let NodeKind::MeshGroup(mg) = &mut node.kind {
                 mg.deform_stack
@@ -1907,8 +1691,6 @@ mod tests {
             .all(|offset| offset.is_finite() && *offset == Vec2::ZERO));
     }
 
-    /// An outer MG's deform, for meshed children, must carry through a
-    /// nested MG to the Part under it.
     #[test]
     fn outer_mg_deform_reaches_part_through_nested_mg() {
         use crate::components::{Mesh, MeshGroupData, MeshIndices, Node, NodeKind, PartData};
@@ -1980,7 +1762,6 @@ mod tests {
         let inner_pins = bake_mesh_group_pins(&arena, &tx, inner_id);
         assert!(outer_pins.per_child.contains_key(&inner_id));
 
-        // Drive the OUTER only: move its vertex 2 (10,10) by (+4,0).
         if let Some(node) = arena.get_mut(outer_id) {
             if let NodeKind::MeshGroup(mg) = &mut node.kind {
                 mg.bins = MgTriangleBins::build(&mg.mesh).map(Into::into);
@@ -2002,9 +1783,6 @@ mod tests {
         propagate_mesh_group_deforms(&mut arena, &mut tx, Mat4::IDENTITY);
         arena.combine_deforms();
 
-        // Outer deform at the inner's lattice vertex (10,10) is (4,0);
-        // the inner then carries it to the part at (5,5) with weights
-        // (0, 0.5, 0.5) -> (2,0).
         let node = arena.get(part_id).unwrap();
         let NodeKind::Part(p) = &node.kind else {
             panic!()
@@ -2018,19 +1796,14 @@ mod tests {
         assert!(c[0].y.abs() < 1e-4, "nested part offset = {:?}", c[0]);
     }
 
-    /// A nested `translate_children` MG shifts its mesh-less descendants by
-    /// the outer MG's same-frame deform as well as by its own params: the
-    /// hierarchy rule says a group's effect on what is beneath it always
-    /// carries every outer group's, parent first.
+    /// A nested `translate_children` MG shifts by the outer MG's same-frame
+    /// deform as well as its own params.
     #[test]
     fn outer_mg_deform_shifts_group_child_through_nested_tc_mg() {
         use crate::components::{Mesh, MeshGroupData, MeshIndices, Node, NodeKind, Transform};
         use glam::Vec3;
 
         // root > outer MG > inner MG (translate_children) > Group at (5,5).
-        // Both lattices are the same quad, so a deform of (+4,0) on the
-        // corner (10,10) warps the group child's spot (5,5) by (+2,0)
-        // whichever of the two drives it.
         fn build() -> (Arena, GlobalTransforms, NodeIdx, NodeIdx, NodeIdx) {
             let quad = || {
                 Mesh::new(
@@ -2107,15 +1880,12 @@ mod tests {
             Vec2::new(t.x, t.y)
         };
 
-        // Neither driven: the group child stays where it was authored.
         {
             let (mut arena, mut tx, _outer_id, _inner_id, group_id) = build();
             propagate_mesh_group_deforms(&mut arena, &mut tx, Mat4::IDENTITY);
             assert_eq!(translation_of(&arena, group_id), Vec2::new(5.0, 5.0));
         }
 
-        // Control: the inner group's own params shift its group child by
-        // half the corner pull.
         let own = {
             let (mut arena, mut tx, _outer_id, inner_id, group_id) = build();
             if let Some(node) = arena.get_mut(inner_id) {
@@ -2135,10 +1905,6 @@ mod tests {
             shifted
         };
 
-        // The rule: drive the OUTER only and the same shift reaches the
-        // group child, through the inner group's lattice. Before the shift
-        // joined the pre-order pass it stayed at (5,5), because the filter
-        // read the inner group's Param sources alone.
         {
             let (mut arena, mut tx, outer_id, _inner_id, group_id) = build();
             if let Some(node) = arena.get_mut(outer_id) {
@@ -2154,8 +1920,6 @@ mod tests {
                 (shifted - own).length() < 1e-4,
                 "outer-driven shift = {shifted:?}, inner-driven = {own:?}"
             );
-            // The recompute inside the pass leaves the globals under the
-            // shifted node current, not one frame behind.
             assert!(
                 (tx.get(group_id).w_axis.x - shifted.x).abs() < 1e-4,
                 "global = {:?}",
@@ -2171,13 +1935,7 @@ mod tests {
         };
         use glam::Vec3;
 
-        // MG quad spans (0..10, 0..10) in MG-local. Put the MG at world
-        // (100, 0) and give the child Part an additional translation of
-        // (5, 5) relative to the MG, so the child's (0,0) vertex lands
-        // at the center of the MG quad in MG-local. A child vertex at
-        // (0,0) child-local should therefore bind to triangle 0 (or 1)
-        // with the center barycentric — the pre-fix code compared
-        // child-local (0,0) to MG quad and fell off to an edge fallback.
+        // MG at world (100,0); the child's (0,0) lands at MG-local (5,5).
         let mut arena = Arena::new();
 
         let mg_mesh = Mesh::new(
@@ -2212,8 +1970,6 @@ mod tests {
             },
         );
 
-        // Child Part at (5,5) relative to MG, with a single vertex at
-        // (0,0) child-local (-> (5,5) in MG-local, center of tri 0).
         let child_part = PartData {
             mesh: Mesh::new(
                 vec![Vec2::ZERO],
@@ -2245,13 +2001,10 @@ mod tests {
         arena.compute_transforms(&mut tx);
         let pins = bake_mesh_group_pins(&arena, &tx, mg_id);
         let child_pins = pins.per_child.get(&child_id).expect("child pins present");
-        // Center of tri 0 (verts 0,1,2), whose baryc is (0, 0.5, 0.5).
         assert_eq!(child_pins.vertices[0], 0, "should fall inside triangle 0");
         if let Some(node) = arena.get_mut(mg_id) {
             if let NodeKind::MeshGroup(mg) = &mut node.kind {
                 mg.pins = pins.into();
-                // Move MG vertex 2 (at (10,10)) by (+4,0). Child at
-                // barycentric (0, 0.5, 0.5) picks up 0.5*(4,0) = (2,0).
                 mg.deform_stack
                     .set(
                         DeformSource::Param(0),
@@ -2280,10 +2033,7 @@ mod tests {
         use glam::Vec3;
         use std::f32::consts::FRAC_PI_2;
 
-        // Same quad layout. MG identity-rotated; child rotated +90deg
-        // relative to MG. MG-local offset (1, 0) should come out as
-        // (0, -1) in child-local (rotation inverse), so that after the
-        // child's own local→world rotation, the world delta matches.
+        // Child rotated +90deg relative to MG: MG-local (1,0) is child-local (0,-1).
         let mut arena = Arena::new();
 
         let mg_mesh = Mesh::new(
@@ -2310,10 +2060,6 @@ mod tests {
             },
         );
 
-        // Child vertex (5, -5) child-local. After +90° z-rotation, it
-        // maps to (5, 5) MG-local, which sits inside the MG mesh (the
-        // strict-inside pin requires this; out-of-bounds vertices produce
-        // zero offset).
         let child_part = PartData {
             mesh: Mesh::new(
                 vec![Vec2::new(5.0, -5.0)],
@@ -2351,8 +2097,6 @@ mod tests {
                 std::sync::Arc::make_mut(&mut mg.pins)
                     .per_child
                     .insert(child_id, child_pins);
-                // Set MG deforms so barycentric sum at the child vertex
-                // yields (1, 0) in MG-local.
                 mg.deform_stack
                     .set(DeformSource::Param(0), vec![Vec2::new(1.0, 0.0); 4])
                     .unwrap();

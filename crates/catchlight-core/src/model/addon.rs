@@ -1,111 +1,31 @@
 //! Addons: a partial model, authored against a base model and installed into
 //! it by Id.
 //!
-//! An **addon** is an ordinary [`Model`] whose cross-references reach into
-//! another one. It is authored against a **base model**, references what it
-//! needs from that base by Id, and is merged in by [`Model::install`].
-//! Nothing about what it needs is declared: [`Model::requirements`] finds the
-//! dangling Ids by scanning, so an addon and the base agree through the Ids
-//! themselves and through nothing else.
-//!
-//! Invariants this module enforces:
-//!
-//! - **A fragment is a forest whose roots name absent parents.** A complete
-//!   model has one root and its parent is `None`; an addon has one or more
-//!   [`Model::roots`], each of whose `parent` names a base node the addon does
-//!   not carry. That is the whole of the difference, in memory and on the wire
-//!   — which is why an addon that names no parent at all is not an addon
-//!   ([`InstallError::NotAnAddon`]) and why the two shapes have their own
-//!   readers ([`Model::from_clm_bytes`] against
-//!   [`Model::from_clm_bytes_fragment`]).
-//! - **An Id an addon *provides* is exclusive.** Install refuses an addon
-//!   whose node or texture Id the base already has
-//!   ([`InstallError::Collision`]) instead of renaming around it: renaming
-//!   would silently break the addon's own internal references, and refusing
-//!   is what gives outfit slots for free — two addons that both provide
-//!   `shoes` are alternatives, and only one is installed at a time. A slot Id
-//!   is unique per part rather than per model, so an addon's slots cannot
-//!   collide on their own: the part carrying them collides first.
-//! - **An addon carries the textures its own parts draw.** A texture's only
-//!   user is a part's albedo, so an addon that reached into the base for one
-//!   would be an addon whose parts stop drawing when the base drops a texture
-//!   it has no reason to keep. A fragment's albedo therefore may not dangle
-//!   (the reader refuses it, [`Model::from_clm_bytes_fragment`]), a texture
-//!   is not a [`Required`] kind at all, and [`Model::extract`] *copies* a
-//!   texture the cut subtree shares with the parts left behind rather than
-//!   leaving it as a requirement. The price is paid where it is cheapest to
-//!   pay: duplicated bytes in the addon file, and — because an Id an addon
-//!   provides is exclusive — a shared texture that makes the addon collide
-//!   with the very base it was cut from until that base drops it.
-//! - **An addon carries no extensions.** An extension annotates a whole
-//!   model, and nothing in it says which subtree it is about, so
-//!   [`Model::extract`] leaves every one behind and install refuses an addon
-//!   that carries one ([`InstallError::CarriesExtension`]). Merging two
-//!   vendors' annotations is a question the format cannot answer.
-//! - **An addon never adds or changes a param.** A `ParamId` it uses has to be
-//!   in the base already — that is a requirement like any other — so
-//!   [`Model::extract`] carries no params and install refuses an addon that
-//!   does ([`InstallError::CarriesParam`]). For the same reason a binding may
-//!   only drive a node the addon itself provides
-//!   ([`InstallError::BindsOffAddon`]): a binding on a *base* node would be an
-//!   edit to the base with no Id of its own to collide on, so two addons could
-//!   silently fight over one node's deform.
-//! - **An addon welds its own parts, and install finishes the weld rule.** A
-//!   weld needs at least one end the addon provides
-//!   ([`InstallError::WeldsOffAddon`]): one between two base parts is an edit
-//!   to the base, as a binding on a base node is. A fragment can only check
-//!   the end it carries, so install — the first place both ends are visible —
-//!   holds every addon weld to the whole rule [`Model::set_welds`] and the
-//!   reader keep: each end a part, each pair naming a slot its part carries,
-//!   and each part pair welded once across the merged list. A merged model is
-//!   therefore one that saves and loads.
-//! - **Install is one edit.** Everything is checked against the merged model
-//!   before anything moves, so a refused install leaves the base untouched,
-//!   and the whole merge bumps [`Model::generation`] exactly once — a puppet
-//!   ticking through an install pays one rebake and keeps its pose, which is
-//!   carried by Id.
-//! - **Extract is install's inverse, up to order.** `extract` takes the
-//!   subtrees, the bindings on them, the welds touching them and every
-//!   texture they draw. Installing that back into the base it was cut from
-//!   restores every value — but install appends: an addon's roots go last
-//!   among their parent's children and its textures last in texture order,
-//!   because an addon records no position to be put back into. "The base it
-//!   was cut from" means the base after the cut: deleting the subtree is what
-//!   frees the texture Ids the addon now provides.
-//! - **Animations travel, lanes are not extracted.** A lane addresses a param,
-//!   and params stay in the base, so there is no such thing as the animations
-//!   "over" a subtree and `extract` returns none. An addon that *was* authored
-//!   with animations installs them, and its lanes' params are requirements
-//!   like any others.
-//! - **Masks travel with their owner.** When an addon's part masks a *base*
-//!   drawable, the mask belongs to that drawable. [`Model::extract`] leaves that mask
-//!   behind and deleting the subtree drops it. That is the same rule as
-//!   [`InstallError::BindsOffAddon`] and as "an addon never adds a param" —
-//!   an addon adds to a base model, it does not edit one — and
-//!   `a_mask_on_a_base_node_is_not_the_addons_to_carry` in
-//!   `tests/addons.rs` is where it is pinned.
+//! Rules install enforces:
+//! - An Id an addon provides is exclusive; a collision is refused, not renamed
+//!   around, since renaming would break the addon's internal references.
+//! - An addon carries its own textures, no extensions and no params. Bindings
+//!   and welds must touch a node the addon provides; one wholly on base nodes
+//!   would be an unowned edit two addons could fight over.
+//! - Install is one edit: a refused install leaves the base untouched, and
+//!   success bumps the generation once.
+//! - Install appends: an addon records no position among its parent's children.
 
 use std::fmt;
 use std::sync::OnceLock;
 
 use super::*;
 
-/// One Id an addon names in another model: what a requirement is about, and
-/// what a collision is about.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Required {
-    /// A node of any kind — what a fragment root's `parent` names.
+    /// What a fragment root's `parent` names.
     Node(NodeId),
-    /// A node the renderer draws — a part or a composite — which is what a
-    /// mask's source names; see [`Model::mask_add`] for the rule.
+    /// A part or a composite: what a mask source names.
     Drawable(NodeId),
-    /// A part and nothing else — what a weld's end names when the weld pairs
-    /// no slots. Kept apart from [`Self::Drawable`] because the two rules
-    /// differ: a composite can clip, but it has no slots and cannot be welded.
+    /// A part only: what a pair-less weld end names. A composite can clip but
+    /// has no slots and cannot be welded.
     Part(NodeId),
     Param(ParamId),
-    /// A slot on a base part, which needs the part and the slot both — what
-    /// one side of a weld's pairs names.
     Slot(NodeId, SlotId),
 }
 
@@ -123,24 +43,15 @@ impl fmt::Display for Required {
     }
 }
 
-/// One thing an addon needs from the base model: the Id, the field that names
-/// it, and what in the addon carries that field.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Requirement {
     pub id: Required,
-    /// `"parent"`, `"mask source"`, `"motion response param"`,
-    /// `"motion response slot"`, `"spine target"`, `"binding param"`,
-    /// `"binding node"`, `"weld end"` or `"animation lane"`. Never an
-    /// albedo: an addon carries the textures its own parts draw.
     pub field: &'static str,
-    /// The node in the addon whose field names it — or the animation, for a
-    /// lane.
+    /// The animation, for a lane.
     pub owner: String,
 }
 
-/// Everything an addon needs from the base model it is installed into, found
-/// by scanning the addon: sorted, and with the same Id listed once per field
-/// that names it.
+/// Sorted, with the same Id listed once per field that names it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Requirements {
     entries: Vec<Requirement>,
@@ -159,9 +70,6 @@ impl Requirements {
         self.entries.iter()
     }
 
-    /// Every node Id required, sorted, once each — including the ones that
-    /// have to be drawn, the ones that have to be parts and the ones a weld
-    /// end reaches through.
     pub fn nodes(&self) -> impl Iterator<Item = &NodeId> {
         sorted(self.entries.iter().filter_map(|r| match &r.id {
             Required::Node(id)
@@ -196,9 +104,6 @@ impl<'a> IntoIterator for &'a Requirements {
     }
 }
 
-/// Sorted and deduplicated. One [`Requirement`] per field that names an Id,
-/// so the same Id shows up several times in `entries` on purpose; the
-/// per-kind accessors are the set view of it.
 fn sorted<T: Ord>(it: impl Iterator<Item = T>) -> impl Iterator<Item = T> {
     let mut v: Vec<T> = it.collect();
     v.sort();
@@ -206,18 +111,11 @@ fn sorted<T: Ord>(it: impl Iterator<Item = T>) -> impl Iterator<Item = T> {
     v.into_iter()
 }
 
-/// Why an addon could not be installed. Every variant names the Id that
-/// stopped it; the base model is untouched.
-///
-/// Non-exhaustive, like [`ModelError`]: install checks the merged model, so
-/// it grows a refusal whenever the model grows a rule.
+/// On any refusal the base model is untouched.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum InstallError {
-    /// The merged model broke a rule the model itself enforces — a motion
-    /// response whose references no longer resolve, say. Carried whole rather
-    /// than as its message, so a caller can branch on it exactly as it would
-    /// on the same refusal from an edit.
+    /// Carried whole so a caller can branch on it.
     #[error(transparent)]
     Model(Box<ModelError>),
     #[error(
@@ -275,9 +173,6 @@ impl From<ModelError> for InstallError {
     }
 }
 
-/// What one [`Model::install`] put into a base model, so [`Model::uninstall`]
-/// can take it back: those nodes, with whatever has come to hang under them
-/// since, and the bindings, welds, textures and animations that came along.
 #[derive(Debug, Clone)]
 pub struct Installed {
     nodes: Vec<NodeId>,
@@ -289,12 +184,11 @@ pub struct Installed {
 }
 
 impl Installed {
-    /// Every node the install added, in tree order.
+    /// In tree order.
     pub fn nodes(&self) -> &[NodeId] {
         &self.nodes
     }
 
-    /// The addon's own roots, as attached to their base parents.
     pub fn roots(&self) -> &[NodeId] {
         &self.roots
     }
@@ -317,11 +211,7 @@ impl Installed {
 }
 
 impl Model {
-    /// Every Id this model names but does not carry: what a base model has to
-    /// have before it can take this one as an addon.
-    ///
-    /// A complete model requires nothing — its own invariants say so — so this
-    /// is empty for anything but a fragment.
+    /// Empty for a complete model.
     pub fn requirements(&self) -> Requirements {
         let mut out: Vec<Requirement> = Vec::new();
         let mut need = |id: Required, field: &'static str, owner: &dyn fmt::Display| {
@@ -411,9 +301,7 @@ impl Model {
                 if self.nodes.contains_key(end) {
                     continue;
                 }
-                // One requirement per base slot the weld pairs: the part and
-                // the slot on it are needed together. A weld with no pairs
-                // still names the part.
+                // A weld with no pairs still names the part.
                 for pair in w.pairs() {
                     need(
                         Required::Slot(end.clone(), slot_of(pair).clone()),
@@ -444,13 +332,7 @@ impl Model {
         Requirements { entries: out }
     }
 
-    /// Merge `addon` into this model.
-    ///
-    /// Fails — leaving this model untouched — if any Id the addon needs is
-    /// missing, or if any Id it provides is one this model already has. On
-    /// success this model carries the addon's nodes (each root appended under
-    /// the base parent it names), the bindings on those nodes, its welds, its
-    /// textures and its animations, and the generation is bumped once.
+    /// On failure this model is untouched; on success the generation is bumped once.
     pub fn install(&mut self, addon: &Model) -> Result<Installed, InstallError> {
         self.check_install(addon)?;
         let order = addon.nodes_in_order();
@@ -477,16 +359,12 @@ impl Model {
                 key: b.key.clone(),
                 interpolate_mode: b.interpolate_mode,
                 values: b.values.clone(),
-                // The addon has no params, so its grid was never derived; the
-                // base's key positions are what this binding fills against.
+                // The base's key positions are what this binding fills against.
                 dense: OnceLock::new(),
             });
         }
 
         self.animations.extend(addon.animations.iter().cloned());
-        // Only appended rows participate in this transaction. Validate with
-        // base params and addon references visible together, before attaching
-        // roots or changing assets. A refusal restores the original revision.
         self.response_index.take();
         if let Err(e) = self.validate_responses() {
             self.bindings
@@ -500,9 +378,6 @@ impl Model {
             self.response_index.take();
             return Err(e.into());
         }
-        // Sibling order inside the addon rode along on the copied child lists;
-        // only its roots need a place among the base's children, and they go
-        // last — an addon records no position to be put back into.
         for r in &addon.roots {
             if let Some(parent) = addon.nodes.get(r).and_then(|n| n.parent.clone()) {
                 self.attach_child(&parent, r.clone());
@@ -521,8 +396,6 @@ impl Model {
         Ok(installed)
     }
 
-    /// Everything [`Self::install`] refuses, checked against the model the
-    /// merge *would* produce, before any of it happens.
     fn check_install(&self, addon: &Model) -> Result<(), InstallError> {
         for r in &addon.roots {
             if addon.nodes.get(r).is_some_and(|n| n.parent.is_none()) {
@@ -570,17 +443,11 @@ impl Model {
         for req in addon.requirements().iter() {
             let held = match &req.id {
                 Required::Node(id) => self.nodes.contains_key(id),
-                // A mask source has to be one the renderer draws, in the
-                // base exactly as in the addon: install is the one place a
-                // fragment's dangling mask source is finally kind-checked.
                 Required::Drawable(id) => self
                     .nodes
                     .get(id)
                     .map(|n| &n.kind)
                     .is_some_and(is_mask_source),
-                // A weld end is a part and nothing else. A composite is
-                // drawn but carries no slots, and a base that welded one
-                // could not be written.
                 Required::Part(id) => matches!(
                     self.nodes.get(id).map(|n| &n.kind),
                     Some(ModelNodeKind::Part(_))
@@ -597,12 +464,6 @@ impl Model {
             }
         }
 
-        // Every weld is held to the weld rule now that both ends can be
-        // seen: one side in the addon, the other in whichever of the two
-        // models carries it, and the merged weld list as the one the rule's
-        // "once per part pair" is counted over. This is the rule
-        // `Model::set_welds` and the reader keep, so a merged model is one
-        // that saves and loads.
         let mut welded = validate::Welded::with_capacity(self.welds.len() + addon.welds.len());
         for w in &self.welds {
             welded.insert(&w.a, &w.b);
@@ -616,9 +477,6 @@ impl Model {
         };
         for w in &addon.welds {
             let (a, b) = (w.a(), w.b());
-            // A weld between two base parts is an edit to the base, the same
-            // way a binding on a base node is: it has no addon node to be
-            // installed with or uninstalled after.
             if !addon.nodes.contains_key(a) && !addon.nodes.contains_key(b) {
                 return Err(InstallError::WeldsOffAddon {
                     a: a.to_string(),
@@ -667,22 +525,9 @@ impl Model {
         Ok(())
     }
 
-    /// Cut `roots` and their subtrees out as an addon: the nodes, the bindings
-    /// on them, the welds touching them, and every texture their parts draw
-    /// — copied, not moved, when a part left behind draws it too.
-    ///
-    /// This model is not changed. A root that is not here, that has no parent
-    /// of its own, or that sits inside another one given, is dropped; the
-    /// rest keep their `parent`, which is what makes the result a fragment.
-    /// Params and animations stay behind — a lane addresses a param, so there
-    /// is no animation "over" a subtree.
-    ///
-    /// **A parentless node cannot be cut.** It is a complete model's root: it
-    /// names no parent, so nothing would say where the addon attaches, and
-    /// the result would be neither shape — a root with no parent is not a
-    /// fragment, and bindings with their params left behind are not a
-    /// complete model — so neither reader would take it back. Asking for one
-    /// yields what asking for nothing yields, an empty fragment.
+    /// A parentless root (or one not here, or nested in another given) is dropped:
+    /// it would yield a model neither reader accepts. A texture a part left behind
+    /// also draws is copied, not moved.
     pub fn extract(&self, roots: &[NodeId]) -> Model {
         let given: HashSet<&NodeId> = roots
             .iter()
@@ -705,10 +550,6 @@ impl Model {
             .collect();
 
         let inside = |id: &NodeId| kept.contains(id);
-        // Every texture the cut parts draw, whether or not the base keeps a
-        // part drawing it too: an addon carries its own, so a shared one is
-        // *copied* rather than left behind as a requirement. The bytes are
-        // `Arc`-shared until one of the two models is written.
         let used_inside: HashSet<&TexId> = nodes.values().filter_map(albedo_of).collect();
         let texture_order: Vec<TexId> = self
             .texture_order
@@ -722,8 +563,6 @@ impl Model {
             .collect();
 
         Model {
-            // Extracting builds a model of its own, so it draws its own
-            // identity: a puppet of the base model is not a puppet of this.
             identity: super::next_identity(),
             generation: 0,
             welds: self
@@ -756,29 +595,15 @@ impl Model {
                 })
                 .collect(),
             animations: Vec::new(),
-            // An extension annotates a whole model, so there is no telling
-            // which of them a cut subtree is about; the base keeps them all.
             extensions: BTreeMap::new(),
-            // The same goes for sections nobody here can read.
             unknown_sections: Vec::new(),
             binding_index: OnceLock::new(),
             bake: Default::default(),
         }
     }
 
-    /// Take back what one [`Self::install`] added.
-    ///
-    /// Total: anything the receipt names that has since been deleted is
-    /// already gone, and a node moved elsewhere in the tree is still removed.
-    ///
-    /// **An installed node goes with its whole current subtree**, not only
-    /// with the nodes the receipt lists. A node added or moved under one
-    /// since the install has nowhere to live once its parent is gone, and
-    /// leaving it would leave a node no walk from the root reaches, still
-    /// carrying bindings, welds and textures. The removal is the one
-    /// [`Self::delete_node`] runs, so everything that named a removed node —
-    /// masks, response inputs, bindings, welds, textures only they drew — is
-    /// swept the same way.
+    /// Total. An installed node goes with its whole current subtree, including
+    /// nodes added under it since; anything already deleted is skipped.
     pub fn uninstall(&mut self, installed: &Installed) {
         let mut removed: HashSet<NodeId> = HashSet::new();
         for id in &installed.nodes {
@@ -788,8 +613,6 @@ impl Model {
         }
         self.remove_nodes(&removed);
 
-        // What the receipt names beyond its nodes. A base part re-pointed at
-        // an addon texture since the install goes back to drawing nothing.
         for node in self.nodes.values_mut() {
             if let ModelNodeKind::Part(p) = &mut node.kind {
                 if p.albedo
@@ -806,15 +629,12 @@ impl Model {
             self.textures.remove(t);
             self.texture_order.retain(|x| x != t);
         }
-        // Un-pointing those parts may have left a *base* texture with nothing
-        // drawing it. Uninstall is total, so it sweeps again.
         self.gc_textures();
         retain_less(&mut self.welds, &installed.welds, |_| true);
         retain_less(&mut self.animations, &installed.animations, |_| true);
         self.bump();
     }
 
-    /// Whether any of `id`'s ancestors is in `set`.
     fn has_ancestor_in(&self, id: &NodeId, set: &HashSet<&NodeId>) -> bool {
         let mut cur = self.nodes.get(id).and_then(|n| n.parent.as_ref());
         while let Some(p) = cur {
@@ -827,8 +647,6 @@ impl Model {
     }
 }
 
-/// Drop everything `keep` rejects, plus one occurrence of each of `once` —
-/// what uninstalling needs for the two lists whose entries carry no Id.
 fn retain_less<T: PartialEq>(list: &mut Vec<T>, once: &[T], keep: impl Fn(&T) -> bool) {
     let mut left: Vec<&T> = once.iter().collect();
     list.retain(|item| {
@@ -874,9 +692,6 @@ mod tests {
         }
     }
 
-    /// A base model an addon can be authored against: a `body` part carrying
-    /// the slots `left` and `right` and drawing the one texture, a `head`
-    /// group to hang things under, and one param.
     struct Base {
         m: Model,
         root: NodeId,
@@ -927,8 +742,6 @@ mod tests {
         }
     }
 
-    /// Author an addon the way an author would: add nodes to a copy of the
-    /// base, then cut them out. What `f` returns are the addon's roots.
     fn author(base: &Base, f: impl FnOnce(&mut Model, &mut SeededHex) -> Vec<NodeId>) -> Model {
         let mut scratch = base.m.clone();
         let mut hex = base.hex.clone();
@@ -936,10 +749,6 @@ mod tests {
         scratch.extract(&roots)
     }
 
-    /// A hat under `head` that reaches into the base every way a fragment can:
-    /// a base parent, a base part as a mask source, a base param through a
-    /// binding and through a motion response, and a weld into the base's `Body`. Its
-    /// texture is its own — that is the one reference an addon never makes.
     fn hat_addon(b: &Base) -> Model {
         author(b, |m, hex| {
             let hat = m
@@ -1066,8 +875,6 @@ mod tests {
         assert_eq!(addon.requirements().slots().count(), 2);
     }
 
-    /// A complete model needs nothing: its own invariants say every Id it
-    /// names is one it carries.
     #[test]
     fn a_complete_model_requires_nothing() {
         assert!(base().m.requirements().is_empty());
@@ -1089,12 +896,9 @@ mod tests {
         let hat = named(&b.m, "Hat");
         assert_eq!(b.m.node(&hat).unwrap().parent(), Some(&b.head));
         assert!(b.m.requirements().is_empty(), "nothing dangles any more");
-        // The addon's own params section is empty, and the base's is untouched.
         assert_eq!(b.m.param_ids(), [b.param.clone()]);
     }
 
-    /// The one ordering rule install has: an addon records no position among
-    /// its parent's children, so its roots go last.
     #[test]
     fn an_addons_roots_are_appended_under_their_parent() {
         let mut b = base();
@@ -1132,8 +936,6 @@ mod tests {
         assert_eq!(stripped.generation(), before, "no half-install");
     }
 
-    /// A weld end is one requirement per slot it pairs, not one for the part:
-    /// the part and the slot on it are needed together.
     #[test]
     fn a_missing_slot_is_named_with_the_part_that_should_carry_it() {
         let b = base();
@@ -1152,8 +954,6 @@ mod tests {
         );
     }
 
-    /// A weld whose pairs were all dropped still reaches the base part, so
-    /// the part is a requirement even with no slot to name.
     #[test]
     fn a_weld_with_no_pairs_still_requires_the_part() {
         let b = base();
@@ -1178,9 +978,6 @@ mod tests {
         );
     }
 
-    /// A mask source may be a composite; a weld end may not. While the two
-    /// shared one requirement kind, a pair-less weld into a base composite
-    /// installed, and the merged model could no longer be written.
     #[test]
     fn a_weld_end_has_to_be_a_part_where_a_mask_source_need_not() {
         let b = base();
@@ -1191,8 +988,6 @@ mod tests {
         }
         assert!(addon.welds().iter().all(|w| w.pairs().is_empty()));
 
-        // The same Ids as `base()`, but `Body` is a composite: drawn, so the
-        // hat's mask is satisfied, and not a part, so its weld is not.
         let mut composite = Model::new();
         let root = composite.root().unwrap().clone();
         composite
@@ -1230,10 +1025,6 @@ mod tests {
             .expect("a refused install leaves a model that still saves");
     }
 
-    /// A fragment may hold a weld whose ends are both in the base — neither
-    /// can be checked until install. Install used to append it, so a base
-    /// that already welded those two parts held the pair twice: a model that
-    /// saved and that no reader would take back.
     #[test]
     fn a_weld_between_two_base_parts_is_not_the_addons_to_install() {
         let mut b = base();
@@ -1282,15 +1073,11 @@ mod tests {
             .expect("the base still saves and loads");
     }
 
-    /// Install holds an addon's own weld ends to the weld rule too, rather
-    /// than trusting the addon to have kept it: a welded end that is not a
-    /// part would merge into a model that cannot be written.
     #[test]
     fn an_addon_weld_end_that_is_not_a_part_is_refused() {
         let b = base();
         let mut addon = hat_addon(&b);
         let hat = named(&addon, "Hat");
-        // No edit builds this state; it is what a kind swap used to leave.
         addon.bindings.clear();
         addon.nodes.get_mut(&hat).unwrap().kind = ModelNodeKind::Group;
 
@@ -1328,8 +1115,6 @@ mod tests {
         );
     }
 
-    /// Decision 2: two addons that provide one Id are alternatives, and the
-    /// second is refused rather than renamed around.
     #[test]
     fn two_addons_providing_shoes_cannot_coexist() {
         let b = base();
@@ -1365,7 +1150,6 @@ mod tests {
             "Boots"
         );
 
-        // Either one on its own, though — that is what makes it a slot.
         let mut m = b.m.clone();
         m.install(&sandals).unwrap();
         assert_eq!(
@@ -1381,7 +1165,6 @@ mod tests {
     fn a_texture_id_the_base_already_has_is_refused() {
         let b = base();
         let mut addon = hat_addon(&b);
-        // Re-upload the hat's texture under the Id the base already uses.
         let hat = named(&addon, "Hat");
         addon
             .add_texture_with_id(b.tex.clone(), &hat, texture(3))
@@ -1416,8 +1199,6 @@ mod tests {
         );
     }
 
-    /// A binding on a base node would be an edit to the base with no Id of its
-    /// own to collide on, so two addons could fight over one node silently.
     #[test]
     fn an_addon_binds_only_its_own_nodes() {
         let b = base();
@@ -1433,8 +1214,6 @@ mod tests {
             m.add_binding(&key).unwrap();
             vec![hat]
         });
-        // `extract` never cuts a binding off its node, so this one has to be
-        // moved onto the fragment by hand.
         let mut addon = addon;
         let key = BindingKey::new(b.param.clone(), b.body.clone(), BindingTarget::Deform);
         addon.bindings.push(ModelBinding {
@@ -1471,9 +1250,6 @@ mod tests {
         );
     }
 
-    /// Install's response check is the model's own, so the refusal is the
-    /// model's own error — something a caller can branch on — and not just
-    /// its message.
     #[test]
     fn a_refused_response_carries_the_models_own_error() {
         let b = base();
@@ -1493,7 +1269,6 @@ mod tests {
                 .unwrap();
             vec![sway]
         });
-        // A response's output rests at zero; this base's param no longer does.
         let mut moved = b.m.clone();
         moved.set_param_default(&b.param, 0.5).unwrap();
         let before = moved.generation();
@@ -1586,11 +1361,6 @@ mod tests {
         assert_eq!(m.to_clm_bytes().unwrap(), b.m.to_clm_bytes().unwrap());
     }
 
-    /// Uninstall used to remove only the nodes the receipt listed. A node
-    /// added under an addon node since the install was left behind with a
-    /// parent that no longer existed: unreachable from the root, still
-    /// holding its binding, its weld, its texture and the mask it was the
-    /// source of.
     #[test]
     fn uninstall_takes_an_installed_nodes_later_children_with_it() {
         let b = base();
@@ -1600,8 +1370,6 @@ mod tests {
         let installed = m.install(&addon).unwrap();
         let hat = named(&m, "Hat");
 
-        // Authored after the install, under an installed node, and reaching
-        // into the base every way a node can.
         let feather = m
             .add_node(
                 &hat,
@@ -1639,7 +1407,6 @@ mod tests {
         assert_eq!(m.to_clm_bytes().unwrap(), b.m.to_clm_bytes().unwrap());
     }
 
-    /// The whole point of the file shape: an addon survives being a file.
     #[test]
     fn an_addon_installs_the_same_after_a_clm_round_trip() {
         let b = base();
@@ -1661,9 +1428,6 @@ mod tests {
         );
     }
 
-    /// An addon carries the textures its parts draw — all of them. A texture
-    /// the base still draws is copied rather than left as a requirement,
-    /// because a texture is not a requirement kind any more.
     #[test]
     fn extract_copies_a_texture_the_base_still_draws() {
         let mut b = base();
@@ -1682,22 +1446,14 @@ mod tests {
                 &mut b.hex,
             )
             .unwrap();
-        // Shared with `Body`, which stays behind.
         b.m.set_part_albedo(&brim, Some(b.tex.clone())).unwrap();
 
         let addon = b.m.extract(&[hat]);
-        // Texture order is the base's, and the base's own came first.
         assert_eq!(addon.texture_ids(), [b.tex.clone(), mine]);
         assert!(addon.requirements().iter().all(|r| r.field != "albedo"));
-        // The cut is not a move: the base still draws it too.
         assert!(b.m.texture(&b.tex).is_some());
     }
 
-    /// Cutting a complete model's root used to hand back a model that was
-    /// neither shape: its root named no parent, so the fragment reader
-    /// refused it, and its bindings named params that had stayed behind, so
-    /// the complete reader did too. A parentless node is dropped from the cut
-    /// like one that is not there.
     #[test]
     fn a_parentless_root_cannot_be_cut_into_a_model_no_reader_takes() {
         let mut b = base();
@@ -1712,17 +1468,12 @@ mod tests {
             .expect("what is left is an empty fragment, which reads back");
         assert_eq!(reopened.node_count(), 0);
 
-        // Naming the root beside a node inside it does not hide that node
-        // behind an ancestor that was never going to be cut.
         let cut = b.m.extract(&[b.root.clone(), b.body.clone()]);
         assert_eq!(cut.roots(), std::slice::from_ref(&b.body));
         assert_eq!(cut.bindings().count(), 1);
         Model::from_clm_bytes_fragment(&cut.to_clm_bytes().unwrap()).unwrap();
     }
 
-    /// Cut, delete, install: the base that dropped the subtree dropped its
-    /// texture with it, so the Id the addon now provides is free and the
-    /// round trip closes.
     #[test]
     fn an_extracted_addon_installs_into_the_base_the_cut_left_behind() {
         let mut b = base();
@@ -1767,8 +1518,6 @@ mod tests {
         assert!(addon.node(&child).is_some());
     }
 
-    /// A fragment is still an editable model: its roots are a sibling list of
-    /// their own, because their parents are not here to hold one.
     #[test]
     fn a_fragment_is_edited_like_any_other_model() {
         let b = base();
@@ -1779,13 +1528,11 @@ mod tests {
         addon.reorder(&sway, 0).unwrap();
         assert_eq!(addon.roots(), [sway.clone(), hat.clone()]);
 
-        // A duplicated root lands beside the original, still a root.
         let mut hex = SeededHex::new(5);
         let copy = addon.duplicate_subtree(&hat, &mut hex).unwrap();
         assert_eq!(addon.roots(), [sway.clone(), hat.clone(), copy.clone()]);
         assert!(addon.is_fragment());
 
-        // Reparenting one root under another takes it off the root list.
         addon.reparent(&copy, &hat).unwrap();
         assert_eq!(addon.roots(), [sway.clone(), hat.clone()]);
         assert_eq!(
@@ -1796,14 +1543,11 @@ mod tests {
         addon.delete_node(&sway).unwrap();
         assert_eq!(addon.roots(), std::slice::from_ref(&hat));
 
-        // Two hats now, so install renames nothing and both arrive.
         let mut m = b.m.clone();
         m.install(&addon).unwrap();
         assert_eq!(m.node(&copy).unwrap().parent(), Some(&hat));
     }
 
-    /// A fragment's dangling weld end is a requirement, not a broken weld, so
-    /// the editor's lint pass has nothing to say about it.
     #[test]
     fn check_does_not_lint_a_fragments_dangling_weld() {
         let b = base();
@@ -1818,11 +1562,6 @@ mod tests {
         );
     }
 
-    /// Extracting from the root used to give back the whole tree as a
-    /// "complete model" — complete only while nothing in it was bound or
-    /// animated, since params never travel. The root is not cut at all now
-    /// (`a_parentless_root_cannot_be_cut_into_a_model_no_reader_takes`), so
-    /// what comes back is always a fragment.
     #[test]
     fn extracting_the_whole_tree_is_an_empty_fragment() {
         let b = base();

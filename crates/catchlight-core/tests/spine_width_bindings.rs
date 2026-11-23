@@ -1,7 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! The projected-width recipe uses the public binding/spine interface.
-//! Synthetic strips establish evaluation order and bounds; pixel ownership,
-//! coverage and clipping of real artwork still require rendered acceptance.
 
 #[path = "../../../tests/support/spine_width.rs"]
 mod support;
@@ -51,8 +49,6 @@ fn check_frame(f: &Fixture, puppet: &Puppet, yaw: f32, body: f32) {
                 + envelope(t)
                     * ((1.0 - smooth(t)) * width_delta(yaw, b[0])
                         + smooth(t) * width_delta(yaw, b[1]));
-            // The cross-section follows the tangent of the rounded joint
-            // path, with a fixed attachment blended into the first link.
             let first = Mat2::from_angle(std::f32::consts::PI * b[0]) * Vec2::X;
             let last = Mat2::from_angle(std::f32::consts::PI * (b[0] + b[1])) * Vec2::X;
             let normal = if t < 0.25 {
@@ -174,8 +170,6 @@ fn neutral_width_is_exactly_inactive_and_the_recipe_round_trips() {
                 .all(|d| *d == Vec2::ZERO));
         }
     }
-    // Move away from neutral and back, including repeated cached ticks: no
-    // stale width or spine source may survive when all cells become identity.
     puppet.set_param_value(&f.yaw, 0.7);
     for lock in &f.locks {
         puppet.set_param_value(&lock.bends[0], LIMIT / 2.0);

@@ -1,11 +1,4 @@
 //! Compiling a [`Model`] into what a puppet evaluates.
-//!
-//! Baking walks the model's tree in pre-order and fills the arena, so a
-//! [`NodeIdx`] is a node's position in that walk. Everything a hot loop needs
-//! is resolved here, once: Ids become slots, a binding's dense grid becomes an
-//! `Arc` shared with the model's own memo, and each cell gets its identity
-//! flag. Nothing here reads a pose — [`crate::puppet::Puppet`] carries the pose
-//! across a rebake itself.
 
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
@@ -24,8 +17,7 @@ use crate::model::{BindingKey, BindingTarget, DenseGrid, Model, ModelNodeKind};
 
 use super::arena::Arena;
 
-/// One param, flattened to the numbers the fold needs: where a value sits in
-/// `[min, max]`. Each baked binding owns its own bracketing positions.
+/// Each baked binding owns its own bracketing positions.
 #[derive(Clone)]
 pub(super) struct BakedParam {
     pub(super) id: ParamId,
@@ -34,28 +26,22 @@ pub(super) struct BakedParam {
     pub(super) default: f32,
 }
 
-/// One binding, resolved against the arena: which slot it writes, which param
-/// slots index its grid, and the grid itself.
 #[derive(Clone)]
 pub(super) struct BakedBinding {
     pub(super) key_positions: Vec<Vec<f32>>,
     pub(super) node: NodeIdx,
     pub(super) target: BindingTarget,
-    /// Param slot along the grid's x axis, and along its y axis when the
-    /// binding spans two params.
+    /// Second slot present when the binding spans two params.
     pub(super) x: u32,
     pub(super) y: Option<u32>,
     pub(super) width: usize,
     pub(super) height: usize,
     pub(super) mode: InterpolateMode,
-    /// Shared with [`Model::binding_dense`]'s memo, so the fill is derived once
-    /// however many puppets animate the model.
+    /// Shared with [`Model::binding_dense`]'s memo.
     pub(super) grid: Arc<DenseGrid>,
-    /// The deform-stack slot this binding writes, unique per binding.
+    /// Unique per binding.
     pub(super) source: crate::deform::DeformSource,
-    /// Per-cell: does the cell hold the target's identity value. The fold
-    /// AND-folds the cells with non-zero interpolation weight to skip a
-    /// binding whose output is guaranteed to be a no-op.
+    /// Per-cell: whether the cell holds the target's identity value.
     pub(super) cell_zero: Vec<bool>,
 }
 
@@ -70,10 +56,6 @@ impl BakedBinding {
     }
 }
 
-/// Everything [`super::Puppet::new`] derives from a model in one pass.
-///
-/// Every table here is fixed until the next bake, so each sits behind an
-/// `Arc`: a puppet clones the handles and owns only its frame.
 #[derive(Clone)]
 pub(super) struct Baked {
     pub(super) arena: Arena,
@@ -85,17 +67,8 @@ pub(super) struct Baked {
     pub(super) spine_targets: Arc<Vec<Vec<Option<u32>>>>,
 }
 
-/// A model's bake, held by the model it was baked from.
-///
-/// Baking is the expensive half of building a puppet and reads nothing but
-/// the model, so every puppet of one generation derives the same tables. The
-/// model keeps the first one's and the rest take a copy: the handles to what
-/// is fixed, and the frame at rest. A query that builds a puppet to answer
-/// one question and drops it pays for the frame, not for the bake.
-///
-/// [`Model::bump`] clears it, as it does every derived memo, so it never
-/// describes a state the model has left; a clone of the model carries it,
-/// because a clone is the same state.
+/// A model's bake, held by the model it was baked from. [`Model::bump`]
+/// clears it; a clone of the model carries it.
 #[derive(Clone, Default)]
 pub(crate) struct BakeMemo(OnceLock<Arc<Baked>>);
 
@@ -104,8 +77,7 @@ impl BakeMemo {
         self.0.take();
     }
 
-    /// `model`'s bake: derived on the first call of a generation, copied out
-    /// of the memo on every one. `self` must be `model`'s own memo.
+    /// `self` must be `model`'s own memo.
     pub(super) fn get_or_bake(&self, model: &Model) -> Baked {
         Baked::clone(self.0.get_or_init(|| Arc::new(bake(model))))
     }
@@ -125,10 +97,8 @@ fn bake(model: &Model) -> Baked {
     let mut node_of_id = HashMap::with_capacity(model.node_count());
     let mut id_of_node = Vec::with_capacity(model.node_count());
 
-    // The root is arena slot 0, already there; fill it in place rather than
-    // hanging a second node under it. An addon fragment has no single root,
-    // so it bakes to a puppet holding nothing but that empty slot: a fragment
-    // is installed into a model, never animated on its own.
+    // The root is arena slot 0 already. An addon fragment has no single root,
+    // so it bakes to a puppet holding only that empty slot.
     let Some(root_id) = model.root().cloned() else {
         return Baked {
             arena,
@@ -147,8 +117,7 @@ fn bake(model: &Model) -> Baked {
     node_of_id.insert(root_id.clone(), arena.root());
     id_of_node.push(root_id.clone());
 
-    // Pre-order, so a node's parent always has a slot before it does, and a
-    // NodeIdx is the node's position in the walk.
+    // Pre-order, so a node's parent always has a slot before it does.
     let mut stack: Vec<(NodeId, NodeIdx)> = Vec::new();
     let push_children =
         |stack: &mut Vec<(NodeId, NodeIdx)>, node: &crate::model::ModelNode, idx| {
@@ -168,13 +137,9 @@ fn bake(model: &Model) -> Baked {
         id_of_node.push(id.clone());
         push_children(&mut stack, node, idx);
     }
-    // `insert_child` registered every node but the root, whose kind was
-    // written into slot 0 directly.
     arena.rebuild_kind_registries();
 
-    // Masks are resolved last, because a mask may name a node that comes
-    // after its target in the walk. A mask whose source is not in the model
-    // is dropped rather than baked as a dangling slot.
+    // Last, because a mask may name a node after its target in the walk.
     for (slot, id) in id_of_node.iter().enumerate() {
         let Some(model_node) = model.node(id) else {
             continue;
@@ -195,9 +160,8 @@ fn bake(model: &Model) -> Baked {
         }
     }
 
-    // Slot pairs resolve here: the solve wants vertex pairs, and a slot the
-    // author has not refilled since the part was re-meshed drops out rather
-    // than pulling a vertex that means something else now.
+    // A slot not refilled since the part was re-meshed drops out rather than
+    // pulling a vertex that now means something else.
     arena.welds = Arc::new(
         model
             .welds()
@@ -348,7 +312,6 @@ fn build_node(model: &Model, node: &crate::model::ModelNode) -> Node {
                 screen_tint: Vec3::from_array(p.screen_tint),
                 base_screen_tint: Vec3::from_array(p.screen_tint),
                 blend_mode: p.blend_mode,
-                // Filled once every node has a slot.
                 masks: Vec::new(),
                 mask_threshold: p.mask_threshold,
                 deform_stack,
@@ -377,9 +340,8 @@ fn build_node(model: &Model, node: &crate::model::ModelNode) -> Node {
                 bins: None,
             }))
         }
-        // The per-vertex assignment is left empty here: it needs the rest
-        // globals of every descendant, which only exist once the whole tree is
-        // in the arena. `Arena::rebuild_spine_rest_state` fills it.
+        // Needs every descendant's rest globals; `Arena::rebuild_spine_rest_state`
+        // fills it.
         ModelNodeKind::Spine(spine) => {
             let data = crate::spine::SpineData::new(
                 spine

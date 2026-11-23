@@ -56,8 +56,8 @@ pub(crate) struct SpringState {
 
 impl SpringState {
     pub fn advance(&mut self, start: f64, end: f64, dt: f64, omega: f64, damping: f64) {
-        // In coordinates relative to a linearly moving target, the forcing
-        // vanishes. Integrate the homogeneous damped oscillator in closed form.
+        // Relative to a linearly moving target the forcing vanishes, so integrate
+        // the homogeneous damped oscillator in closed form.
         let slope = (end - start) / dt;
         let e = self.x - start;
         let u = self.velocity - slope;

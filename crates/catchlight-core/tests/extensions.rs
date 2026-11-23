@@ -1,11 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 //! Extensions: what a file carries for a vendor, and what the reader refuses.
-//!
-//! The property that matters most is the boring one — an extension survives a
-//! save unchanged, and a save→save is a no-op — because everything a vendor
-//! builds on top of the format rests on it. The rest is the reader refusing
-//! every shape it cannot vouch for.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -19,7 +14,6 @@ use catchlight_core::id::ExtensionKey;
 use catchlight_core::{ExtensionValue, InstallError, Model, ModelError};
 
 fn models_dir() -> PathBuf {
-    // crates/catchlight-core/ -> crates/ -> workspace root.
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
         .nth(2)
@@ -52,14 +46,11 @@ fn json() -> ExtensionValue {
 }
 
 fn bytes() -> ExtensionValue {
-    // Not an image and not text: an extension's bytes are opaque.
     ExtensionValue::Bytes(Arc::from(
         (0u8..=255).cycle().take(4096).collect::<Vec<u8>>(),
     ))
 }
 
-/// The one that everything else rests on: a model carrying both kinds writes,
-/// reads back the same, and writes the same bytes the second time.
 #[test]
 fn every_fixture_carries_both_kinds_through_a_save() {
     for path in fixtures() {
@@ -83,7 +74,6 @@ fn every_fixture_carries_both_kinds_through_a_save() {
     }
 }
 
-/// A model with no extensions omits the field and section on save.
 #[test]
 fn saving_a_model_without_extensions_omits_the_extension_data() {
     for path in fixtures() {
@@ -122,8 +112,8 @@ fn deleting_a_key_the_model_does_not_carry_is_an_error() {
     );
 }
 
-/// `catchlight.` is the format's own prefix. A reader takes such a key,
-/// because the format may write one some day; nothing else may author one.
+/// A reader takes a `catchlight.` key, since the format may write one some
+/// day; nothing else may author one.
 #[test]
 fn a_reserved_key_is_refused_to_an_author_and_accepted_from_a_file() {
     let mut model = Model::new();
@@ -136,7 +126,6 @@ fn a_reserved_key_is_refused_to_an_author_and_accepted_from_a_file() {
     );
     assert!(model.delete_extension(&reserved).is_err());
 
-    // The same key straight off the wire loads.
     let doc = ClmStructure {
         extensions: [(reserved.clone(), ClmExtension::Json(serde_json::json!(1)))]
             .into_iter()
@@ -166,14 +155,11 @@ fn a_byte_value_over_the_cap_is_refused() {
     );
 }
 
-/// A JSON string whose compact JSON text is exactly `len` bytes: the two
-/// quotes count.
+/// Compact JSON text exactly `len` bytes long, quotes included.
 fn json_of_len(len: usize) -> serde_json::Value {
     serde_json::Value::String("a".repeat(len - 2))
 }
 
-/// A JSON value rides inside the structure, so it is pushed whole with every
-/// structure feed. It used to have no cap at all.
 #[test]
 fn a_json_value_over_the_cap_is_refused() {
     let mut model = Model::new();
@@ -206,9 +192,6 @@ fn a_json_value_over_the_cap_is_refused() {
     );
 }
 
-// ---- what the reader refuses --------------------------------------------
-
-/// A one-node structure, the smallest complete model.
 fn root_structure() -> ClmStructure {
     use catchlight_core::formats::clm::{ClmNode, ClmNodeKind, ClmTransform};
     ClmStructure {
@@ -251,8 +234,7 @@ fn blob(k: &str, data: &[u8]) -> ClmExtensionBlob {
     }
 }
 
-/// `check_extensions` is what both the reader and the writer run, so driving
-/// it directly is driving both.
+/// `check_extensions` runs in both reader and writer.
 fn refusal(doc: &ClmStructure, blobs: &[ClmExtensionBlob]) -> clm::ClmError {
     clm::check_extensions(doc, blobs).expect_err("this pairing must be refused")
 }
@@ -267,7 +249,6 @@ fn a_marker_without_its_bytes_is_refused_by_key() {
 
 #[test]
 fn bytes_nothing_names_are_refused_by_key() {
-    // No entry at all, and an entry of the wrong kind, are both orphans.
     let empty = root_structure();
     assert!(
         matches!(refusal(&empty, &[blob("acme.thumb", b"abc")]), clm::ClmError::ExtensionBytesOrphan { key } if key == "acme.thumb")
@@ -289,7 +270,6 @@ fn a_size_or_a_hash_that_disagrees_with_the_marker_is_refused() {
         refusal(&doc, &[blob("acme.thumb", b"abcd")]),
         clm::ClmError::ExtensionSizeMismatch { .. }
     ));
-    // Same length, different bytes: only the hash catches it.
     assert!(matches!(
         refusal(&doc, &[blob("acme.thumb", b"abd")]),
         clm::ClmError::ExtensionHashMismatch { key } if key == "acme.thumb"
@@ -306,8 +286,6 @@ fn a_byte_value_over_the_cap_is_refused_on_the_way_in() {
     ));
 }
 
-/// The reader and the writer hold a JSON value to the same cap the model
-/// does, measured the same way.
 #[test]
 fn a_json_value_over_the_cap_is_refused_on_the_way_in_and_out() {
     let at_cap = with_extensions(vec![(
@@ -332,8 +310,7 @@ fn a_json_value_over_the_cap_is_refused_on_the_way_in_and_out() {
         clm::ClmError::ExtensionTooLarge { .. }
     ));
 
-    // A file some other writer produced: the structure section written
-    // straight to CBOR, past `encode`'s own check.
+    // Written straight to CBOR, past `encode`'s own check.
     let mut structure = Vec::new();
     ciborium::into_writer(&over, &mut structure).unwrap();
     let bytes = catchlight_core::formats::container::write(
@@ -344,7 +321,6 @@ fn a_json_value_over_the_cap_is_refused_on_the_way_in_and_out() {
                 kind: 0,
                 data: &structure,
             },
-            // An empty texture table.
             catchlight_core::formats::container::Section {
                 kind: 1,
                 data: &[0x80],
@@ -358,9 +334,7 @@ fn a_json_value_over_the_cap_is_refused_on_the_way_in_and_out() {
     ));
 }
 
-/// CBOR can spell NaN and the infinities; JSON cannot. `serde_json` reads
-/// one as `null`, which would hand back a different value from the one the
-/// file carries — so it is refused, wherever in the value it sits.
+/// CBOR can spell NaN and the infinities; JSON cannot, so they are refused.
 #[test]
 fn a_float_that_is_not_finite_is_refused_rather_than_read_as_null() {
     use ciborium::value::Value;
@@ -397,7 +371,6 @@ fn a_float_that_is_not_finite_is_refused_rather_than_read_as_null() {
         assert!(message.contains("not a JSON number"), "{what}: {message}");
     }
 
-    // Everything JSON can spell still reads as itself, nested or not.
     let finite = Value::Map(vec![
         (Value::Text("ratio".into()), Value::Float(0.5)),
         (Value::Text("count".into()), Value::Integer(3.into())),
@@ -435,8 +408,6 @@ fn the_same_key_carried_twice_is_refused() {
     ));
 }
 
-/// A writer runs the same check, so it can never leave a marker whose bytes
-/// are not in the file.
 #[test]
 fn writing_a_marker_without_its_bytes_is_refused_too() {
     let doc = with_extensions(vec![(key("acme.thumb"), marker(b"abc"))]);
@@ -446,8 +417,6 @@ fn writing_a_marker_without_its_bytes_is_refused_too() {
     ));
 }
 
-/// Every value shape the format does not carry is refused by the
-/// deserializer, before any of the checks above run.
 #[test]
 fn a_value_that_is_not_json_or_a_marker_is_refused() {
     for (what, value) in [
@@ -464,7 +433,6 @@ fn a_value_that_is_not_json_or_a_marker_is_refused() {
             )]),
         ),
     ] {
-        // `{"json": <value>}` — the arm a JSON value arrives under.
         let wrapped =
             ciborium::value::Value::Map(vec![(ciborium::value::Value::Text("json".into()), value)]);
         let mut buf = Vec::new();
@@ -482,7 +450,6 @@ fn a_key_off_the_charset_or_without_a_dot_is_refused_and_named() {
             "{bad:?} should not be a key"
         );
     }
-    // And on the wire, where the message has to say which key.
     let mut buf = Vec::new();
     ciborium::into_writer(
         &ciborium::value::Value::Map(vec![(
@@ -499,8 +466,6 @@ fn a_key_off_the_charset_or_without_a_dot_is_refused_and_named() {
     let message = decoded.expect_err("a bad key is refused").to_string();
     assert!(message.contains("camera"), "{message}");
 }
-
-// ---- addons --------------------------------------------------------------
 
 #[test]
 fn extract_leaves_extensions_behind_and_install_refuses_one() {
@@ -525,7 +490,6 @@ fn extract_leaves_extensions_behind_and_install_refuses_one() {
         "an addon carries no extensions"
     );
 
-    // One that does is refused, by key.
     let mut carrier = addon.clone();
     carrier.set_extension(key("acme.camera"), json()).unwrap();
     let mut target = Model::new();

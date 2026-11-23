@@ -1,34 +1,17 @@
 //! How a value is read between the cells of a binding's grid.
-//!
-//! A binding holds a value at each of its own grid positions; a pose lands
-//! between them. [`InterpolateMode`] is the rule the author picked for that,
-//! and the free functions here are the one implementation of it — shared by
-//! [`Model::eval_scalar`](crate::Model::eval_scalar) (what a model reports at
-//! a pose) and
-//! [`crate::puppet::Puppet`]'s fold (what a tick evaluates), so the two can
-//! never drift.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum InterpolateMode {
     Nearest,
     Linear,
     /// Hold a key's value from its own position until the next key.
-    /// On a binding that is the bracket's lower cell; on an animation lane,
-    /// the last keyframe at or before the frame. The two are one rule read
-    /// over different axes: a pose sitting exactly on a key reads that key.
     Stepped,
     Cubic,
 }
 
-/// The pair of key-position indices that bracket `t`. Shared with
-/// `crate::model::eval` so a Model and a puppet locate a pose identically.
-///
-/// **Each interval is closed below and open above, except the last, which is
-/// closed at both ends.** A pose exactly on an interior key is therefore the
-/// *lower* end of its bracket at fraction 0, never the upper end of the one
-/// before it at fraction 1. Every mode but `Stepped` reads the same value
-/// either way; `Stepped` holds the lower cell, so this is what makes a key
-/// show its own value at its own position.
+/// The pair of key-position indices that bracket `t`. Each interval is
+/// closed below and open above, except the last, so a pose exactly on an
+/// interior key is the lower end of its bracket (what `Stepped` relies on).
 pub(crate) fn bracket(axis: &[f32], t: f32) -> (usize, usize) {
     let last = axis.len().saturating_sub(1);
     if last == 0 {
@@ -72,9 +55,7 @@ pub(crate) fn binding_bracket(
     bracket(axis, normalized)
 }
 
-/// Fractional position of `t` inside `[a, b]`. Returns 0 when a == b, so a
-/// degenerate (single-key-position) axis doesn't NaN. Shared with
-/// `crate::model::eval`.
+/// Returns 0 when a == b, so a single-key-position axis doesn't NaN.
 pub(crate) fn frac(t: f32, a: f32, b: f32) -> f32 {
     if (b - a).abs() < 1e-9 {
         0.0
@@ -83,13 +64,8 @@ pub(crate) fn frac(t: f32, a: f32, b: f32) -> f32 {
     }
 }
 
-/// Uniform Catmull-Rom: the cubic Hermite from `p1`→`p2` (`t` in `[0,1]`)
-/// whose endpoint tangents are the central differences of the four
-/// samples. It serves both
-/// Cubic parameter bindings and Cubic animation lanes — `AnimationLane`
-/// shares this single copy. With a collapsed neighbourhood (p0==p1,
-/// p2==p3) the tangent terms cancel and it reduces to `lerp`, so
-/// boundary cells degrade to linear.
+/// Uniform Catmull-Rom from `p1`→`p2` (`t` in `[0,1]`). With a collapsed
+/// neighbourhood (p0==p1, p2==p3) it reduces to `lerp`.
 pub(crate) fn cubic<T>(p0: T, p1: T, p2: T, p3: T, t: f32) -> T
 where
     T: Copy
@@ -120,8 +96,6 @@ mod tests {
         assert_eq!(bracket(&axis, 1.0), (1, 2));
     }
 
-    /// A pose exactly on an interior key opens the bracket above it, so a
-    /// mode that holds the lower cell reads that key's own value.
     #[test]
     fn an_interior_key_is_the_lower_end_of_its_bracket() {
         let axis = [0.0, 0.25, 0.5, 1.0];

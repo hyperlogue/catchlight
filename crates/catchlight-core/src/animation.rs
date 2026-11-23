@@ -1,15 +1,8 @@
 //! Playing an animation: what a clip's lanes read at a frame.
 //!
-//! There is one animation type, not two. A clip is
-//! [`ClmAnimation`] wherever it appears —
-//! on the model, on the wire, and on the puppet playing it — the same way a
-//! mesh is a `ClmMesh` and a binding's cells are `ClmBindingValues`. This
-//! module is the play behaviour over that type; `formats::clm` is its shape.
-//!
-//! **A loop region is derived, not authored.** `lead_in` / `lead_out` affect
-//! it only when they lie strictly inside the clip, and a clip whose lead-out
-//! precedes its lead-in falls back to the whole length rather than wedging
-//! playback at one frame.
+//! A loop region is derived: `lead_in` / `lead_out` affect it only when they
+//! lie strictly inside the clip, and a lead-out before the lead-in falls back
+//! to the whole length.
 
 use crate::formats::clm::{ClmAnimation, ClmKeyframe, ClmLane};
 use crate::interpolate::InterpolateMode;
@@ -20,8 +13,8 @@ pub(crate) fn same_sample(a: f32, b: f32, scale: f32) -> bool {
 }
 
 impl ClmLane {
-    /// A loop can repeat its endpoint or omit the duplicate closing sample.
-    /// In the latter case allow an ordinary frame of travel across the seam.
+    /// A loop may omit the duplicate closing sample; allow one frame of travel
+    /// across the seam.
     pub(crate) fn jumps_at_wrap(&self, begin: i32, end: i32) -> bool {
         let first = self.value_at(begin as f32);
         let last = self.value_at((end - 1) as f32);
@@ -37,8 +30,6 @@ impl ClmLane {
         {
             return false;
         }
-        // A coarse loop may cross its fastest stretch at the seam. Compare
-        // with the largest interior frame step before discarding velocity.
         !self.keyframes.windows(2).enumerate().any(|(i, keys)| {
             let (a, b) = (&keys[0], &keys[1]);
             let lo = begin.max(a.frame);
@@ -47,10 +38,8 @@ impl ClmLane {
                 return false;
             }
             let span = f64::from(b.frame) - f64::from(a.frame);
-            // Linear segments have constant steps. A stepped or nearest
-            // segment switches at a key or its midpoint. For a cubic segment
-            // the one-frame difference is quadratic in the starting frame:
-            // its extremum straddles the inflection point of the cubic.
+            // For a cubic segment the one-frame difference is quadratic in the starting
+            // frame: its extremum straddles the cubic's inflection point.
             let middle = match self.interpolation {
                 InterpolateMode::Nearest => 0.5,
                 InterpolateMode::Cubic => {
@@ -79,7 +68,7 @@ impl ClmLane {
         })
     }
 
-    /// Interpolated value at fractional frame `t`, clamped at both ends.
+    /// `t` is a fractional frame, clamped at both ends.
     pub fn value_at(&self, t: f32) -> f32 {
         value_at(&self.keyframes, self.interpolation, t)
     }
@@ -91,8 +80,7 @@ impl ClmAnimation {
     }
 }
 
-/// The keyframe interpolator. Reads `keyframes` in frame order — the order
-/// [`crate::Model::set_animations`] and the `.clm` reader both enforce.
+/// Reads `keyframes` in frame order, which the model and reader enforce.
 fn value_at(keyframes: &[ClmKeyframe], interpolation: InterpolateMode, t: f32) -> f32 {
     match keyframes {
         [] => 0.0,
@@ -113,9 +101,7 @@ fn value_at(keyframes: &[ClmKeyframe], interpolation: InterpolateMode, t: f32) -
             if b.frame == a.frame {
                 return b.value;
             }
-            // i64: frames come verbatim from the file, and the full i32
-            // span overflows the subtraction — the neighbour of the case
-            // `loop_region` saturates for.
+            // i64: the full i32 frame span overflows the subtraction.
             let span = (i64::from(b.frame) - i64::from(a.frame)) as f32;
             let frac = ((t - a.frame as f32) / span).clamp(0.0, 1.0);
             match interpolation {
@@ -126,8 +112,6 @@ fn value_at(keyframes: &[ClmKeyframe], interpolation: InterpolateMode, t: f32) -
                         b.value
                     }
                 }
-                // A key holds from its own frame: `b` is the first key at or
-                // after `t`, so landing exactly on it reads `b`.
                 InterpolateMode::Stepped => {
                     if frac >= 1.0 {
                         b.value
@@ -148,17 +132,13 @@ fn value_at(keyframes: &[ClmKeyframe], interpolation: InterpolateMode, t: f32) -
     }
 }
 
-/// The frames a looping player wraps between.
 fn loop_region(length: i32, lead_in: i32, lead_out: i32) -> (i32, i32) {
-    // saturating_add: lead_in/lead_out come verbatim from the model file,
-    // so `+ 1` on i32::MAX would overflow (panic in debug, wrap to a
-    // negative that passes the `< length` test in release).
+    // saturating_add: lead_out comes verbatim from the file.
     let has_lead_in = lead_in > 0 && lead_in.saturating_add(1) < length;
     let has_lead_out = lead_out > 0 && lead_out.saturating_add(1) < length;
     let begin = if has_lead_in { lead_in } else { 0 };
     let end = if has_lead_out { lead_out } else { length };
-    // A file with lead_out < lead_in would give begin > end, which wedges
-    // playback at `begin` forever; fall back to the whole clip.
+    // lead_out < lead_in would wedge playback; fall back to the whole clip.
     if begin >= end {
         return (0, length);
     }
@@ -168,7 +148,7 @@ fn loop_region(length: i32, lead_in: i32, lead_out: i32) -> (i32, i32) {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct AnimationPlayState {
     pub index: usize,
-    /// Current playback time in seconds from the start of the clip.
+    /// Seconds from the start of the clip.
     pub time: f32,
     pub looping: bool,
 }
@@ -253,8 +233,6 @@ mod tests {
         assert_eq!(l.value_at(20.0), 20.0);
     }
 
-    /// Frames come verbatim from the file: the full i32 span must not
-    /// overflow the subtraction (a panic in debug, a negative in release).
     #[test]
     fn extreme_frames_interpolate_without_overflow() {
         let l = lane(
@@ -284,8 +262,6 @@ mod tests {
         );
         assert_eq!(l.value_at(0.0), 1.0);
         assert_eq!(l.value_at(9.9), 1.0);
-        // A key holds from its own frame, so the switch is at the keyframe
-        // and not just past it.
         assert_eq!(l.value_at(10.0), 5.0);
         assert_eq!(l.value_at(10.1), 5.0);
         assert_eq!(l.value_at(19.0), 5.0);
@@ -294,10 +270,8 @@ mod tests {
 
     #[test]
     fn cubic_is_plain_catmull_rom() {
-        // Keyframes (0,0) (1,1) (2,0) sampled mid-first-segment: the
-        // neighbourhood is p=[0,0,1,0] at t=0.5, and uniform Catmull-Rom
-        // gives 0.5625 — the value a Cubic binding's fold produces for the
-        // same cells, pinning that lanes and bindings share one spline.
+        // Uniform Catmull-Rom at p=[0,0,1,0], t=0.5 gives 0.5625, the same as a
+        // Cubic binding's fold over the same cells.
         let l = lane(vec![(0, 0.0), (1, 1.0), (2, 0.0)], InterpolateMode::Cubic);
         let mid = l.value_at(0.5);
         assert!(

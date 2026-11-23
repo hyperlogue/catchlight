@@ -1,7 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-//! Geometry queries observe the complete evaluated frame while retaining
-//! authored identities. Synthetic meshes keep expected positions independent
-//! of rendering, textures, private fixtures and the inspection implementation.
+//! Geometry queries observe the evaluated frame with authored identities.
 
 use catchlight_core::formats::clm::{ClmIndices, ClmMesh};
 use catchlight_core::geometry::{Bounds2, EvaluatedGeometry, GeometryError};
@@ -99,7 +97,6 @@ fn coordinates_preserve_authored_order_origin_and_full_world_transform() {
     let bounds = geometry.world_bounds().unwrap().unwrap();
     assert!(bounds.min.abs_diff_eq(Vec2::new(108.0, 252.0), 1e-4));
     assert!(bounds.max.abs_diff_eq(Vec2::new(116.0, 260.0), 1e-4));
-    // Repeated observation cannot consume scratch or re-evaluate the frame.
     assert_eq!(geometry.vertices().collect::<Vec<_>>(), vertices);
     assert_eq!(
         puppet.combined_deform(idx).unwrap(),
@@ -152,8 +149,6 @@ fn inherited_meshgroup_and_weld_deformations_are_observed_from_the_same_frame() 
     let mut puppet = Puppet::new(&model);
     let idx = puppet.node_idx(&group).unwrap();
     puppet.set_scratch_deform(idx, &[Vec2::new(3.0, 4.0); 4]);
-    // A scratch edit shows after the caller's own evaluation; the observer
-    // does not choose a tick/preview policy on the caller's behalf.
     puppet.tick(&model, 0.0);
     let frame = EvaluatedGeometry::new(&model, &puppet).unwrap();
     let a = frame.mesh(&a).unwrap();
@@ -324,7 +319,6 @@ fn a_response_slot_samples_the_complete_weld_chain() {
         model.slot_fill(&part, &slot, 0).unwrap();
         parts.push(part);
     }
-    // A second slot on B selects the same vertex for the later weld.
     let second = SlotId::new("far").unwrap();
     model.slot_add(&parts[1], second.clone()).unwrap();
     model.slot_fill(&parts[1], &second, 0).unwrap();

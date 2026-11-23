@@ -1,132 +1,4 @@
 //! The authored model: the character as a person made it.
-//!
-//! [`Model`] holds what a model file holds — the node tree, params and their
-//! bindings, textures and welds — and nothing that animating
-//! it produces. A puppet animates a Model; a render cache is prepared from
-//! one. Both read it, neither owns it.
-//!
-//! Invariants this module enforces:
-//!
-//! - **Nothing mutates a Model except its own methods.** Every field is
-//!   private and every mutating method bumps [`Model::generation`], so a
-//!   derived object (a puppet, a render cache) can hold the last generation it
-//!   baked against and rebake when it moved. The number comes from a
-//!   process-wide clock, never from the model's own count, because undo
-//!   restores an older model wholesale: a per-model counter would reissue a
-//!   number a derived object had already baked against. A mutation path that
-//!   forgets to bump is the bug class
-//!   `generation_bumps_on_every_mutating_method` exists to catch.
-//! - **Two models are told apart by [`Model::identity`], not by the
-//!   generation.** Every constructed model draws a nonce from a process-wide
-//!   counter; a clone keeps it, because an undo snapshot is the same model.
-//!   The counter alone cannot do that job — every loader hands back generation
-//!   0, so a puppet baked against one model would tick against another with
-//!   the two numbers agreeing. Derived objects compare the nonce beside the
-//!   generation and `debug_assert!` on a mismatch.
-//! - **The tree is always valid, for the shape the model is.** A *complete*
-//!   model has one root and its parent is `None`; an *addon fragment* has
-//!   [`Model::roots`] naming parents it does not carry, and its other
-//!   references into a base model are meant to dangle until
-//!   [`Model::install`] resolves them — [`addon`] is where that lives, and
-//!   [`Model::is_fragment`] is which shape this is. Neither shape has a
-//!   cycle, and no reference that resolves inside the model may dangle:
-//!   deleting a node drops every mask, binding and weld that
-//!   pointed into the removed subtree, deleting a slot drops the weld pairs
-//!   that named it, and deleting a param or texture nulls out whatever
-//!   referenced it. Renaming rewrites instead — a node's new Id reaches its
-//!   weld ends like everything else. Cross-references (a part's albedo, a
-//!   mask's source, a response output, a weld's ends) are private and only
-//!   reachable through methods that check them — [`Model::update_node_kind`]
-//!   hands out the whole kind and refuses an edit that changed one — which
-//!   is what makes [`Model::to_clm_file`] total.
-//! - **Every texture has a user, and a part's albedo is the only user kind.**
-//!   There is no adding a texture and finding it a part later:
-//!   [`Model::add_texture`] takes the part it is for and sets its albedo in
-//!   the same edit, so a texture is never in the model unmapped. The rule
-//!   holds on the way out too — [`Model::set_part_albedo`] deletes the
-//!   texture it leaves behind if this part was the last drawing it, and
-//!   [`Model::delete_node`] takes the textures only the removed subtree drew
-//!   — which is why nothing has to sweep for orphans and why the `.clm`
-//!   reader can refuse a file carrying one. It is a *hard* delete: undo
-//!   restores it, but an addon that named it by Id does not, so the two
-//!   `textures_dropped_by_*` queries let an editor say so first.
-//! - **An Id is unique within the model and never changes on its own.** This
-//!   is where the uniqueness [`crate::id`] cannot check is enforced: a
-//!   generated Id is re-drawn until it is free, an author-chosen one is
-//!   refused if it is taken, and [`Model::rename_node_id`] and its two
-//!   siblings are the only way an Id ever changes — each rewrites every
-//!   reference to it. The root's Id starts out `root`; a `.clm` stores every
-//!   Id, so a model read from one has exactly the Ids it was written with.
-//!   A [`SlotId`] is scoped to its part rather than model-wide, so the same
-//!   rules apply within that scope: [`Model::slot_add_generated`] draws until
-//!   the Id is free on the part, and [`Model::rename_slot`] is the one way a
-//!   slot's Id changes.
-//! - **A mask source is a drawable.** The renderer rasterizes a source's own
-//!   drawing into the mask, so [`Model::mask_add`] takes a part or a
-//!   composite and refuses everything else — a mesh group is never drawn, and
-//!   a group or a motion response has nothing to draw. The `.clm` reader refuses
-//!   the same shapes.
-//! - **What the writer emits, the reader takes — and the other way round.**
-//!   A param's range and default, a mesh's shape, a spine's joints, a node's
-//!   placement, a weld and a binding's fit to its node are checked wherever
-//!   they enter the model — a new param and a new node as much as
-//!   [`Model::set_param_range`] and [`Model::set_node_mesh`] — so no sequence
-//!   of edits builds a Model that [`Model::to_clm_file`] writes and
-//!   [`Model::from_clm_file`] then refuses, and no file loads as a Model no
-//!   edit could have built. A rule with more than one way in is stated once,
-//!   in `model/validate.rs`, and every way in calls it.
-//! - **Nothing is addressed by name.** A [`Name`] is a label: free to change,
-//!   free to repeat, and never a key.
-//! - **Every param is a scalar.** Joint control over two params is a property
-//!   of the binding — a [`BindingKey`] names one or two params and its grid is
-//!   product of the binding's own normalized axes — so a pose is a plain map
-//!   `ParamId -> f32` and nothing else carries a second dimension.
-//! - **A weld pairs slots, never vertex indices.** A part carries named
-//!   [`Slot`]s, each filled by one of its vertices or *unfilled*; a
-//!   [`ModelWeld`] names two parts and pairs their slots, one
-//!   [`SlotPair`] at a time. Which vertex fills a slot is the part owner's
-//!   decision, so an addon's weld into a base part survives the base being
-//!   re-meshed: [`Model::set_node_mesh`] empties every slot on the part and
-//!   hands back the list to refill, and until they are refilled the weld
-//!   solves the pairs it still resolves rather than tearing the mesh.
-//!   A slot is its part's own — no edit to one part's slots reaches another
-//!   part, and [`Model::slot_delete`] drops the pairs that named it the way
-//!   deleting a node drops the bindings that pointed at it.
-//! - **An animation lane names a live param.** Animations are authored data
-//!   like everything else here, so [`Model::set_animations`] refuses a lane
-//!   over an unknown param and [`Model::delete_param`] drops the lanes that
-//!   named the param it removed. A lane's keyframes stay in frame order for
-//!   the same reason: playback reads a lane by binary search.
-//! - **Sibling order is model state.** It is the draw order for equal z
-//!   order, so [`Model::reorder`] is an edit, not view state.
-//! - **Textures stay source-encoded, and a payload is immutable.** A
-//!   [`ModelTexture`] keeps the author's bytes verbatim; decoding is the
-//!   render cache's job. Nothing rewrites a payload in place — a new one is a
-//!   new [`TexId`] — so a payload `Arc` that is pointer-equal to one seen
-//!   before *is* the same texture, and a render cache keys its GPU reuse on
-//!   exactly that.
-//! - **A model can be replaced without becoming another model.**
-//!   [`Model::replace_structure`] and [`Model::replace_from`] rebuild the
-//!   whole state in place, keeping [`Model::identity`] and bumping
-//!   [`Model::generation`]. Every derived object then reads "the same model
-//!   moved" and carries what its own rules say it carries. This is the
-//!   replica path: an editor server owns the model and pushes it after
-//!   each edit, and the client holds a model it never mutates locally. See
-//!   `model/file.rs` for the wire shape.
-//! - **Derived values are memoized, never stored.** A binding's dense grid —
-//!   what `crate::fill` derives from its authored cells — is built on first
-//!   read and dropped the moment the cells, the key positions or the mesh it
-//!   was derived from move. Nothing else on a Model is derived.
-//! - **Heavy leaves are shared.** Meshes, binding cell grids and texture bytes
-//!   sit behind `Arc` and are edited through `Arc::make_mut`, so cloning a
-//!   Model for undo is a shallow copy of small structs plus refcount bumps.
-//!   Measured by `bench::clone_and_edit_a_five_hundred_node_model` (release,
-//!   `--ignored`): a 500-node, 500-binding, 3.1 MiB model clones in **~50 µs**
-//!   and clones-then-authors-one-deform-cell in **~62 µs** — the difference is
-//!   the one 3x3x128-float grid `Arc::make_mut` has to copy out. Undo pushes
-//!   one snapshot per edit, so that is the whole per-edit cost of the history.
-//!
-//! Pure and wasm-safe: no GPU, no async, no filesystem.
 
 pub mod addon;
 mod binding;
@@ -164,18 +36,11 @@ use crate::id::{
 };
 use crate::interpolate::InterpolateMode;
 
-/// How many times a generated Id is re-drawn before the model gives up. The
-/// 32 bits collide by birthday around 2^16 siblings, so a handful of retries
-/// covers any real model and the cap only fires on a wedged [`HexSource`].
+/// 32-bit Ids collide by birthday around 2^16 siblings; the cap only fires on
+/// a wedged [`HexSource`].
 const ID_MINT_ATTEMPTS: usize = 64;
 
-/// Why an edit to a [`Model`] — or a read of a `.clm` file into one — could
-/// not be carried out. Every mutating method leaves the model untouched when
-/// it returns one of these.
-///
-/// Non-exhaustive: a rule the model starts enforcing gets a variant of its
-/// own rather than borrowing a neighbour's, and a caller that matches on this
-/// keeps compiling when one is added.
+/// Every mutating method leaves the model untouched when it returns one of these.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum ModelError {
@@ -205,16 +70,12 @@ pub enum ModelError {
     Fragment,
     #[error("the root node cannot be {0}")]
     Root(&'static str),
-    /// [`Model::update_node_kind`] was used to change something an in-place
-    /// kind edit may not: the kind itself, or a field another method owns.
     #[error("an in-place kind edit cannot change {0}")]
     KindEdit(&'static str),
     #[error("invalid binding key positions or cell coordinates")]
     CellOutOfRange,
     #[error("a param's range must be finite and increasing")]
     InvalidParamRange,
-    /// A value that has to be a number was `NaN` or infinite. Names what the
-    /// value was, so the refusal reads the same wherever it is raised.
     #[error("{0} must be finite")]
     NonFinite(&'static str),
     #[error("a deform holds {got} offsets, but the node's mesh takes {expected}")]
@@ -289,14 +150,8 @@ pub enum ModelError {
     LoadLimit(#[from] crate::LoadLimitError),
 }
 
-/// A source-encoded texture (verbatim PNG/TGA bytes), shared via `Arc` so model
-/// snapshots are cheap to clone even when the structure churns.
-///
-/// The payload is `Arc<[u8]>` rather than `Arc<Vec<u8>>` so it is the same
-/// representation [`crate::texture::EncodedTexture`] holds: the decode path a
-/// renderer runs on every rebuild then shares this allocation instead of
-/// copying it. Nothing appends to a payload — a texture's bytes are immutable
-/// under its Id — so the spare capacity a `Vec` would carry buys nothing.
+/// Source-encoded texture bytes (PNG/TGA), immutable under its Id. `Arc<[u8]>`
+/// matches [`crate::texture::EncodedTexture`], so decoding shares the allocation.
 #[derive(Debug, Clone)]
 pub struct ModelTexture {
     pub encoding: TextureEncoding,
@@ -305,12 +160,6 @@ pub struct ModelTexture {
 }
 
 impl From<&ModelTexture> for crate::texture::EncodedTexture {
-    /// The decoder's view of a source-encoded texture, for
-    /// [`crate::texture::prepare_textures`].
-    ///
-    /// Shares the bytes: both sides hold `Arc<[u8]>`, so this is a refcount
-    /// bump however large the texture is. A render cache converts every
-    /// texture it is about to decode, on every rebuild.
     fn from(tex: &ModelTexture) -> Self {
         crate::texture::EncodedTexture {
             format: match tex.encoding {
@@ -323,24 +172,16 @@ impl From<&ModelTexture> for crate::texture::EncodedTexture {
     }
 }
 
-/// What an extension holds. The two arms are the two things a vendor may
-/// keep: something small and structured, or an opaque blob.
-///
-/// The split is not about size alone. A JSON value lives inline in the
-/// structure, so it travels with every structure feed and shows up
-/// whole in a `diff`; bytes live in their own section and travel by hash, so
-/// a thumbnail does not ride along with an unrelated edit.
+/// JSON values travel inline with the structure; bytes live in their own
+/// section and travel by hash.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExtensionValue {
-    /// A JSON-compatible value: string-keyed maps, arrays, strings, numbers,
-    /// bools, null. Nothing else survives the reader.
     Json(serde_json::Value),
-    /// Opaque bytes, at most [`clm::MAX_EXTENSION_BYTES`] of them.
+    /// At most [`clm::MAX_EXTENSION_BYTES`].
     Bytes(Arc<[u8]>),
 }
 
 impl ExtensionValue {
-    /// The bytes, for the arm that has them.
     pub fn bytes(&self) -> Option<&Arc<[u8]>> {
         match self {
             Self::Bytes(data) => Some(data),
@@ -348,7 +189,6 @@ impl ExtensionValue {
         }
     }
 
-    /// The JSON value, for the arm that has one.
     pub fn json(&self) -> Option<&serde_json::Value> {
         match self {
             Self::Json(value) => Some(value),
@@ -357,10 +197,6 @@ impl ExtensionValue {
     }
 }
 
-/// The authored model: a tree of nodes by Id, ordered params and textures, the
-/// bindings params drive nodes through, and motion responses. The tree is
-/// always valid (single root, no cycles, no dangling cross-references), so
-/// [`Model::to_clm_file`] is total.
 #[derive(Debug, Clone)]
 pub struct Model {
     identity: u64,
@@ -370,9 +206,8 @@ pub struct Model {
     /// Avoid scanning a model without responses for response ownership on every edit.
     response_count: usize,
     response_index: OnceLock<Arc<response::ResponseIndex>>,
-    /// The nodes whose parent this model does not carry, in tree order.
-    /// A complete model has exactly one and its `parent` is `None`; a
-    /// fragment has one or more, each naming a base node that is absent.
+    /// Nodes whose parent this model does not carry: exactly one (parentless) in
+    /// a complete model, one or more in a fragment.
     roots: Vec<NodeId>,
     params: HashMap<ParamId, ModelParam>,
     param_order: Vec<ParamId>,
@@ -380,32 +215,19 @@ pub struct Model {
     texture_order: Vec<TexId>,
     bindings: Vec<ModelBinding>,
     animations: Vec<ClmAnimation>,
-    /// Vendor annotations, keyed and ordered by [`ExtensionKey`]. Nothing in
-    /// catchlight reads them; they ride along so a tool built on top of the
-    /// format has somewhere to keep what it knows.
     extensions: BTreeMap<ExtensionKey, ExtensionValue>,
-    /// Sections of the file this model was read from that this build does
-    /// not recognise, kept so a save writes them back unchanged. Nothing
-    /// edits them. See [`clm::ClmUnknownSection`].
+    /// Unrecognised file sections, written back unchanged on save.
     unknown_sections: Vec<clm::ClmUnknownSection>,
-    /// `bindings` by key. Derived, so it is built on the first lookup and
-    /// dropped by [`Model::bump`] — every mutating path invalidates it
-    /// without having to know it exists.
+    /// Derived; dropped by [`Model::bump`].
     binding_index: OnceLock<HashMap<BindingKey, usize>>,
-    /// What a puppet bakes from this state. Derived, and dropped by
-    /// [`Model::bump`] like the index above.
+    /// Derived; dropped by [`Model::bump`].
     bake: crate::puppet::BakeMemo,
 }
 
-/// The share of the meeting point a slot pair starts at: the two sides meet
-/// midway.
 pub const DEFAULT_SLOT_WEIGHT: f32 = 0.5;
 
-/// One named handle on a part, filled by one of the part's vertices or by
-/// nothing. A [`ModelWeld`] pairs slots, so it names a vertex without ever
-/// storing a vertex index. An *unfilled* slot is what re-authoring the part's
-/// mesh leaves behind: a weld skips the pairs naming it until the part's
-/// author fills it again.
+/// A named handle on a part, filled by one of its vertices or unfilled until
+/// the part's author refills it after a re-mesh.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Slot {
     id: SlotId,
@@ -417,29 +239,20 @@ impl Slot {
         &self.id
     }
 
-    /// The part vertex filling the slot, or `None` while it is unfilled.
     pub fn vertex(&self) -> Option<u32> {
         self.vertex
     }
 }
 
-/// One pair a weld holds: a slot on the A part, a slot on the B part, and
-/// A's share of the point the two are pulled to.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SlotPair {
-    /// The slot on the weld's A part.
     pub a: SlotId,
-    /// The slot on the weld's B part.
     pub b: SlotId,
-    /// A's share of the meeting point in `[0, 1]`: 1.0 pins A and snaps B
-    /// to it, 0.5 meets midway.
+    /// A's share of the meeting point, `0..=1`: 1.0 pins A, 0.5 meets midway.
     pub weight: f32,
 }
 
-/// A weld: two parts, and the slot pairs between them. Each pair is pulled to
-/// a weighted meeting point after every other deformation, so the parts stay
-/// joined. Both ends name a part and the pairs name slots, so nothing here
-/// goes stale when a part is re-meshed.
+/// Pairs are pulled to a weighted meeting point after every other deformation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModelWeld {
     a: NodeId,
@@ -456,25 +269,19 @@ impl ModelWeld {
         }
     }
 
-    /// The part this weld's A side names.
     pub fn a(&self) -> &NodeId {
         &self.a
     }
 
-    /// The part this weld's B side names.
     pub fn b(&self) -> &NodeId {
         &self.b
     }
 
-    /// The slot pairs, in authored order.
     pub fn pairs(&self) -> &[SlotPair] {
         &self.pairs
     }
 
-    /// The vertex pairs this weld solves, in pair order. A pair whose slot is
-    /// unfilled on either end is skipped — a part under repair holds the rest
-    /// of the join closed instead of tearing the mesh — so the result can be
-    /// shorter than [`Self::pairs`], or empty.
+    /// Pairs with an unfilled slot on either end are skipped.
     pub fn resolve(&self, model: &Model) -> Vec<ModelWeldPair> {
         let (Some(a), Some(b)) = (model.slots(&self.a), model.slots(&self.b)) else {
             return Vec::new();
@@ -493,17 +300,12 @@ impl ModelWeld {
     }
 }
 
-/// One resolved pair of welded vertices, one from each part: what a
-/// [`SlotPair`] becomes once both slots are filled. A Model never stores these —
-/// [`ModelWeld::resolve`] derives them — but the runtime takes them
-/// directly.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ModelWeldPair {
     /// Vertex indices into each part's mesh.
     pub a_vert: u32,
     pub b_vert: u32,
-    /// A's share of the meeting point in `[0, 1]`: 1.0 pins A and snaps B
-    /// to it, 0.5 meets midway.
+    /// A's share of the meeting point, `0..=1`: 1.0 pins A, 0.5 meets midway.
     pub weight: f32,
 }
 
@@ -536,7 +338,6 @@ pub enum ModelNodeKind {
 }
 
 impl ModelNodeKind {
-    /// The wire/UI name of the kind.
     pub fn name(&self) -> &'static str {
         match self {
             Self::Group => "group",
@@ -548,7 +349,6 @@ impl ModelNodeKind {
         }
     }
 
-    /// The segment a generated Id records the node's kind as.
     fn id_kind(&self) -> NodeIdKind {
         match self {
             Self::Group => NodeIdKind::Group,
@@ -561,13 +361,10 @@ impl ModelNodeKind {
     }
 }
 
-/// A mesh behind an `Arc`: cloning a Model shares it, and the first edit
-/// through [`Model`] copies it out.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModelMesh(Arc<ClmMesh>);
 
 impl ModelMesh {
-    /// A copy of the mesh as the file stores it.
     pub fn to_clm(&self) -> ClmMesh {
         (*self.0).clone()
     }
@@ -587,8 +384,7 @@ impl Deref for ModelMesh {
     }
 }
 
-/// A mesh group deforms what is beneath it and is never drawn, so it has no
-/// colour to edit: no opacity, blend mode, tint or screen tint.
+/// Never drawn, so it has no colour fields.
 #[derive(Debug, Clone)]
 pub struct ModelMeshGroup {
     pub translate_children: bool,
@@ -596,8 +392,6 @@ pub struct ModelMeshGroup {
 }
 
 impl ModelMeshGroup {
-    /// A mesh group over `mesh`, carrying meshless descendants along with
-    /// its deform.
     pub fn new(mesh: impl Into<ModelMesh>) -> Self {
         Self {
             translate_children: true,
@@ -618,17 +412,14 @@ pub struct ModelPart {
     pub screen_tint: [f32; 3],
     pub mask_threshold: f32,
     mesh: ModelMesh,
-    /// Albedo texture, or `None` for an unmapped part (the renderer culls it).
+    /// `None` for an unmapped part, which the renderer culls.
     albedo: Option<TexId>,
     masks: Arc<Vec<ModelMask>>,
-    /// The vertex slots welds pair, filled by this part's author. Only
-    /// [`Model`]'s slot methods build one, so a slot is always in mesh range
-    /// or unfilled.
+    /// Built only by [`Model`]'s slot methods, so a slot is in mesh range or unfilled.
     slots: Arc<Vec<Slot>>,
 }
 
 impl ModelPart {
-    /// An opaque, unmasked, untextured part drawing `mesh`, with no slots.
     pub fn new(mesh: impl Into<ModelMesh>) -> Self {
         Self {
             opacity: 1.0,
@@ -655,7 +446,6 @@ impl ModelPart {
         &self.masks
     }
 
-    /// The part's slots, in authored order.
     pub fn slots(&self) -> &[Slot] {
         &self.slots
     }
@@ -673,7 +463,6 @@ pub struct ModelComposite {
 }
 
 impl ModelComposite {
-    /// An opaque, unmasked composite that a mesh group above it does not reach.
     pub fn new() -> Self {
         Self {
             opacity: 1.0,
@@ -697,12 +486,8 @@ impl Default for ModelComposite {
     }
 }
 
-/// One drawable's clipping rule: whose shape clips it, and whether what that
-/// shape covers is kept or cut away. Only [`Model::mask_add`] and the `.clm`
-/// reader build one, and both hold it to the same rule, so a mask's source is
-/// always a drawable other than the node it clips — a part or a composite —
-/// that the model carries. In an addon fragment the source may instead be a
-/// node of the base, which [`Model::install`] checks is one.
+/// The source is a part or composite other than the node it clips; in a
+/// fragment it may be a base node, which [`Model::install`] checks.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModelMask {
     source: NodeId,
@@ -719,20 +504,9 @@ impl ModelMask {
     }
 }
 
-/// A chain of joints drawn on the art, turning the geometry beneath the node.
-///
-/// The authored half of [`crate::spine::SpineData`]: the per-vertex
-/// assignment the runtime derives from this polyline belongs to the puppet,
-/// and it is rebuilt from rest geometry on every bake.
-///
-/// **`targets` is as long as `joints`, always.** A spine reads one bend per
-/// link, so the two vectors index each other; an entry is `None` where a link
-/// is rigid. Every method here that can change either length restores the
-/// pairing before it returns, so no caller ever sees them disagree.
-///
-/// **`joints[i]` is the far end of link `i`, and `targets[i]` is link `i`'s
-/// own bend** — the turn at the joint *above* it, which is the node's own
-/// origin for link 0 and `joints[i - 1]` after that. Both vectors use link order.
+/// `targets` is always as long as `joints`; `None` marks a rigid link.
+/// `joints[i]` is the far end of link `i`; `targets[i]` is link `i`'s bend,
+/// the turn at the joint above it (the node's origin for link 0).
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModelSpine {
     joints: Arc<Vec<[f32; 2]>>,
@@ -740,9 +514,7 @@ pub struct ModelSpine {
 }
 
 impl ModelSpine {
-    /// A spine over `joints`, every link rigid. Building one checks nothing:
-    /// the joints are held to [`Self::check_joints`] when the spine joins a
-    /// model, by [`Model::add_node`] and [`Model::set_spine_joints`].
+    /// Unchecked until it joins a model; see [`Self::check_joints`].
     pub fn new(joints: Vec<[f32; 2]>) -> Self {
         let targets = vec![None; joints.len()];
         Self {
@@ -751,27 +523,21 @@ impl ModelSpine {
         }
     }
 
-    /// Whether `joints` is a chain the turn pass can compose: at least one
-    /// joint, every coordinate finite, and no joint repeating the point above
-    /// it — the node's own origin for the first one. The one rule every way
-    /// into a model holds a spine to, the `.clm` reader included; public so a
-    /// caller can refuse bad joints before it has built anything around them.
+    /// At least one joint, all finite, and no joint repeating the point above it
+    /// (the node's origin for the first).
     pub fn check_joints(joints: &[[f32; 2]]) -> Result<(), SpineJointError> {
         validate::spine_joints(joints)
     }
 
-    /// The far end of each link, in the node's own space.
+    /// In the node's own space.
     pub fn joints(&self) -> &[[f32; 2]] {
         &self.joints
     }
 
-    /// The param each link's bend is read from, in link order. `None` where a
-    /// link is rigid.
     pub fn targets(&self) -> &[Option<ParamId>] {
         &self.targets
     }
 
-    /// Whether the spine reads `param`.
     pub fn reads(&self, param: &ParamId) -> bool {
         self.targets.iter().flatten().any(|p| p == param)
     }
@@ -782,21 +548,16 @@ impl ModelSpine {
     }
 }
 
-/// A named scalar the author exposes for posing. Joint control over two
-/// params is a property of the *binding*, not of the param: see
-/// [`BindingParams`].
 #[derive(Debug, Clone)]
 pub struct ModelParam {
     pub name: Name,
     pub min: f32,
     pub max: f32,
-    /// Rest value, in param-value space.
+    /// In param-value space.
     pub default: f32,
 }
 
 impl ModelParam {
-    /// A param over `[min, max]` resting at `default`. Each binding owns its
-    /// own normalized sampling positions over that range.
     pub fn new(name: Name, min: f32, max: f32, default: f32) -> Self {
         Self {
             name,
@@ -807,22 +568,18 @@ impl ModelParam {
     }
 }
 
-/// One or two params' control over one property of one node. Bindings live on
-/// the model, not on the param, and are addressed by their [`BindingKey`].
 #[derive(Debug, Clone)]
 pub struct ModelBinding {
     key: BindingKey,
     key_positions: Vec<Vec<f32>>,
     interpolate_mode: InterpolateMode,
     values: ModelBindingValues,
-    /// The dense grid derived from `values`, built on the first read. Shared
-    /// by every snapshot that shares the cells, and dropped by
-    /// [`Self::values_mut`] — the only way the cells change.
+    /// Memo of `values`; dropped by [`Self::values_mut`].
     dense: OnceLock<Arc<DenseGrid>>,
 }
 
 impl ModelBinding {
-    /// One normalized key-position axis per driving param, in param order.
+    /// Normalized key positions, one axis per driving param, in param order.
     pub fn key_positions(&self) -> &[Vec<f32>] {
         &self.key_positions
     }
@@ -831,7 +588,6 @@ impl ModelBinding {
         &self.key
     }
 
-    /// The one or two params that drive it.
     pub fn params(&self) -> &BindingParams {
         &self.key.params
     }
@@ -852,23 +608,17 @@ impl ModelBinding {
         &self.values
     }
 
-    /// Copy-on-write access to the cells, dropping the dense grid derived from
-    /// them. This is the only way a binding's cells change, which is what
-    /// makes the memo safe to hand out from a `&self` method.
+    /// Copy-on-write; the only way cells change, which keeps the dense memo valid.
     fn values_mut(&mut self) -> &mut ClmBindingValues {
         self.dense.take();
         Arc::make_mut(&mut self.values.0)
     }
 
-    /// Drop the derived grid without touching the cells — for a change to the
-    /// key positions or to the mesh the deform identity is sized to.
     fn invalidate_dense(&mut self) {
         self.dense.take();
     }
 }
 
-/// A binding's authored cell grid behind an `Arc`, shared by every snapshot
-/// until one of them edits it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModelBindingValues(Arc<ClmBindingValues>);
 
@@ -905,8 +655,7 @@ impl std::ops::DerefMut for ModelNode {
 }
 
 impl ModelNode {
-    /// A node at the identity transform (unit scale), enabled, z order 0. The
-    /// label is truncated rather than rejected — a name is not a key.
+    /// The label is truncated rather than rejected.
     pub fn new(name: impl AsRef<str>, kind: ModelNodeKind) -> Self {
         Self {
             properties: NodeProperties {
@@ -934,7 +683,6 @@ impl ModelNode {
         &self.children
     }
 
-    /// The node's mesh, for the two kinds that carry one.
     pub fn mesh(&self) -> Option<&ClmMesh> {
         match &self.kind {
             ModelNodeKind::Part(p) => Some(p.mesh()),
@@ -979,26 +727,20 @@ impl ModelNode {
     }
 }
 
-/// The Id a fresh model's root carries until an author renames it.
 const DEFAULT_ROOT_ID: &str = "root";
 
-/// Hands out [`Model::identity`]. Starts at 1 so 0 is free to mean "no model".
+/// Starts at 1 so 0 is free to mean "no model".
 static NEXT_IDENTITY: AtomicU64 = AtomicU64::new(1);
 
-/// Mint the next model's identity.
 fn next_identity() -> u64 {
     NEXT_IDENTITY.fetch_add(1, Ordering::Relaxed)
 }
 
-/// Hands out [`Model::generation`] values. Process-wide, because a generation
-/// is a logical clock rather than a per-model edit count: undo restores an
-/// *older* model, generation and all, so a per-model counter would hand the
-/// same number to two different states of one model and a derived object
-/// baked against the first would silently accept the second.
+/// Process-wide because undo restores older models: a per-model counter would
+/// reissue a generation a derived object already baked against.
 static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 impl Model {
-    /// A new model with a single `Group` root named "Root", at Id `root`.
     pub fn new() -> Self {
         let root = NodeId::from_generated(DEFAULT_ROOT_ID.to_string());
         let mut nodes = HashMap::new();
@@ -1024,49 +766,27 @@ impl Model {
         }
     }
 
-    /// Bumped by every mutating method. A puppet or a render cache remembers
-    /// the generation it baked against and rebakes when this moved; nothing
-    /// reads the number itself.
     pub fn generation(&self) -> u64 {
         self.generation
     }
 
-    /// This model's identity, distinct from every other model this process
-    /// builds. Compared beside [`Self::generation`] by everything derived from
-    /// a model, so ticking a puppet against a *different* model that happens
-    /// to sit at the same generation is caught instead of silently reading the
-    /// wrong tree.
-    ///
-    /// A clone keeps it: an undo snapshot is the same model, and a puppet
-    /// baked against one is baked against the other.
+    /// Compared beside [`Self::generation`], which every loader starts at 0.
+    /// A clone keeps it: an undo snapshot is the same model.
     pub fn identity(&self) -> u64 {
         self.identity
     }
 
-    /// The one place a mutation is recorded. Every `&mut self` method calls it
-    /// on success — and only on success, so a rejected edit leaves derived
-    /// objects alone.
-    ///
-    /// The new value comes from [`NEXT_GENERATION`], so it is one this process
-    /// has never handed out: `baked == current` then really does mean "the
-    /// same state", even after an undo walked the model backwards.
+    /// Called only on success, so a rejected edit leaves derived objects alone.
     fn bump(&mut self) {
         self.generation = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
-        // The binding index is derived from `bindings`, and this is the one
-        // place every edit passes through.
         self.binding_index.take();
         self.bake.clear();
     }
 
-    /// The memo [`crate::puppet::Puppet`] bakes this model through.
     pub(crate) fn bake_memo(&self) -> &crate::puppet::BakeMemo {
         &self.bake
     }
 
-    // ---- tree ----
-
-    /// The single root of a complete model, or `None` for a fragment —
-    /// which has [`Self::roots`] instead, each naming an absent parent.
     pub fn root(&self) -> Option<&NodeId> {
         match self.roots.as_slice() {
             [only] if self.nodes.get(only).is_some_and(|n| n.parent.is_none()) => Some(only),
@@ -1074,22 +794,14 @@ impl Model {
         }
     }
 
-    /// The nodes at the top of this model's tree, in tree order: the ones
-    /// whose parent it does not carry. One for a complete model, one or more
-    /// for a fragment.
     pub fn roots(&self) -> &[NodeId] {
         &self.roots
     }
 
-    /// Whether this is an addon fragment rather than a complete model: a
-    /// forest whose roots name parents it does not carry, instead of the one
-    /// root that has no parent at all. See [`crate::model::addon`].
     pub fn is_fragment(&self) -> bool {
         self.root().is_none()
     }
 
-    /// The ordered list `id` sits in — its parent's children, or the model's
-    /// own root list when the parent is not in this model.
     fn siblings_of(&self, id: &NodeId) -> Option<&[NodeId]> {
         match self.nodes.get(id)?.parent.as_ref() {
             Some(p) if self.nodes.contains_key(p) => Some(&self.nodes.get(p)?.children),
@@ -1114,8 +826,6 @@ impl Model {
         }
     }
 
-    /// Append `child` where its parent's children are kept, or to the root
-    /// list when the parent is not in this model.
     fn attach_child(&mut self, parent: &NodeId, child: NodeId) {
         match self.nodes.get_mut(parent) {
             Some(p) => Arc::make_mut(&mut p.children).push(child),
@@ -1135,12 +845,8 @@ impl Model {
         self.nodes.keys()
     }
 
-    /// Edit a node's common properties in place. They cannot change response ownership or inputs.
-    ///
-    /// The z-order and the transform have to come back finite, as the reader
-    /// requires of a file: a `NaN` in either poisons the draw sort or every
-    /// matrix beneath the node. One that does not is refused with
-    /// [`ModelError::NonFinite`] and the properties put back as they were.
+    /// Cannot change response ownership or inputs. Z-order and transform must stay
+    /// finite, or the edit is undone with [`ModelError::NonFinite`].
     pub fn update_node<R>(
         &mut self,
         id: &NodeId,
@@ -1157,29 +863,10 @@ impl Model {
         Ok(out)
     }
 
-    /// Edit a node's kind in place: the fields a kind exposes — colour,
-    /// blend mode, thresholds, flags, a motion response's terms — and nothing
-    /// else.
-    ///
-    /// The closure is handed the whole kind, so it can reach further than it
-    /// may change. The edit is refused with [`ModelError::KindEdit`], and the
-    /// kind restored, if it:
-    ///
-    /// - **replaces the kind with another.** Everything that names a node
-    ///   names it as the kind it is: a weld names a part, a deform binding a
-    ///   mesh, a colour binding something drawn. A swap strands them all, and
-    ///   used to be the one way to build a model that could not be saved.
-    /// - **changes a mesh, an albedo, a mask list or a slot list.** Each has
-    ///   its own method that keeps what depends on it in step —
-    ///   [`Self::set_node_mesh`] refits deforms and empties slots,
-    ///   [`Self::set_part_albedo`] sweeps the texture left behind,
-    ///   [`Self::mask_add`] checks the source, [`Self::slot_delete`] drops the
-    ///   weld pairs — and writing the field directly skips all of it.
-    /// - **changes a spine**, whose joints and targets go through
-    ///   [`Self::set_spine_joints`] and [`Self::set_spine_targets`].
-    ///
-    /// A motion response may change freely; it is validated and restored if
-    /// its references no longer resolve.
+    /// Edits only the fields a kind exposes. Swapping the kind, or changing a
+    /// mesh, albedo, mask list, slot list or spine, is undone with
+    /// [`ModelError::KindEdit`]: each has its own method that keeps dependents in
+    /// step.
     pub fn update_node_kind<R>(
         &mut self,
         id: &NodeId,
@@ -1192,8 +879,6 @@ impl Model {
             node.kind = previous;
             return Err(ModelError::KindEdit(what));
         }
-        // The kind is the one it was, so the only thing left that the
-        // response graph can see is a response's own terms.
         let response_changed = matches!(
             (&previous, &node.kind),
             (ModelNodeKind::MotionResponse(a), ModelNodeKind::MotionResponse(b)) if a != b
@@ -1210,9 +895,7 @@ impl Model {
         Ok(out)
     }
 
-    /// Nodes in topological pre-order from the root, each parent before its
-    /// children, following sibling order. This is the order `.clm` writes
-    /// them in, and the order the arena bridge assigns indices in.
+    /// Pre-order, following sibling order; `.clm` and the arena bridge rely on it.
     pub fn nodes_in_order(&self) -> Vec<NodeId> {
         let mut out = Vec::with_capacity(self.nodes.len());
         let mut stack: Vec<NodeId> = self.roots.iter().rev().cloned().collect();
@@ -1227,8 +910,7 @@ impl Model {
         out
     }
 
-    /// Insert `node` as the last child of `parent` under a generated Id
-    /// (`<parent>/<kind>-<8 hex>`, re-drawn until it is free).
+    /// Generated Id: `<parent>/<kind>-<8 hex>`, re-drawn until free.
     pub fn add_node(
         &mut self,
         parent: &NodeId,
@@ -1245,7 +927,6 @@ impl Model {
         Ok(id)
     }
 
-    /// Insert `node` under an Id the author chose. Fails if the Id is taken.
     pub fn add_node_with_id(
         &mut self,
         id: NodeId,
@@ -1258,17 +939,10 @@ impl Model {
         if self.nodes.contains_key(&id) {
             return Err(ModelError::DuplicateId(id.to_string()));
         }
-        // A node is built outside the model, so this is where its placement
-        // is first held to what `update_node` and the reader hold it to.
         validate::node_placement(node.z_order, &node.transform)?;
-        // A mesh reaches a Model here or through `set_node_mesh_with`, and
-        // both hold it to the same shape: the reader refuses a malformed one,
-        // so nothing may author one either.
         if let Some(mesh) = node.mesh() {
             validate_mesh(mesh)?;
         }
-        // The same goes for a spine's joints: `ModelSpine::new` takes any,
-        // and this is where they join a model.
         if let ModelNodeKind::Spine(spine) = &node.kind {
             validate::spine_joints(spine.joints())?;
         }
@@ -1297,13 +971,7 @@ impl Model {
         Ok(())
     }
 
-    /// Remove a node and its whole subtree, then drop every mask and binding
-    /// that pointed into the removed set so the model stays referentially valid.
-    ///
-    /// A texture the removed parts were the last to draw goes with them; one
-    /// a part outside the subtree still draws stays.
-    /// [`Self::textures_dropped_by_deleting`] answers which is which before
-    /// the edit runs.
+    /// Also drops the textures only the subtree drew.
     pub fn delete_node(&mut self, id: &NodeId) -> Result<(), ModelError> {
         if self.root() == Some(id) {
             return Err(ModelError::Root("deleted"));
@@ -1317,16 +985,7 @@ impl Model {
         Ok(())
     }
 
-    /// Take `removed` out of the model, along with everything that named a
-    /// node in it: the child entry in a surviving parent, masks, motion
-    /// response slot inputs, bindings, welds, and any texture only the
-    /// removed parts drew.
-    ///
-    /// `removed` has to be closed under descent — whole subtrees — or the
-    /// children of a removed node would be left naming a parent that is gone.
-    /// The one cleanup both [`Self::delete_node`] and [`Self::uninstall`] run,
-    /// so neither can leave behind what the other would have swept. Does not
-    /// bump the generation; the caller does, once, for its whole edit.
+    /// `removed` must be closed under descent. Does not bump; the caller does.
     fn remove_nodes(&mut self, removed: &HashSet<NodeId>) {
         self.roots.retain(|r| !removed.contains(r));
         for id in removed {
@@ -1345,9 +1004,7 @@ impl Model {
         self.gc_textures();
     }
 
-    /// Move `id` (and its subtree) under `new_parent`. Rejects moving the root
-    /// or creating a cycle. The node keeps its Id, parent prefix and all: the
-    /// prefix records where a node was created, not where it lives.
+    /// The node keeps its Id: the prefix records where it was created.
     pub fn reparent(&mut self, id: &NodeId, new_parent: &NodeId) -> Result<(), ModelError> {
         if self.root() == Some(id) {
             return Err(ModelError::Root("reparented"));
@@ -1383,9 +1040,7 @@ impl Model {
         Ok(())
     }
 
-    /// Move `id` to `index` within its parent's children (clamped to the end).
-    /// Sibling order is draw-list order for equal z order, so this is a model
-    /// edit, not view state.
+    /// `index` clamps to the end. Sibling order breaks z-order ties when drawing.
     pub fn reorder(&mut self, id: &NodeId, index: usize) -> Result<(), ModelError> {
         if self.root() == Some(id) {
             return Err(ModelError::Root("reordered"));
@@ -1402,13 +1057,8 @@ impl Model {
         Ok(())
     }
 
-    /// Deep-copy `id`'s subtree as its next sibling, under fresh Ids. Mask
-    /// references inside the subtree point at the copies; external ones stay
-    /// shared. Each copied node also copies its param bindings, so the
-    /// duplicate deforms like the original, and a weld between two copied
-    /// parts is copied between their copies, so it holds together like the
-    /// original too. A weld to a part outside the subtree is not copied. The
-    /// copy's root is renamed `"<name> copy"`.
+    /// Copies bindings, masks into the subtree, and welds between copied parts;
+    /// a weld crossing the subtree edge is not copied.
     pub fn duplicate_subtree(
         &mut self,
         id: &NodeId,
@@ -1423,7 +1073,6 @@ impl Model {
             .and_then(|n| n.parent.clone())
             .ok_or(ModelError::UnknownNode)?;
 
-        // Pre-order with sibling order preserved (parent precedes children).
         let mut order = Vec::new();
         let mut stack = vec![id.clone()];
         while let Some(n) = stack.pop() {
@@ -1435,8 +1084,7 @@ impl Model {
             order.push(n);
         }
 
-        // Reserve every ID first. An exhausted generator must leave neither
-        // partial copies nor an index referring to the old response graph.
+        // Reserve every Id first so exhaustion leaves no partial copy.
         let mut map = HashMap::new();
         let mut reserved = HashSet::new();
         for old in &order {
@@ -1515,11 +1163,8 @@ impl Model {
             .collect();
         self.bindings.extend(copied);
 
-        // A weld between two copied parts is part of what was copied: the
-        // copies carry the same slots, so the same pairs hold them together.
-        // One that crosses the subtree's edge stays with the original — a
-        // second weld onto the same slots of the part left outside would pull
-        // it two ways.
+        // A weld crossing the subtree edge stays with the original; a second weld
+        // onto the same slots would pull it two ways.
         let welded: Vec<ModelWeld> = self
             .welds
             .iter()
@@ -1543,13 +1188,7 @@ impl Model {
         Ok(new_root)
     }
 
-    // ---- renaming ----
-
-    /// Give a node a different Id, rewriting every reference to it: its
-    /// parent's child list, its children's parent, masks that name it as a
-    /// source, bindings that drive it, welds that end on it, and the root
-    /// itself. Renaming is a breaking change for any addon that referenced the
-    /// old Id; there are no aliases.
+    /// Rewrites every reference. No alias is kept, so addons naming the old Id break.
     pub fn rename_node_id(&mut self, old: &NodeId, new: NodeId) -> Result<(), ModelError> {
         if old == &new {
             return Ok(());
@@ -1628,8 +1267,6 @@ impl Model {
         Ok(())
     }
 
-    /// Give a param a different Id, rewriting the bindings it drives and any
-    /// response that reads or writes it.
     pub fn rename_param_id(&mut self, old: &ParamId, new: ParamId) -> Result<(), ModelError> {
         if old == &new {
             return Ok(());
@@ -1703,7 +1340,6 @@ impl Model {
         Ok(())
     }
 
-    /// Give a texture a different Id, rewriting every part that draws with it.
     pub fn rename_tex_id(&mut self, old: &TexId, new: TexId) -> Result<(), ModelError> {
         if old == &new {
             return Ok(());
@@ -1735,16 +1371,7 @@ impl Model {
         Ok(())
     }
 
-    // ---- node cross-references ----
-
-    /// Point a part at a texture, or unmap it (the renderer culls an unmapped
-    /// part).
-    ///
-    /// If this part was the last thing drawing the texture it leaves behind,
-    /// that texture is deleted in the same edit — a texture with no user is
-    /// not a thing a Model holds, so nothing has to sweep for one later.
-    /// [`Self::texture_dropped_by_repointing`] answers which one that is
-    /// before the edit runs.
+    /// Deletes the texture left behind if this part was its last user.
     pub fn set_part_albedo(
         &mut self,
         id: &NodeId,
@@ -1766,12 +1393,7 @@ impl Model {
         Ok(())
     }
 
-    /// Aim a spine's links at params — one param per link, in link order,
-    /// `None` where a link is rigid.
-    ///
-    /// `targets` must be exactly as long as the spine's joints. Use
-    /// [`Model::set_spine_joints`] to change the length; it carries the
-    /// targets across.
+    /// `targets` must match the joint count; [`Model::set_spine_joints`] changes it.
     pub fn set_spine_targets(
         &mut self,
         node: &NodeId,
@@ -1801,12 +1423,7 @@ impl Model {
         Ok(())
     }
 
-    /// Reshape a spine. The targets follow the new length: links past the new
-    /// end lose their param, new links arrive rigid.
-    ///
-    /// The joints have to be ones the reader would take
-    /// ([`ModelSpine::check_joints`]), so a reshaped spine is one that saves
-    /// and loads.
+    /// Links past the new end lose their param; new links arrive rigid.
     pub fn set_spine_joints(
         &mut self,
         node: &NodeId,
@@ -1824,21 +1441,9 @@ impl Model {
         Ok(())
     }
 
-    /// Replace a meshed node's mesh, mapping every authored deform cell on it
-    /// through `refit(old_mesh, new_mesh, offsets)`. The mesh and the cells
-    /// that are sized to it move in one step, so no reader ever sees offsets
-    /// fitted to a mesh that is gone.
-    ///
-    /// Every cell `refit` returns has to be one finite `[dx, dy]` per vertex
-    /// of the new mesh. One that is not refuses the edit
-    /// ([`ModelError::DeformLength`], [`ModelError::NonFinite`]) with the
-    /// model untouched.
-    ///
-    /// Slots are *not* refitted. Which vertex fills a slot is a claim about
-    /// the mesh that just went away, and guessing a new one would defeat the
-    /// point of naming vertices by slot — so every slot on the part is
-    /// emptied and returned, in slot order, for its author to refill. The
-    /// weld pairs that named those slots skip them meanwhile.
+    /// `refit` must return one finite `[dx, dy]` per new vertex, or the edit is
+    /// refused untouched. Slots are not refitted: every slot on the part is
+    /// emptied and returned for its author to refill.
     pub fn set_node_mesh_with(
         &mut self,
         id: &NodeId,
@@ -1856,11 +1461,6 @@ impl Model {
                 })
             }
         };
-        // Refit every authored cell before anything moves. What `refit` hands
-        // back is the caller's arithmetic, so each cell is held to what
-        // `set_deform_vertices` holds an authored one to — one finite
-        // `[dx, dy]` per vertex of the new mesh — and a bad one refuses the
-        // whole edit instead of surfacing at the next save.
         let expected = mesh.verts.len();
         let mut refitted: Vec<(usize, Vec<Vec<f32>>)> = Vec::new();
         for (index, binding) in self
@@ -1881,8 +1481,7 @@ impl Model {
             refitted.push((index, values));
         }
         let apply = |b: &mut ModelBinding, values: Vec<Vec<f32>>| {
-            // A deform's identity is sized to the mesh, so every binding on
-            // the node loses its derived grid, authored cells or not.
+            // The deform identity is sized to the mesh, so every grid goes stale.
             b.invalidate_dense();
             if let ClmBindingValues::Deform(cells) = b.values_mut() {
                 for (cell, value) in cells.cells.iter_mut().zip(values) {
@@ -1925,9 +1524,8 @@ impl Model {
         Ok(emptied)
     }
 
-    /// Replace a meshed node's mesh, resizing every authored deform cell on it
-    /// to the new vertex count (new vertices start at zero offset). Empties
-    /// the part's slots the same way [`Self::set_node_mesh_with`] does.
+    /// New vertices start at zero offset; slots are emptied as in
+    /// [`Self::set_node_mesh_with`].
     pub fn set_node_mesh(&mut self, id: &NodeId, mesh: ClmMesh) -> Result<Vec<SlotId>, ModelError> {
         self.set_node_mesh_with(id, mesh, |_, new, offsets| {
             let mut out = offsets.to_vec();
@@ -1936,8 +1534,6 @@ impl Model {
         })
     }
 
-    // ---- masks ----
-
     fn masks_mut(&mut self, id: &NodeId) -> Result<&mut Vec<ModelMask>, ModelError> {
         match self.nodes.get_mut(id) {
             Some(n) => n.masks_mut().ok_or(ModelError::NotMaskable),
@@ -1945,10 +1541,6 @@ impl Model {
         }
     }
 
-    /// Append a mask source. A source has to be something the renderer draws
-    /// — a part, whose mesh and texture it rasterizes into the mask, or a
-    /// composite, whose whole subtree it rasterizes. A mesh group, a group or
-    /// a motion response draws nothing and cannot be one.
     pub fn mask_add(
         &mut self,
         id: &NodeId,
@@ -1982,8 +1574,7 @@ impl Model {
         Ok(())
     }
 
-    /// Move the mask at `index` to `to` (clamped). Mask order is evaluation
-    /// order, so this is a model edit.
+    /// `to` clamps. Mask order is evaluation order.
     pub fn mask_reorder(&mut self, id: &NodeId, index: usize, to: usize) -> Result<(), ModelError> {
         let masks = self.masks_mut(id)?;
         if index >= masks.len() {
@@ -2006,10 +1597,6 @@ impl Model {
         Ok(())
     }
 
-    // ---- slots ----
-
-    /// The slots on a part, in authored order, or `None` for a node that is
-    /// not a part.
     pub fn slots(&self, id: &NodeId) -> Option<&[Slot]> {
         match &self.node(id)?.kind {
             ModelNodeKind::Part(p) => Some(p.slots()),
@@ -2017,13 +1604,10 @@ impl Model {
         }
     }
 
-    /// One slot on one part.
     pub fn slot(&self, id: &NodeId, slot: &SlotId) -> Option<&Slot> {
         self.slots(id)?.iter().find(|s| &s.id == slot)
     }
 
-    /// Every slot in the model no vertex fills, in model order — what a mesh
-    /// edit left behind for its author to refill.
     pub fn unfilled_slots(&self) -> Vec<(NodeId, SlotId)> {
         let mut out = Vec::new();
         for id in self.nodes_in_order() {
@@ -2039,9 +1623,6 @@ impl Model {
         out
     }
 
-    /// Add an unfilled slot to a part. A slot is the part's own, so this
-    /// reaches no other part: a weld pairs two parts' slots by Id and gains
-    /// nothing until a pair names this one.
     pub fn slot_add(&mut self, id: &NodeId, slot: SlotId) -> Result<(), ModelError> {
         let part = self.part_mut(id)?;
         if part.slots.iter().any(|s| s.id == slot) {
@@ -2055,30 +1636,19 @@ impl Model {
         Ok(())
     }
 
-    /// Add an unfilled slot under a generated Id (`slot-<8 hex>`, re-drawn
-    /// until it is free on this part).
-    ///
-    /// A part is where a [`SlotId`] has to be unique, so this is where the
-    /// draw can be checked — [`crate::id`] cannot see the part.
+    /// Generated Id: `slot-<8 hex>`, re-drawn until free on this part.
     pub fn slot_add_generated(
         &mut self,
         id: &NodeId,
         hex: &mut impl HexSource,
     ) -> Result<SlotId, ModelError> {
-        // Refuse a node that could not carry a slot before minting one for it.
         self.part_mut(id)?;
         let slot = self.mint(SlotId::generate, |m, s| m.slot(id, s).is_some(), hex)?;
         self.slot_add(id, slot.clone())?;
         Ok(slot)
     }
 
-    /// Rename a slot on one part, rewriting every weld pair that named it.
-    ///
-    /// A weld pairs slots rather than vertices, so a rename that did not carry
-    /// the welds would leave them pairing a slot the part no longer has — the
-    /// pair would survive in the file and resolve to nothing. Like every other
-    /// rename this is breaking for an addon that named the old Id; there is no
-    /// alias.
+    /// Rewrites every weld pair naming the slot; no alias is kept.
     pub fn rename_slot(
         &mut self,
         id: &NodeId,
@@ -2122,7 +1692,6 @@ impl Model {
         Ok(())
     }
 
-    /// Point a slot at one of the part's vertices.
     pub fn slot_fill(&mut self, id: &NodeId, slot: &SlotId, vertex: u32) -> Result<(), ModelError> {
         let vertices = match self.node(id).map(|n| &n.kind) {
             Some(ModelNodeKind::Part(p)) => p.mesh().vertex_count(),
@@ -2137,17 +1706,13 @@ impl Model {
         Ok(())
     }
 
-    /// Empty a slot without removing it: the weld pairs that name it skip it
-    /// until it is filled again.
     pub fn slot_clear(&mut self, id: &NodeId, slot: &SlotId) -> Result<(), ModelError> {
         self.slot_mut(id, slot)?.vertex = None;
         self.bump();
         Ok(())
     }
 
-    /// Remove a slot from a part, and with it every weld pair that named it.
-    /// No other part's slots move — a weld left with no pairs stays, because
-    /// it still records which two parts are joined.
+    /// Drops the weld pairs naming it; a weld left with no pairs stays.
     pub fn slot_delete(&mut self, id: &NodeId, slot: &SlotId) -> Result<(), ModelError> {
         let part = self.part_mut(id)?;
         let Some(at) = part.slots.iter().position(|s| &s.id == slot) else {
@@ -2186,8 +1751,6 @@ impl Model {
             .ok_or(ModelError::UnknownSlot)
     }
 
-    // ---- params ----
-
     pub fn param_ids(&self) -> &[ParamId] {
         &self.param_order
     }
@@ -2196,7 +1759,6 @@ impl Model {
         self.params.get(id)
     }
 
-    /// Add a param under a generated Id (`param-<8 hex>`).
     pub fn add_param(
         &mut self,
         param: ModelParam,
@@ -2207,13 +1769,6 @@ impl Model {
         Ok(id)
     }
 
-    /// Add a param under an Id the author chose. Fails if the Id is taken, or
-    /// if the range is one [`Self::set_param_range`] would refuse — the key
-    /// positions are normalized across it, and a collapsed, inverted or
-    /// non-finite range has nothing to normalize onto — or if the default is
-    /// not finite, which [`Self::set_param_default`] would refuse: a pose
-    /// starts from the default, and `NaN` there is `NaN` in every binding the
-    /// param drives.
     pub fn add_param_with_id(&mut self, id: ParamId, param: ModelParam) -> Result<(), ModelError> {
         if !param_range_is_valid(param.min, param.max) {
             return Err(ModelError::InvalidParamRange);
@@ -2236,8 +1791,7 @@ impl Model {
         Ok(())
     }
 
-    /// Remove a param, every binding that named it (a two-param binding loses
-    /// half its grid, so it goes too), and references to it in spines, responses and animation lanes.
+    /// A two-param binding naming it is removed whole.
     pub fn delete_param(&mut self, id: &ParamId) -> Result<(), ModelError> {
         if self.params.remove(id).is_none() {
             return Err(ModelError::UnknownParam);
@@ -2272,8 +1826,6 @@ impl Model {
         Ok(())
     }
 
-    // ---- textures ----
-
     pub fn texture_ids(&self) -> &[TexId] {
         &self.texture_order
     }
@@ -2282,13 +1834,7 @@ impl Model {
         self.textures.get(id)
     }
 
-    /// Add a texture under a generated Id (`tex-<8 hex>`) and point `part` at
-    /// it, in one edit.
-    ///
-    /// A texture is never added on its own: the part comes first and the
-    /// upload goes *to* it. If `part` was the last thing drawing whatever it
-    /// drew before, that texture goes in the same edit — see
-    /// [`Self::set_part_albedo`].
+    /// Displaces `part`'s old albedo as [`Self::set_part_albedo`] does.
     pub fn add_texture(
         &mut self,
         part: &NodeId,
@@ -2300,8 +1846,6 @@ impl Model {
         Ok(id)
     }
 
-    /// Add a texture under an Id the author chose and point `part` at it.
-    /// Fails if the Id is taken.
     pub fn add_texture_with_id(
         &mut self,
         id: TexId,
@@ -2323,7 +1867,6 @@ impl Model {
         Ok(())
     }
 
-    /// Remove a texture and unmap every part that drew with it.
     pub fn delete_texture(&mut self, id: &TexId) -> Result<(), ModelError> {
         if self.textures.remove(id).is_none() {
             return Err(ModelError::UnknownTexture);
@@ -2340,12 +1883,7 @@ impl Model {
         Ok(())
     }
 
-    /// What [`Self::delete_node`] would take with it: the textures only the
-    /// subtree under `id` draws, in the model's texture order.
-    ///
-    /// Deleting the last user deletes the texture, and an addon that named it
-    /// by Id has no way back — so an editor can say what a delete costs
-    /// before it runs.
+    /// The textures [`Self::delete_node`] would drop, in model texture order.
     pub fn textures_dropped_by_deleting(&self, id: &NodeId) -> Vec<TexId> {
         let removed: HashSet<NodeId> = self.subtree(id).into_iter().collect();
         let kept: HashSet<&TexId> = self
@@ -2366,9 +1904,7 @@ impl Model {
             .collect()
     }
 
-    /// What pointing `part` at `albedo` would take with it: the texture
-    /// `part` draws now, if nothing else draws it. Answers for an upload too
-    /// — [`Self::add_texture`] displaces the old albedo the same way.
+    /// The texture [`Self::set_part_albedo`] or [`Self::add_texture`] would drop.
     pub fn texture_dropped_by_repointing(
         &self,
         part: &NodeId,
@@ -2384,8 +1920,7 @@ impl Model {
             .then(|| old.clone())
     }
 
-    /// Point `part` at `albedo`, dropping whatever texture that leaves with
-    /// no user. Both Ids are the caller's to check, and so is the bump.
+    /// The caller checks both Ids and bumps.
     fn point_albedo(&mut self, part: &NodeId, albedo: Option<TexId>) {
         let old = match self.nodes.get_mut(part).map(|n| &mut n.kind) {
             Some(ModelNodeKind::Part(p)) => std::mem::replace(&mut p.albedo, albedo),
@@ -2399,52 +1934,30 @@ impl Model {
         }
     }
 
-    /// Drop every texture no part's albedo names any more. The edits that can
-    /// remove a part — and with it the last user of a texture — run this
-    /// before they return.
     fn gc_textures(&mut self) {
         let drawn: HashSet<TexId> = self.nodes.values().filter_map(albedo_of).cloned().collect();
         self.textures.retain(|id, _| drawn.contains(id));
         self.texture_order.retain(|id| drawn.contains(id));
     }
 
-    /// The model's animations, in authored order.
     pub fn animations(&self) -> &[ClmAnimation] {
         &self.animations
     }
 
-    // ---- extensions ----
-
-    /// Every extension this model carries, in key order.
-    ///
-    /// Catchlight reads none of them. They are a vendor's to define and a
-    /// vendor's to interpret; the format's whole contribution is to carry
-    /// them across a save without dropping or reordering them.
     pub fn extensions(&self) -> &BTreeMap<ExtensionKey, ExtensionValue> {
         &self.extensions
     }
 
-    /// One extension's value.
     pub fn extension(&self, key: &ExtensionKey) -> Option<&ExtensionValue> {
         self.extensions.get(key)
     }
 
-    /// The sections of this model's file that this build does not
-    /// recognise, in file order. Read-only: they are carried so a save does
-    /// not lose what a newer writer put there, and nothing here can say what
-    /// an edit to one would mean.
     pub fn unknown_sections(&self) -> &[clm::ClmUnknownSection] {
         &self.unknown_sections
     }
 
-    /// Set an extension, replacing whatever was under that key.
-    ///
-    /// A reserved key is refused: `catchlight.` is the format's own prefix,
-    /// and a reader accepts one because the format may write one some day,
-    /// but nothing outside the format may author it. A byte value over
-    /// [`clm::MAX_EXTENSION_BYTES`], or a JSON value over
-    /// [`clm::MAX_EXTENSION_JSON_BYTES`], is refused with the same cap the
-    /// reader applies, so a model that takes a value is one that can be saved.
+    /// `catchlight.` keys are reserved and refused. Size caps match the reader's,
+    /// so any value taken can be saved.
     pub fn set_extension(
         &mut self,
         key: ExtensionKey,
@@ -2471,9 +1984,7 @@ impl Model {
         Ok(())
     }
 
-    /// Drop an extension. Deleting a key the model does not carry is an
-    /// error, as it is everywhere else here: a delete that quietly does
-    /// nothing hides a typo in the key.
+    /// A missing key is an error, so a typo is not silently ignored.
     pub fn delete_extension(&mut self, key: &ExtensionKey) -> Result<(), ModelError> {
         if key.is_reserved() {
             return Err(ModelError::ReservedExtension(key.to_string()));
@@ -2485,10 +1996,8 @@ impl Model {
         Ok(())
     }
 
-    /// Replace the animation list. Every lane must name a live param — an
-    /// animation is stored on the model, so a dangling lane would survive a
-    /// save the way no other cross-reference does — and keep its keyframes
-    /// in frame order, because playback reads a lane by binary search.
+    /// Lanes must name live params and keep frames in order (playback
+    /// binary-searches them).
     pub fn set_animations(&mut self, animations: Vec<ClmAnimation>) -> Result<(), ModelError> {
         if animations
             .iter()
@@ -2516,20 +2025,9 @@ impl Model {
         &self.welds
     }
 
-    /// Set one pair's share of one weld's meeting point.
-    ///
-    /// The only way to move a single weight before this was to rewrite the
-    /// whole weld, which is a poor fit for a slider: a partial
-    /// [`Self::set_welds`] list is refused, so a caller had to read every
-    /// other weight back and send it again unchanged.
-    ///
-    /// `slot` is a slot on `a`. **`weight` is the share of `a`**, the part
-    /// this call names first, and a weld may be stored either way round —
-    /// [`Self::set_welds`] keeps the order it was given. So naming the parts
-    /// the other way round stores `1 - weight`, and the number means the same
-    /// thing whichever way the caller says it. That only holds while a weight
-    /// is a share, which is why one outside `0..=1` is refused here rather
-    /// than clamped in the solver.
+    /// `slot` is on `a`, and `weight` is `a`'s share whichever way the weld is
+    /// stored (naming the parts reversed stores `1 - weight`), so it must be in
+    /// `0..=1`.
     pub fn set_weld_slot_weight(
         &mut self,
         a: &NodeId,
@@ -2557,15 +2055,8 @@ impl Model {
         Ok(())
     }
 
-    /// Replace the weld list. A weld's two ends must be different live parts,
-    /// one record per unordered part pair, and each pair must name a slot the
-    /// part on that side carries, no slot twice within one weld, with a weight
-    /// within `0..=1`. A slot either end leaves unfilled is fine —
-    /// [`ModelWeld::resolve`] skips the pair.
-    ///
-    /// In a **fragment**, an end naming a node the fragment does not carry is
-    /// a weld into the base model: only the end this model can see is
-    /// validated, and [`Model::install`] checks the other against the base.
+    /// Unfilled slots are fine. In a fragment, an end the fragment does not carry
+    /// is a weld into the base, checked by [`Model::install`].
     pub fn set_welds(&mut self, welds: Vec<ModelWeld>) -> Result<(), ModelError> {
         let fragment = self.is_fragment();
         let mut welded = validate::Welded::with_capacity(welds.len());
@@ -2597,14 +2088,9 @@ impl Model {
         Ok(())
     }
 
-    /// What one end of a weld names in this model. A node a fragment does
-    /// not carry is an end reaching into the base model, which is
-    /// [`Model::install`]'s to check.
     fn weld_end(&self, end: &NodeId, fragment: bool) -> validate::WeldEnd {
         validate::WeldEnd::of(self.node(end).map(|n| &n.kind), fragment)
     }
-
-    // ---- accounting ----
 
     pub fn estimated_size_bytes(&self) -> usize {
         let mut bytes =
@@ -2713,14 +2199,10 @@ impl Model {
         bytes
     }
 
-    /// The node's mesh, for the two kinds that carry one.
     pub fn node_mesh(&self, id: &NodeId) -> Option<&ClmMesh> {
         self.node(id)?.mesh()
     }
 
-    /// Draw a generated Id until `taken` says it is free. 32 bits collide
-    /// eventually, and [`crate::id`] cannot check uniqueness — this is where
-    /// the model does.
     fn mint<T, H: HexSource>(
         &self,
         mut generate: impl FnMut(&mut H) -> T,
@@ -2736,8 +2218,6 @@ impl Model {
         Err(ModelError::IdExhausted)
     }
 
-    /// Every cross-reference a node about to join the model carries has to
-    /// name something this model actually has.
     fn check_node_refs(&self, node: &ModelNode) -> Result<(), ModelError> {
         // Checked in either shape: an addon carries its own textures, so an
         // albedo is the one cross-reference that never dangles into a base.
@@ -2800,17 +2280,11 @@ impl Model {
     }
 }
 
-/// Whether two shared leaves hold the same value. A leaf two models share —
-/// a snapshot and the model it was taken from share nearly all of them — is
-/// one allocation and is equal without being read; only a leaf that was
-/// replaced is compared by value.
+/// Pointer-equal leaves are equal without being read.
 fn same<T: PartialEq + ?Sized>(a: &Arc<T>, b: &Arc<T>) -> bool {
     Arc::ptr_eq(a, b) || a == b
 }
 
-/// What an in-place kind edit changed that it may not, named the way
-/// [`ModelError::KindEdit`] says it — or `None` if the edit stayed within the
-/// fields a kind exposes. The rule [`Model::update_node_kind`] documents.
 fn kind_edit_fault(before: &ModelNodeKind, after: &ModelNodeKind) -> Option<&'static str> {
     use ModelNodeKind as Kind;
     match (before, after) {
@@ -2839,16 +2313,11 @@ fn kind_edit_fault(before: &ModelNodeKind, after: &ModelNodeKind) -> Option<&'st
     }
 }
 
-/// Whether a node of this kind may be named as a mask source: the two kinds
-/// the renderer draws. One place, because [`Model::mask_add`], the model's own
-/// reference check and the `.clm` reader all have to agree.
 pub(crate) fn is_mask_source(kind: &ModelNodeKind) -> bool {
     matches!(kind, ModelNodeKind::Part(_) | ModelNodeKind::Composite(_))
 }
 
-/// The texture a node draws with, for the one kind that draws with one. A
-/// part's albedo is a texture's only user, so this is the whole of "who uses
-/// this texture".
+/// A part's albedo is a texture's only user.
 pub(crate) fn albedo_of(node: &ModelNode) -> Option<&TexId> {
     match &node.kind {
         ModelNodeKind::Part(p) => p.albedo.as_ref(),
@@ -2943,7 +2412,6 @@ mod tests {
     use crate::formats::clm::ClmIndices;
     use crate::id::SeededHex;
 
-    /// One model carrying every kind of thing a mutating method can reach.
     pub(super) struct Fixture {
         pub model: Model,
         pub root: NodeId,
@@ -3000,9 +2468,7 @@ mod tests {
         };
         fixture.part = fixture.node("part", part_kind());
         fixture.other = fixture.node("other", part_kind());
-        // A texture goes to the part that draws it, so the parts come first.
-        // `other` is the one that draws it; `part` is left unmapped, which is
-        // what most of these tests point somewhere.
+        // `other` draws the texture; `part` is left unmapped.
         let drawn_by = fixture.other.clone();
         fixture.tex = fixture
             .model
@@ -3034,8 +2500,6 @@ mod tests {
         SlotId::new(id).unwrap()
     }
 
-    /// A pair joining the same slot Id on both sides, which is how every
-    /// fixture here names them.
     fn pair(id: &str, weight: f32) -> SlotPair {
         SlotPair {
             a: slot(id),
@@ -3072,9 +2536,6 @@ mod tests {
         }
     }
 
-    /// An animation is stored on the model, so a lane naming a param that
-    /// isn't there would outlive the edit that removed it — the one
-    /// cross-reference a caller can hand in wholesale.
     #[test]
     fn an_animation_lane_must_name_a_live_param() {
         let mut r = fixture();
@@ -3087,8 +2548,6 @@ mod tests {
         assert!(r.model.animations().is_empty());
     }
 
-    /// A lane is read by binary search over its frames, so an out-of-order
-    /// lane would silently interpolate the wrong pair of keyframes.
     #[test]
     fn an_animation_lane_must_be_in_frame_order() {
         let mut r = fixture();
@@ -3129,9 +2588,6 @@ mod tests {
         );
     }
 
-    /// Every model a process builds is a different model, however alike their
-    /// contents — and every loader hands back generation 0, so the identity is
-    /// the only thing that can say so.
     #[test]
     fn every_constructed_model_gets_its_own_identity() {
         let a = Model::new();
@@ -3147,8 +2603,6 @@ mod tests {
         }
     }
 
-    /// Deleting a param unhooks the spine that read it, leaving the link in
-    /// place and rigid — the slot belongs to the link, not to the param.
     #[test]
     fn deleting_a_param_leaves_a_rigid_link_behind() {
         let mut r = fixture();
@@ -3162,10 +2616,6 @@ mod tests {
         assert_eq!(spine_targets(&r.model, &spine), vec![None, None]);
     }
 
-    /// A spine's joints are held to one rule on every way in. The reader
-    /// refused a jointless, non-finite or zero-length link while the mutators
-    /// took any, so an edit could author a model that saved and would not
-    /// load again.
     #[test]
     fn a_spine_no_reader_would_take_cannot_be_authored() {
         let mut r = fixture();
@@ -3206,18 +2656,12 @@ mod tests {
             other => panic!("not a spine: {other:?}"),
         }
 
-        // What the mutators take, the reader takes.
         r.model
             .set_spine_joints(&spine, vec![[0.0, -10.0]])
             .unwrap();
         Model::from_clm_bytes(&r.model.to_clm_bytes().unwrap()).unwrap();
     }
 
-    /// A number a model stores has to be a number. The reader held binding
-    /// cells to that and nothing else; the mutators held neither a node's
-    /// placement nor a param's default to it, so one `NaN` from an edit
-    /// reached the draw sort, every matrix under the node, or every binding
-    /// the param drives — and saved.
     #[test]
     fn a_value_that_is_not_a_number_is_refused_by_every_mutator_that_writes_one() {
         let mut r = fixture();
@@ -3275,9 +2719,6 @@ mod tests {
         r.model.set_param_default(&param, 7.0).unwrap();
     }
 
-    /// A refit is the caller's arithmetic, and its output went into the
-    /// binding unchecked: a cell of the wrong length was only reported when
-    /// the model was next saved, and a `NaN` not at all.
     #[test]
     fn a_refit_that_returns_a_bad_cell_refuses_the_whole_mesh_edit() {
         let mut r = fixture();
@@ -3300,8 +2741,7 @@ mod tests {
         let before = r.model.generation();
         let bytes = r.model.to_clm_bytes().unwrap();
 
-        // The first cell refits fine; the second is still sized to the old
-        // mesh. Nothing of the first may stick.
+        // The first cell refits fine; the second does not. Nothing may stick.
         let mut cell = 0;
         let got = r
             .model
@@ -3341,11 +2781,6 @@ mod tests {
         Model::from_clm_bytes(&r.model.to_clm_bytes().unwrap()).unwrap();
     }
 
-    /// `update_node_kind` hands its closure the whole kind and used to keep
-    /// whatever came back: another kind, an unvalidated mesh, an albedo with
-    /// no texture behind it, masks and slots dropped without the welds and
-    /// responses that named them. Each has a method that owns it; the closure
-    /// may only touch the fields a kind exposes.
     #[test]
     fn an_in_place_kind_edit_changes_only_the_fields_a_kind_exposes() {
         let mut r = fixture();
@@ -3409,8 +2844,6 @@ mod tests {
             "every refused edit put the kind back"
         );
 
-        // The fields a kind exposes still edit, and the closure's value comes
-        // back out.
         let was = r
             .model
             .update_node_kind(&part, |kind| match kind {
@@ -3443,9 +2876,6 @@ mod tests {
         }
     }
 
-    /// Undo snapshots a model by cloning it, and a puppet built against the
-    /// live model has to keep working when the snapshot is restored, so a
-    /// clone is the *same* model.
     #[test]
     fn a_clone_keeps_the_identity() {
         let model = Model::new();
@@ -3453,12 +2883,6 @@ mod tests {
         assert_eq!(model.identity(), snapshot.identity());
     }
 
-    /// Undo restores an older model, generation and all, and the next edit
-    /// walks forward from there. A per-model counter would reissue the
-    /// generation of the state that was undone, and a puppet or render cache
-    /// still holding it would accept a model with different contents. The
-    /// process-wide clock is what makes "the same number" mean "the same
-    /// state".
     #[test]
     fn editing_forward_from_a_restored_snapshot_never_reuses_a_generation() {
         let mut model = Model::new();
@@ -3467,11 +2891,9 @@ mod tests {
         model.set_animations(Vec::new()).unwrap();
         let undone = model.generation();
 
-        // The undo.
         model = snapshot;
         assert_ne!(model.generation(), undone);
 
-        // A *different* edit, forward from the restored state.
         model.set_animations(Vec::new()).unwrap();
         assert_ne!(
             model.generation(),
@@ -3480,10 +2902,7 @@ mod tests {
         );
     }
 
-    /// Every derived object (puppet, render cache) rebakes off `generation`, so
-    /// a mutating method that forgets to bump it is a stale-cache bug that no
-    /// other test would see. This list is the API surface: a new mutating
-    /// method belongs in it.
+    /// A new mutating method belongs in this list.
     #[test]
     fn generation_bumps_on_every_mutating_method() {
         #[allow(clippy::type_complexity)]
@@ -3863,7 +3282,6 @@ mod tests {
         }
     }
 
-    /// Two welded parts, each carrying slots `l` and `r`, filled and paired.
     fn welded_fixture() -> Fixture {
         let mut r = fixture();
         let (part, other) = (r.part.clone(), r.other.clone());
@@ -3883,9 +3301,6 @@ mod tests {
         r
     }
 
-    /// A generated slot Id is drawn until it is free on the part, the way a
-    /// node's is drawn until it is free in the model — a slot is scoped to its
-    /// part, so that is where "free" is decided.
     #[test]
     fn a_generated_slot_id_is_redrawn_until_it_is_free() {
         let mut r = fixture();
@@ -3914,8 +3329,6 @@ mod tests {
         ));
     }
 
-    /// A slot is its part's own: the same Id on two parts is two slots, and a
-    /// weld is what says one is paired with the other.
     #[test]
     fn a_slot_id_is_free_on_every_other_part() {
         let mut r = welded_fixture();
@@ -3935,8 +3348,6 @@ mod tests {
         assert!(r.model.slot(&other, &slot("m")).is_some());
     }
 
-    /// A weld pairs slots, so renaming one has to reach into the welds or the
-    /// pair survives naming a slot the part no longer has.
     #[test]
     fn renaming_a_slot_carries_the_weld_pairs_that_named_it() {
         let mut r = welded_fixture();
@@ -3974,15 +3385,11 @@ mod tests {
             r.model.rename_slot(&part, &slot("neck"), slot("r")),
             Err(ModelError::DuplicateSlot(id)) if id == "r"
         ));
-        // Renaming a slot to what it is already called is not a collision.
         r.model
             .rename_slot(&part, &slot("neck"), slot("neck"))
             .unwrap();
     }
 
-    /// One weight at a time, and the number means the same thing whichever
-    /// part the caller names first — a weld is stored in whatever order the
-    /// last `set_welds` gave it.
     #[test]
     fn a_slot_weight_is_a_share_of_the_end_it_is_named_against() {
         let mut r = welded_fixture();
@@ -3992,7 +3399,6 @@ mod tests {
             .set_weld_slot_weight(&part, &other, &slot("l"), 0.25)
             .unwrap();
         assert_eq!(r.model.welds()[0].pairs()[0].weight, 0.25);
-        // The other pair on the same weld is untouched.
         assert_eq!(r.model.welds()[0].pairs()[1].weight, 0.25);
 
         // Named the other way round, 0.25 is B's share, so A's is 0.75 — and
@@ -4021,10 +3427,6 @@ mod tests {
         );
     }
 
-    /// The point of naming vertices by slot: a mesh edit invalidates which
-    /// vertex a slot meant, so the edit empties every slot on the part and
-    /// hands them back. The weld survives it, covering the pairs that still
-    /// resolve.
     #[test]
     fn re_meshing_a_part_empties_its_slots_and_reports_them() {
         let mut r = welded_fixture();
@@ -4080,9 +3482,6 @@ mod tests {
         assert!(r.model.to_clm_bytes().is_ok());
     }
 
-    /// Deleting a slot takes the pairs that named it out of every weld the
-    /// part is an end of, and touches nothing else — the way deleting a node
-    /// drops the bindings that pointed at it.
     #[test]
     fn deleting_a_slot_drops_the_pairs_that_named_it() {
         let mut r = welded_fixture();
@@ -4245,9 +3644,6 @@ mod tests {
         );
     }
 
-    /// The `.clm` reader refuses a malformed mesh and a range the key
-    /// positions cannot normalize onto, so no edit may author one: a model
-    /// that saves has to be a model that reopens.
     #[test]
     fn what_the_reader_refuses_cannot_be_authored() {
         let mut r = fixture();
@@ -4276,8 +3672,6 @@ mod tests {
         assert!(r.model.to_clm_bytes().is_ok());
     }
 
-    /// A rejected edit must leave every derived object alone, so it must not
-    /// move the generation either.
     #[test]
     fn a_rejected_edit_leaves_the_generation_alone() {
         let mut r = fixture();
@@ -4294,10 +3688,6 @@ mod tests {
         assert_eq!(r.model.generation(), before);
     }
 
-    // ---- textures ----
-
-    /// A texture is added *to* a part, and the two land in one edit: there is
-    /// no window in which the model holds a texture nobody draws.
     #[test]
     fn adding_a_texture_points_a_part_at_it_in_one_edit() {
         let mut r = fixture();
@@ -4313,8 +3703,6 @@ mod tests {
         );
     }
 
-    /// The part has to be there, and has to be a part: an albedo is a
-    /// texture's only user, so nothing else can be given one.
     #[test]
     fn a_texture_needs_a_part_to_draw_it() {
         let mut r = fixture();
@@ -4338,9 +3726,6 @@ mod tests {
         assert_eq!(r.model.generation(), before, "and nothing moved the clock");
     }
 
-    /// Pointing the last part drawing a texture somewhere else deletes it, in
-    /// the same edit — including when "somewhere else" is nowhere, and
-    /// including the upload that displaces it.
     #[test]
     fn repointing_the_last_part_drawing_a_texture_deletes_it() {
         for albedo_after in [None, Some(())] {
@@ -4378,8 +3763,6 @@ mod tests {
         }
     }
 
-    /// An upload displaces what the part drew, and takes it with the same
-    /// edit when nothing else drew it.
     #[test]
     fn an_upload_takes_the_texture_it_displaces() {
         let mut r = fixture();
@@ -4395,8 +3778,6 @@ mod tests {
         assert_eq!(albedo(&r.model, &other), Some(new));
     }
 
-    /// Undo is a snapshot of the whole model, so the cascade is undone with
-    /// the edit that caused it — a restored model carries the texture again.
     #[test]
     fn a_snapshot_taken_before_the_cascade_still_has_the_texture() {
         let mut r = fixture();
@@ -4410,9 +3791,6 @@ mod tests {
         assert_eq!(snapshot.texture_ids(), std::slice::from_ref(&old));
     }
 
-    /// Deleting a subtree takes the textures only it drew. One a part outside
-    /// the subtree still draws stays — the rule is "no user", not "the owner
-    /// left".
     #[test]
     fn deleting_a_subtree_takes_only_the_textures_nothing_else_draws() {
         let mut r = fixture();
@@ -4452,9 +3830,6 @@ mod tests {
         assert_eq!(albedo(&r.model, &other), Some(shared));
     }
 
-    /// Every edit that can leave a texture with no user is one of these, and
-    /// each of them cleans up after itself — which is what lets the `.clm`
-    /// reader refuse a file carrying an unused texture.
     #[test]
     fn no_edit_leaves_a_texture_with_no_part_drawing_it() {
         #[allow(clippy::type_complexity)]
@@ -4492,8 +3867,6 @@ mod tests {
         }
     }
 
-    /// An Id is what an addon reaches into a model by, so a rename has to be a
-    /// whole-model rewrite or it leaves a dangling reference behind.
     #[test]
     fn renaming_rewrites_every_reference_to_the_id() {
         let mut r = fixture();
@@ -4537,7 +3910,6 @@ mod tests {
 
         assert!(r.model.node(&part).is_none());
         assert!(r.model.node(&new_node).is_some());
-        // parent's child list, and the child's parent
         assert!(r
             .model
             .node(&r.root)
@@ -4545,12 +3917,10 @@ mod tests {
             .children()
             .contains(&new_node));
         assert_eq!(r.model.node(&child).unwrap().parent(), Some(&new_node));
-        // the mask that named it as a source
         assert_eq!(
             r.model.node(&composite).unwrap().masks().unwrap()[0].source(),
             &new_node
         );
-        // the binding that drives it, and the weld that ends on it
         assert_eq!(r.model.bindings().next().unwrap().node(), &new_node);
         assert_eq!(r.model.welds()[0].a(), &new_node);
         assert!(r.model.to_clm_bytes().is_ok());
@@ -4583,7 +3953,6 @@ mod tests {
         assert_eq!(albedo(&r.model, &new_node), Some(new_tex));
         assert!(r.model.to_clm_bytes().is_ok());
 
-        // Renaming the root moves the root handle too.
         let new_root = NodeId::new("body").unwrap();
         let old_root = r.root.clone();
         r.model.rename_node_id(&old_root, new_root.clone()).unwrap();
@@ -4604,8 +3973,6 @@ mod tests {
         assert!(r.model.node(&part).is_some());
     }
 
-    /// A generated Id records the parent a node was *created* under; it is a
-    /// reading aid, not a path, so moving the node must not touch it.
     #[test]
     fn reparenting_leaves_the_generated_id_alone() {
         let mut r = fixture();
@@ -4627,8 +3994,6 @@ mod tests {
         assert!(part.as_str().starts_with("root/part-"));
     }
 
-    /// 32 bits collide eventually and `id.rs` cannot check uniqueness, so the
-    /// model re-draws until the Id is free.
     #[test]
     fn a_colliding_generated_id_is_redrawn() {
         // Hands out 0xaaaaaaaa twice, then 0xbbbbbbbb forever.
@@ -4707,7 +4072,6 @@ mod tests {
             &[c.clone(), a.clone(), b.clone()]
         );
 
-        // an out-of-range index clamps to the end.
         m.reorder(&c, 99).unwrap();
         assert_eq!(
             m.node(&root).unwrap().children(),
@@ -4745,7 +4109,6 @@ mod tests {
         assert!(Arc::ptr_eq(&original_mesh, &mesh_arc(&edited)));
         assert!(Arc::ptr_eq(&original_cells, &cells_arc(&edited)));
 
-        // An unrelated edit still shares.
         edited
             .update_node(&node, |n| n.name = Name::truncated("renamed"))
             .unwrap();
@@ -4797,7 +4160,6 @@ mod tests {
         m.set_binding_key(&key, [1, 0], 5.0).unwrap();
 
         let copy = m.duplicate_subtree(&group, &mut hex).unwrap();
-        // the copy lands right after the original, under its own Id.
         assert_ne!(copy, group);
         assert_eq!(
             m.node(&root).unwrap().children(),
@@ -4808,18 +4170,14 @@ mod tests {
         let copy_children = m.node(&copy).unwrap().children().to_vec();
         assert_eq!(copy_children.len(), 2);
         let copy_masked = &copy_children[1];
-        // internal mask reference points at the copied source, not the original.
         let masks = m.node(copy_masked).unwrap().masks().unwrap();
         assert_eq!(masks.len(), 1);
         assert_eq!(masks[0].source(), &copy_children[0]);
-        // the copied node has its own binding.
         assert_eq!(m.bindings_of_param(&param).count(), 2);
         assert!(m.bindings().any(|b| b.node() == copy_masked));
         assert!(m.to_clm_bytes().is_ok());
     }
 
-    /// A duplicate copied bindings and masks and dropped welds, so the copy
-    /// of a welded pair came apart at the seam the original held.
     #[test]
     fn duplicate_copies_the_welds_between_the_parts_it_copies() {
         let mut hex = SeededHex::new(3);
@@ -4881,9 +4239,6 @@ mod tests {
         assert!(m
             .mask_add(&a, &root, MaskMode::Mask)
             .is_err_and(|e| matches!(e, ModelError::NotAMaskSource)));
-        // A composite is drawn, so it is a source like a part is — the
-        // renderer has always rasterized one, and `tests/models/
-        // composite_masks.clm` is the baseline that says so.
         m.mask_add(&a, &target, MaskMode::Mask).unwrap();
         m.mask_delete(&a, 0).unwrap();
         let bend = r.node(
@@ -4957,7 +4312,6 @@ mod tests {
             ),
             "a weld's pair has to name a slot the part carries",
         );
-        // A node cloned out of another model cannot smuggle its Ids in.
         let mut foreign = ModelPart::new(quad());
         foreign.albedo = Some(orphan_tex);
         let root = r.root.clone();
@@ -4972,10 +4326,6 @@ mod tests {
         assert!(r.model.to_clm_bytes().is_ok());
     }
 
-    /// A mesh group authored in catchlight carries its meshless descendants
-    /// by default; the flag is the escape for leaving them in place. An
-    /// imported model is not affected — the importer writes the key the
-    /// source authored.
     #[test]
     fn a_new_mesh_group_translates_its_children() {
         assert!(ModelMeshGroup::new(quad()).translate_children);
@@ -5029,9 +4379,7 @@ mod bench {
     use super::tests_support::dense_model;
     use std::time::Instant;
 
-    /// Undo is a stack of `Model` snapshots, so a snapshot has to cost about
-    /// nothing next to the edit that follows it. This is the measurement the
-    /// number in the module doc comes from; run it with
+    /// Undo-snapshot cost; run with
     /// `cargo test -p catchlight-core --lib -- --ignored --nocapture bench`.
     #[test]
     #[ignore = "a timing measurement, not a pass/fail check"]
@@ -5069,15 +4417,12 @@ mod bench {
     }
 }
 
-/// Model builders shared by the tests and the benchmark.
 #[cfg(test)]
 mod tests_support {
     use super::*;
     use crate::formats::clm::ClmIndices;
     use crate::id::SeededHex;
 
-    /// A model with `nodes` parts, each carrying a `verts`-vertex mesh and a
-    /// two-param deform binding whose `keys` x `keys` grid is fully authored.
     pub(super) fn dense_model(nodes: usize, verts: usize, keys: usize) -> (Model, BindingKey) {
         let positions: Vec<f32> = (0..keys).map(|i| i as f32 / (keys - 1) as f32).collect();
         let mut hex = SeededHex::new(11);

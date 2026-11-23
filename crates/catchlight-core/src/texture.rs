@@ -1,42 +1,18 @@
-//! A model's textures, from the bytes it stores to the images a renderer
-//! uploads.
+//! A model's textures, from stored bytes to renderer-ready images.
 //!
-//! A [`Model`](crate::Model) keeps every texture exactly as its author
-//! supplied it — encoded, never re-encoded — so something has to decode them,
-//! and that is [`prepare_textures`]. It is the whole texture strategy in one
-//! entry point: decode, convert into the canonical premultiplied-linear
-//! encoding, and crop each image to the bounding box of its *opaque* texels
-//! (plus a transparent mip skirt), handing back a [`UvCrop`] per texture for
-//! whoever owns the meshes to apply. The render cache is what calls it; the
-//! table it returns stays 1:1 with the model's texture order, so albedo slots
-//! never move and only part UVs are rewritten.
-//!
-//! Why the *opaque* bbox and not the mesh-referenced *UV* bbox: on imported
-//! models the UV bbox is dominated by transparent texels the mesh's vertices
-//! straddle but never show (on the reference model it comes out ~12% opaque).
-//! The opaque bbox is ~4x tighter — reference model ~158 MB -> ~56 MB.
-//!
-//! Sampling stays correct because premultiplied storage plus a transparent
-//! ClampToBorder make taps past the opaque region read transparent, and the
-//! 16-texel skirt reproduces the source texture's mip neighborhood so
-//! box-filtered levels 0..=4 match. Each crop is its own texture with its own
-//! mip chain, so no mip footprint can straddle into another crop's texels.
+//! Crops use the *opaque* bbox rather than the UV bbox: on imported models the UV
+//! bbox is mostly transparent texels (~4x larger on the reference model).
 
 use std::sync::Arc;
 
 use crate::components::{srgb_encode_to_byte, DecodedTexture};
 use crate::load_budget::{LoadBudget, LoadLimitError};
 
-/// Why a texture could not be prepared.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum TextureError {
     #[error("texture decode failed: {0}")]
     Decode(String),
-    /// A texture is larger than
-    /// [`MAX_TEXTURE_DIMENSION`](crate::load_budget::MAX_TEXTURE_DIMENSION) on
-    /// a side, or the textures together decode to more bytes than the
-    /// caller's budget allows.
     #[error(transparent)]
     Limit(#[from] LoadLimitError),
 }
@@ -60,47 +36,26 @@ impl TextureFormat {
 pub struct EncodedTexture {
     pub format: TextureFormat,
     pub data: Arc<[u8]>,
-    /// `true` for premultiplied-in-sRGB on-disk bytes (every `.inx`
-    /// texture); `false` for editor-authored straight-alpha. Decides whether
-    /// `decode` un-premultiplies before re-premultiplying into linear.
+    /// `true` for premultiplied-in-sRGB on-disk bytes (every `.inx` texture);
+    /// `false` for editor-authored straight alpha.
     pub premultiplied: bool,
 }
 
 impl EncodedTexture {
-    /// Width/height from the image header alone — no pixel decode. What
-    /// [`prepare_textures`] holds to the caller's budget before it decodes
-    /// anything.
+    /// From the image header alone, without a pixel decode.
     pub fn dimensions(&self) -> Result<(u32, u32), image::ImageError> {
         let mut reader = image::ImageReader::new(std::io::Cursor::new(&self.data[..]));
         reader.set_format(self.format.to_image_format());
         reader.into_dimensions()
     }
 
-    /// Decode into the canonical [`DecodedTexture`] form: bytes encoding
-    /// premultiplied LINEAR color, ready to upload as `Rgba8UnormSrgb`.
-    /// The sampler then decodes sRGB→linear and returns premultiplied
-    /// linear values; the shader treats the sample as premultiplied and
-    /// runs all blend / tint math in linear space.
-    ///
-    /// The inx/inp on-disk convention pre-multiplies RGB by alpha in
-    /// sRGB byte space (`byte = srgb_encode(linear) * α`). To convert
-    /// to "premultiplied linear, encoded as sRGB byte" we
-    /// (1) unpremultiply in sRGB byte space → straight sRGB bytes,
-    /// (2) decode each channel sRGB→linear, multiply by α, encode
-    ///     linear→sRGB byte back into the buffer.
-    ///
-    /// Premultiplied storage handles alpha-edge bilinear correctly
-    /// without an explicit alpha-bleed pass: at an edge, the filter
-    /// mixes `(rgb·α, α)` with `(0, 0)` and the resulting gradient is
-    /// already premultiplied. That holds for a straight-alpha source too:
-    /// it is premultiplied here, on the way in, so nothing downstream ever
-    /// filters straight-alpha texels.
+    /// Output encodes premultiplied *linear* color, for upload as `Rgba8UnormSrgb`.
+    /// Premultiplied storage makes alpha-edge bilinear filtering correct without an
+    /// alpha-bleed pass.
     pub fn decode(&self) -> Result<DecodedTexture, image::ImageError> {
         let img = image::load_from_memory_with_format(&self.data, self.format.to_image_format())?;
         let (width, height) = (img.width(), img.height());
         let mut rgba = img.into_rgba8().into_raw();
-        // Both conventions converge on premultiplied-linear; only a
-        // premultiplied-sRGB source needs unwinding to straight first.
         if self.premultiplied {
             premultiplied_srgb_to_premultiplied_linear_inplace(&mut rgba);
         } else {
@@ -114,8 +69,7 @@ impl EncodedTexture {
     }
 }
 
-/// Every `(channel byte, alpha byte)` pair's final value under the inx
-/// conversion. Indexed `alpha * 256 + channel`.
+/// Indexed `alpha * 256 + channel`.
 static PREMULTIPLY_SRGB_LUT: std::sync::OnceLock<Box<[u8; 65536]>> = std::sync::OnceLock::new();
 
 fn premultiply_srgb_lut() -> &'static [u8; 65536] {
@@ -138,17 +92,9 @@ fn premultiply_srgb_lut() -> &'static [u8; 65536] {
     })
 }
 
-/// Convert premultiplied-in-sRGB bytes straight to the
-/// premultiplied-linear encoding, in one pass.
-///
-/// Composing [`unpremultiply_srgb_inplace`] with
-/// [`premultiply_linear_into_srgb_inplace`] gives the same bytes, but each
-/// output depends only on its own channel and alpha, so the composition is
-/// a pure function of two bytes and tabulates completely. That turns the
-/// per-pixel divide, `powf` pair, and second sweep over the buffer into one
-/// indexed read — and the second sweep is most of the cost, because the
-/// overwhelming majority of an atlas is fully transparent or fully opaque
-/// and does no arithmetic either way.
+/// Same bytes as [`unpremultiply_srgb_inplace`] then
+/// [`premultiply_linear_into_srgb_inplace`], tabulated: each output depends only
+/// on its channel and alpha byte.
 pub fn premultiplied_srgb_to_premultiplied_linear_inplace(rgba: &mut [u8]) {
     debug_assert_eq!(rgba.len() % 4, 0, "rgba buffer must be a multiple of 4");
     let lut = premultiply_srgb_lut();
@@ -170,10 +116,8 @@ pub fn premultiplied_srgb_to_premultiplied_linear_inplace(rgba: &mut [u8]) {
     }
 }
 
-/// Undo premultiplication in sRGB byte space on an RGBA8 buffer.
-/// For each pixel: `straight = round((rgb * 255) / α)`, computed in
-/// f32 so partial-alpha pixels don't lose precision to integer
-/// division. Pixels with α=0 are left as `(0, 0, 0, 0)`.
+/// `straight = round((rgb * 255) / α)`, in f32 so partial alpha keeps precision.
+/// α=0 pixels stay `(0, 0, 0, 0)`.
 pub fn unpremultiply_srgb_inplace(rgba: &mut [u8]) {
     debug_assert_eq!(rgba.len() % 4, 0, "rgba buffer must be a multiple of 4");
     for px in rgba.as_chunks_mut::<4>().0 {
@@ -194,15 +138,7 @@ pub fn unpremultiply_srgb_inplace(rgba: &mut [u8]) {
     }
 }
 
-/// Convert straight-alpha sRGB-encoded RGBA to bytes encoding
-/// premultiplied LINEAR color: for each channel, `srgb_decode(rgb)`,
-/// multiply by `α`, `srgb_encode` back to byte. Alpha is unchanged.
-/// α=0 pixels emit `(0, 0, 0, 0)`; α=255 pixels are unchanged
-/// (premultiply by 1 is a no-op).
-///
-/// Result is suitable for upload as `Rgba8UnormSrgb`: the sampler
-/// decodes sRGB→linear and returns premultiplied linear values, which
-/// the shader can blend / tint directly without re-multiplying by α.
+/// Straight-alpha sRGB to bytes encoding premultiplied linear color. Alpha is unchanged.
 pub fn premultiply_linear_into_srgb_inplace(rgba: &mut [u8]) {
     debug_assert_eq!(rgba.len() % 4, 0, "rgba buffer must be a multiple of 4");
     let decode = crate::components::srgb_decode_table();
@@ -225,22 +161,12 @@ pub fn premultiply_linear_into_srgb_inplace(rgba: &mut [u8]) {
     }
 }
 
-/// Undo [`premultiply_linear_into_srgb_inplace`]: bytes encoding
-/// premultiplied LINEAR color back to straight-alpha sRGB. For each
-/// channel, `srgb_decode(rgb)`, divide by `α`, `srgb_encode` back to byte,
-/// clamped at white. α=0 pixels emit `(0, 0, 0, 0)`; α=255 pixels are
-/// unchanged.
+/// Inverse of [`premultiply_linear_into_srgb_inplace`], clamped at white.
 ///
-/// **This is the inverse a framebuffer readback needs, not
-/// [`unpremultiply_srgb_inplace`].** The two undo different
-/// premultiplications and the names are one letter apart, so: a render
-/// target is `Rgba8UnormSrgb`, which means the blender works on linear
-/// values and encodes on store, so what comes back is
-/// `srgb_encode(linear × α)` and the divide has to happen in linear.
-/// `unpremultiply_srgb_inplace` undoes the *other* convention, the
-/// `byte = srgb_encode(linear) × α` that inx textures are stored in, where
-/// the divide happens in byte space. Using that one on a readback saturates
-/// every partly transparent pixel toward white.
+/// This is the inverse a framebuffer readback needs, not
+/// [`unpremultiply_srgb_inplace`]: an `Rgba8UnormSrgb` target stores
+/// `srgb_encode(linear × α)`, so the divide must happen in linear. The byte-space
+/// one saturates partly transparent readback pixels toward white.
 pub fn unpremultiply_linear_from_srgb_inplace(rgba: &mut [u8]) {
     debug_assert_eq!(rgba.len() % 4, 0, "rgba buffer must be a multiple of 4");
     let decode = crate::components::srgb_decode_table();
@@ -262,42 +188,24 @@ pub fn unpremultiply_linear_from_srgb_inplace(rgba: &mut [u8]) {
     }
 }
 
-/// Transparent skirt around the opaque bbox, in texels. The renderer
-/// box-filters each texture's own mip chain, so the skirt only has to feed the
-/// boundary mip box: 16 = 2^4 covers mip levels 0..=4 ([`ALIGN`]), and
-/// anything the box reaches past it is the transparent `ClampToBorder` — the
-/// same transparent the source had beyond its opaque content.
-///
-/// The skirt runs past the source where opaque content sits within 16 texels
-/// of an edge, and is baked rather than left to the sampler on purpose: the
-/// web backends have no border sampler, and the shader's stand-in for one is
-/// exact only at mip level 0. It gives way on an axis only where it would
-/// make the crop larger than the caller can hold (see [`alpha_crop_rect`]).
+/// Transparent skirt around the opaque bbox, in texels: 16 = 2^4 feeds mip
+/// levels 0..=4. Baked rather than left to the sampler because the web backends
+/// have no border sampler and the shader's stand-in is exact only at mip 0.
 const MARGIN: i64 = 16;
 
-/// Crop origins and sizes are multiples of 2^4, so the box-filter footprints
-/// of mip levels 0..=4 tile inside the crop instead of straddling its edge —
-/// each level is computed from exactly the texels the source's own mip used.
+/// Multiples of 2^4, so mip 0..=4 box-filter footprints tile inside the crop
+/// instead of straddling its edge.
 const ALIGN: i64 = 16;
 
 #[derive(Clone, Copy)]
 struct Plan {
     src_w: u32,
     src_h: u32,
-    /// Aligned opaque-bbox crop in source-texel coords; the origin may be
-    /// negative and the far edge past the source, where the skirt is.
-    /// `None` when there is nothing to remap: the texture has no opaque
-    /// texels (it becomes a 1x1 transparent stand-in so the table stays
-    /// index-aligned with the source), or the crop is the whole image.
+    /// Source-texel coords; the origin may be negative and the far edge past the
+    /// source. `None` when fully transparent (1x1 stand-in) or uncropped.
     crop: Option<(i64, i64, u32, u32)>,
 }
 
-/// Where one texture's opaque crop sits inside the source image, as the UV
-/// remap a mesh authored against the uncropped texture needs.
-///
-/// `None` on a [`PreppedTexture`] means "no remap": either the texture was
-/// fully transparent (it became a 1x1 stand-in and nothing sampling it is
-/// visible) or it had no crop to apply.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct UvCrop {
     src_w: u32,
@@ -309,11 +217,7 @@ pub struct UvCrop {
 }
 
 impl UvCrop {
-    /// Map a UV authored against the *source* texture onto the crop.
-    ///
-    /// In f64 because the source dimensions run to thousands of texels and
-    /// the crop is a small window inside them: doing this in f32 loses a
-    /// texel's worth of precision at the far edge of a 4k texture.
+    /// In f64: f32 loses a texel of precision at the far edge of a 4k texture.
     pub fn map(&self, uv: crate::Vec2) -> crate::Vec2 {
         let (tw, th) = (self.src_w as f64, self.src_h as f64);
         crate::Vec2::new(
@@ -323,50 +227,22 @@ impl UvCrop {
     }
 }
 
-/// One decoded, cropped texture and the UV remap that goes with it.
 #[derive(Debug, Clone)]
 pub struct PreppedTexture {
     pub texture: DecodedTexture,
     pub uv_crop: Option<UvCrop>,
-    /// The image's width and height as its header states them, before any
-    /// halving or crop. `width * height * 4` is what [`prepare_textures`]
-    /// charged the budget for it, so a caller that keeps this texture across
-    /// a rebuild can charge the same amount without reading the header again.
+    /// Header size before halving or crop; what the budget was charged for it.
     pub source_size: [u32; 2],
 }
 
-/// Decode `textures` (each halved `texture_halvings` times) and crop each to
-/// its opaque bounding box, without touching any runtime.
+/// The returned table is 1:1 with `textures`, so albedo ids index it unchanged.
 ///
-/// The returned table is 1:1 with `textures`, so albedo ids index it
-/// unchanged; each entry carries the [`UvCrop`] its parts' mesh UVs must be
-/// remapped through before they are drawn. Whoever owns those meshes applies
-/// it; the render cache rewrites the UVs it uploads.
+/// Every header is charged to `budget` as full-size RGBA8 before any pixel is
+/// decoded, since a few kilobytes of PNG can state any size.
 ///
-/// Nothing here remembers a decode. A caller that rebuilds after every edit
-/// passes only the textures whose payload changed — the render cache keeps
-/// the GPU texture of every other one by Id and payload `Arc` — so a memo in
-/// front of this would hold a decoded copy of every texture for a hit that
-/// never comes.
-///
-/// **Every header is charged before any pixel is decoded.** A model stores
-/// its textures encoded and loading one never looks inside them, so this is
-/// the first place a texture's real size is known — and a few kilobytes of
-/// PNG can state any size at all. Each image's header dimensions are held to
-/// [`MAX_TEXTURE_DIMENSION`](crate::load_budget::MAX_TEXTURE_DIMENSION) and
-/// charged to `budget` as RGBA8 at full size
-/// ([`LoadBudget::check_texture_dimensions`], the same charge the importer
-/// makes), so a file that would decode past the caller's
-/// `decoded_texture_bytes` is refused having allocated nothing. Full size,
-/// whatever `texture_halvings` says: the halving runs on the decoded image.
-///
-/// `max_dimension` is the largest side the caller can hold — a device's 2D
-/// texture limit. A crop carries a transparent skirt that can make it up to
-/// 32 texels larger than the image it was cut from; on an axis where that
-/// would pass `max_dimension` the skirt is given up and the crop ends with
-/// the source, so a texture that fits the device uncropped is never refused
-/// for having been cropped. An image larger than `max_dimension` on its own
-/// is prepared as it is and is the caller's to refuse.
+/// `max_dimension` is the device's 2D texture limit. On an axis where the skirt
+/// would exceed it, the crop ends at the source instead; an image larger than
+/// `max_dimension` on its own is the caller's to refuse.
 pub fn prepare_textures(
     textures: &[EncodedTexture],
     texture_halvings: u32,
@@ -383,8 +259,7 @@ pub fn prepare_textures(
     }
 
     let prepped = prep_textures(textures, texture_halvings, max_dimension)?;
-    // Albedo ids index this table positionally, so a dropped entry would
-    // silently repoint every later part at the wrong texture.
+    // A dropped entry would repoint every later part at the wrong texture.
     assert_eq!(prepped.len(), textures.len());
     Ok(prepped
         .into_iter()
@@ -404,13 +279,8 @@ pub fn prepare_textures(
         .collect())
 }
 
-/// Decode and crop every texture, in order.
-///
-/// PNG decode dominates the cost of loading a model and is entropy decoding
-/// plus un-filtering — pure CPU work with no GPU analogue — but it is
-/// independent per texture, so native builds fan it out across cores.
-/// wasm stays sequential: the wgpu web backend is not thread-safe and
-/// rayon degrades to a serial iterator there in any case.
+/// Native builds decode in parallel. wasm stays sequential: the wgpu web
+/// backend is not thread-safe.
 fn prep_textures(
     textures: &[EncodedTexture],
     texture_halvings: u32,
@@ -441,8 +311,6 @@ fn prep_one(
     let decoded = decode_halved(tex, texture_halvings)?;
     let (src_w, src_h) = (decoded.width, decoded.height);
     Ok(match alpha_crop_rect(&decoded, max_dimension) {
-        // Opaque out to every edge with no room for a skirt: the crop is
-        // the image, so there is nothing to copy and no remap to apply.
         Some((0, 0, w, h)) if (w, h) == (src_w, src_h) => (
             decoded,
             Plan {
@@ -459,8 +327,6 @@ fn prep_one(
                 crop: Some((x, y, w, h)),
             },
         ),
-        // A fully transparent texture becomes a 1x1 stand-in so the table
-        // stays index-aligned with the source.
         None => (
             DecodedTexture {
                 width: 1,
@@ -476,12 +342,6 @@ fn prep_one(
     })
 }
 
-/// Bounding box of the opaque (alpha>0) texels, expanded by [`MARGIN`] and
-/// snapped to [`ALIGN`] so the box-filter footprints of mip levels 0..=4
-/// match the source's. `None` when the texture is fully transparent.
-///
-/// The skirt runs past the source where opaque content is near an edge,
-/// unless that makes the crop longer than `max_dimension` on that axis.
 fn alpha_crop_rect(tex: &DecodedTexture, max_dimension: u32) -> Option<(i64, i64, u32, u32)> {
     let (w, h) = (tex.width as usize, tex.height as usize);
     let (mut minx, mut miny, mut maxx, mut maxy) = (usize::MAX, usize::MAX, 0usize, 0usize);
@@ -501,24 +361,9 @@ fn alpha_crop_rect(tex: &DecodedTexture, max_dimension: u32) -> Option<(i64, i64
     if !any {
         return None;
     }
-    // One axis: the skirted, aligned span, or — where that is longer than
-    // the caller can hold — the same span stopped at the source.
-    //
-    // The skirt past the source is not waste. Sampling just outside opaque
-    // content has to fade to transparent at every mip level, and only a
-    // native sampler has a border to fade to: WebGPU and WebGL2 clamp to
-    // the edge texel, and the shader's emulation of the border is exact at
-    // level 0 alone. Baked into the texture, the fade is the same
-    // everywhere. Stopping every crop at its source moved a few hundred
-    // edge pixels per frame of the Lan fixture even with a real border.
-    //
-    // But the skirt makes a crop up to 32 texels longer than its source, so
-    // an image opaque to its edges and already at the device's limit came
-    // back over it and was refused. There the skirt gives way: the near
-    // edge stops at 0 and the far edge at the source size rounded *up* to
-    // [`ALIGN`] — not at the size itself, because an odd-sized crop has no
-    // exact box-filtered mip chain — and the sampler's border, or its
-    // emulation, stands in for the texels the crop no longer holds.
+    // Where the skirted span exceeds the caller's limit, stop at the source:
+    // the near edge at 0 and the far edge rounded *up* to [`ALIGN`], since an
+    // odd-sized crop has no exact box-filtered mip chain.
     let span = |min: usize, max: usize, size: usize| {
         let lo = align_down(min as i64 - MARGIN);
         let hi = align_up(max as i64 + 1 + MARGIN);
@@ -533,9 +378,7 @@ fn alpha_crop_rect(tex: &DecodedTexture, max_dimension: u32) -> Option<(i64, i64
     Some((x0, y0, (x1 - x0) as u32, (y1 - y0) as u32))
 }
 
-/// Copy crop `(x, y, w, h)` (source-texel coords, origin may be negative) of
-/// `tex` into a fresh `w x h` texture, out-of-source texels left at the
-/// transparent zero-fill — the ClampToBorder equivalent.
+/// Out-of-source texels stay at the transparent zero-fill (ClampToBorder).
 fn crop(tex: &DecodedTexture, x: i64, y: i64, w: u32, h: u32) -> DecodedTexture {
     let mut rgba = vec![0u8; (w as usize) * (h as usize) * 4];
     blit(&mut rgba, w, tex, [0, 0], [x, y], [w, h]);
@@ -564,9 +407,6 @@ fn decode_halved(tex: &EncodedTexture, halvings: u32) -> Result<DecodedTexture, 
     Ok(decoded)
 }
 
-/// Copy the crop rect `(src[0], src[1], size[0], size[1])` of `tex` to `dst`
-/// in `out` (row stride `out_w`), leaving out-of-source texels at the
-/// destination's transparent zero-fill (the ClampToBorder equivalent).
 fn blit(
     out: &mut [u8],
     out_w: u32,
@@ -603,7 +443,6 @@ fn blit(
 mod tests {
     use super::*;
 
-    /// A size limit no crop here reaches: the skirt always fits.
     const ROOMY: u32 = u32::MAX;
 
     fn encoded_png(rgba: [u8; 4], premultiplied: bool) -> EncodedTexture {
@@ -644,9 +483,6 @@ mod tests {
 
     #[test]
     fn blit_clips_to_source_and_preserves_bytes() {
-        // 4x4 source with row-major distinct bytes; crop extends 16 texels
-        // beyond every edge (negative origin) — out-of-source texels must
-        // stay zero, in-source bytes must land shifted by the offset.
         const OUT: u32 = 128;
         let mut rgba = vec![0u8; 4 * 4 * 4];
         for (i, b) in rgba.iter_mut().enumerate() {
@@ -666,7 +502,6 @@ mod tests {
                 assert_eq!(&out[dst..dst + 4], &rgba[src..src + 4]);
             }
         }
-        // A texel in the transparent rim.
         let rim = ((48 * OUT as i64 + 32) * 4) as usize;
         assert_eq!(&out[rim..rim + 4], &[0, 0, 0, 0]);
     }
@@ -676,10 +511,6 @@ mod tests {
         assert_eq!(alpha_crop_rect(&tex(64, 64, &[]), ROOMY), None);
     }
 
-    /// The decode path takes a model's payload by reference count, not by
-    /// copy. A render cache converts every texture it is about to decode on
-    /// every rebuild, so a copy here would be one copy of every changed
-    /// texture per edit — which is what the two `Arc` shapes used to cost.
     #[test]
     fn the_decoders_view_of_a_model_texture_shares_its_bytes() {
         let model_texture = crate::ModelTexture {
@@ -694,8 +525,6 @@ mod tests {
         );
     }
 
-    /// The same bytes are a different image under the other alpha convention,
-    /// and bytes read under the wrong format are an error rather than a guess.
     #[test]
     fn alpha_convention_and_format_decide_the_decode() {
         let budget = &mut LoadBudget::default();
@@ -719,10 +548,8 @@ mod tests {
         ));
     }
 
-    /// A PNG whose header states `width` x `height` and whose image data is
-    /// not a deflate stream at all: [`EncodedTexture::dimensions`] reads it,
-    /// a decode fails. Which of the two errors comes back therefore says
-    /// whether the header was checked before the pixels were asked for.
+    /// Header states `width` x `height`; the image data is not a deflate stream,
+    /// so a decode fails while `dimensions` succeeds.
     fn png_stating(width: u32, height: u32) -> EncodedTexture {
         fn chunk(out: &mut Vec<u8>, kind: &[u8; 4], body: &[u8]) {
             out.extend_from_slice(&(body.len() as u32).to_be_bytes());
@@ -742,7 +569,6 @@ mod tests {
         let mut header = Vec::new();
         header.extend_from_slice(&width.to_be_bytes());
         header.extend_from_slice(&height.to_be_bytes());
-        // 8-bit RGBA, no interlace.
         header.extend_from_slice(&[8, 6, 0, 0, 0]);
         chunk(&mut data, b"IHDR", &header);
         chunk(&mut data, b"IDAT", &[0xFF; 16]);
@@ -761,9 +587,6 @@ mod tests {
         })
     }
 
-    /// A model keeps its textures encoded, so nothing has looked at a `.clm`
-    /// texture's size until it is prepared. One side over the cap is refused
-    /// from the header: a few dozen bytes may not ask for a 8193-wide decode.
     #[test]
     fn a_texture_over_the_dimension_cap_is_refused_from_its_header() {
         use crate::load_budget::MAX_TEXTURE_DIMENSION;
@@ -792,10 +615,6 @@ mod tests {
         }
     }
 
-    /// The decoded-bytes budget is over every texture in the call together,
-    /// and all of it is charged before the first decode starts: the textures
-    /// here cannot be decoded, so a `Decode` error would mean the budget was
-    /// consulted too late to stop the allocation.
     #[test]
     fn the_decoded_budget_is_aggregate_and_charged_before_any_decode() {
         let textures = [png_stating(64, 64), png_stating(64, 64)];
@@ -810,20 +629,13 @@ mod tests {
                 got: both,
             })
         );
-        // Halving does not shrink the charge: the image is decoded at full
-        // size first.
         let err = prepare_textures(&textures, 3, ROOMY, &mut budget_of(both - 1)).unwrap_err();
         assert!(matches!(err, TextureError::Limit(_)), "{err:?}");
 
-        // Exactly at the limit the headers pass, and only then is a decode
-        // attempted.
         let err = prepare_textures(&textures, 0, ROOMY, &mut budget_of(both)).unwrap_err();
         assert!(matches!(err, TextureError::Decode(_)), "{err:?}");
     }
 
-    /// The budget is the caller's, so what one call charged counts against
-    /// the next — which is how a render cache holds a model's kept and fresh
-    /// textures to one total.
     #[test]
     fn a_budget_carries_across_calls() {
         let one = encoded_png([255, 0, 0, 255], false);
@@ -838,47 +650,28 @@ mod tests {
 
     #[test]
     fn crop_rect_brackets_opaque_with_aligned_margin() {
-        // One opaque texel at (40, 50) in a 256x256 texture. MARGIN=16,
-        // ALIGN=16: x0 = align_down(40-16)=align_down(24)=16,
-        // x1 = align_up(41+16)=align_up(57)=64; y0 = align_down(34)=32,
-        // y1 = align_up(67)=80.
         let (x, y, w, h) = alpha_crop_rect(&tex(256, 256, &[(40, 50)]), ROOMY).unwrap();
         assert_eq!((x, y, w, h), (16, 32, 48, 48));
-        // The opaque texel sits strictly inside the crop, away from the edge.
         assert!(x < 40 && (x + w as i64) > 40);
         assert!(y < 50 && (y + h as i64) > 50);
     }
 
-    /// Opaque content at an edge buys a skirt past the source: that fade to
-    /// transparent has to be in the texture, because not every backend has a
-    /// border to sample it from.
     #[test]
     fn the_skirt_runs_past_the_source() {
         let corners = tex(96, 64, &[(0, 0), (95, 63)]);
         assert_eq!(alpha_crop_rect(&corners, ROOMY), Some((-16, -16, 128, 96)));
 
-        // One edge only: the skirt is past the source on that side alone.
         let left = tex(256, 256, &[(3, 120)]);
         assert_eq!(alpha_crop_rect(&left, ROOMY), Some((-16, 96, 48, 48)));
     }
 
-    /// The skirt makes a crop up to 32 texels longer than its source, so an
-    /// image opaque to its edges and already at the device's limit used to
-    /// come back over it and be refused. On an axis where the skirted crop
-    /// does not fit, the crop stops at the source instead.
     #[test]
     fn the_skirt_gives_way_where_the_crop_would_not_fit() {
-        // Too wide with a skirt, so the width stops at the source; the
-        // height has room and keeps its own.
         let wide = tex(96, 1, &[(0, 0), (95, 0)]);
         assert_eq!(alpha_crop_rect(&wide, 96), Some((0, -16, 96, 48)));
-        // One texel of room short is still short.
         assert_eq!(alpha_crop_rect(&wide, 127), Some((0, -16, 96, 48)));
         assert_eq!(alpha_crop_rect(&wide, 128), Some((-16, -16, 128, 48)));
 
-        // A source that is not a multiple of 16 long: the far edge rounds
-        // out to the alignment, so every mip level still halves exactly, and
-        // no further.
         let odd = tex(250, 100, &[(0, 0), (249, 99)]);
         let (x, y, w, h) = alpha_crop_rect(&odd, 256).unwrap();
         assert_eq!((x, y, w, h), (0, -16, 256, 144));
@@ -909,9 +702,6 @@ mod tests {
         }
     }
 
-    /// A texture opaque to every edge and already as large as the caller can
-    /// hold is prepared at its own size, with no remap: there is no room for
-    /// a skirt and nothing to crop. With room, it gets the skirt.
     #[test]
     fn an_opaque_texture_at_the_limit_is_prepared_at_its_own_size() {
         let source = opaque_png(48, 32);
@@ -949,16 +739,11 @@ mod tests {
         let (lx, ly) = ((40 - x) as u32, (50 - y) as u32);
         let i = ((ly * w + lx) * 4) as usize;
         assert_eq!(&cropped.rgba[i..i + 4], &[200, 100, 50, 255]);
-        // A corner texel of the crop is in the transparent skirt.
         assert_eq!(&cropped.rgba[0..4], &[0, 0, 0, 0]);
     }
 
     #[test]
     fn remap_keeps_opaque_uvs_inside_unit_square() {
-        // A UV pointing at the opaque texel maps to the crop interior; a UV
-        // at the source corner (transparent, and >MARGIN from the content)
-        // maps outside [0,1] -> sampled transparent by ClampToBorder, exactly
-        // as in the source.
         let source = tex(256, 256, &[(140, 150)]);
         let (cx, cy, cw, ch) = alpha_crop_rect(&source, ROOMY).unwrap();
         let remap = |u: f64, v: f64| {
@@ -973,17 +758,10 @@ mod tests {
         assert!(gx < 0.0 && gy < 0.0);
     }
 
-    /// [`UvCrop::map`] is the whole contract between the crop and whoever owns
-    /// the meshes: a UV authored against the source texture has to land on the
-    /// same texel of the crop. Checked against the window arithmetic done by
-    /// hand, in f64, so a change to `map` cannot quietly shift every part's
-    /// UVs by a texel.
     #[test]
     fn the_uv_remap_lands_on_the_same_texel_of_the_crop() {
         use crate::Vec2;
 
-        // A 64x64 PNG with one opaque texel, so the crop is a real window
-        // rather than the whole image.
         let mut image = image::RgbaImage::new(64, 64);
         image.put_pixel(40, 33, image::Rgba([10, 20, 30, 255]));
         let mut data = std::io::Cursor::new(Vec::new());
@@ -1027,9 +805,6 @@ mod tests {
             assert_eq!(crop.map(uv), by_hand(uv), "uv {uv:?}");
         }
 
-        // The opaque texel's UV lands inside the crop; the source corner does
-        // not, and reads transparent through ClampToBorder exactly as it did
-        // in the source.
         let inside = crop.map(Vec2::new(40.5 / 64.0, 33.5 / 64.0));
         assert!((0.0..=1.0).contains(&inside.x) && (0.0..=1.0).contains(&inside.y));
         let corner = crop.map(Vec2::ZERO);
@@ -1038,10 +813,7 @@ mod tests {
 
     #[test]
     fn fused_premultiply_matches_the_two_pass_composition() {
-        // The fused table replaces unpremultiply-then-premultiply, so it
-        // has to agree on every input it can ever see — and it can see all
-        // of them, since each output channel depends only on its own byte
-        // and the pixel's alpha. Exhaustive, not sampled.
+        // Exhaustive: each output depends only on its own byte and the pixel's alpha.
         let mut fused: Vec<u8> = Vec::with_capacity(256 * 256 * 4);
         for a in 0..256usize {
             for c in 0..256usize {
@@ -1064,14 +836,8 @@ mod tests {
         }
     }
 
-    /// The readback inverse round-trips: premultiply a straight colour into
-    /// the encoding a render target holds, undo it, and get the colour back.
-    ///
-    /// Not at every alpha. Premultiplying scales a channel down before it is
-    /// quantised to 8 bits, so at alpha 1 only about 1/255 of the range
-    /// survives and dividing it back multiplies the quantisation error by
-    /// 255 — a pixel that faint carries no colour to recover. The bound here
-    /// is what the encoding can honestly promise.
+    /// Not at every alpha: at alpha 1 dividing back multiplies quantisation
+    /// error by 255, so the bound is what the encoding can promise.
     #[test]
     fn unpremultiply_linear_recovers_what_premultiply_linear_encoded() {
         for alpha in [40u8, 64, 128, 200, 254, 255] {
@@ -1088,14 +854,9 @@ mod tests {
         }
     }
 
-    /// The two unpremultiplies are not interchangeable, which is the whole
-    /// reason both exist. A quarter-opacity pixel off a render target comes
-    /// back as its own colour under the linear inverse and saturates under
-    /// the byte-space one.
     #[test]
     fn the_two_unpremultiplies_disagree_and_only_one_fits_a_readback() {
         let mut target = vec![210, 90, 70, 255];
-        // What the blender leaves for a part drawn at opacity 0.25.
         target[3] = 64;
         premultiply_linear_into_srgb_inplace(&mut target);
 
@@ -1113,8 +874,6 @@ mod tests {
 
     #[test]
     fn unpremultiply_srgb_recovers_straight_alpha() {
-        // Pixel layout: opaque (α=255), fully transparent (α=0),
-        // half-alpha grey, tiny-alpha saturated color.
         let mut px = [
             200, 100, 50, 255, // fully opaque: untouched
             123, 234, 89, 0, // α=0: rgb zeroed
@@ -1124,12 +883,10 @@ mod tests {
         unpremultiply_srgb_inplace(&mut px);
         assert_eq!(&px[0..4], &[200, 100, 50, 255]);
         assert_eq!(&px[4..8], &[0, 0, 0, 0]);
-        // (64 * 255 / 128).round() = 127.5 → banker's/half-away-up 128.
         assert!((px[4 + 4] as i32 - 127).abs() <= 1);
         assert!((px[5 + 4] as i32 - 127).abs() <= 1);
         assert!((px[6 + 4] as i32 - 127).abs() <= 1);
         assert_eq!(px[7 + 4], 128);
-        // α=20: inv = 12.75. 10*12.75 = 127.5; 5*12.75 = 63.75; 2*12.75 = 25.5.
         assert!((px[12] as i32 - 128).abs() <= 1);
         assert!((px[13] as i32 - 64).abs() <= 1);
         assert!((px[14] as i32 - 26).abs() <= 1);
@@ -1138,8 +895,6 @@ mod tests {
 
     #[test]
     fn unpremultiply_srgb_clamps_noise() {
-        // Slightly-invalid asset where rgb > alpha (impossible in a
-        // correct premultiply). The clamp to 255 must hold.
         let mut px = [200u8, 100, 50, 10];
         unpremultiply_srgb_inplace(&mut px);
         assert_eq!(px, [255, 255, 255, 10]);
@@ -1158,9 +913,7 @@ mod tests {
 
     #[test]
     fn premultiply_linear_half_alpha_matches_linear_premul_then_encode() {
-        // sRGB byte 188 ≈ linear 0.5026. Premul by α=128/255≈0.502 →
-        // linear 0.2523. srgb_encode → byte ≈ 138 (linear premul,
-        // not the byte-space premul which would give 188*0.5=94).
+        // Linear premul gives ≈138; byte-space premul would give 94.
         let mut px = [188u8, 188, 188, 128];
         premultiply_linear_into_srgb_inplace(&mut px);
         for (c, &v) in px[..3].iter().enumerate() {

@@ -1,11 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! `.clm` against the models that are actually committed, and against one big
 //! enough that an accidental quadratic or a hash-order leak would show.
-//!
-//! The unit tests in `model/file.rs` build their sample in memory, so they
-//! cannot catch a fixture the writer would rewrite on open-and-save. These
-//! read the real files: `tests/models/*.clm` are Git LFS objects, so an
-//! unfetched checkout fails here the same way the render suites do.
+//! `tests/models/*.clm` are Git LFS objects.
 
 use std::path::{Path, PathBuf};
 
@@ -17,7 +13,6 @@ use catchlight_core::{
 };
 
 fn models_dir() -> PathBuf {
-    // crates/catchlight-core/ -> crates/ -> workspace root.
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
         .nth(2)
@@ -36,9 +31,7 @@ fn fixtures() -> Vec<PathBuf> {
     paths
 }
 
-/// Every Id and Name in a model, in the model's own orders — what a field-by-
-/// field comparison of the decoded structures would miss if the reader silently
-/// re-minted an Id.
+/// Catches a reader that silently re-mints an Id.
 fn identity(model: &Model) -> Vec<String> {
     let mut out = vec![format!("roots={:?}", model.roots())];
     for id in model.nodes_in_order() {
@@ -71,8 +64,6 @@ fn identity(model: &Model) -> Vec<String> {
     out
 }
 
-/// Every supported fixture preserves authored identity and assets, and has
-/// a stable canonical encoding. All bundled files use the current format.
 #[test]
 fn every_committed_fixture_round_trips_byte_for_byte() {
     for path in fixtures() {
@@ -99,9 +90,6 @@ fn every_committed_fixture_round_trips_byte_for_byte() {
     }
 }
 
-/// A model is read from bytes directly, or from a decoded `ClmFile`, and
-/// written the same two ways. The direct paths exist so a texture payload is
-/// copied once rather than three times; they must not be a second format.
 #[test]
 fn both_readers_and_both_writers_agree_on_every_fixture() {
     for path in fixtures() {
@@ -132,9 +120,6 @@ fn both_readers_and_both_writers_agree_on_every_fixture() {
     }
 }
 
-/// The one fixture with a weld: it is the only committed proof that slot
-/// pairs survive a real file, and the vertex pairs they resolve to are what
-/// the weld baseline renders.
 #[test]
 fn the_welded_fixture_keeps_its_vertex_pairs() {
     let bytes = std::fs::read(models_dir().join("welded_seam.clm")).expect("welded_seam.clm");
@@ -171,8 +156,6 @@ fn five_hundred_node_model() -> Model {
     let mut params: Vec<ParamId> = Vec::new();
     let mut parent = root;
     for i in 0..500usize {
-        // A wide-but-deep tree: every eighth node starts a new chain, so the
-        // topological order is not just one spine.
         let node = model
             .add_node(
                 &parent,
@@ -222,9 +205,8 @@ fn five_hundred_node_model() -> Model {
     model
 }
 
-/// Nodes, params and bindings all live in `HashMap`s or are addressed through
-/// them, so a writer that iterated one of them would still pass a three-node
-/// round trip and fail here.
+/// Nodes, params and bindings live in `HashMap`s; a hash-order leak would
+/// pass a three-node round trip and fail here.
 #[test]
 fn a_five_hundred_node_model_round_trips() {
     let model = five_hundred_node_model();
@@ -243,7 +225,6 @@ fn a_five_hundred_node_model_round_trips() {
     );
 }
 
-/// Every joint and optional bend target survives a round trip.
 #[test]
 fn a_spine_round_trips_byte_for_byte() {
     use catchlight_core::model::ModelSpine;
@@ -273,7 +254,6 @@ fn a_spine_round_trips_byte_for_byte() {
             &mut hex,
         )
         .unwrap();
-    // A middle link reading nothing, so the None survives the trip too.
     model
         .set_spine_targets(
             &node,

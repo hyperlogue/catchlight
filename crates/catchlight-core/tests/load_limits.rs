@@ -1,9 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! What the load budget charges for a `.clm`, and when.
-//!
-//! Two things are pinned here that the unit tests beside the budget cannot
-//! see, because both are about the order the readers call it in: a file's
-//! bytes are charged once, and its structure is charged before it is parsed.
 
 use std::path::{Path, PathBuf};
 
@@ -17,7 +13,6 @@ use catchlight_core::load_budget::charge_clm_structure;
 use catchlight_core::{LoadBudget, LoadLimitError, LoadLimits, Model, ModelError};
 
 fn fixture(name: &str) -> Vec<u8> {
-    // crates/catchlight-core/ -> crates/ -> workspace root.
     let path: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
         .nth(2)
@@ -40,9 +35,6 @@ fn limit_error(err: ModelError) -> LoadLimitError {
     }
 }
 
-/// A file's bytes are charged once. Decoding charged the whole input and
-/// building the model then charged every texture payload again, so a file
-/// loaded only while it was under about half of `encoded_bytes`.
 #[test]
 fn a_file_exactly_at_the_encoded_byte_limit_loads() {
     let bytes = fixture("quad_over_bg.clm");
@@ -68,8 +60,6 @@ fn a_file_exactly_at_the_encoded_byte_limit_loads() {
     );
 }
 
-/// A `ClmFile` that never was bytes has had nothing charged, so its reader
-/// still charges the payloads.
 #[test]
 fn a_hand_built_file_still_has_its_payloads_charged() {
     let file = clm::decode(&fixture("quad_over_bg.clm")).unwrap();
@@ -84,9 +74,8 @@ fn a_hand_built_file_still_has_its_payloads_charged() {
     assert_eq!(limit_error(err).resource, "encoded bytes");
 }
 
-/// The structure section is charged by its size before it is parsed. The
-/// section here is not CBOR at all, so which error comes back says which
-/// happened first.
+/// The section here is not CBOR, so the error says whether the charge came
+/// before the parse.
 #[test]
 fn the_structure_section_is_charged_before_it_is_parsed() {
     let garbage = [0xFFu8; 64];
@@ -99,7 +88,7 @@ fn the_structure_section_is_charged_before_it_is_parsed() {
         }],
     )
     .unwrap();
-    // The same section in a structure-only container: kind 2 is the manifest.
+    // Kind 2 is the manifest.
     let structure_only = container::write(
         &clm::MAGIC,
         clm::FORMAT_VERSION,
@@ -149,7 +138,6 @@ fn the_structure_section_is_charged_before_it_is_parsed() {
     assert!(matches!(err, ClmError::Decode(_)), "{err:?}");
 }
 
-/// The default structure limit leaves the committed models a wide margin.
 #[test]
 fn the_largest_committed_structure_is_far_under_the_default_limit() {
     let bytes = fixture("lan.clm");
@@ -166,7 +154,6 @@ fn charge(doc: &ClmStructure, set: impl FnOnce(&mut LoadLimits)) -> Result<(), L
     charge_clm_structure(doc, &mut budget(set))
 }
 
-/// A spine's joints and bend targets, both of them.
 #[test]
 fn spine_joints_and_targets_are_charged() {
     let doc = clm::decode(&fixture("strand_response.clm")).unwrap().doc;
@@ -176,7 +163,6 @@ fn spine_joints_and_targets_are_charged() {
     assert_eq!((err.resource, err.got), ("spine joints", 6));
 }
 
-/// A weld and each pair it holds.
 #[test]
 fn welds_and_their_pairs_are_charged() {
     let doc = clm::decode(&fixture("welded_seam.clm")).unwrap().doc;
@@ -186,7 +172,6 @@ fn welds_and_their_pairs_are_charged() {
     assert_eq!((err.resource, err.got), ("weld pairs", 4));
 }
 
-/// An animation, each lane, each keyframe.
 #[test]
 fn animations_lanes_and_keyframes_are_charged() {
     let lane = |keys: i32| ClmLane {
@@ -204,14 +189,11 @@ fn animations_lanes_and_keyframes_are_charged() {
         ..ClmStructure::default()
     };
 
-    // One animation, two lanes, five keyframes.
     assert_eq!(charge(&doc, |l| l.keyframes = 8), Ok(()));
     let err = charge(&doc, |l| l.keyframes = 7).unwrap_err();
     assert_eq!((err.resource, err.got), ("animation keyframes", 8));
 }
 
-/// A JSON extension by its JSON text, a byte extension by what its marker
-/// states.
 #[test]
 fn extension_values_are_charged() {
     let mut doc = ClmStructure::default();

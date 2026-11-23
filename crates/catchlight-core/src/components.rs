@@ -10,9 +10,7 @@ impl NodeIdx {
     }
 }
 
-/// A part's albedo, as a *position* in [`Model::texture_ids`](crate::Model::texture_ids). Not an Id: the
-/// model's own texture identity is a [`TexId`](crate::id::TexId) string, and
-/// this is where the bake found it, for a render cache to resolve.
+/// A part's albedo, as a position in [`Model::texture_ids`](crate::Model::texture_ids).
 /// `u32::MAX` means the part draws no texture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TextureIdx(pub u32);
@@ -23,37 +21,19 @@ impl TextureIdx {
     }
 }
 
-/// A decoded texture: pre-decoded bytes
-/// encoding premultiplied LINEAR colour, ready for any renderer to upload
-/// as `Rgba8UnormSrgb` (the sampler's decode then hands shaders
-/// premultiplied linear).
-/// [`EncodedTexture::decode`](crate::EncodedTexture::decode) owns the
-/// conversion from each source alpha convention — straight, or
-/// premultiplied in sRGB — into this shape, when a model's textures are
-/// prepared for a renderer. Nothing earlier does it: an importer writes a
-/// texture's bytes as it found them and records the convention beside them,
-/// and a model stores them the same way. Consumers downstream of the decode
-/// never need to know the origin format.
-///
-/// Premultiplied storage is what makes filtering correct at an alpha edge
-/// without a separate bleed pass: the filter mixes `(rgb*a, a)` with
-/// `(0, 0)` and the result is already premultiplied.
+/// Premultiplied LINEAR colour stored as `Rgba8UnormSrgb` bytes. Premultiplied
+/// storage makes filtering correct at an alpha edge without a bleed pass.
 #[derive(Debug, Clone)]
 pub struct DecodedTexture {
     pub width: u32,
     pub height: u32,
-    /// RGBA8 premultiplied-linear encoded as sRGB bytes, tightly packed
-    /// (`4 * width` bytes per row).
+    /// Tightly packed (`4 * width` bytes per row).
     pub rgba: Arc<[u8]>,
 }
 
 impl DecodedTexture {
-    /// Half-resolution copy via the same linear-space box filter renderers
-    /// use for mip generation, so importing at `halved()` resolution is
-    /// texel-identical to sampling mip 1 of the full texture. Normalized
-    /// UVs are unaffected. Used to right-size import resolution for
-    /// deployments whose maximum on-screen sampling rate never reaches
-    /// the authored texel density.
+    /// Half-resolution copy via the same linear-space box filter renderers use
+    /// for mip generation, so it is texel-identical to mip 1.
     pub fn halved(&self) -> DecodedTexture {
         let (width, height, rgba) = downsample_box_filter(&self.rgba, self.width, self.height);
         DecodedTexture {
@@ -65,13 +45,8 @@ impl DecodedTexture {
 }
 
 pub fn downsample_box_filter(src: &[u8], w: u32, h: u32) -> (u32, u32, Vec<u8>) {
-    // Mip averaging must happen in LINEAR space. The texture is sampled as
-    // `Rgba8UnormSrgb` (sRGB→linear decode at draw time), so averaging the
-    // gamma-encoded RGB bytes directly biases minified texels dark and
-    // over-sharpens high-contrast seams (verified against a 4x-supersampled
-    // ground truth on the reference model's shirt). Decode RGB → average in linear →
-    // re-encode. Alpha is stored linear (sRGB formats don't gamma the A
-    // channel), so it averages directly.
+    // Average in LINEAR space: averaging gamma-encoded bytes biases minified
+    // texels dark. Alpha is stored linear, so it averages directly.
     let dw = (w / 2).max(1);
     let dh = (h / 2).max(1);
     let decode = srgb_decode_table();
@@ -105,8 +80,6 @@ pub fn downsample_box_filter(src: &[u8], w: u32, h: u32) -> (u32, u32, Vec<u8>) 
     (dw, dh, out)
 }
 
-/// The sRGB transfer function's inverse on a normalized [0, 1] signal.
-/// Only used to build the tables below; the pixel paths go through those.
 fn srgb_to_linear(s: f32) -> f32 {
     if s <= 0.04045 {
         s / 12.92
@@ -115,21 +88,16 @@ fn srgb_to_linear(s: f32) -> f32 {
     }
 }
 
-/// Every sRGB byte's linear value. The input domain is 256 values wide,
-/// so this is the whole function, not an approximation of it.
 static SRGB_DECODE: std::sync::OnceLock<[f32; 256]> = std::sync::OnceLock::new();
 
-/// Hoist this out of a per-texel loop and index it directly: the
-/// `OnceLock` probe costs several times the array read it guards, so
-/// probing it per channel is markedly slower than binding it once.
+/// Hoist this out of per-texel loops: the `OnceLock` probe costs several
+/// times the array read.
 pub(crate) fn srgb_decode_table() -> &'static [f32; 256] {
     SRGB_DECODE.get_or_init(|| std::array::from_fn(|b| srgb_to_linear(b as f32 / 255.0)))
 }
 
-/// Unlike the decode this takes an `f32`, so reaching a table means
-/// searching for the input's place among the 255 step points — branches
-/// that image-derived values leave unpredictable, and that measured no
-/// faster than the `powf` they would replace.
+/// Not table-driven: a search over 255 step points measured no faster than
+/// `powf`.
 #[inline]
 pub(crate) fn srgb_encode_to_byte(linear: f32) -> u8 {
     let s = if linear <= 0.0031308 {
@@ -140,11 +108,8 @@ pub(crate) fn srgb_encode_to_byte(linear: f32) -> u8 {
     (s * 255.0).round().clamp(0.0, 255.0) as u8
 }
 
-/// Each node carries two transforms: `base_transform` / `base_z_order` are
-/// what the model authored, baked once and never mutated; `transform` /
-/// `z_order` are the per-frame working copies a tick resets to base and then
-/// folds the bindings into. A puppet with no bindings sees identical
-/// behaviour: base == working at bake, nothing changes between frames.
+/// `base_*` fields are authored and never mutated; `transform` / `z_order`
+/// are per-frame working copies reset to base each tick.
 #[derive(Debug, Clone)]
 pub struct Node {
     pub name: String,
@@ -187,9 +152,6 @@ const _: () = assert!(
     "NodeKind is too large - consider boxing new variants"
 );
 
-/// `mesh` is what the model authored and never changes between bakes, so it
-/// sits behind an `Arc`: cloning a puppet shares it and copies only the
-/// evaluated fields beside it.
 #[derive(Debug, Clone)]
 pub struct PartData {
     pub mesh: Arc<Mesh>,
@@ -256,21 +218,15 @@ impl Default for CompositeData {
     }
 }
 
-/// A mesh group is never drawn, so it carries no colour at all — the fields a
-/// drawable has for it are absent here, and a `.clm` binding that drives
-/// colour on a mesh group is rejected at load
-/// ([`ClmLoadError::ColorOnMeshGroup`](crate::model::ClmLoadError)).
+/// A mesh group is never drawn, so it carries no colour.
 #[derive(Debug, Clone)]
 pub struct MeshGroupData {
-    /// Shared between clones of a puppet, like a part's.
     pub mesh: Arc<Mesh>,
     pub translate_children: bool,
     pub deform_stack: crate::deform::DeformStack,
     pub(crate) pins: Arc<crate::meshgroup::MeshGroupPins>,
-    /// Spatial triangle candidates baked from `mesh` ahead of `pins`, which
-    /// are found through them. Exact containment is checked at the current
-    /// position. `None` when the cache cannot be built within its limits;
-    /// propagation then falls back to the linear hinted scan.
+    /// `None` when the cache cannot be built within its limits; propagation then
+    /// falls back to the linear hinted scan.
     pub(crate) bins: Option<Arc<crate::meshgroup::MgTriangleBins>>,
 }
 
@@ -304,9 +260,6 @@ impl Default for Transform {
 }
 
 impl From<&crate::formats::clm::ClmTransform> for Transform {
-    /// The authored transform as the runtime holds it. One conversion, so a
-    /// caller that needs a node's matrix outside a bake — the editor, sizing
-    /// up a fit — composes exactly what the bake would have.
     fn from(t: &crate::formats::clm::ClmTransform) -> Self {
         Self {
             translation: Vec3::from(t.translation),
@@ -332,8 +285,8 @@ impl Transform {
 }
 
 pub fn checked_affine_inverse(matrix: Mat4) -> Option<Mat4> {
-    // Smaller determinants amplify ordinary coordinates into unstable values;
-    // treat them as singular even when glam can produce a finite inverse.
+    // Smaller determinants amplify coordinates into unstable values even when
+    // glam produces a finite inverse.
     const MIN_ABS_DETERMINANT: f32 = 1e-12;
     if !matrix.is_finite() {
         return None;
@@ -478,7 +431,6 @@ pub enum BlendMode {
 }
 
 impl BlendMode {
-    /// Parse a serialized blend-mode name without silently falling back.
     pub fn from_name(s: &str) -> Option<Self> {
         Some(match s {
             "Normal" => BlendMode::Normal,
@@ -502,7 +454,6 @@ impl BlendMode {
 }
 
 impl BlendMode {
-    /// Canonical serialized name used by editors and serializers.
     pub fn as_str(self) -> &'static str {
         match self {
             BlendMode::Normal => "Normal",
@@ -537,9 +488,6 @@ pub enum MaskMode {
     DodgeMask,
 }
 
-/// One drawable's clipping rule, as a puppet holds it: the arena slot of the
-/// node whose shape clips it, and whether what that shape covers is kept or
-/// cut away. A model names the source by Id; the bake resolves it.
 #[derive(Debug, Clone)]
 pub struct Mask {
     pub source: NodeIdx,
@@ -560,10 +508,7 @@ mod tests {
 
     #[test]
     fn downsample_2x2_to_1x1_averages_four_samples() {
-        // Red and green diagonal, black on off-diagonal, full alpha.
-        // RGB is averaged in LINEAR space: one lit texel of four -> mean
-        // linear 0.25 -> sRGB byte ~137 (a gamma-space byte mean would be
-        // 63). B has no lit texel -> 0; alpha is linear, all 255 -> 255.
+        // One lit texel of four -> linear mean 0.25 -> sRGB byte ~137.
         let src: Vec<u8> = vec![
             255, 0, 0, 255, 0, 255, 0, 255, //
             0, 0, 0, 255, 0, 0, 0, 255, //
@@ -578,9 +523,6 @@ mod tests {
 
     #[test]
     fn downsample_1x1_to_1x1_clamps_sampling_coordinates() {
-        // With w=h=1 the 2x2 sampling box would read indices (0..2, 0..2)
-        // without clamping and index out of bounds. Output should equal
-        // input after min(w-1)/min(h-1) clamp.
         let src = vec![7u8, 8, 9, 10];
         let (dw, dh, out) = downsample_box_filter(&src, 1, 1);
         assert_eq!((dw, dh), (1, 1));
@@ -666,9 +608,6 @@ mod tests {
 
     #[test]
     fn mesh_indices_upgrades_to_u32_above_u16_max() {
-        // >65K vertex mesh: indices that exceed u16::MAX must land in U32
-        // so they don't silently wrap (the exact bug MeshIndices was
-        // introduced to prevent).
         let over = u16::MAX as usize + 1;
         let indices = MeshIndices::from_usize_iter([0, 1, over]);
         let MeshIndices::U32(_) = &indices else {

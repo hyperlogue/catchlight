@@ -1,20 +1,7 @@
-//! Param bindings over the sparse authored-keypoint model: a binding stores
-//! only the cells the rigger set; everything else is derived at puppet build by
-//! `crate::fill`. Authored = present, so set/partial/unset UX reads
-//! the data shape directly. Cells stay sorted by `(y, x)` so saves stay
-//! byte-stable regardless of authoring order.
-//!
-//! A binding belongs to the model, not to the param: it is addressed by its
-//! [`BindingKey`] — the param, the node and the property — so nothing has to
-//! walk a param's private list to find one.
-//!
-//! **A binding spans at most two params, and its grid is the only space it is
-//! read over.** [`BindingParams`] has two variants and stays that way: a third
-//! axis would make the grid a volume whose cells grow with the product of
-//! three key-position sets. Rigs needing more reach compose instead —
-//! independent bindings write independent deform sources that
-//! [`crate::deform::DeformStack`] sums onto the base mesh, so the product is
-//! never formed and never has to be taken apart again.
+//! Param bindings: a binding stores only the cells the rigger set; the rest is
+//! derived at puppet build. Cells stay sorted by `(y, x)` so saves are
+//! byte-stable. A binding spans at most two params: a third axis would make the
+//! grid grow with the product of three key sets; rigs compose instead.
 
 use std::sync::OnceLock;
 
@@ -24,34 +11,25 @@ use crate::interpolate::InterpolateMode;
 
 use super::*;
 
-/// A binding's dense evaluation grid, row-major over its cell grid: what the
-/// author set at a keypoint and what [`crate::fill`] derived everywhere else.
-/// Always exactly one shape for one binding — a deform binding's grid holds a
-/// flat `[dx, dy, …]` per cell, every other target one `f32`.
+/// Row-major. A deform binding holds a flat `[dx, dy, …]` per cell, other targets one `f32`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DenseGrid {
     Scalar(Vec<f32>),
     Deform(Vec<Vec<f32>>),
 }
 
-/// A finite, strictly increasing range. A collapsed or inverted one cannot map
-/// a pose onto the normalized key positions.
 pub fn param_range_is_valid(min: f32, max: f32) -> bool {
     min.is_finite() && max.is_finite() && min < max
 }
 
-/// The second axis of a one-param binding: one position, so the grid is a row
-/// and `derive_dense` treats it as 1-D.
 const SINGLE_POSITION: [f32; 1] = [0.0];
 
-/// A binding target whose value matrix is a single `f32` per cell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ScalarTarget {
     Tx,
     Ty,
-    /// Depth, toward the viewer. Under a parent no `Rx` or `Ry` turns, a drawing
-    /// does not move on screen for it (the camera is orthographic, and clips
-    /// only past 1000 either way).
+    /// Depth, toward the viewer. The camera is orthographic and clips only past
+    /// 1000 either way.
     Tz,
     Sx,
     Sy,
@@ -68,34 +46,28 @@ pub enum ScalarTarget {
     ScreenTintB,
 }
 
-/// Any binding target — the per-vertex deform or one of the scalars.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BindingTarget {
     Deform,
     Scalar(ScalarTarget),
 }
 
-/// The one or two params a binding's grid spans. Two params are jointly
-/// authored — "head left *and* up" is its own shape, not left plus up — so the
-/// grid is the product of the binding's two position axes. The axes and the
-/// param pair belong to the binding.
+/// Two params are jointly authored ("left *and* up" is its own shape), so the
+/// grid is the product of the binding's two position axes.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum BindingParams {
-    /// One param. The grid is a row: every cell's `y` is 0.
     One(ParamId),
-    /// Two params, x then y. The binding owns one position axis for each.
+    /// x then y.
     Two(ParamId, ParamId),
 }
 
 impl BindingParams {
-    /// The param along the grid's x axis.
     pub fn x(&self) -> &ParamId {
         match self {
             Self::One(p) | Self::Two(p, _) => p,
         }
     }
 
-    /// The param along the grid's y axis, if the binding spans two.
     pub fn y(&self) -> Option<&ParamId> {
         match self {
             Self::One(_) => None,
@@ -107,7 +79,6 @@ impl BindingParams {
         std::iter::once(self.x()).chain(self.y())
     }
 
-    /// Which grid axis `param` drives, if it is one of the binding's.
     pub fn axis_of(&self, param: &ParamId) -> Option<u8> {
         if self.x() == param {
             Some(0)
@@ -123,8 +94,6 @@ impl BindingParams {
     }
 }
 
-/// What a binding is: one or two params' control over one property of one
-/// node. Two bindings with the same key are the same binding.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct BindingKey {
     pub params: BindingParams,
@@ -133,7 +102,6 @@ pub struct BindingKey {
 }
 
 impl BindingKey {
-    /// One param drives `target` on `node`.
     pub fn new(param: ParamId, node: NodeId, target: BindingTarget) -> Self {
         Self {
             params: BindingParams::One(param),
@@ -142,8 +110,6 @@ impl BindingKey {
         }
     }
 
-    /// Two params jointly drive `target` on `node`; `x` runs along the grid's
-    /// first axis and `y` along its second.
     pub fn pair(x: ParamId, y: ParamId, node: NodeId, target: BindingTarget) -> Self {
         Self {
             params: BindingParams::Two(x, y),
@@ -227,8 +193,6 @@ impl ScalarTarget {
         })
     }
 
-    /// The wire name `parse` accepts — the single string table both sides of
-    /// the protocol share.
     pub fn name(self) -> &'static str {
         match self {
             Self::Tx => "tx",
@@ -250,10 +214,7 @@ impl ScalarTarget {
         }
     }
 
-    /// Does this target drive colour? Colour lands on a part or a composite; a
-    /// mesh group is never drawn, so [`Model::add_binding`] refuses to aim one
-    /// at a mesh group and `catchlight_core` refuses to load a file that does
-    /// ([`Model::check`] flags it).
+    /// A mesh group is never drawn, so a colour target cannot aim at one.
     pub fn is_color(self) -> bool {
         matches!(
             self,
@@ -267,8 +228,7 @@ impl ScalarTarget {
         )
     }
 
-    /// The value a cell holds when the binding has no effect. Multiplicative
-    /// targets (scale, opacity, tint) rest at 1; additive at 0.
+    /// Multiplicative targets (scale, opacity, tint) rest at 1; additive at 0.
     pub fn identity(self) -> f32 {
         match self {
             Self::Sx | Self::Sy | Self::Opacity | Self::TintR | Self::TintG | Self::TintB => 1.0,
@@ -368,7 +328,6 @@ pub fn scalar_cells(v: &ClmBindingValues) -> Option<&[ClmCell<f32>]> {
     }
 }
 
-/// Wire names for mask modes (the inverse of the server's parse).
 pub fn mask_mode_name(m: crate::components::MaskMode) -> &'static str {
     match m {
         crate::components::MaskMode::Mask => "mask",
@@ -394,7 +353,6 @@ fn upsert<T>(cells: &mut Vec<ClmCell<T>>, cell: [u32; 2], value: T) {
     }
 }
 
-/// Validate binding-owned normalized axes before any grid is allocated.
 fn validate_binding_positions(params: usize, positions: &[Vec<f32>]) -> Result<(), ModelError> {
     if validate::binding_positions_are_valid(params, positions) {
         Ok(())
@@ -404,7 +362,7 @@ fn validate_binding_positions(params: usize, positions: &[Vec<f32>]) -> Result<(
 }
 
 /// A corrective binding contributes identity when all of its response inputs
-/// are zero. An ordinary pose axis spans that whole protected row or column.
+/// are zero.
 fn neutral_cells(zero: [Option<usize>; 2], w: usize, h: usize) -> impl Iterator<Item = [u32; 2]> {
     let coordinates = |index: Option<usize>, n: usize| index.map_or(0..n, |i| i..i + 1);
     let xs = coordinates(zero[0], w);
@@ -440,7 +398,6 @@ impl Model {
         Some(normalized_zero(p.min, p.max))
     }
 
-    /// Normalized keys that creating a binding on this param will install.
     pub fn initial_positions(&self, param: &ParamId) -> Vec<f32> {
         self.initial_axis(param).into_owned()
     }
@@ -518,8 +475,8 @@ impl Model {
         zero_for: impl Fn(&ParamId) -> Option<f32>,
     ) -> Result<(), ModelError> {
         let zero = Self::zero_indices(&b.key, &b.key_positions, zero_for)?;
-        // Fragment outputs may name base params. Installation knows their
-        // ranges and validates the protected slice on the combined model.
+        // Fragment outputs may name base params; installation validates the
+        // protected slice on the combined model.
         if zero == [None, None] {
             return Ok(());
         }
@@ -551,20 +508,17 @@ impl Model {
         Ok(())
     }
 
-    /// How many positions this binding has on the named param's axis.
     pub fn key_count(&self, key: &BindingKey, param: &ParamId) -> Result<u32, ModelError> {
         let axis = key.params.axis_of(param).ok_or(ModelError::UnknownParam)? as usize;
         let binding = self.binding(key).ok_or(ModelError::UnknownBinding)?;
         Ok(binding.key_positions[axis].len() as u32)
     }
 
-    /// The grid of an existing binding, or the initial axes of an auto-creating write.
     pub fn binding_grid(&self, key: &BindingKey) -> Result<(u32, u32), ModelError> {
         let (x, y) = self.binding_axes(key)?;
         Ok((x.len() as u32, y.len() as u32))
     }
 
-    /// Normalized binding-owned positions, in driving-param order.
     pub(super) fn binding_axes(
         &self,
         key: &BindingKey,
@@ -592,13 +546,11 @@ impl Model {
         }
     }
 
-    /// Every binding in the model, in creation order.
     pub fn bindings(&self) -> impl Iterator<Item = &ModelBinding> {
         self.bindings.iter()
     }
 
-    /// The bindings one param drives, in creation order. A two-param binding
-    /// appears for each of its params.
+    /// A two-param binding appears for each of its params.
     pub fn bindings_of_param<'a>(
         &'a self,
         param: &'a ParamId,
@@ -608,7 +560,6 @@ impl Model {
             .filter(move |b| b.key.params.contains(param))
     }
 
-    /// The bindings that drive one node, in creation order.
     pub fn bindings_of_node<'a>(
         &'a self,
         node: &'a NodeId,
@@ -620,10 +571,7 @@ impl Model {
         self.bindings.get(*self.binding_index().get(key)?)
     }
 
-    /// `bindings` by key, built on the first lookup after an edit. A puppet
-    /// bakes every binding in the model and a rebake does it again, so the
-    /// lookup this backs is on a path that runs once per binding — a scan
-    /// there is quadratic in the model's size.
+    /// Built lazily; a scan here would be quadratic over a bake.
     fn binding_index(&self) -> &HashMap<BindingKey, usize> {
         self.binding_index.get_or_init(|| {
             self.bindings
@@ -634,9 +582,8 @@ impl Model {
         })
     }
 
-    /// The publication boundary for binding edits. Only a corrective binding
-    /// needs a candidate copy. A failed write, including an auto-creating
-    /// one, leaves the authored cells and generation untouched.
+    /// Only a corrective binding needs a candidate copy. A failed write leaves the
+    /// authored cells and generation untouched.
     fn edit_binding(
         &mut self,
         key: &BindingKey,
@@ -685,12 +632,7 @@ impl Model {
         Ok(())
     }
 
-    /// Ensure `key`'s binding exists, creating an everywhere-unset one if it
-    /// does not (an unset binding contributes nothing). A deform binding needs
-    /// a meshed node; a colour binding needs a drawable one, because a mesh
-    /// group is never drawn and has no colour to fold into; and a two-param
-    /// binding needs two different params, or its grid would be a param
-    /// crossed with itself.
+    /// Creates an everywhere-unset binding if absent.
     pub fn add_binding(&mut self, key: &BindingKey) -> Result<(), ModelError> {
         self.add_binding_with_positions(
             key,
@@ -701,8 +643,7 @@ impl Model {
         )
     }
 
-    /// Create an all-unset binding with explicit normalized axes. An existing
-    /// binding is left unchanged, including its positions and interpolation.
+    /// An existing binding is left unchanged, including its positions.
     pub fn add_binding_with_positions(
         &mut self,
         key: &BindingKey,
@@ -749,8 +690,7 @@ impl Model {
         Ok(binding)
     }
 
-    /// Author one keypoint of a scalar binding (auto-creating the binding).
-    /// `cell` indexes this binding's grid. No other cell is authored.
+    /// Auto-creates the binding.
     pub fn set_binding_key(
         &mut self,
         key: &BindingKey,
@@ -761,8 +701,7 @@ impl Model {
         if !value.is_finite() {
             return Err(ModelError::NonFinite("a binding value"));
         }
-        // Validate before creating anything — a failed key write must not
-        // leave a phantom binding behind.
+        // Validate first: a failed key write must not leave a phantom binding.
         self.check_cell(key, cell)?;
         self.edit_binding(key, BindingEdit::CreateIfMissing, |binding| {
             if let Some(cells) = scalar_cells_mut(binding.values_mut()) {
@@ -771,7 +710,6 @@ impl Model {
         })
     }
 
-    /// Un-author a keypoint (the cell goes back to derived).
     pub fn unset_binding_key(
         &mut self,
         key: &BindingKey,
@@ -791,7 +729,6 @@ impl Model {
         })
     }
 
-    /// Author the do-nothing identity value at a keypoint.
     pub fn reset_binding_key(
         &mut self,
         key: &BindingKey,
@@ -840,7 +777,6 @@ impl Model {
         })
     }
 
-    /// Negate every authored value.
     pub fn invert_binding(&mut self, key: &BindingKey) -> Result<(), ModelError> {
         self.edit_binding(
             key,
@@ -864,10 +800,7 @@ impl Model {
         )
     }
 
-    /// The binding's dense grid: the value at every cell of it, authored or
-    /// derived by [`crate::fill`]. Built on the first read and shared until
-    /// the cells, the key positions or the mesh it came from move — so a
-    /// reader that walks a whole grid pays for the fill once.
+    /// Built on first read and shared until the cells, positions or mesh change.
     pub fn binding_dense(&self, key: &BindingKey) -> Option<&Arc<DenseGrid>> {
         let binding = self.binding(key)?;
         Some(
@@ -912,8 +845,6 @@ impl Model {
         }
     }
 
-    /// The evaluated scalar value at a cell: authored if present, otherwise
-    /// the derived fill — the single implementation every reader shares.
     pub fn scalar_value_at(&self, key: &BindingKey, cell: [u32; 2]) -> Result<f32, ModelError> {
         key.target.scalar()?;
         self.check_cell(key, cell)?;
@@ -928,10 +859,7 @@ impl Model {
         }
     }
 
-    /// The evaluated deform offsets at a cell: authored if present, otherwise
-    /// the derived fill; the identity is zeros sized to the node's mesh, so an
-    /// everywhere-unset — or entirely absent — binding evaluates to
-    /// well-shaped rest offsets.
+    /// Absent or unset bindings evaluate to zeros sized to the node's mesh.
     pub fn deform_value_at(
         &self,
         key: &BindingKey,
@@ -954,14 +882,9 @@ impl Model {
         }
     }
 
-    /// Read a contiguous vertex page of one authored or derived deform cell.
-    ///
-    /// Each vertex contributes two flat values. Authored cells are sliced
-    /// directly; holes run the same component-wise fill over sliced authored
-    /// arrays. This never initializes the full mesh-by-grid dense cache. A
-    /// caller accepting untrusted read sizes must budget grid cells times page
-    /// vertices before requesting a derived hole (and account for repeated
-    /// calls); limiting only the returned page would not bound fill work.
+    /// Never initializes the full dense cache. A caller accepting untrusted read
+    /// sizes must budget grid cells times page vertices before requesting a derived
+    /// hole; limiting only the returned page does not bound fill work.
     pub fn deform_value_at_range(
         &self,
         key: &BindingKey,
@@ -1019,7 +942,6 @@ impl Model {
             .ok_or(ModelError::CellOutOfRange)
     }
 
-    /// Copy the (derived-or-authored) value at `from` and author it at `to`.
     pub fn copy_binding_key(
         &mut self,
         key: &BindingKey,
@@ -1045,8 +967,7 @@ impl Model {
         }
     }
 
-    /// Author per-vertex deform offsets at a cell. `offsets` is flat
-    /// `[dx, dy, …]` and must match the node's mesh.
+    /// `offsets` is flat `[dx, dy, …]` and must match the node's mesh.
     pub fn set_deform_vertices(
         &mut self,
         key: &BindingKey,
@@ -1068,9 +989,7 @@ impl Model {
         })
     }
 
-    /// Author a deform keypoint by applying an affine (scale, then rotate, then
-    /// translate — about the node's mesh origin) to the node's rest vertices and
-    /// storing the resulting per-vertex offsets in `cell`.
+    /// Scale, then rotate, then translate, about the node's mesh origin.
     pub fn set_deform_from_transform(
         &mut self,
         key: &BindingKey,
@@ -1099,14 +1018,12 @@ impl Model {
         self.set_deform_vertices(key, cell, offsets)
     }
 
-    /// Flat length of the node's mesh vertex array (`2 * vertex count`).
+    /// `2 * vertex count`.
     pub fn deform_len(&self, node: &NodeId) -> usize {
         self.node(node)
             .and_then(ModelNode::mesh)
             .map_or(0, |m| m.verts.len())
     }
-
-    // ---- param structure ----
 
     pub fn set_param_name(&mut self, param: &ParamId, name: Name) -> Result<(), ModelError> {
         self.param_mut(param)?.name = name;
@@ -1114,8 +1031,7 @@ impl Model {
         Ok(())
     }
 
-    /// Change the value a pose starts the param from. It has to be finite;
-    /// whether it sits inside the range is the author's business.
+    /// Must be finite; it need not lie inside the range.
     pub fn set_param_default(&mut self, param: &ParamId, default: f32) -> Result<(), ModelError> {
         if !default.is_finite() {
             return Err(ModelError::NonFinite("a param's default"));
@@ -1128,9 +1044,6 @@ impl Model {
         Ok(())
     }
 
-    /// Change the param's range. Key positions are normalized, so they keep
-    /// their relative places and authored cells (which are index-keyed) don't
-    /// move.
     pub fn set_param_range(
         &mut self,
         param: &ParamId,
@@ -1173,8 +1086,7 @@ impl Model {
         self.params.get_mut(param).ok_or(ModelError::UnknownParam)
     }
 
-    /// Insert one normalized position into this binding only. Existing cells
-    /// shift to keep their sampled positions; the new row/column is unauthored.
+    /// Existing cells shift to keep their sampled positions.
     pub fn key_insert(
         &mut self,
         key: &BindingKey,
@@ -1207,8 +1119,7 @@ impl Model {
         Ok(idx)
     }
 
-    /// Delete a binding position and its authored row/column. At least one
-    /// position remains; endpoints may be removed because params own ranges.
+    /// At least one position remains.
     pub fn key_delete(
         &mut self,
         key: &BindingKey,
@@ -1235,8 +1146,7 @@ impl Model {
         })
     }
 
-    /// Move one normalized position without crossing neighbors. Only this
-    /// binding's derived grid is invalidated; authored indices stay unchanged.
+    /// Must not cross neighbors.
     pub fn key_move(
         &mut self,
         key: &BindingKey,
@@ -1288,8 +1198,6 @@ impl ModelBinding {
     }
 }
 
-/// The two cell-value shapes share their `(x, y)` bookkeeping; this is the one
-/// place an axis edit rewrites coordinates, whatever a cell holds.
 trait CellCoords {
     fn map_coords(&mut self, axis: u8, f: &dyn Fn(u32) -> u32);
     fn drop_at(&mut self, axis: u8, coord: u32);
@@ -1334,7 +1242,6 @@ mod tests {
         assert!(!param_range_is_valid(0.0, f32::INFINITY));
     }
 
-    /// A model with one group, one quad part and a shared scalar input.
     struct Fixture {
         m: Model,
         hex: SeededHex,
@@ -1485,7 +1392,6 @@ mod tests {
 
         r.m.set_binding_key(&key, [2, 0], 60.0).unwrap();
         r.m.set_binding_key(&key, [0, 0], -60.0).unwrap();
-        // Raw writes author only the requested cells.
         assert_eq!(r.m.bindings_of_param(&r.param).count(), 1);
         assert_eq!(cells_of(&r.m, &key), vec![(0, -60.0), (2, 60.0)]);
 
@@ -1550,7 +1456,6 @@ mod tests {
             (cells[0].x, &cells[0].value),
             (2, &vec![10.0, 0.0, 10.0, 0.0, 10.0, 0.0, 10.0, 0.0])
         );
-        // wrong-length vertex writes are refused.
         assert!(r
             .m
             .set_deform_vertices(&key, [0, 0], vec![1.0, 2.0])
@@ -1558,8 +1463,6 @@ mod tests {
         assert!(r.m.to_clm_bytes().is_ok());
     }
 
-    /// A binding is one param's control over one property of one node, so the
-    /// key has to reject an operation aimed at the wrong kind of value.
     #[test]
     fn the_key_target_decides_which_operations_apply() {
         let mut r = fixture();
@@ -1599,20 +1502,16 @@ mod tests {
         let xs: Vec<u32> = cells_of(&r.m, &key).into_iter().map(|c| c.0).collect();
         assert_eq!(xs, vec![0, 3]);
 
-        // Duplicates and out-of-range inserts are rejected.
         assert!(r.m.key_insert(&key, &r.param, 0.5).is_err());
         assert!(r.m.key_insert(&key, &r.param, 2.0).is_err());
 
-        // move the inserted position (must stay between neighbours).
         r.m.key_move(&key, &r.param, 2, 0.6).unwrap();
         assert!(r.m.key_move(&key, &r.param, 2, 0.4).is_err());
 
-        // deleting it keeps the shifted cells consistent.
         r.m.key_delete(&key, &r.param, 2).unwrap();
         let xs: Vec<u32> = cells_of(&r.m, &key).into_iter().map(|c| c.0).collect();
         assert_eq!(xs, vec![0, 2]);
 
-        // a range change leaves the normalized key positions alone.
         r.m.set_param_range(&r.param, 0.0, 4.0).unwrap();
         assert_eq!(
             r.m.binding(&key).unwrap().key_positions()[0],
@@ -1620,8 +1519,6 @@ mod tests {
         );
     }
 
-    /// A mesh group is never drawn, so a colour binding on one has nowhere to
-    /// land and the runtime refuses to load the file it would flatten to.
     #[test]
     fn a_colour_binding_cannot_be_authored_on_a_mesh_group() {
         let mut r = fixture();
@@ -1644,14 +1541,10 @@ mod tests {
             )),
             Err(ModelError::ColorOnMeshGroup)
         ));
-        // A non-colour target on the same node is fine.
         r.m.add_binding(&r.tx(&group)).unwrap();
     }
 
-    /// Every key in `bindings()` resolves to the binding at that position, and
-    /// nothing else resolves at all. `binding` reads a derived index, so this
-    /// is the check that the index never outlives the edit that invalidated
-    /// it.
+    /// Guards that the derived index never outlives an edit.
     fn index_agrees_with_the_vec(m: &Model, what: &str) {
         for (i, b) in m.bindings().enumerate() {
             let found = m.binding(b.key());
@@ -1714,9 +1607,6 @@ mod tests {
         index_agrees_with_the_vec(&r.m, "after deleting the param");
     }
 
-    /// A refusal says what was wrong. A bad range, a value that is not a
-    /// number and a mis-sized deform used to answer as `CellOutOfRange` or
-    /// `NotMeshed`, which described none of them.
     #[test]
     fn a_refused_value_names_what_was_wrong_with_it() {
         let mut r = fixture();
@@ -1742,7 +1632,6 @@ mod tests {
             r.m.set_deform_vertices(&deform, [0, 0], vec![f32::INFINITY; 8]),
             Err(ModelError::NonFinite(_))
         ));
-        // A node with no mesh at all is still what `NotMeshed` says.
         assert!(matches!(
             r.m.set_deform_vertices(&r.deform(&r.group), [0, 0], Vec::new()),
             Err(ModelError::NotMeshed)

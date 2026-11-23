@@ -1,12 +1,5 @@
-//! Vertex welding: after all other deformation, paired vertices of two Parts
-//! are pulled to a weighted meeting point so a seam (neck/torso,
-//! shoulder/arm) stays closed under param-driven deforms.
-//!
-//! **A weld pairs two Parts directly, and one list serves every pose.** The
-//! correspondence lives in the [`WeldPair`]: there is no third entity both
-//! sides bind to, and no second list for another display state. Either would
-//! have to be resolved inside the sequential solve below, and a per-state list
-//! would make the model carry a copy of every seam per state.
+//! Vertex welding: paired vertices of two Parts are pulled to a weighted
+//! meeting point so a seam stays closed under deforms.
 
 use glam::{Affine2, Mat2, Vec2};
 use smallvec::SmallVec;
@@ -16,9 +9,7 @@ use crate::deform::DeformSource;
 use crate::meshgroup::{affine2_from_mat4, linear_mat2};
 use crate::puppet::{Arena, GlobalTransforms};
 
-/// One welded pair of parts, arena-global and canonical: each unordered
-/// `{a, b}` pair appears in at most one record, and the solve writes both
-/// sides, so there is no mirrored record and no owner.
+/// Each unordered `{a, b}` pair appears in at most one record.
 #[derive(Debug, Clone)]
 pub struct Weld {
     pub a: NodeIdx,
@@ -30,14 +21,12 @@ pub struct Weld {
 pub struct WeldPair {
     pub a_vert: u32,
     pub b_vert: u32,
-    /// A's share of the meeting point: 1.0 pins A and snaps B to it,
-    /// 0.0 the reverse, 0.5 meets midway.
+    /// A's share of the meeting point: 1.0 pins A, 0.0 pins B.
     pub weight: f32,
 }
 
-// The solve blends world positions, so both sides' full affines apply on the
-// way in; the resulting deltas are direction vectors, so only the inverse
-// linear part applies on the way back out.
+// Deltas are direction vectors, so only the inverse linear part applies on
+// the way back out.
 struct Side {
     world: Affine2,
     inv_linear: Mat2,
@@ -56,16 +45,8 @@ fn side(transforms: &GlobalTransforms, id: NodeIdx) -> Option<Side> {
     })
 }
 
-/// Solve every weld, accumulating per-vertex pulls into each Part's
-/// `DeformSource::Weld` slot. Runs after `propagate_mesh_group_deforms`
-/// (welds must see mesh-group deforms) and before `combine_deforms` (which
-/// folds the slot into the rendered deform).
-///
-/// Records solve sequentially in list order, each reading deforms that
-/// include earlier records' writes — chained welds (A–B then B–C) therefore
-/// see the already-welded seam. A record is skipped
-/// whole when either side is missing, not an enabled Part, or has a
-/// degenerate world transform.
+/// Must run after mesh-group propagation and before `combine_deforms`.
+/// Records solve sequentially, each seeing earlier records' writes.
 pub(crate) fn apply_welds(arena: &mut Arena, transforms: &GlobalTransforms) {
     if arena.welds.is_empty() {
         return;
@@ -75,10 +56,7 @@ pub(crate) fn apply_welds(arena: &mut Arena, transforms: &GlobalTransforms) {
     let welds = std::sync::Arc::clone(&arena.welds);
     let mut cur_a = std::mem::take(&mut arena.weld_cur_a_scratch);
     let mut cur_b = std::mem::take(&mut arena.weld_cur_b_scratch);
-    // Parts whose Weld slot has been zeroed this frame. The slot buffer is
-    // pooled across frames, so the first writer must clear last frame's
-    // contents before accumulating — after setting them aside in `before`,
-    // index for index with `touched`.
+    // The pooled Weld slot must be cleared by its first writer each frame.
     let mut touched: SmallVec<[NodeIdx; 8]> = SmallVec::new();
     let mut before = std::mem::take(&mut arena.weld_before_scratch);
 
@@ -94,9 +72,6 @@ pub(crate) fn apply_welds(arena: &mut Arena, transforms: &GlobalTransforms) {
         );
     }
 
-    // A seam that did not move pulls exactly as it did last fold. Only a
-    // part whose pulls changed is dirty; the rest keep their combined deform
-    // and its generation, so the renderer has nothing to upload for them.
     for (&id, held) in touched.iter().zip(&before) {
         if let Some(NodeKind::Part(part)) = arena.get_mut(id).map(|n| &mut n.kind) {
             part.deform_stack.settle_source(DeformSource::Weld, held);
@@ -124,7 +99,6 @@ fn apply_one(
         return;
     }
 
-    // Per pair, aligned with weld.pairs: the world-space pull on each side.
     let mut delta_a: SmallVec<[Vec2; 32]> = SmallVec::new();
     let mut delta_b: SmallVec<[Vec2; 32]> = SmallVec::new();
     {
@@ -149,8 +123,6 @@ fn apply_one(
             let world_a = side_a.world.transform_point2(base_a - origin_a + da);
             let world_b = side_b.world.transform_point2(base_b - origin_b + db);
             let w = pair.weight.clamp(0.0, 1.0);
-            // blended = w·A + (1-w)·B, so A moves by (1-w)·(B-A) and B by
-            // w·(A-B): higher weight pins A and pulls B toward it.
             delta_a.push((world_b - world_a) * (1.0 - w));
             delta_b.push((world_a - world_b) * w);
         }
@@ -176,10 +148,6 @@ fn apply_one(
     );
 }
 
-/// Sum the part's active deform sources — including the Weld slot when an
-/// earlier record already wrote it this frame — without disturbing the
-/// stack's combined/generation memo. False when the node isn't an enabled
-/// Part.
 fn read_current(arena: &mut Arena, id: NodeIdx, out: &mut Vec<Vec2>) -> bool {
     let Some(node) = arena.get_mut(id) else {
         return false;
@@ -248,9 +216,6 @@ mod tests {
     use crate::deform::DeformStack;
     use glam::Vec3;
 
-    // Two single-triangle Parts sharing the seam edge x∈[0,10] at y=0:
-    // part A above (apex +y), part B below (apex -y). Seam pairs:
-    // A verts 0,1 ↔ B verts 0,1, coincident at rest.
     fn two_part_arena(offset_b: Vec2) -> (Arena, NodeIdx, NodeIdx) {
         let mut arena = Arena::new();
         let a = insert_part(
@@ -351,9 +316,7 @@ mod tests {
 
     #[test]
     fn gpu_space_coincident_seam_with_nonzero_origin_is_a_no_op() {
-        // GPU draws v - origin. A origin-0 seam at (0,0)/(10,0) and B with
-        // origin (3,0) and verts shifted by that origin meet on screen;
-        // welding in raw verts would see B 3px to the right and pull.
+        // The GPU draws v - origin, so welding must use world positions.
         let mut arena = Arena::new();
         let a = insert_part(
             &mut arena,
@@ -394,10 +357,6 @@ mod tests {
         assert_eq!(weld_slot(&arena, b), vec![Vec2::ZERO; 3]);
     }
 
-    // B's node sits translated by (4, 2) while its verts compensate, so the
-    // seam is coincident in world space but the two parts' local frames
-    // differ — the solve must still be a no-op, proving the world-space
-    // round-trip through both transforms is consistent.
     #[test]
     fn differing_local_frames_with_coincident_world_seam_is_a_no_op() {
         let (mut arena, a, b) = two_part_arena(Vec2::new(4.0, 2.0));
@@ -414,7 +373,6 @@ mod tests {
     #[test]
     fn midweight_meets_halfway_after_a_deform() {
         let (mut arena, a, b) = two_part_arena(Vec2::ZERO);
-        // Move A's whole mesh right by 8 via a param-style deform source.
         if let Some(node) = arena.get_mut(a) {
             if let NodeKind::Part(p) = &mut node.kind {
                 p.deform_stack
@@ -427,12 +385,10 @@ mod tests {
 
         let slot_a = weld_slot(&arena, a);
         let slot_b = weld_slot(&arena, b);
-        // combined() on A includes the Test deform; the weld pull is on top.
         assert!((slot_a[0] - Vec2::new(8.0 - 4.0, 0.0)).length() < 1e-5);
         assert!((slot_a[1] - Vec2::new(8.0 - 4.0, 0.0)).length() < 1e-5);
         assert!((slot_b[0] - Vec2::new(4.0, 0.0)).length() < 1e-5);
         assert!((slot_b[1] - Vec2::new(4.0, 0.0)).length() < 1e-5);
-        // The apexes (vert 2) are not welded and keep their own deforms.
         assert!((slot_a[2] - Vec2::new(8.0, 0.0)).length() < 1e-5);
         assert!(slot_b[2].length() < 1e-5);
     }
@@ -469,10 +425,6 @@ mod tests {
         }
     }
 
-    // A rotated part must receive its pull in its own local basis: rotate B
-    // by 90° around Z (its verts pre-rotated back so the world seam stays
-    // coincident), deform A, and check B's local-space pull is the world
-    // pull rotated by -90°.
     #[test]
     fn pull_maps_through_the_inverse_linear_part() {
         let mut arena = Arena::new();
@@ -485,8 +437,7 @@ mod tests {
                 Vec2::new(5.0, 10.0),
             ],
         );
-        // Local frame rotated +90°: local (x, y) lands at world (-y, x), so
-        // world seam verts (0,0) and (10,0) are local (0,0) and (0,-10).
+        // Local frame rotated +90°: local (x, y) lands at world (-y, x).
         let rot = Transform {
             rotation: Vec3::new(0.0, 0.0, std::f32::consts::FRAC_PI_2),
             ..Transform::default()
@@ -533,8 +484,6 @@ mod tests {
         }]
         .into();
         run(&mut arena);
-        // World pull on B is (8, 0); in B's +90°-rotated local frame that is
-        // (0, -8).
         let b_pull = weld_slot(&arena, b)[0];
         assert!(
             (b_pull - Vec2::new(0.0, -8.0)).length() < 1e-4,
@@ -558,8 +507,6 @@ mod tests {
         assert_eq!(weld_slot(&arena, b), vec![Vec2::ZERO; 3]);
     }
 
-    // Two records touching the same part must accumulate, and the second
-    // must read deforms that include the first's write (sequential solve).
     #[test]
     fn sequential_records_accumulate_and_chain() {
         let (mut arena, a, b) = two_part_arena(Vec2::ZERO);
@@ -579,8 +526,6 @@ mod tests {
                     .unwrap();
             }
         }
-        // a–b with w=1 snaps b's seam to a's (moved by 8); then b–c with w=1
-        // snaps c's seam to b's — which must be the *welded* position.
         arena.welds = vec![seam_weld(a, b, 1.0), seam_weld(b, c, 1.0)].into();
         run(&mut arena);
         let c_pull = weld_slot(&arena, c)[0];
@@ -590,7 +535,6 @@ mod tests {
         );
     }
 
-    // Across frames the pooled Weld slot must be re-zeroed, not accumulate.
     #[test]
     fn weld_slot_does_not_accumulate_across_frames() {
         let (mut arena, a, b) = two_part_arena(Vec2::ZERO);
@@ -604,7 +548,6 @@ mod tests {
         arena.welds = vec![seam_weld(a, b, 0.0)].into();
         run(&mut arena);
         let first = weld_slot(&arena, a);
-        // Frame 2: same pose. reset + re-apply like a real frame.
         arena.reset_deforms();
         if let Some(node) = arena.get_mut(a) {
             if let NodeKind::Part(p) = &mut node.kind {
@@ -617,9 +560,6 @@ mod tests {
         assert_eq!(weld_slot(&arena, a), first);
     }
 
-    /// A seam that did not move pulls exactly as it did last fold, so the
-    /// welded parts keep their combined deform and its generation — what the
-    /// renderer keys an upload on. A seam that did move gets a new one.
     #[test]
     fn an_unmoved_seam_keeps_the_generation_and_a_moved_one_does_not() {
         fn frame(arena: &mut Arena, a: NodeIdx, shift: f32) {

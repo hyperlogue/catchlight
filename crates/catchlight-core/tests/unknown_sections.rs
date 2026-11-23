@@ -1,10 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! A section this build does not recognise is carried, not dropped.
-//!
-//! The container is a table of numbered sections and a newer writer may add
-//! one. A file that passes through an older catchlight — opened, edited,
-//! saved — has to come out with that section intact, or every tool built on
-//! the older one is quietly destructive.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -18,7 +13,6 @@ const FUTURE: u32 = 77;
 const FURTHER: u32 = 1000;
 
 fn fixture() -> Vec<u8> {
-    // crates/catchlight-core/ -> crates/ -> workspace root.
     let path: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
         .nth(2)
@@ -27,9 +21,6 @@ fn fixture() -> Vec<u8> {
     std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
 }
 
-/// The fixture as a newer writer might have left it: its own two sections
-/// with three this build has no name for threaded between them, two of them
-/// under one kind.
 fn file_from_the_future() -> Vec<u8> {
     let bytes = fixture();
     let original = container::read(&bytes, &clm::MAGIC).unwrap();
@@ -84,8 +75,6 @@ fn kinds(bytes: &[u8]) -> Vec<(u32, Vec<u8>)> {
         .collect()
 }
 
-/// Decode, encode: every unknown section is still there, byte for byte and
-/// in the order the file had them, after the sections this build writes.
 #[test]
 fn a_decoded_file_writes_its_unknown_sections_back() {
     let bytes = file_from_the_future();
@@ -105,15 +94,12 @@ fn a_decoded_file_writes_its_unknown_sections_back() {
         ]
     );
 
-    // The first save moved them behind the known sections; from then on a
-    // save changes nothing.
+    // The first save moves them behind the known sections.
     let again = clm::decode(&saved).unwrap();
     assert_eq!(again, file);
     assert_eq!(again.encode().unwrap(), saved);
 }
 
-/// The same through a `Model`, which is the path an editor saves by — and
-/// across an edit, which is the point of opening the file at all.
 #[test]
 fn a_model_carries_unknown_sections_through_an_edit_and_a_save() {
     let bytes = file_from_the_future();
@@ -124,7 +110,6 @@ fn a_model_carries_unknown_sections_through_an_edit_and_a_save() {
     assert_eq!(model.to_clm_bytes().unwrap(), expected);
     assert_eq!(model.to_clm_file().unwrap().unknown_sections, carried());
 
-    // Read from a decoded file rather than from bytes.
     let through_file = Model::from_clm_file(&clm::decode(&bytes).unwrap()).unwrap();
     assert_eq!(through_file.unknown_sections(), carried());
     assert_eq!(through_file.to_clm_bytes().unwrap(), expected);
@@ -150,7 +135,6 @@ fn a_model_carries_unknown_sections_through_an_edit_and_a_save() {
     );
 }
 
-/// A file with nothing unknown in it is written exactly as before.
 #[test]
 fn a_file_with_no_unknown_section_is_unchanged() {
     let bytes = fixture();
@@ -163,7 +147,6 @@ fn a_file_with_no_unknown_section_is_unchanged() {
     );
 }
 
-/// Two models that differ only in what they carry are two different files.
 #[test]
 fn authored_equality_sees_unknown_sections() {
     let with = Model::from_clm_bytes(&file_from_the_future()).unwrap();
@@ -176,8 +159,6 @@ fn authored_equality_sees_unknown_sections() {
         .unwrap());
 }
 
-/// A structure push is not a file: it carries none of them, and applying one
-/// leaves a replica the ones it was loaded with.
 #[test]
 fn a_structure_push_neither_carries_nor_clears_them() {
     let bytes = file_from_the_future();
@@ -223,8 +204,6 @@ fn a_structure_push_neither_carries_nor_clears_them() {
     );
 }
 
-/// An addon is a piece cut out of a model, and nothing says which piece an
-/// unreadable section is about.
 #[test]
 fn an_extracted_addon_carries_none() {
     let mut model = Model::from_clm_bytes(&file_from_the_future()).unwrap();
@@ -245,9 +224,6 @@ fn an_extracted_addon_carries_none() {
     );
 }
 
-/// A carried section under a kind the format defines would be a second
-/// structure, or turn the file into a structure-only container. A reader
-/// never produces one; a hand-built file that holds one is refused.
 #[test]
 fn a_section_of_a_known_kind_cannot_be_carried_as_unknown() {
     for kind in 0..=3 {
@@ -263,8 +239,6 @@ fn a_section_of_a_known_kind_cannot_be_carried_as_unknown() {
     }
 }
 
-/// A hand-built file's unknown sections count toward its encoded bytes, as
-/// they do when the same file arrives as bytes.
 #[test]
 fn unknown_sections_are_charged_as_encoded_bytes() {
     let mut file = clm::decode(&fixture()).unwrap();

@@ -1,13 +1,4 @@
 //! Evaluating a model's bindings at a pose.
-//!
-//! A [`Pose`] is a plain map from [`ParamId`] to a value — that is what scalar
-//! params buy. Evaluation locates each of a binding's one or two params on its
-//! key positions, then interpolates the binding's dense grid: linearly along
-//! one param, bilinearly across two, and the same four modes the runtime folds
-//! with. `bracket` and `frac` come from `crate::interpolate`, so a Model and a
-//! puppet locate the same pose in the same place, and the grid itself is
-//! [`Model::binding_dense`]'s memo, so posing a model repeatedly derives each
-//! fill once.
 
 use std::collections::HashMap;
 
@@ -16,8 +7,7 @@ use crate::interpolate::{cubic, frac, InterpolateMode};
 
 use super::{BindingKey, BindingTarget, DenseGrid, Model, ModelError};
 
-/// An assignment of values to a model's params. A param the pose does not
-/// mention reads its default, so a partial pose is a legal pose.
+/// A param the pose does not mention reads its default.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Pose(HashMap<ParamId, f32>);
 
@@ -61,15 +51,12 @@ impl FromIterator<(ParamId, f32)> for Pose {
     }
 }
 
-/// Where a pose sits on one binding axis: the bracketing indices and
-/// how far between them it fell.
 struct Located {
     lo: usize,
     hi: usize,
     frac: f32,
 }
 
-/// A value a binding grid can hold and interpolation can mix.
 trait Sample: Clone {
     fn lerp(a: &Self, b: &Self, t: f32) -> Self;
     fn spline(p: [&Self; 4], t: f32) -> Self;
@@ -111,8 +98,6 @@ impl Sample for Vec<f32> {
 }
 
 impl Model {
-    /// The value a scalar binding contributes at `pose`, or `None` when the
-    /// key names no binding (or names a deform one).
     pub fn eval_scalar(&self, key: &BindingKey, pose: &Pose) -> Option<f32> {
         if !matches!(key.target, BindingTarget::Scalar(_)) {
             return None;
@@ -124,8 +109,7 @@ impl Model {
         }
     }
 
-    /// The per-vertex offsets a deform binding contributes at `pose`, flat
-    /// `[dx, dy, …]`, or `None` when the key names no deform binding.
+    /// Flat `[dx, dy, …]`.
     pub fn eval_deform(&self, key: &BindingKey, pose: &Pose) -> Option<Vec<f32>> {
         if key.target != BindingTarget::Deform {
             return None;
@@ -137,7 +121,6 @@ impl Model {
         }
     }
 
-    /// Where `pose` puts a param on this binding's key positions.
     fn locate(&self, param: &ParamId, axis: &[f32], pose: &Pose) -> Result<Located, ModelError> {
         let p = self.param(param).ok_or(ModelError::UnknownParam)?;
         if axis.is_empty() {
@@ -166,7 +149,6 @@ impl Model {
         })
     }
 
-    /// Interpolate a dense grid at `pose`, in the binding's own mode.
     fn interpolate<T: Sample>(
         &self,
         key: &BindingKey,
@@ -201,9 +183,8 @@ impl Model {
                 at(cx, cy).clone()
             }
             InterpolateMode::Stepped => {
-                // Hold the bracket's lower cell, except at the very top of an
-                // axis, where the bracket stops advancing and the last cell
-                // would otherwise be unreachable.
+                // At the very top of an axis the bracket stops advancing; without this the
+                // last cell would be unreachable.
                 let cx = if fx >= 1.0 && x1 + 1 >= w { x1 } else { x0 };
                 let cy = if fy >= 1.0 && y1 + 1 >= h { y1 } else { y0 };
                 at(cx, cy).clone()
@@ -214,9 +195,7 @@ impl Model {
                 T::lerp(&top, &bottom, fy)
             }
             InterpolateMode::Cubic => {
-                // The spline reaches one cell past the bracket on each side;
-                // clamping the outer indices makes edge cells degrade to
-                // linear rather than index out of the grid.
+                // Clamping the outer indices degrades edge cells to linear.
                 let cx = [x0.saturating_sub(1), x0, x1, (x1 + 1).min(w - 1)];
                 let cy = [y0.saturating_sub(1), y0, y1, (y1 + 1).min(h - 1)];
                 let row = |r: usize| {
@@ -238,8 +217,6 @@ pub(super) mod tests {
         BindingParams, ModelNode, ModelNodeKind, ModelParam, ModelPart, ScalarTarget,
     };
 
-    /// A part with a two-param binding, each axis at 0 / 0.5 / 1 over
-    /// the range [0, 1].
     pub(super) fn fixture() -> (Model, BindingKey, ParamId, ParamId) {
         let mut hex = SeededHex::new(13);
         let mut model = Model::new();
@@ -287,8 +264,6 @@ pub(super) mod tests {
             .collect()
     }
 
-    /// The whole point of a two-param binding: the corners are authored
-    /// independently and the middle is the bilinear blend of all four.
     #[test]
     fn a_two_param_deform_binding_is_bilinear_over_its_grid() {
         let (mut model, key, x, y) = fixture();
@@ -305,7 +280,6 @@ pub(super) mod tests {
             .set_deform_vertices(&key, [2, 2], vec![10.0, 20.0, 10.0, 20.0])
             .unwrap();
 
-        // Each corner evaluates to what was authored there.
         assert_eq!(
             model
                 .eval_deform(&key, &pose((&x, 1.0), (&y, 0.0)))
@@ -318,7 +292,6 @@ pub(super) mod tests {
                 .unwrap(),
             vec![0.0, 20.0, 0.0, 20.0],
         );
-        // The centre is the blend of all four.
         let mid = model
             .eval_deform(&key, &pose((&x, 0.5), (&y, 0.5)))
             .unwrap();
@@ -326,8 +299,6 @@ pub(super) mod tests {
         assert!((mid[1] - 10.0).abs() < 1e-5, "{mid:?}");
     }
 
-    /// One param moving must move the value on its own axis and nothing else —
-    /// the pair is a grid, not two independent contributions.
     #[test]
     fn each_param_drives_its_own_axis() {
         let (mut model, key, x, y) = fixture();
@@ -345,8 +316,6 @@ pub(super) mod tests {
         assert!(only_y[0].abs() < 1e-5, "{only_y:?}");
     }
 
-    /// A scalar binding on one param is the same evaluation with the second
-    /// axis collapsed.
     #[test]
     fn a_one_param_scalar_binding_is_linear() {
         let (mut model, _, x, _) = fixture();
@@ -370,8 +339,6 @@ pub(super) mod tests {
         };
         assert!((at(0.0) + 2.0).abs() < 1e-5);
         assert!((at(1.0) - 6.0).abs() < 1e-5);
-        // The middle key position derives to the midpoint (2.0), so a quarter
-        // of the way along lands halfway between -2 and 2.
         assert!((at(0.5) - 2.0).abs() < 1e-5, "{}", at(0.5));
         assert!(at(0.25).abs() < 1e-5, "{}", at(0.25));
     }
@@ -384,9 +351,8 @@ mod memo_tests {
     use crate::formats::clm::{ClmIndices, ClmMesh};
     use crate::model::DenseGrid;
 
-    /// The memo is only sound if everything the fill reads invalidates it: the
-    /// authored cells, the key positions they are weighed by, and the mesh a
-    /// deform's identity is sized to.
+    /// The memo must be invalidated by authored cells, key positions, and the
+    /// mesh a deform's identity is sized to.
     #[test]
     fn the_dense_grid_is_rebuilt_when_what_it_came_from_moves() {
         let (mut model, key, x, _) = fixture();
@@ -399,18 +365,15 @@ mod memo_tests {
         let before = at(&model).unwrap();
         assert_eq!(at(&model).unwrap(), before, "a second read is the memo");
 
-        // An authored cell.
         model
             .set_deform_vertices(&key, [1, 0], vec![9.0, 0.0, 0.0, 0.0])
             .unwrap();
         let after_cell = at(&model).unwrap();
         assert_ne!(after_cell, before, "the new keypoint reached the grid");
 
-        // A key position: the cells are unchanged, their weights are not.
         model.key_move(&key, &x, 1, 0.9).unwrap();
         assert_ne!(at(&model).unwrap(), after_cell, "moving the key re-derived");
 
-        // The mesh a deform is sized to.
         let node = key.node.clone();
         model
             .set_node_mesh(
@@ -430,8 +393,6 @@ mod memo_tests {
         );
     }
 
-    /// Cloning a model shares the memo, and editing one snapshot must not
-    /// reach the other's.
     #[test]
     fn a_snapshot_keeps_the_grid_it_was_taken_with() {
         let (mut model, key, x, _) = fixture();
@@ -454,8 +415,6 @@ mod memo_tests {
         );
     }
 
-    /// A binding with no authored cells still has a grid — the identity at
-    /// every cell — so a reader never has to special-case one.
     #[test]
     fn an_unauthored_binding_derives_the_identity_grid() {
         let (mut model, key, _, _) = fixture();

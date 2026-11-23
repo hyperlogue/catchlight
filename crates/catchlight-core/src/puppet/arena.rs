@@ -1,20 +1,4 @@
 //! The compact-index node arena a puppet evaluates in.
-//!
-//! Both runtimes address nodes by [`NodeIdx`], a slot into one dense `Vec` —
-//! never by Id — so a full-node pass is cache-linear and a point lookup is a
-//! bounds check plus an index. Every `NodeIdx` handed out by `insert_child` is
-//! sequential and never removed, which is what makes the slot index and the
-//! handle the same number. Ids live at the edge: a [`crate::puppet::Puppet`]
-//! translates them when it bakes and when a caller asks.
-//!
-//! The arena holds the *evaluated frame* — each node's working transform,
-//! z order, colour and deform stack — plus what is baked once from the model
-//! it came from: mesh-group pins, the triangle bins, and the base
-//! matrices the transform walk reuses when a node has no delta this frame.
-//! What it does not hold is a pose: a fold writes into the arena, but which
-//! fold to run and at what values is the owning runtime's business. That is
-//! the whole reason it is a separate struct — [`crate::puppet`] carries the
-//! pose layers over one set of passes.
 
 use std::sync::Arc;
 
@@ -23,11 +7,7 @@ use glam::{Mat4, Vec2};
 use crate::components::{Node, NodeIdx};
 use crate::node::NodeTree;
 
-/// Computed global transforms for all nodes in a puppet.
-/// `Vec<Mat4>` indexed by `NodeIdx.0`; aligns with the dense node storage so
-/// point lookups are a bounds check + index rather than a hash probe, and
-/// the DFS walk in compute_transforms_with_root writes through contiguous
-/// memory.
+/// Global transforms indexed by `NodeIdx.0`.
 #[derive(Debug, Clone)]
 pub struct GlobalTransforms {
     transforms: Vec<Mat4>,
@@ -72,70 +52,35 @@ impl Default for GlobalTransforms {
     }
 }
 
-/// The dense node storage and the passes that run over it.
-///
-/// Field visibility is `pub(crate)` because [`crate::meshgroup`] and
-/// [`crate::weld`] borrow several of these disjointly in one loop, which no
-/// accessor pair can express.
+/// Fields are `pub(crate)` because [`crate::meshgroup`] and [`crate::weld`]
+/// borrow several of them disjointly in one loop.
 #[derive(Clone)]
 pub(crate) struct Arena {
-    // Dense storage indexed by NodeIdx.0. Every NodeIdx allocated via
-    // `allocate_id` is sequential and never removed, so NodeIdx doubles
-    // as the slot index -- no HashMap<NodeIdx,_> indirection, full-node
-    // passes are cache-linear, and point lookups are a bounds check + index.
+    // Indexed by NodeIdx.0; NodeIdx is sequential and never removed, so it
+    // doubles as the slot index.
     pub(crate) nodes: Vec<Node>,
-    // Fixed once the bake has filled it, so clones of a puppet share it.
     pub(crate) tree: Arc<NodeTree>,
     next_id: u32,
-    // Frame-persistent scratch used by propagate_mesh_group_deforms to
-    // carry computed offsets between a read-borrow of the MG node and a
-    // write-borrow of the child node. Sized by the largest child
-    // vert_count seen so far; reused across MGs and across frames.
+    // Frame-persistent scratch, sized by the largest child vert_count seen.
     pub(crate) mg_propagate_scratch: Vec<glam::Vec2>,
-    // Parallel scratch used by mesh-group propagation to read the child's
-    // combined-minus-Node(mg_id) deform without allocating a per-frame
-    // Vec. Sized by the largest child vert_count seen so far.
     pub(crate) mg_cur_deform_scratch: Vec<glam::Vec2>,
-    // Per-MG scratch for `mg_vertices[i] + mg_combined[i]` precomputed
-    // once per MG before the per-child loop. Avoids re-summing per
-    // child-vert when many children of the same MG hit the same MG
-    // triangle. Sized by the largest MG vertex count.
     pub(crate) mg_deformed_vertices_scratch: Vec<glam::Vec2>,
-    // Per-MG scratch for the lattice's rest positions in its own space,
-    // `mg_vertices[i] - origin`, filled once per MG and read by the
-    // translate-children shift and by every child below it.
     pub(crate) mg_local_scratch: Vec<glam::Vec2>,
-    // Cached pre-order of MeshGroup NodeIdxs. Invalidated on tree edits
-    // (see insert_child). None = stale, recompute on next access.
+    // None = stale.
     pub(crate) mg_pre_order_cache: Option<Vec<NodeIdx>>,
-    // The vertex buffers stay in their original deform stacks across a reset.
     pub(crate) mg_written_sources: Vec<(NodeIdx, NodeIdx)>,
     pub(crate) mg_shifts: Vec<(NodeIdx, Vec2)>,
-    // base_transform.to_matrix() cached per slot. 60-100ns per node of
-    // quat/mat ops saved in compute_transforms when the node has no
-    // active transform delta this frame.
+    // Saves ~60-100ns of quat/mat ops per node with no delta this frame.
     pub(crate) base_local_matrix: Arc<Vec<Mat4>>,
-    // Parallel to nodes: true when a fold wrote a delta into
-    // node.transform this frame. Cleared by reset_dynamic_state.
     pub(crate) node_transform_dirty: Vec<bool>,
     pub(crate) deform_node_ids: Vec<NodeIdx>,
-    /// Puppet-global weld list; solve order is list order (see
-    /// [`crate::weld::apply_welds`]).
+    /// Solve order is list order.
     pub(crate) welds: Arc<Vec<crate::weld::Weld>>,
-    // Frame-persistent scratches for the weld pass: each side's current
-    // deform sum, read without disturbing the stack memos.
     pub(crate) weld_cur_a_scratch: Vec<glam::Vec2>,
     pub(crate) weld_cur_b_scratch: Vec<glam::Vec2>,
-    // What each welded part's Weld slot held when the pass began, one buffer
-    // per part touched, so the pass can tell whether its pulls moved.
     pub(crate) weld_before_scratch: Vec<Vec<glam::Vec2>>,
-    /// Spine nodes, in arena order. `Baked::spine_targets` is parallel to it.
+    /// `Baked::spine_targets` is parallel to this.
     pub(crate) spine_node_ids: Vec<NodeIdx>,
-    // Frame-persistent scratch for the spine pass, the same pair
-    // `propagate_mesh_group_deforms` keeps: the offsets computed under a read
-    // borrow of the spine and written under a write borrow of the child, and
-    // the child's combined-minus-Node(spine) deform read without disturbing
-    // the stack memos.
     pub(crate) spine_scratch: Vec<glam::Vec2>,
     pub(crate) spine_cur_deform_scratch: Vec<glam::Vec2>,
     pub(crate) mesh_group_node_ids: Vec<NodeIdx>,
@@ -146,7 +91,6 @@ impl Arena {
         let root_id = NodeIdx::new(0);
         let tree = Arc::new(NodeTree::new(root_id));
 
-        // Slot 0 = root (NodeIdx::new(0)).
         let nodes = vec![Node::default()];
 
         Self {
@@ -213,7 +157,6 @@ impl Arena {
         }
     }
 
-    /// Rebuild the three kind registries from the current node kinds.
     pub(crate) fn rebuild_kind_registries(&mut self) {
         self.deform_node_ids.clear();
         self.spine_node_ids.clear();
@@ -236,7 +179,6 @@ impl Arena {
         self.invalidate_structure_caches();
     }
 
-    /// Drop every cache that depends on tree shape or node kinds.
     pub(crate) fn invalidate_structure_caches(&mut self) {
         self.mg_pre_order_cache = None;
     }
@@ -247,7 +189,7 @@ impl Arena {
         if self.mesh_group_node_ids.is_empty() {
             return;
         }
-        // The bins first: the pins are found through them.
+        // The pins are found through the bins.
         for i in 0..self.mesh_group_node_ids.len() {
             let id = self.mesh_group_node_ids[i];
             if let Some(crate::NodeKind::MeshGroup(mesh_group)) =
@@ -278,9 +220,7 @@ impl Arena {
         }
     }
 
-    /// Restore every node's transform / z_order / colour to the authored
-    /// baseline. Call at the start of a frame before a fold, so deltas don't
-    /// accumulate across frames.
+    /// Call at the start of a frame so deltas don't accumulate across frames.
     pub(crate) fn reset_dynamic_state(&mut self) {
         let _span = tracing::trace_span!("reset_dynamic_state").entered();
         for d in self.node_transform_dirty.iter_mut() {
@@ -305,8 +245,6 @@ impl Arena {
         }
     }
 
-    /// Clear every DeformStack on Part / MeshGroup nodes. Call at the
-    /// start of a frame before any sources push their contributions.
     pub(crate) fn reset_deforms(&mut self) {
         let _span = tracing::trace_span!("reset_deforms").entered();
         for &id in &self.deform_node_ids {
@@ -320,8 +258,6 @@ impl Arena {
         }
     }
 
-    /// Collapse each DeformStack's active sources into its combined
-    /// per-vertex offset. Idempotent and cheap when nothing is dirty.
     pub(crate) fn combine_deforms(&mut self) {
         let _span = tracing::trace_span!("combine_deforms").entered();
         for &id in &self.deform_node_ids {
@@ -335,8 +271,6 @@ impl Arena {
         }
     }
 
-    /// Derive each spine's per-vertex assignment from the drawing's transforms,
-    /// like [`Self::rebuild_all_mesh_group_pins`] does for mesh groups.
     pub(crate) fn rebuild_spine_rest_state(&mut self) {
         self.reset_dynamic_state();
         self.reset_deforms();
@@ -360,18 +294,12 @@ impl Arena {
         }
     }
 
-    /// Turn every spine's descendants by this frame's bends. Call after the
-    /// transforms are computed and before the mesh groups, so a group above a
-    /// spine warps art the spine has already bent.
+    /// Call after the transforms and before the mesh groups.
     pub(crate) fn propagate_spine_deforms(&mut self, transforms: &GlobalTransforms) {
         let _span = tracing::trace_span!("propagate_spine_deforms").entered();
         crate::spine::propagate_spine_deforms(self, transforms);
     }
 
-    /// Run the mesh groups in pre-order: each combines its stack, shifts its
-    /// `translate_children` targets and brings the globals under them up to
-    /// date in `transforms`, then pushes the combined deform to its meshed
-    /// children. `root` is the same fold `compute_transforms_with_root` takes.
     pub(crate) fn propagate_mesh_group_deforms(
         &mut self,
         transforms: &mut GlobalTransforms,
@@ -381,20 +309,15 @@ impl Arena {
         crate::meshgroup::propagate_mesh_group_deforms(self, transforms, root);
     }
 
-    /// Solve every weld into the parts' `DeformSource::Weld` slots. Call
-    /// after `propagate_mesh_group_deforms` and before `combine_deforms`.
+    /// Call after `propagate_mesh_group_deforms` and before `combine_deforms`.
     pub(crate) fn apply_welds(&mut self, transforms: &GlobalTransforms) {
         crate::weld::apply_welds(self, transforms);
     }
 
-    /// Allocate a new id, attach as a child of `parent`, and install `node`.
-    ///
-    /// This is the only supported way to grow the arena, so the dense stores
-    /// and the tree stay in sync.
+    /// The only supported way to grow the arena, so the dense stores and the
+    /// tree stay in sync.
     pub(crate) fn insert_child(&mut self, parent: NodeIdx, node: Node) -> NodeIdx {
         let id = self.allocate_id();
-        // An unresolvable parent would leave the node registered in every side
-        // index but absent from tree walks.
         // Only a bake grows the arena, and it holds the only reference.
         let tree = Arc::make_mut(&mut self.tree);
         if let Err(err) = tree.add_child(parent, id) {
@@ -428,7 +351,6 @@ impl Arena {
         if is_spine {
             self.spine_node_ids.push(id);
         }
-        // Inserting a node invalidates the cached traversal orders.
         self.invalidate_structure_caches();
         id
     }
@@ -444,17 +366,12 @@ impl Arena {
         self.compute_transforms_with_root(out, Mat4::IDENTITY);
     }
 
-    /// Fold `root` into the top-level transform of the puppet so it
-    /// renders at an arbitrary world position. Used by bevy integration
-    /// to apply the entity's `GlobalTransform` without re-pointing the
-    /// shared camera uniform between puppets: every `queue.write_buffer`
-    /// lands at the start of the next submit, so a uniform rewritten between
-    /// two puppets' passes would reach both with its last value.
+    /// Rendering uses this rather than rewriting the shared camera uniform per
+    /// puppet: `queue.write_buffer` lands at the next submit, so every pass would
+    /// see the last value.
     pub(crate) fn compute_transforms_with_root(&self, out: &mut GlobalTransforms, root: Mat4) {
         let _span = tracing::trace_span!("compute_transforms_with_root").entered();
-        // Size the Vec once at frame start; each insert below is then a
-        // direct index write. DFS covers every reachable node so we
-        // don't need a post-walk clear to scrub stale slots.
+        // DFS covers every reachable node, so no post-walk clear is needed.
         out.ensure_size(self.nodes.len());
 
         self.tree.with_dfs_order(|order| {
@@ -479,11 +396,8 @@ impl Arena {
         });
     }
 
-    /// One node's local matrix. Skips `Transform::to_matrix()` if (a) the
-    /// fold didn't write this frame and (b) the transform still matches base
-    /// (invariant preserved when no external code has touched the Transform
-    /// fields). A 36-byte equality compare is cheaper than
-    /// `from_scale_rotation_translation` + `Quat::from_euler`.
+    /// Skips `Transform::to_matrix()` when the fold didn't write this frame and
+    /// the transform still equals base; the compare is cheaper than the rebuild.
     #[inline]
     fn local_matrix(&self, slot: usize, node: Option<&Node>) -> Mat4 {
         let Some(n) = node else {
@@ -500,11 +414,8 @@ impl Arena {
         }
     }
 
-    /// Recompute the globals of `subtree_root` and everything under it,
-    /// reading the parent's global back out of `out`. Same per-node logic as
-    /// `compute_transforms_with_root`, restricted to one subtree: a mesh
-    /// group's `translate_children` shift moves a whole node mid-pass, and
-    /// what sits under it has to read the shifted place.
+    /// A mesh group's `translate_children` shift moves a node mid-pass, so its
+    /// subtree must be recomputed from the shifted parent.
     pub(crate) fn recompute_subtree_transforms(
         &self,
         out: &mut GlobalTransforms,

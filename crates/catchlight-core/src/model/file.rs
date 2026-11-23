@@ -1,78 +1,11 @@
 //! The file edge: a [`Model`] to and from `.clm` bytes.
 //!
-//! There is no translation here beyond framing — [`crate::formats::clm`] holds
-//! the same value types the Model does, and both sides key everything by Id —
-//! so this module orders, checks and copies, and nothing else. Its two
-//! obligations:
-//!
-//! - **Writing is total and deterministic.** A Model's tree is always valid
-//!   and its cross-references are always live, so [`Model::to_clm_file`] has
-//!   nothing left to refuse. It still checks the two things it used to be
-//!   able to meet — a deform cell whose length its node's mesh cannot take,
-//!   and a weld whose end is not a part — though no edit produces either any
-//!   more ([`Model::set_node_mesh_with`] holds a refit to the new mesh, and
-//!   [`Model::update_node_kind`] refuses the kind swap), so that a file this
-//!   writes is always one this reader takes.
-//!   The orders it
-//!   writes — nodes pre-order from the root, params, textures and bindings in
-//!   the Model's own order — are the Model's, so the same Model always writes
-//!   the same bytes.
-//! - **Reading trusts nothing.** Every Id in the file is resolved against what
-//!   the file itself declares, and a failure names the field and the Id that
-//!   dangled ([`ClmLoadError`]). What the reader accepts is exactly what the
-//!   Model's own invariants allow, so a loaded Model needs no repair pass.
-//!   Beyond the Ids, that is a list of checks, each the file-shaped half of a
-//!   rule an edit already obeys: a param's range has to be finite and
-//!   increasing ([`crate::param_range_is_valid`]) and its default finite
-//!   ([`Model::set_param_default`]); a node's z-order and transform have to
-//!   be finite ([`Model::update_node`]); a spine's joints have to be ones the
-//!   turn pass can compose ([`Model::set_spine_joints`]); a binding's key has
-//!   to be its own ([`Model::add_binding`]); a mask source has to be a kind
-//!   the renderer draws ([`Model::mask_add`]); a deform binding has to sit on a
-//!   node that carries a mesh, and a colour binding may not sit on a mesh
-//!   group ([`Model::add_binding`]); a mesh has to be `[x, y]` pairs with uvs
-//!   to match and every index in range ([`Model::set_node_mesh`]); a deform
-//!   cell has to be sized to its node's mesh; and every texture the file
-//!   carries has to be one some part's albedo names
-//!   ([`ClmLoadError::UnusedTexture`], the file-shaped half of
-//!   [`Model::add_texture`] taking the part the texture is for); and an
-//!   animation lane's keyframes have to be in frame order
-//!   ([`Model::set_animations`], because playback reads a lane by binary
-//!   search).
-//! - **A file is read as one shape or the other, never guessed.**
-//!   [`Model::from_clm_bytes`] reads a *complete model*: one node with no
-//!   parent, and nothing dangling. [`Model::from_clm_bytes_fragment`] reads an
-//!   *addon fragment*: every node names a parent, the ones the file does not
-//!   carry are its roots, and every other reference into a base — mask
-//!   source, response output, binding param, weld end, animation lane — may
-//!   dangle for [`Model::install`] to resolve. A part's albedo is the one
-//!   that may not: an addon carries the textures its own parts draw, so that
-//!   reference resolves inside the fragment in both shapes. The two shapes
-//!   are disjoint on
-//!   the wire (a complete model always has a parentless node and a fragment
-//!   never does), so a caller that does not know which it holds decodes once
-//!   and tries both readers against the same [`ClmFile`]; nothing else about
-//!   the container or the structure changes between them.
-//! - **A structure carries no bytes, and reading one is the same reading.**
-//!   [`Model::to_structure_bytes`] writes the `Structure` section and a
-//!   manifest of the model's textures, no payloads;
-//!   [`Model::replace_structure`] reads it back against payloads a caller
-//!   supplies by Id. Both sides go through the same structure builder as a
-//!   `.clm`, so a structure is held to every rule a file is — including that
-//!   every texture the manifest lists is one a part draws — and a payload the
-//!   caller cannot supply is [`ClmLoadError::MissingTexture`] rather than a
-//!   model with a hole in it. What the manifest says about a texture wins
-//!   over what the lookup hands back, so two replicas given one structure
-//!   hold one model.
-//! - **Replacing keeps the model and moves the clock.**
-//!   [`Model::replace_structure`] and [`Model::replace_from`] keep
-//!   [`Model::identity`] and bump [`Model::generation`]. That is what makes a
-//!   replica cheap: a puppet and a render cache built on the model read "the
-//!   same model, new state", so the puppet rebakes carrying its pose and its
-//!   drivers, and the cache rebuilds keeping every texture whose payload
-//!   `Arc` came back unchanged. The new state is built whole before either
-//!   field moves, so a refused structure leaves the model exactly as it was.
-//!
+//! Writing is total and deterministic. Reading trusts nothing: every check is
+//! the file-shaped half of a rule an edit already obeys, so a loaded Model
+//! needs no repair pass. A complete model and an addon fragment are disjoint
+//! on the wire (a fragment never has a parentless node), and the caller says
+//! which it is reading.
+
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::formats::clm::{
@@ -87,12 +20,7 @@ use crate::load_budget::{
 
 use super::*;
 
-/// Why a `.clm` could not be turned into a [`Model`]. Every variant names the
-/// Id that broke and the field that named it — a hostile or truncated file
-/// reports itself, it never panics and never loads half a model.
-///
-/// Non-exhaustive: every rule the reader starts holding a file to names
-/// itself with a variant of its own.
+/// Every variant names the Id that broke and the field that named it.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum ClmLoadError {
@@ -241,38 +169,22 @@ pub enum ClmLoadError {
     MissingTexture { id: String },
 }
 
-/// The slot Ids one part carries — what a weld's pairs are checked against.
 type SlotTable = HashSet<SlotId>;
 
-/// Which of the two shapes a `.clm` is being read as. The reader never
-/// guesses: the caller says, and the file is refused if it is the other one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Shape {
-    /// A complete model. Exactly one node has no parent, and every Id the file
-    /// names is one the file also carries.
     Base,
-    /// An addon fragment. Every node names a parent; the ones the file does
-    /// not carry are its roots, and every other reference into the base model
-    /// is left dangling for [`Model::install`] to resolve.
     Fragment,
 }
 
 impl Shape {
-    /// Whether a reference this shape allows to leave the file may dangle.
-    /// A binding's *node* never may, in either shape: an addon binds its own
-    /// nodes — see [`crate::model::addon`].
+    /// A binding's *node* never may dangle, in either shape.
     fn allows_dangling(self) -> bool {
         matches!(self, Self::Fragment)
     }
 }
 
-/// Pair a structure's extension markers with the bytes behind them.
-///
-/// A JSON value is already whole in the structure. A byte value is only a
-/// `{size, hash}` there, so `bytes` has to produce the payload, and it is
-/// held against the marker on the way in: the marker is what two readers of
-/// one structure agree on, so a payload that does not match it is refused
-/// rather than trusted.
+/// A byte payload that disagrees with its marker is refused, not trusted.
 fn extensions_of(
     doc: &ClmStructure,
     bytes: impl Fn(&ExtensionKey) -> Option<Arc<[u8]>>,
@@ -308,13 +220,9 @@ fn extensions_of(
 }
 
 impl Model {
-    /// Everything [`Self::to_clm_structure`] refuses, without building the
-    /// structure: a weld whose end is not a part, and a deform cell whose
-    /// length its node's mesh cannot take. No edit produces either any more;
-    /// both stay checked so that a structure this writes is always one this
-    /// reader takes. Separate from the writer so that
-    /// [`Self::authored_eq`] can report an unwritable model the way writing
-    /// it would, without writing it.
+    /// Everything [`Self::to_clm_structure`] refuses, without building it.
+    /// No edit produces either case; both stay checked so this writer's output
+    /// is always readable.
     pub(super) fn check_writable(&self) -> Result<(), ModelError> {
         let fragment = self.is_fragment();
         for weld in &self.welds {
@@ -334,9 +242,7 @@ impl Model {
         Ok(())
     }
 
-    /// Snapshot the model's `Structure` section — everything a `.clm`
-    /// carries except the texture payloads. Total for any Model whose deform
-    /// cells are sized to the meshes they sit on.
+    /// Total for any Model whose deform cells are sized to their meshes.
     pub fn to_clm_structure(&self) -> Result<ClmStructure, ModelError> {
         self.check_writable()?;
         let order = self.nodes_in_order();
@@ -401,9 +307,6 @@ impl Model {
             bindings,
             welds,
             animations: self.animations.clone(),
-            // A byte value leaves only its size and hash here; the bytes go
-            // in their own section, which is what keeps a structure feed from
-            // carrying a thumbnail on every unrelated edit.
             extensions: self
                 .extensions
                 .iter()
@@ -421,10 +324,7 @@ impl Model {
         })
     }
 
-    /// Snapshot the model into a `.clm` structure plus its texture table. The
-    /// payloads are copied out of their `Arc`s here, so this is for a caller
-    /// that wants the file as a value to edit; one that only wants the bytes
-    /// uses [`Self::to_clm_bytes`], which copies each payload once.
+    /// Copies payloads out of their `Arc`s; [`Self::to_clm_bytes`] copies once.
     pub fn to_clm_file(&self) -> Result<ClmFile, ModelError> {
         let doc = self.to_clm_structure()?;
         let mut textures = Vec::with_capacity(self.texture_order.len());
@@ -445,8 +345,6 @@ impl Model {
         })
     }
 
-    /// The bytes behind every byte extension, in key order — the payload half
-    /// of what [`Self::to_clm_structure`] wrote markers for.
     fn extension_blobs(&self) -> Vec<ClmExtensionBlob> {
         self.extensions
             .iter()
@@ -459,9 +357,7 @@ impl Model {
             .collect()
     }
 
-    /// The bytes [`Self::to_clm_file`] then [`clm::encode`] would write,
-    /// without the `ClmFile` in between: the payloads are serialized from
-    /// where the model holds them, so each is copied once, into the result.
+    /// Serializes payloads from where the model holds them, copying each once.
     pub fn to_clm_bytes(&self) -> Result<Vec<u8>, ModelError> {
         let doc = self.to_clm_structure()?;
         let mut textures = Vec::with_capacity(self.texture_order.len());
@@ -482,15 +378,7 @@ impl Model {
         )?)
     }
 
-    /// The structure alone, in a **structure-only** container: the same
-    /// `Structure` section [`Self::to_clm_bytes`] would write, beside a
-    /// manifest naming the model's textures in order, and no payload bytes at
-    /// all.
-    ///
-    /// This is what a server pushes a replica after every edit, so it never
-    /// touches a texture: writing it costs the structure and nothing else, and
-    /// [`Self::replace_structure`] reads it back against payloads the replica
-    /// already holds.
+    /// A structure-only container: never touches a texture payload.
     pub fn to_structure_bytes(&self) -> Result<Vec<u8>, ModelError> {
         let doc = self.to_clm_structure()?;
         let mut textures = Vec::with_capacity(self.texture_order.len());
@@ -505,7 +393,6 @@ impl Model {
         Ok(clm::encode_structure(&doc, &textures)?)
     }
 
-    /// Read a **complete model**: one root with no parent, nothing dangling.
     pub fn from_clm_file(file: &ClmFile) -> Result<Model, ModelError> {
         Self::from_clm_file_with_budget(file, &mut LoadBudget::default())
     }
@@ -517,9 +404,6 @@ impl Model {
         Self::read(file, budget, Shape::Base)
     }
 
-    /// Read an **addon fragment**: a forest whose roots name absent parents,
-    /// with every other reference into the base model left to dangle. See
-    /// [`crate::model::addon`] for what install then does with it.
     pub fn from_clm_file_fragment(file: &ClmFile) -> Result<Model, ModelError> {
         Self::from_clm_file_fragment_with_budget(file, &mut LoadBudget::default())
     }
@@ -531,8 +415,6 @@ impl Model {
         Self::read(file, budget, Shape::Fragment)
     }
 
-    /// Read a `ClmFile` that arrived as one — built by hand or by an
-    /// importer — so nothing about it is on the budget yet.
     fn read(file: &ClmFile, budget: &mut LoadBudget, shape: Shape) -> Result<Model, ModelError> {
         charge_clm_file(file, budget)?;
         let textures = file.textures.iter().map(|t| {
@@ -548,14 +430,8 @@ impl Model {
         Ok(model)
     }
 
-    /// Read `.clm` bytes. Decoding charged the input whole, payloads
-    /// included, so what is left is the texture count and the structure:
-    /// charging the payloads again here counted every texture byte twice and
-    /// refused files half the size `encoded_bytes` allows.
-    ///
-    /// Each payload is copied once, out of `bytes` and into the `Arc` the
-    /// model keeps. Going through a [`ClmFile`] would copy it into a `Vec`
-    /// first and hold both until the model was built.
+    /// Decoding already charged the payloads, so only the texture count and
+    /// the structure are charged here; charging again counts every byte twice.
     fn read_bytes(
         bytes: &[u8],
         budget: &mut LoadBudget,
@@ -576,8 +452,7 @@ impl Model {
         Ok(model)
     }
 
-    /// The reader past the budget. Charges nothing: its two callers charge
-    /// what they read, and they differ in what that is.
+    /// Charges nothing: its two callers charge different things.
     fn assemble(
         doc: &ClmStructure,
         table: impl ExactSizeIterator<Item = (TexId, ModelTexture)>,
@@ -593,9 +468,7 @@ impl Model {
             texture_order.push(id);
         }
 
-        // Decoding already held the markers against the bytes, but a
-        // `ClmFile` can also be built by hand and handed straight to
-        // `from_clm_file`, so the pairing is checked here too.
+        // A hand-built `ClmFile` skips decoding, so the pairing is checked here.
         clm::check_extensions(doc, blobs)?;
         let blobs: HashMap<&ExtensionKey, &[u8]> = blobs
             .iter()
@@ -605,10 +478,8 @@ impl Model {
         Self::build(doc, textures, texture_order, extensions, shape)
     }
 
-    /// Every check the reader runs, over a structure and a texture table that
-    /// is already in the Model's own form. The one path both a `.clm` and a
-    /// structure push come through, so neither can drift into accepting what
-    /// the other refuses. Charges nothing: its callers charge what they read.
+    /// The one path both a `.clm` and a structure push come through, so
+    /// neither can accept what the other refuses. Charges nothing.
     fn build(
         doc: &ClmStructure,
         textures: HashMap<TexId, ModelTexture>,
@@ -648,9 +519,8 @@ impl Model {
             param_order.push(p.id.clone());
         }
 
-        // Pre-scan the Ids so a parent that names nothing reads differently
-        // from one the file writes too late, and so a mask may name a node the
-        // file has not reached yet.
+        // Pre-scan so a parent written too late reads differently from one
+        // that names nothing, and so a mask may name a later node.
         let mut declared: HashSet<&NodeId> = HashSet::with_capacity(doc.nodes.len());
         for n in &doc.nodes {
             if !declared.insert(&n.id) {
@@ -672,8 +542,6 @@ impl Model {
                         .into());
                     }
                 }
-                // A parent the file does not carry: a fragment's root, or a
-                // complete model that lost a node.
                 Some(parent) => {
                     if !shape.allows_dangling() {
                         return Err(ClmLoadError::DanglingParent {
@@ -711,7 +579,6 @@ impl Model {
                 _ => Vec::new(),
             };
 
-            // The file-shaped half of `Model::update_node`'s rule.
             validate::node_placement(cn.z_order, &cn.transform).map_err(|fault| {
                 ClmLoadError::NodeNotFinite {
                     node: cn.id.to_string(),
@@ -733,16 +600,10 @@ impl Model {
             return Err(ClmLoadError::NoRoot.into());
         }
 
-        // Every mask source the file itself carries has to be a kind the
-        // renderer draws — the reader's half of `Model::mask_add`. Walked in
-        // tree order so a file with two bad masks always names the first.
-        // A source the file does *not* carry is a fragment's requirement, and
-        // `Model::install` kind-checks it against the base.
+        // Walked in tree order so a file with two bad masks names the first.
+        // A source the file does not carry is checked by `Model::install`.
         for cn in &doc.nodes {
             for mask in clm_masks_of(&cn.kind) {
-                // `Model::mask_add` refuses a node as its own mask source: a
-                // drawable clipped by its own drawing has nothing to clip
-                // against. In either shape — the node is in the file.
                 if mask.source == cn.id {
                     return Err(ClmLoadError::SelfMask {
                         node: cn.id.to_string(),
@@ -763,12 +624,8 @@ impl Model {
             }
         }
 
-        // The other half of the albedo check above: every texture the file
-        // carries is drawn by a part the file carries. Both shapes, because
-        // an addon brings the textures its own parts draw and nothing else —
-        // a spare one in a fragment is as much a mistake as in a model.
-        // Walked in the file's texture order, so a file with two spares
-        // always names the first.
+        // Spare textures are refused in both shapes. Walked in file order so
+        // the first spare is named.
         let drawn: HashSet<&TexId> = doc
             .nodes
             .iter()
@@ -784,7 +641,6 @@ impl Model {
             .into());
         }
 
-        // Children in tree order, which is the model's sibling order.
         for cn in &doc.nodes {
             if let Some(parent) = &cn.parent {
                 if let Some(pn) = nodes.get_mut(parent) {
@@ -813,9 +669,8 @@ impl Model {
                 }
             }
             let target = target_of(&b.values);
-            // The rule `Model::add_binding` holds an authored binding to. A
-            // deform on a node with no mesh would otherwise slip past
-            // `check_deform_cells`, whose expected length for it is zero.
+            // Otherwise a meshless deform slips past `check_deform_cells`,
+            // whose expected length for it is zero.
             match validate::binding_target(&bound.kind, target) {
                 Ok(()) => {}
                 Err(validate::BindingFault::ColorOnMeshGroup(t)) => {
@@ -893,11 +748,8 @@ impl Model {
                 node: b.node.clone(),
                 target,
             };
-            // A binding is addressed by its key, so a model holds one per
-            // key: `Model::add_binding` leaves an existing one alone rather
-            // than adding a second. Two in a file would both load, and every
-            // lookup and edit would reach only one of them while the puppet
-            // folded both.
+            // Two under one key would both fold, but lookups and edits would
+            // reach only one.
             if !bound_keys.insert(key.clone()) {
                 return Err(ClmLoadError::DuplicateBinding {
                     node: b.node.to_string(),
@@ -957,8 +809,7 @@ impl Model {
             bindings,
             animations: doc.animations.clone(),
             extensions,
-            // Not the structure's to say: whoever read a whole file sets
-            // them, and a structure push leaves the ones the model has.
+            // Set by whoever read a whole file; a structure push keeps them.
             unknown_sections: Vec::new(),
             binding_index: OnceLock::new(),
             bake: Default::default(),
@@ -967,7 +818,6 @@ impl Model {
         Ok(model)
     }
 
-    /// Read a **complete model** from `.clm` bytes.
     pub fn from_clm_bytes(bytes: &[u8]) -> Result<Model, ModelError> {
         Self::from_clm_bytes_with_budget(bytes, &mut LoadBudget::default())
     }
@@ -979,7 +829,6 @@ impl Model {
         Self::read_bytes(bytes, budget, Shape::Base)
     }
 
-    /// Read an **addon fragment** from `.clm` bytes.
     pub fn from_clm_bytes_fragment(bytes: &[u8]) -> Result<Model, ModelError> {
         Self::from_clm_bytes_fragment_with_budget(bytes, &mut LoadBudget::default())
     }
@@ -991,30 +840,12 @@ impl Model {
         Self::read_bytes(bytes, budget, Shape::Fragment)
     }
 
-    /// Rebuild this model from a **structure-only** container
-    /// ([`Self::to_structure_bytes`]), taking every texture payload from
-    /// `textures` rather than from the bytes.
+    /// Rebuild from a structure-only container, taking payloads from
+    /// `textures`. Returning an `Arc` the client already holds lets a render
+    /// cache keep its GPU texture.
     ///
-    /// This is the replica's one edit: a server pushes the structure after
-    /// each change and the client applies it over the payloads it already
-    /// holds, so a per-commit sync costs no texture transfer, no decode and
-    /// no re-upload. The lookup supplies the *bytes* and nothing else — a
-    /// texture's Id, its place in the model's texture order, and how to read
-    /// it are the structure's to say — and returning the `Arc` a client
-    /// already holds is what lets a render cache keep the GPU texture it
-    /// uploaded for it.
-    ///
-    /// A texture the lookup cannot supply is
-    /// [`ClmLoadError::MissingTexture`], naming it; use
-    /// [`clm::structure_texture_ids`] to fetch what is missing first. The
-    /// structure is read as a **complete model**, and every check
-    /// [`Self::from_clm_bytes`] runs is run here.
-    ///
-    /// The model **keeps its identity and moves its generation**, so a
-    /// [`crate::Puppet`] and a render cache built on it see the same model in
-    /// a new state: their gates rebake and rebuild rather than refusing. On
-    /// any error the model is untouched — the new state is built whole before
-    /// anything is swapped.
+    /// Keeps [`Self::identity`] and bumps [`Self::generation`]. On error the
+    /// model is untouched: the new state is built whole before the swap.
     pub fn replace_structure(
         &mut self,
         structure: &[u8],
@@ -1023,14 +854,8 @@ impl Model {
         self.replace_structure_with_budget(structure, textures, &mut LoadBudget::default())
     }
 
-    /// [`Self::replace_structure`] for a structure whose extensions carry
-    /// bytes: `extension_bytes` supplies a marker's payload the way
-    /// `textures` supplies a texture's.
-    ///
-    /// A byte extension travels by hash, not by value — that is the point of
-    /// the marker — so a client fetches the payload it lacks and hands it in
-    /// here. A marker the lookup cannot satisfy is an error naming the key,
-    /// never a silently dropped value.
+    /// [`Self::replace_structure`] with `extension_bytes` supplying byte
+    /// extension payloads.
     pub fn replace_structure_with_extensions(
         &mut self,
         structure: &[u8],
@@ -1051,9 +876,6 @@ impl Model {
         textures: impl Fn(&TexId) -> Option<ModelTexture>,
         budget: &mut LoadBudget,
     ) -> Result<(), ModelError> {
-        // A caller with no way to fetch a payload supplies none, so a
-        // structure carrying a byte marker is refused by name rather than
-        // read as a model that quietly lost it.
         self.replace_structure_with_budget_and_extensions(structure, textures, |_| None, budget)
     }
 
@@ -1072,9 +894,8 @@ impl Model {
             let found = textures(&want.id).ok_or_else(|| ClmLoadError::MissingTexture {
                 id: want.id.to_string(),
             })?;
-            // The structure decides everything but the bytes: two replicas
-            // fed the same structure hold the same model whatever their
-            // stores happen to remember about a payload.
+            // The manifest wins over the lookup, so replicas fed the same
+            // structure hold the same model.
             let texture = ModelTexture {
                 encoding: want.encoding,
                 alpha: want.alpha,
@@ -1096,28 +917,17 @@ impl Model {
 
         let extensions = extensions_of(&structure.doc, extension_bytes)?;
         let mut next = Self::build(&structure.doc, table, order, extensions, Shape::Base)?;
-        // A structure push carries no section this build cannot read, so the
-        // ones this model was loaded with stay where they are.
         next.unknown_sections = std::mem::take(&mut self.unknown_sections);
         self.become_model(next);
         Ok(())
     }
 
-    /// [`Self::replace_structure`] from another `Model` in memory: the
-    /// in-tab handoff, where an in-page editor hands its session's model
-    /// straight to the replica.
-    ///
-    /// The structure is cloned and every texture payload is `Arc`-shared with
-    /// `other`, so this costs a shallow copy and no texture work. Identity
-    /// and generation behave exactly as they do across a structure push.
+    /// [`Self::replace_structure`] from a `Model` in memory; payloads are
+    /// `Arc`-shared.
     pub fn replace_from(&mut self, other: &Model) {
         self.become_model(other.clone());
     }
 
-    /// Take `next`'s whole state while keeping this model's identity, then
-    /// move the clock. The two halves are the point: derived objects tell
-    /// models apart by identity and states apart by generation, so keeping
-    /// one and moving the other is exactly "the same model moved".
     fn become_model(&mut self, next: Model) {
         let identity = self.identity;
         *self = next;
@@ -1126,10 +936,6 @@ impl Model {
     }
 }
 
-/// A deform cell holds one `[dx, dy]` per mesh vertex, so its length is the
-/// node's flat vertex-array length and nothing else. A [`Model`] sizes the
-/// grid from the mesh, so a cell that disagrees with it is a file saying two
-/// things at once — refuse it rather than pick a winner.
 fn check_deform_cells(
     node: &NodeId,
     expected: usize,
@@ -1152,7 +958,6 @@ fn check_deform_cells(
     Ok(())
 }
 
-/// The masks a `.clm` node carries, or none for a kind that cannot hold any.
 fn clm_masks_of(kind: &ClmNodeKind) -> &[ClmMask] {
     match kind {
         ClmNodeKind::Part(p) => &p.masks,
@@ -1161,9 +966,6 @@ fn clm_masks_of(kind: &ClmNodeKind) -> &[ClmMask] {
     }
 }
 
-/// A mesh off the wire, held to what [`Model::set_node_mesh`] holds an
-/// authored one to — the reader is the only other way a mesh gets into a
-/// Model.
 fn check_mesh(id: &NodeId, mesh: &ClmMesh) -> Result<(), ModelError> {
     match super::validate_mesh(mesh) {
         Err(ModelError::MalformedMesh(reason)) => Err(ClmLoadError::MalformedMesh {
@@ -1250,9 +1052,6 @@ fn model_kind(
             check_mesh(id, &p.mesh)?;
             let mut part = ModelPart::new(p.mesh.clone());
             if let Some(albedo) = &p.albedo {
-                // Checked in either shape, unlike every other reference that
-                // leaves a node: an addon carries the textures its own parts
-                // draw, so this one never reaches into a base.
                 if !textures.contains_key(albedo) {
                     return Err(ClmLoadError::DanglingTexture {
                         node: id.to_string(),
@@ -1293,13 +1092,8 @@ fn model_kind(
     })
 }
 
-/// A spine the turn pass can actually compose, or a refusal naming the field.
-///
-/// A joint that repeats the point above it is a link with no direction, and
-/// the arc-length assignment would divide by its length; a non-finite
-/// coordinate spreads `NaN` into every vertex the spine touches. Both are
-/// refused at the door, where the bad value is still attributable to a joint
-/// of a node.
+/// A repeated joint would make the arc-length assignment divide by zero, and
+/// a non-finite coordinate spreads `NaN` into every vertex the spine touches.
 fn model_spine(
     id: &NodeId,
     sp: &ClmSpine,
@@ -1317,9 +1111,7 @@ fn model_spine(
         }
     })?;
     let mut spine = ModelSpine::new(sp.joints.clone());
-    // `#[serde(default)]` gives an empty Vec, which is also what a file whose
-    // links are all rigid writes; both mean the same thing, and the length the
-    // model holds is not the file's to leave off.
+    // An absent key means every link is rigid; the model holds one per link.
     if !sp.targets.is_empty() {
         if sp.targets.len() != sp.joints.len() {
             return Err(ClmLoadError::SpineTargetCount {
@@ -1368,9 +1160,6 @@ fn model_masks(
         .collect()
 }
 
-/// One part's slots, checked: no repeated slot Id, and every *filled* slot
-/// naming a vertex the part's mesh actually has. An unfilled slot is a slot
-/// whose part was re-meshed since it was filled; it carries no index to check.
 fn read_slots(id: &NodeId, part: &ClmPart) -> Result<Vec<Slot>, ModelError> {
     let vertices = part.mesh.vertex_count();
     let mut out: Vec<Slot> = Vec::with_capacity(part.slots.len());
@@ -1399,17 +1188,9 @@ fn read_slots(id: &NodeId, part: &ClmPart) -> Result<Vec<Slot>, ModelError> {
     Ok(out)
 }
 
-/// A weld, held to the weld rule ([`validate::weld`]) against the slots the
-/// file declares: the two ends have to be two different parts welded once,
-/// each pair has to name a slot the part on its side carries, no slot twice,
-/// and each weight has to be a share within `0..=1`. Whether a slot is
-/// *filled* is not this check's business: [`ModelWeld::resolve`] skips the
-/// pairs that are not.
-///
-/// A **fragment** may weld its own part to a base part, so an end naming a
-/// node the file does not carry is checked as far as it can be — the pairs on
-/// the resolvable side still have to name that part's slots — and
-/// [`Model::install`] finishes the job against the base.
+/// Whether a slot is filled is not checked: [`ModelWeld::resolve`] skips
+/// unfilled pairs. A fragment's end into the base is finished by
+/// [`Model::install`].
 fn read_weld<'a>(
     weld: &'a ClmWeld,
     slots: &HashMap<&NodeId, SlotTable>,
@@ -1424,8 +1205,6 @@ fn read_weld<'a>(
             .iter()
             .map(|pair| (&pair.a, &pair.b, pair.weight)),
         welded,
-        // An end the file does not carry is a requirement in a fragment and
-        // a broken reference in a complete model.
         |end| validate::WeldEnd::of(nodes.get(end).map(|n| &n.kind), shape.allows_dangling()),
         |part, slot| slots.get(part).is_some_and(|known| known.contains(slot)),
     )
@@ -1497,9 +1276,6 @@ mod tests {
         }
     }
 
-    /// One model touching every Id-bearing field the wire has: a textured part
-    /// with a mask, a composite, a mesh group, a motion response, a
-    /// two-param deform binding, a weld, and an animation.
     fn sample() -> Model {
         let mut hex = SeededHex::new(9);
         let mut m = Model::new();
@@ -1663,11 +1439,8 @@ mod tests {
         }
     }
 
-    /// [`sample`] with the root, the `Lower` part and the params taken out:
-    /// what is left is an addon that hangs off `root`, is masked by a base
-    /// part, welds into one, and is deformed and animated by base params.
-    /// Every kind of dangling reference at once — the texture table stays,
-    /// because the one reference an addon never makes is into the base's.
+    /// [`sample`] minus the root, the `Lower` part and the params: an addon
+    /// with every kind of dangling reference.
     fn sample_fragment_file() -> ClmFile {
         let mut file = sample().to_clm_file().unwrap();
         let lower = node_named(&file, "Lower").id.clone();
@@ -1695,8 +1468,6 @@ mod tests {
         ));
     }
 
-    /// The point of the fragment shape: nothing that reaches into a base model
-    /// is dropped, defaulted or rewritten on the way through a file.
     #[test]
     fn a_fragment_round_trips_with_its_dangling_references() {
         let file = sample_fragment_file();
@@ -1708,14 +1479,11 @@ mod tests {
         let upper = named(&f, "Upper");
         let face = named(&f, "Face");
         assert_eq!(f.roots(), [upper.clone(), face.clone(), named(&f, "Sway")]);
-        // Every root names the base node it hangs off.
         for r in f.roots() {
             let parent = f.node(r).unwrap().parent().unwrap();
             assert_eq!(parent.as_str(), "root");
             assert!(f.node(parent).is_none());
         }
-        // Its own texture came with it; every other reference still points
-        // at the base.
         assert!(f.texture(part(&f, &upper).albedo().unwrap()).is_some());
         assert!(f.node(part_mask_source(&f, &face)).is_none());
         assert!(f.node(f.welds()[0].b()).is_none());
@@ -1755,9 +1523,6 @@ mod tests {
         assert_eq!(reopened.to_clm_bytes().unwrap(), m.to_clm_bytes().unwrap());
     }
 
-    /// Everything the model holds is keyed by Id, so a round trip that lost or
-    /// rewrote one would still compare equal field for field. Pin the Ids and
-    /// the labels themselves.
     #[test]
     fn ids_and_names_survive_the_round_trip() {
         let m = sample();
@@ -1787,9 +1552,8 @@ mod tests {
         );
     }
 
-    /// The editor's dirty check is byte equality, so an open-and-save with no
-    /// edit has to be a no-op — twice over, since a `HashMap` iteration order
-    /// leaking into the writer would only show up on a second pass.
+    /// Twice over, since `HashMap` order leaking into the writer would only
+    /// show up on a second pass.
     #[test]
     fn saving_the_same_model_twice_writes_the_same_bytes() {
         let m = sample();
@@ -1801,9 +1565,6 @@ mod tests {
         assert_eq!(reopened.to_clm_bytes().unwrap(), once);
     }
 
-    /// A part's slots travel with the part and a weld travels as the two
-    /// parts it names plus its pairs — the file is a copy of the model, not a
-    /// translation of it.
     #[test]
     fn a_weld_travels_as_two_parts_and_its_pairs() {
         let m = sample();
@@ -1847,9 +1608,6 @@ mod tests {
         );
     }
 
-    /// A mesh edit empties the slots on the part it re-meshed but leaves the
-    /// weld alone, so the file carries an unfilled slot and reading it back
-    /// gives a weld that solves the pairs it still resolves.
     #[test]
     fn a_weld_over_an_unfilled_slot_loads_and_skips_the_pair() {
         let mut m = sample();
@@ -1890,8 +1648,6 @@ mod tests {
         );
     }
 
-    /// A parent that exists but is written later is a different fault from one
-    /// that does not exist: the file is readable, just not in one pass.
     #[test]
     fn a_parent_written_after_its_child_is_a_structured_error() {
         let mut file = sample().to_clm_file().unwrap();
@@ -1933,9 +1689,6 @@ mod tests {
         ));
     }
 
-    /// An albedo is the one reference a fragment may not dangle: an addon
-    /// carries the textures its own parts draw, so there is no base texture
-    /// for it to be reaching at.
     #[test]
     fn a_fragments_albedo_may_not_dangle_either() {
         let mut file = sample_fragment_file();
@@ -1951,9 +1704,6 @@ mod tests {
         ));
     }
 
-    /// The other half of the same rule: a texture no part's albedo names is
-    /// one an author cannot have meant, and it would survive every edit
-    /// afterwards because nothing would ever collect it.
     #[test]
     fn a_texture_no_part_draws_is_a_structured_error() {
         let mut file = sample().to_clm_file().unwrap();
@@ -1970,8 +1720,6 @@ mod tests {
             ClmLoadError::UnusedTexture { id } if id == "spare"
         ));
 
-        // And in a fragment, where a texture reaching into the base is
-        // exactly what an addon may not do.
         let mut file = sample_fragment_file();
         file.textures.push(ClmTexture {
             id: TexId::new("spare").unwrap(),
@@ -2004,9 +1752,6 @@ mod tests {
         ));
     }
 
-    /// `Model::set_param_range` refuses a collapsed, inverted or non-finite
-    /// range because the normalized key positions have nothing to map onto;
-    /// a file carrying one has to be refused for the same reason.
     #[test]
     fn a_param_range_the_model_would_refuse_is_a_structured_error() {
         for (min, max) in [
@@ -2030,8 +1775,6 @@ mod tests {
         }
     }
 
-    /// A mask is the source's own drawing, so the source has to be one of the
-    /// two kinds the renderer draws. `Model::mask_add` refuses the rest.
     #[test]
     fn a_mask_source_that_is_never_drawn_is_a_structured_error() {
         let mut file = sample().to_clm_file().unwrap();
@@ -2053,9 +1796,6 @@ mod tests {
         );
     }
 
-    /// `Model::mask_add` refuses a node as its own mask source. The reader
-    /// took one — a part or a composite is a drawable, so the kind check
-    /// passed — and loaded a model no edit could have built.
     #[test]
     fn a_node_masking_itself_is_a_structured_error() {
         let mut file = sample().to_clm_file().unwrap();
@@ -2072,7 +1812,6 @@ mod tests {
             }
         );
 
-        // A fragment carries the node either way, so it is refused too.
         let mut fragment = sample_fragment_file();
         let upper = node_named(&fragment, "Upper").id.clone();
         part_named(&mut fragment, "Upper").masks.push(ClmMask {
@@ -2087,8 +1826,6 @@ mod tests {
         );
     }
 
-    /// A composite is drawn, so it is a source like a part is — which is what
-    /// `tests/models/composite_masks.clm` has always been a baseline of.
     #[test]
     fn a_composite_mask_source_loads() {
         let mut file = sample().to_clm_file().unwrap();
@@ -2104,9 +1841,6 @@ mod tests {
         assert_eq!(part(&m, &upper).masks()[0].source(), &face);
     }
 
-    /// `Model::add_binding` refuses a deform on a node with no mesh to
-    /// deform. The reader used to take one: `check_deform_cells` asks for
-    /// cells of length zero, and a file that carries none agrees.
     #[test]
     fn a_deform_binding_on_a_node_with_no_mesh_is_a_structured_error() {
         for (name, kind) in [("Face", "composite"), ("Sway", "motion_response")] {
@@ -2125,8 +1859,6 @@ mod tests {
         }
     }
 
-    /// The mesh checks `Model::set_node_mesh` runs, run on the way in as
-    /// well: the reader is the only other door a mesh comes through.
     #[test]
     fn a_malformed_mesh_is_a_structured_error() {
         let cases: [(BreakMesh, &str); 3] = [
@@ -2144,7 +1876,6 @@ mod tests {
             ),
         ];
 
-        // Both meshed kinds, so neither door is left open.
         for (name, take) in [("Upper", part_mesh as MeshOf), ("Bend", group_mesh)] {
             for (break_it, reason) in cases {
                 let mut file = sample().to_clm_file().unwrap();
@@ -2169,8 +1900,6 @@ mod tests {
         }
     }
 
-    /// One way to break a mesh, and the way to reach the mesh on one node
-    /// kind: `a_malformed_mesh_is_a_structured_error` crosses the two.
     type BreakMesh = fn(&mut ClmMesh);
     type MeshOf = fn(&mut ClmNode) -> &mut ClmMesh;
 
@@ -2188,9 +1917,6 @@ mod tests {
         }
     }
 
-    /// A spine the file describes badly: no joints, a coordinate that is not
-    /// a number, a joint repeating the point above it, and a target list of
-    /// the wrong length. Each names the node and the joint.
     #[test]
     fn a_malformed_spine_is_a_structured_error() {
         fn spine_file(build: impl FnOnce(&mut ClmSpine)) -> (ClmFile, String) {
@@ -2216,7 +1942,6 @@ mod tests {
             (file, id.to_string())
         }
 
-        // The well-formed one loads, so every failure below is the one edit.
         let (ok, _) = spine_file(|_| {});
         assert!(Model::from_clm_file(&ok).is_ok(), "the base case loads");
 
@@ -2241,8 +1966,7 @@ mod tests {
             ClmLoadError::SpineJointCoincident { node, joint: 1 }
         );
 
-        // The first joint's point above it is the node's own origin, so a
-        // spine whose first link has no length is refused the same way.
+        // The first link starts at the node's own origin.
         let (file, node) = spine_file(|sp| sp.joints[0] = [0.0, 0.0]);
         assert_eq!(
             load_err(&file),
@@ -2267,8 +1991,6 @@ mod tests {
         ));
     }
 
-    /// A file with no `targets` key at all is a spine every link of which is
-    /// rigid. The model still holds one optional target per link.
     #[test]
     fn a_spine_with_no_targets_key_loads_one_slot_per_link() {
         let mut file = sample().to_clm_file().unwrap();
@@ -2294,7 +2016,6 @@ mod tests {
             panic!("the spine came back as another kind");
         };
         assert_eq!(spine.targets(), [None, None, None]);
-        // And the model's own writer fills the key in from then on.
         let round_tripped = Model::from_clm_bytes(&model.to_clm_bytes().unwrap()).unwrap();
         let ModelNodeKind::Spine(spine) = &round_tripped.node(&id).unwrap().kind else {
             panic!("the spine came back as another kind");
@@ -2333,9 +2054,6 @@ mod tests {
         );
     }
 
-    /// A binding's grid is one or two params wide and nothing else has a shape
-    /// for a third, so a file that names one has to be refused rather than
-    /// truncated.
     #[test]
     fn a_binding_over_three_params_is_a_structured_error() {
         let mut file = sample().to_clm_file().unwrap();
@@ -2360,9 +2078,6 @@ mod tests {
         ));
     }
 
-    /// A binding is addressed by its key, and `Model::add_binding` never
-    /// makes a second under one. The reader used to: both loaded, the puppet
-    /// folded both, and every lookup and edit reached only the first.
     #[test]
     fn two_bindings_under_one_key_are_a_structured_error() {
         let mut file = sample().to_clm_file().unwrap();
@@ -2377,7 +2092,6 @@ mod tests {
                 target: "deform",
             }
         );
-        // The fragment reader runs the same check.
         let mut fragment = sample_fragment_file();
         let twin = fragment.doc.bindings[0].clone();
         fragment.doc.bindings.push(twin);
@@ -2389,7 +2103,6 @@ mod tests {
             }
         );
 
-        // The same node and target over other params is another binding.
         let mut file = sample().to_clm_file().unwrap();
         let mut other = file.doc.bindings[0].clone();
         other.params.truncate(1);
@@ -2401,9 +2114,6 @@ mod tests {
         assert_eq!(Model::from_clm_file(&file).unwrap().bindings().count(), 2);
     }
 
-    /// The file-shaped half of the mutators' finite checks: a `NaN` z-order,
-    /// transform or param default used to load, and then poisoned the draw
-    /// sort, every matrix under the node, or every binding the param drives.
     #[test]
     fn a_value_that_is_not_a_number_is_a_structured_error() {
         fn upper(file: &mut ClmFile) -> &mut ClmNode {
@@ -2444,7 +2154,6 @@ mod tests {
             }
         );
 
-        // A fragment is held to the same node rule.
         let mut fragment = sample_fragment_file();
         upper(&mut fragment).transform.scale[0] = f32::NAN;
         assert_eq!(
@@ -2478,9 +2187,6 @@ mod tests {
         ));
     }
 
-    /// `Model::add_binding` refuses a colour target on a mesh group, but a
-    /// Model read from a file used to accept it and the fold then dropped it
-    /// silently. The reader is where that hole closes.
     #[test]
     fn a_colour_binding_on_a_mesh_group_is_a_structured_error() {
         for (values, target) in [
@@ -2516,8 +2222,6 @@ mod tests {
         }
     }
 
-    /// A non-colour target on a mesh group is exactly what a mesh group is
-    /// for, so the check has to be about colour and not about mesh groups.
     #[test]
     fn a_deform_binding_on_a_mesh_group_still_loads() {
         let mut file = sample().to_clm_file().unwrap();
@@ -2528,8 +2232,6 @@ mod tests {
         assert!(Model::from_clm_file(&file).is_ok());
     }
 
-    /// A Model sizes a deform grid from the mesh, so a file whose cell and
-    /// mesh disagree is saying two things at once about the same node.
     #[test]
     fn a_deform_cell_the_mesh_cannot_take_is_a_structured_error() {
         let node = {
@@ -2560,10 +2262,6 @@ mod tests {
         }
     }
 
-    /// And the writer refuses the same shape. A refit that returned the wrong
-    /// length used to be the one way a Model reached it; that is refused at
-    /// the edit now, so the state is built by hand. The writer's check stays
-    /// as the line that keeps a file it writes one this reader takes.
     #[test]
     fn a_deform_cell_the_mesh_cannot_take_cannot_be_written() {
         let mut m = sample();
@@ -2636,8 +2334,6 @@ mod tests {
         ));
     }
 
-    /// A slot may be paired once per weld: twice would pull one vertex to two
-    /// meeting points and the solve has no answer for that.
     #[test]
     fn a_weld_pairing_one_slot_twice_is_a_structured_error() {
         let mut file = sample().to_clm_file().unwrap();
@@ -2649,8 +2345,6 @@ mod tests {
         ));
     }
 
-    /// A weight is a share of a meeting point, so one outside `0..=1` has no
-    /// meaning; and one weld records one pair of parts.
     #[test]
     fn the_other_things_a_weld_cannot_say_are_structured_errors() {
         let mut file = sample().to_clm_file().unwrap();
@@ -2715,8 +2409,6 @@ mod tests {
         ));
     }
 
-    /// A file with no `animations` key at all reads as a model with none, so
-    /// an older writer's output still opens.
     #[test]
     fn an_absent_animations_section_reads_as_none() {
         let mut file = sample().to_clm_file().unwrap();
@@ -2747,8 +2439,6 @@ mod tests {
         ));
     }
 
-    /// Authored cells reach the wire through `ClmBindingValues`; pin one so the
-    /// round-trip test is not the only thing that touches them.
     #[test]
     fn authored_cells_reach_the_wire() {
         let file = sample().to_clm_file().unwrap();
@@ -2763,10 +2453,6 @@ mod tests {
         }
     }
 
-    // ---- the structure path: a replica's whole edit ---------------------
-
-    /// The textures a model holds, as a replica's store would: keyed by Id,
-    /// payloads `Arc`-shared with the model they came from.
     fn store(m: &Model) -> HashMap<TexId, ModelTexture> {
         m.texture_ids()
             .iter()
@@ -2774,10 +2460,6 @@ mod tests {
             .collect()
     }
 
-    /// The one byte-level promise a structure makes: its `Structure` section
-    /// is the same section the file would have written. A replica that
-    /// applies a structure and then saves has to produce the file the server
-    /// would have.
     #[test]
     fn a_structure_carries_the_files_own_structure_section() {
         let m = sample();
@@ -2804,8 +2486,6 @@ mod tests {
         );
     }
 
-    /// The two container shapes are disjoint and each reader says so by name,
-    /// rather than reading a structure as a model whose textures all vanished.
     #[test]
     fn the_two_container_shapes_refuse_each_other() {
         let m = sample();
@@ -2819,8 +2499,6 @@ mod tests {
         ));
     }
 
-    /// What a client reads before it fetches: the Ids in the model's own
-    /// order, each with the encoding its bytes will need.
     #[test]
     fn a_structures_textures_are_listed_without_building_a_model() {
         let m = sample();
@@ -2835,8 +2513,6 @@ mod tests {
         assert_eq!(listed[0].alpha, held.alpha);
     }
 
-    /// The whole point: the structure crosses, the payloads do not, and what
-    /// lands is the model the server holds — same bytes, same texture order.
     #[test]
     fn applying_a_structure_rebuilds_the_model_over_the_payloads_it_has() {
         let server = sample();
@@ -2862,8 +2538,6 @@ mod tests {
         }
     }
 
-    /// A structure is held to every rule a file is: the reader is the same
-    /// reader.
     #[test]
     fn a_structure_is_read_as_strictly_as_a_file() {
         let m = sample();
@@ -2892,9 +2566,6 @@ mod tests {
         ));
     }
 
-    /// A payload the caller cannot supply names itself, and the model it was
-    /// meant for is untouched — the new state is built whole before anything
-    /// is swapped.
     #[test]
     fn a_payload_the_caller_lacks_names_itself_and_changes_nothing() {
         let server = sample();
@@ -2918,8 +2589,6 @@ mod tests {
         );
     }
 
-    /// The two halves derived objects read: the identity says "the same
-    /// model", the generation says "a new state of it".
     #[test]
     fn replacing_keeps_the_identity_and_moves_the_generation() {
         let server = sample();
@@ -2941,8 +2610,6 @@ mod tests {
         assert!(replica.generation() > before);
     }
 
-    /// The in-tab handoff: an editor hands its model over and the replica
-    /// shares the payloads rather than copying them.
     #[test]
     fn replace_from_shares_the_payloads_it_is_handed() {
         let server = sample();
@@ -2975,7 +2642,6 @@ mod tests {
         }
         let posed = puppet.param_value(&param).unwrap();
 
-        // The server edits, and only the structure crosses.
         let root = server.root().unwrap().clone();
         server
             .add_node(

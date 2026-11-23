@@ -1,10 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! A `Stepped` key holds from its own position.
-//!
-//! The rule is one sentence — a key's value shows at that key and until the
-//! next one — and it has to hold on both axes it is read over: a binding's
-//! key positions and an animation lane's frames. A pose resting exactly on a
-//! key is the common case, not an edge: a param's default usually is one.
 
 use catchlight_core::formats::clm::{ClmAnimation, ClmKeyframe, ClmLane};
 use catchlight_core::id::SeededHex;
@@ -14,8 +9,6 @@ use catchlight_core::{
     ScalarTarget,
 };
 
-/// A param over `-1..=1` driving one group's `Tx` through keys at -1, 0 and 1
-/// holding 10, 20 and 30.
 fn three_keys(mode: InterpolateMode) -> (Model, ParamId, NodeId, BindingKey) {
     let mut hex = SeededHex::new(11);
     let mut model = Model::new();
@@ -51,8 +44,6 @@ fn three_keys(mode: InterpolateMode) -> (Model, ParamId, NodeId, BindingKey) {
     (model, param, node, key)
 }
 
-/// What the puppet folds into the node's `Tx` and what the model reports for
-/// the same pose. They share one interpolator and must agree.
 fn tx_at(
     model: &Model,
     param: &ParamId,
@@ -77,7 +68,6 @@ fn a_stepped_binding_shows_each_key_at_its_own_position() {
         (-1.0, 10.0),
         (-0.5, 10.0),
         (-0.0001, 10.0),
-        // The interior key, where the param also rests.
         (0.0, 20.0),
         (0.5, 20.0),
         (0.9999, 20.0),
@@ -89,8 +79,6 @@ fn a_stepped_binding_shows_each_key_at_its_own_position() {
     }
 }
 
-/// Opening the bracket at an interior key must not move any other mode: each
-/// already read the key's own value there.
 #[test]
 fn the_other_modes_still_read_the_key_at_its_position() {
     for mode in [
@@ -111,7 +99,6 @@ fn the_other_modes_still_read_the_key_at_its_position() {
 fn a_stepped_lane_switches_on_the_keyframe() {
     let (model, param, node, _) = three_keys(InterpolateMode::Linear);
     let mut puppet = Puppet::new(&model);
-    // One frame per tick, so playback lands exactly on each keyframe.
     let timestep = 1.0 / 4.0;
     puppet.set_animations(vec![ClmAnimation {
         name: "steps".into(),
@@ -147,7 +134,5 @@ fn a_stepped_lane_switches_on_the_keyframe() {
         puppet.tick(&model, timestep);
         seen.push(puppet.get(idx).unwrap().transform.translation.x);
     }
-    // Frames 0..=4: the key at frame 2 takes effect on frame 2, and the one
-    // at frame 4 on frame 4.
     assert_eq!(seen, [10.0, 10.0, 20.0, 20.0, 30.0]);
 }

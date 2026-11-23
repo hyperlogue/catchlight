@@ -1,66 +1,20 @@
 //! The rules more than one door holds a model to, each stated once.
-//!
-//! A model is reached four ways: through a mutator, through the `.clm`
-//! reader, through [`Model::install`], and — after the fact — through the
-//! [`Model::check`] lints and the writer. A rule each of them spells out for
-//! itself is a rule they come to disagree on: a file the writer emits and the
-//! reader refuses, an install that builds what no edit could. So a rule with
-//! more than one door lives here, and the doors call it.
-//!
-//! Every function takes the facts it needs as plain arguments or lookups and
-//! answers with a small *fault* that says what is wrong and nothing about how
-//! to say it. The door maps the fault to its own error ([`ModelError`],
-//! [`ClmLoadError`], [`InstallError`], a [`CheckWarning`]), because only the
-//! door knows what else to name: the reader has a node Id to quote where a
-//! mutator was handed one by its caller.
-//!
-//! The rules:
-//!
-//! - **A weld joins two different parts, once.** Its ends are two different
-//!   nodes, each a part; one weld records an unordered part pair; each pair
-//!   names a slot the part on its side carries, no slot twice on a side, with
-//!   a weight that is a share within `0..=1` ([`weld`]). An end the model
-//!   does not carry is a fragment's weld into its base and is the one thing
-//!   deferred, to [`Model::install`], which runs the same rule against the
-//!   merged model.
-//! - **A spine is at least one link, and every link has a length.** No
-//!   joints, a coordinate that is not a number, or a joint on top of the
-//!   point above it leaves the turn pass a link with no direction to turn
-//!   about ([`spine_joints`]).
-//! - **A binding fits its node.** A deform needs a mesh to deform and a
-//!   colour needs something drawn ([`binding_target`]); a deform cell holds
-//!   one finite `[dx, dy]` per mesh vertex ([`deform_offsets`]); and an axis
-//!   of key positions is nonempty, finite, strictly increasing and within
-//!   `0..=1` ([`binding_positions_are_valid`]).
-//! - **Where a node sits is a number.** A `NaN` z-order has no place in the
-//!   draw sort and a `NaN` in a transform spreads through every matrix
-//!   beneath the node ([`node_placement`]).
-//! - **A response input does not outlive the slot it reads.** Whatever
-//!   removes a part or a slot drops the inputs that named it
-//!   ([`drop_slot_inputs`]).
 
 use super::*;
 
 // ---- welds ----------------------------------------------------------------
 
-/// What one end of a weld names, as far as the caller can see.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum WeldEnd {
-    /// A part: the pairs on this side are checked against its slots.
     Part,
-    /// A node of another kind, named so the refusal can say which.
     NotAPart(&'static str),
-    /// A node the caller does not carry, where that is allowed: a fragment's
-    /// weld into its base. Nothing on this side is checked here.
+    /// A missing node allowed to dangle: a fragment's weld into its base.
     Deferred,
-    /// A node the caller does not carry, where nothing may dangle.
     Missing,
 }
 
 impl WeldEnd {
-    /// Classify an end from the kind of the node it names. `may_dangle` is
-    /// whether a missing node is a requirement rather than a broken weld —
-    /// true for a fragment, false for a complete or a merged model.
+    /// `may_dangle`: true for a fragment, false for a complete or merged model.
     pub(super) fn of(kind: Option<&ModelNodeKind>, may_dangle: bool) -> Self {
         match kind {
             Some(ModelNodeKind::Part(_)) => Self::Part,
@@ -70,14 +24,12 @@ impl WeldEnd {
         }
     }
 
-    /// Whether a model holding a weld with this end can be written and read
-    /// back.
     pub(super) fn is_sound(self) -> bool {
         matches!(self, Self::Part | Self::Deferred)
     }
 }
 
-/// What is wrong with a weld. `end` is always the weld's own `a` or `b`.
+/// `end` is always the weld's own `a` or `b`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) enum WeldFault<'a> {
     SelfPaired,
@@ -88,9 +40,8 @@ pub(super) enum WeldFault<'a> {
     EndMissing {
         end: &'a NodeId,
     },
-    /// The two parts are already welded, whichever way round.
     Duplicate,
-    /// `slot` is the pair's slot on `a`, which is how a pair is named.
+    /// `slot` is the pair's slot on `a`.
     WeightOutOfRange {
         slot: &'a SlotId,
     },
@@ -104,9 +55,7 @@ pub(super) enum WeldFault<'a> {
     },
 }
 
-/// The part pairs welded so far, unordered: one weld records a pair, so the
-/// second weld between the same two parts is refused whichever way round it
-/// names them.
+/// The part pairs welded so far, unordered.
 #[derive(Debug, Default)]
 pub(super) struct Welded<'a>(HashSet<(&'a NodeId, &'a NodeId)>);
 
@@ -115,19 +64,13 @@ impl<'a> Welded<'a> {
         Self(HashSet::with_capacity(welds))
     }
 
-    /// Record a weld between `a` and `b`. `false` if the pair was already
-    /// recorded.
     pub(super) fn insert(&mut self, a: &'a NodeId, b: &'a NodeId) -> bool {
         self.0.insert(if a < b { (a, b) } else { (b, a) })
     }
 }
 
-/// Hold one weld to the weld rule, and record it in `welded`.
-///
-/// `end` classifies the node an end names; `carries` answers whether a part
-/// carries a slot, and is only asked about an end that is a [`WeldEnd::Part`].
-/// Whether a slot is *filled* is not this rule's business: resolving a weld
-/// skips the pairs that are not.
+/// Hold one weld to the weld rule, and record it in `welded`. Whether a slot
+/// is *filled* is not checked: resolving a weld skips unfilled pairs.
 pub(super) fn weld<'a>(
     a: &'a NodeId,
     b: &'a NodeId,
@@ -153,8 +96,7 @@ pub(super) fn weld<'a>(
     let mut seen_a = HashSet::new();
     let mut seen_b = HashSet::new();
     for (slot_a, slot_b, weight) in pairs {
-        // `contains` is false for `NaN`, so a weight that is not a number is
-        // refused along with one that is out of range.
+        // `contains` is false for `NaN`, so a non-number weight is refused too.
         if !(0.0..=1.0).contains(&weight) {
             return Err(WeldFault::WeightOutOfRange { slot: slot_a });
         }
@@ -181,11 +123,6 @@ pub(super) fn weld<'a>(
 
 // ---- spines ---------------------------------------------------------------
 
-/// Why a chain of joints is not a spine the turn pass can compose.
-///
-/// The same three rules whether the joints come from an edit or a file: at
-/// least one joint, every coordinate finite, and no joint repeating the point
-/// above it — the node's own origin for the first one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum SpineJointError {
     #[error("a spine needs at least one joint")]
@@ -196,17 +133,12 @@ pub enum SpineJointError {
     Coincident(usize),
 }
 
-/// Hold a spine's joints to the spine rule.
-///
-/// A joint that repeats the point above it is a link with no direction, and
-/// the arc-length assignment would divide by its length; a non-finite
-/// coordinate spreads `NaN` into every vertex the spine touches.
+/// A repeated joint is a zero-length link the arc-length assignment would
+/// divide by; a non-finite coordinate spreads `NaN` into every vertex.
 pub(super) fn spine_joints(joints: &[[f32; 2]]) -> Result<(), SpineJointError> {
     if joints.is_empty() {
         return Err(SpineJointError::NoJoints);
     }
-    // The link above `joints[0]` starts at the node's own origin, so that is
-    // the point the first joint may not repeat.
     let mut above = [0.0f32, 0.0];
     for (i, joint) in joints.iter().enumerate() {
         if !joint[0].is_finite() || !joint[1].is_finite() {
@@ -222,17 +154,12 @@ pub(super) fn spine_joints(joints: &[[f32; 2]]) -> Result<(), SpineJointError> {
 
 // ---- bindings -------------------------------------------------------------
 
-/// Why a binding's target cannot sit on a node of some kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum BindingFault {
-    /// A deform on a node that carries no mesh to deform.
     DeformOnUnmeshed,
-    /// A colour on a mesh group, which is never drawn and has no colour to
-    /// fold it into.
     ColorOnMeshGroup(ScalarTarget),
 }
 
-/// Whether a binding with this target can sit on a node of this kind.
 pub(super) fn binding_target(
     kind: &ModelNodeKind,
     target: BindingTarget,
@@ -250,14 +177,12 @@ pub(super) fn binding_target(
     }
 }
 
-/// What is wrong with one deform cell's offsets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum DeformFault {
     Length { expected: usize, got: usize },
     NonFinite,
 }
 
-/// How every mutator reports a bad deform cell.
 impl From<DeformFault> for ModelError {
     fn from(fault: DeformFault) -> Self {
         match fault {
@@ -267,8 +192,7 @@ impl From<DeformFault> for ModelError {
     }
 }
 
-/// One deform cell holds one `[dx, dy]` per mesh vertex — `expected` is the
-/// node's flat vertex-array length — and every offset is a number.
+/// `expected` is the node's flat vertex-array length.
 pub(super) fn deform_offsets(offsets: &[f32], expected: usize) -> Result<(), DeformFault> {
     if offsets.len() != expected {
         return Err(DeformFault::Length {
@@ -282,9 +206,8 @@ pub(super) fn deform_offsets(offsets: &[f32], expected: usize) -> Result<(), Def
     Ok(())
 }
 
-/// Whether `positions` is one axis per param, each nonempty, finite, strictly
-/// increasing and within `0..=1`, with a grid inside the binding-grid budget.
-/// Checked before any grid is allocated.
+/// Positions must be one axis per param, each nonempty, finite, strictly
+/// increasing and within `0..=1`. Checked before any grid is allocated.
 pub(super) fn binding_positions_are_valid(params: usize, positions: &[Vec<f32>]) -> bool {
     if positions.len() != params
         || positions.iter().any(|axis| {
@@ -305,7 +228,6 @@ pub(super) fn binding_positions_are_valid(params: usize, positions: &[Vec<f32>])
 
 // ---- nodes ----------------------------------------------------------------
 
-/// Which of a node's placement values is not a number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum PlacementFault {
     ZOrder,
@@ -313,7 +235,6 @@ pub(super) enum PlacementFault {
 }
 
 impl PlacementFault {
-    /// The field's own name, for an error that already says which node.
     pub(super) fn field(self) -> &'static str {
         match self {
             Self::ZOrder => "z-order",
@@ -322,7 +243,6 @@ impl PlacementFault {
     }
 }
 
-/// How every mutator reports a node placed nowhere.
 impl From<PlacementFault> for ModelError {
     fn from(fault: PlacementFault) -> Self {
         Self::NonFinite(match fault {
@@ -332,7 +252,6 @@ impl From<PlacementFault> for ModelError {
     }
 }
 
-/// A node's z-order and every component of its transform are finite.
 pub(super) fn node_placement(z_order: f32, transform: &ClmTransform) -> Result<(), PlacementFault> {
     if !z_order.is_finite() {
         return Err(PlacementFault::ZOrder);
@@ -345,8 +264,6 @@ pub(super) fn node_placement(z_order: f32, transform: &ClmTransform) -> Result<(
     Ok(())
 }
 
-/// Drop every motion response input that reads a slot `gone` says is going
-/// away. A no-op on any other kind of node.
 pub(super) fn drop_slot_inputs(kind: &mut ModelNodeKind, gone: impl Fn(&NodeId, &SlotId) -> bool) {
     if let ModelNodeKind::MotionResponse(response) = kind {
         response.inputs.retain(|input| {
@@ -370,8 +287,6 @@ mod tests {
         SlotId::new(s).unwrap()
     }
 
-    /// One weld between `a` and `b` over the given pairs, both ends parts
-    /// that carry every slot but `absent`.
     fn check<'a>(
         a: &'a NodeId,
         b: &'a NodeId,
@@ -394,7 +309,6 @@ mod tests {
         let good = [(slot("l"), slot("l"), 0.5), (slot("r"), slot("r"), 1.0)];
         let mut welded = Welded::default();
         assert_eq!(check(&a, &b, &good, &mut welded), Ok(()));
-        // The same pair the other way round is the same weld.
         assert_eq!(check(&b, &a, &good, &mut welded), Err(WeldFault::Duplicate));
         assert_eq!(
             check(&a, &a, &good, &mut Welded::default()),
@@ -460,7 +374,6 @@ mod tests {
             spine_joints(&[[0.0, f32::NAN]]),
             Err(SpineJointError::NonFinite(0))
         );
-        // The first joint may not sit on the node's own origin.
         assert_eq!(
             spine_joints(&[[0.0, 0.0]]),
             Err(SpineJointError::Coincident(0))

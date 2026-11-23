@@ -3,12 +3,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::{NodeIdx, Vec2};
 use smallvec::SmallVec;
 
-// Process-global "combine epoch". Each combine() that actually runs claims
-// a unique value, so a (mesh_id, generation) pair the renderer has already
-// uploaded can never collide with a *different* combine result — even when
-// a puppet is `clone_from`'d (which rewinds a per-stack counter back to the
-// source's value and would otherwise alias two distinct deforms to the same
-// generation). 0 is reserved for "never combined".
+// Process-global so a `clone_from`'d stack, whose counter rewinds, can never
+// reuse a generation the renderer already uploaded. 0 means "never combined".
 static DEFORM_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 fn next_deform_generation() -> u64 {
@@ -19,16 +15,11 @@ fn next_deform_generation() -> u64 {
 pub enum DeformSource {
     Param(u32),
     Node(NodeIdx),
-    /// All weld pulls on this part, summed. One slot regardless of how many
-    /// weld records touch the part — the weld pass zeroes it on first touch
-    /// each frame and accumulates (see `crate::weld::apply_welds`).
+    /// All weld pulls on this part, summed into one slot.
     Weld,
-    /// An external writer's scratch slot — the editor's live drag. The one
-    /// source a fold does not produce, and so the one [`DeformStack::reset`]
-    /// leaves alone: nothing else can reconstruct it.
+    /// An external writer's scratch slot (the editor's live drag). Nothing else
+    /// can reconstruct it, so [`DeformStack::reset`] leaves it alone.
     Scratch,
-    /// A slot for this crate's own unit tests, so they can write a source no
-    /// pass owns. Not part of the public enum.
     #[cfg(test)]
     Test,
 }
@@ -40,24 +31,17 @@ pub enum DeformShapeError {
     StackLength { expected: usize, actual: usize },
 }
 
-// Per-source offset buffer. `active` lets us keep the allocation across
-// frames (reset() flips active=false; source_buf_mut() flips it back
-// true and returns a mut slice). Without this, every frame would
-// re-allocate the buffer a binding writes into.
+// `active` keeps the allocation across frames instead of reallocating.
 #[derive(Debug, Clone)]
 struct SourceSlot {
     source: DeformSource,
     offsets: Vec<Vec2>,
     active: bool,
-    // Param value whose fold currently fills `offsets` (param_buf_mut
-    // memo key); None when the buffer was last written through the
-    // unkeyed paths.
+    // Param value whose fold filled `offsets`; None after an unkeyed write.
     last_val: Option<Vec2>,
 }
 
-// Inline capacity 2 covers the observed hot-path shape: at most one
-// Param source + one MeshGroup-parent Node source per node. More spill to
-// the heap without losing correctness.
+// Inline capacity 2: at most one Param plus one MeshGroup-parent source per node.
 type Sources = SmallVec<[SourceSlot; 2]>;
 
 #[derive(Debug, Clone, Default)]
@@ -66,12 +50,9 @@ pub struct DeformStack {
     sources: Sources,
     combined: Vec<Vec2>,
     dirty: bool,
-    // Active set at the last combine (bit i = sources[i]; slots are
-    // never removed, so indices are stable). Lets combine() notice
-    // activations/deactivations without reset() having to mark dirty —
-    // the key to keeping `combined` (and its generation, which gates
-    // the snapshot copy and the GPU upload) when a frame re-folds the
-    // same param values.
+    // Active set at the last combine (bit i = sources[i]). Lets combine() notice
+    // (de)activations without reset() marking dirty, keeping the generation when
+    // a frame re-folds the same param values.
     last_combined_mask: Option<u64>,
     generation: u64,
 }
@@ -88,16 +69,8 @@ impl DeformStack {
         }
     }
 
-    /// Deactivate every source a fold produces, so the next one starts from
-    /// nothing.
-    ///
-    /// [`DeformSource::Scratch`] survives. Every other source is re-derived
-    /// from the model each fold, which is what makes dropping it safe; the
-    /// scratch slot is an edit in progress that only its writer holds, so a
-    /// fold that dropped it would delete state nothing can rebuild — and a
-    /// live drag would vanish on any frame that happened to fold (a driver
-    /// moving is enough). It goes when its writer clears it, or when the
-    /// model changes and the puppet rebakes the stack from scratch.
+    /// Deactivate every source a fold produces. [`DeformSource::Scratch`]
+    /// survives: it is an edit in progress that no fold can rebuild.
     pub fn reset(&mut self) {
         for slot in self.sources.iter_mut() {
             if slot.source != DeformSource::Scratch {
@@ -106,8 +79,7 @@ impl DeformStack {
         }
     }
 
-    /// Active set as a bitmask; None when it can't be represented
-    /// (>64 sources — never in practice), which forces a recombine.
+    /// None when there are more than 64 sources, which forces a recombine.
     fn active_mask(&self) -> Option<u64> {
         if self.sources.len() > 64 {
             return None;
@@ -121,9 +93,6 @@ impl DeformStack {
         Some(mask)
     }
 
-    // Prefer this in hot paths: returns a writable slice of
-    // length `self.vert_count`, pooled across frames. Marks the slot
-    // active and the stack dirty.
     pub fn source_buf_mut(&mut self, source: DeformSource) -> &mut [Vec2] {
         self.dirty = true;
         let vert_count = self.vert_count;
@@ -149,14 +118,9 @@ impl DeformStack {
         &mut slot.offsets
     }
 
-    /// Value-memoized variant of `source_buf_mut` for param-driven
-    /// folds: a fold's output is a pure function of the param value
-    /// (binding matrices are immutable after import), so when `val` is
-    /// bit-equal to the value that produced the slot's current
-    /// contents, the slot is just re-marked active — no dirty, no
-    /// per-vertex rewrite — and `None` tells the caller to skip its
-    /// fold. `combine` then keeps the existing sum and generation, so
-    /// the snapshot copy and GPU upload skip too.
+    /// Value-memoized `source_buf_mut`. Param folds are a pure function of the
+    /// value, so a bit-equal `val` re-marks the slot active without dirtying and
+    /// returns `None` so the caller skips its fold.
     pub fn param_buf_mut(&mut self, source: DeformSource, val: Vec2) -> Option<&mut [Vec2]> {
         let vert_count = self.vert_count;
         let pos = self.sources.iter().position(|s| s.source == source);
@@ -199,16 +163,9 @@ impl DeformStack {
         Ok(())
     }
 
-    /// Set `source`'s offsets, marking the stack dirty only when that changes
-    /// what the source holds. `false` when `offsets` is not one per vertex,
-    /// and nothing is written.
-    ///
-    /// The passes downstream of the bindings — spines, mesh groups — re-derive
-    /// a child's offsets every time they run, and usually arrive at the
-    /// numbers they wrote last fold: a blink re-runs every group, and only the
-    /// eyes' children move. Through [`Self::source_buf_mut`] each of those
-    /// would mark its stack dirty regardless, and `combine` would hand the
-    /// renderer a new generation — an upload — for a deform that did not move.
+    /// Set `source`'s offsets, marking the stack dirty only when they change, so
+    /// a re-run pass that writes the same numbers causes no new upload. `false`
+    /// when `offsets` is not one per vertex, and nothing is written.
     pub(crate) fn write_source(&mut self, source: DeformSource, offsets: &[Vec2]) -> bool {
         if offsets.len() != self.vert_count {
             return false;
@@ -236,9 +193,7 @@ impl DeformStack {
         true
     }
 
-    /// [`Self::source_buf_mut`] without the dirty mark, for a pass that
-    /// accumulates into the slot over several steps and cannot say whether
-    /// the contents moved until the last one. It owes the stack a
+    /// [`Self::source_buf_mut`] without the dirty mark. The caller must call
     /// [`Self::settle_source`] before anything combines.
     pub(crate) fn source_buf_unsettled(&mut self, source: DeformSource) -> &mut [Vec2] {
         let vert_count = self.vert_count;
@@ -265,8 +220,6 @@ impl DeformStack {
         &mut slot.offsets
     }
 
-    /// Close a [`Self::source_buf_unsettled`] write: mark the stack dirty if
-    /// `source` no longer holds `before`, what it held when the pass began.
     pub(crate) fn settle_source(&mut self, source: DeformSource, before: &[Vec2]) {
         if let Some(slot) = self.sources.iter().find(|s| s.source == source) {
             if slot.offsets.as_slice() != before {
@@ -295,12 +248,8 @@ impl DeformStack {
         if self.combined.len() != self.vert_count {
             self.combined = vec![Vec2::ZERO; self.vert_count];
         }
-        // Copy-first: the dominant case is a single active source, so seed
-        // `combined` from the first one instead of zero-filling then reading
-        // it back to add. copy_from_slice needs matching lengths (it panics
-        // otherwise, and clippy denies panics); sources are normally exactly
-        // vert_count long, but fall back to the zip-add path — which tolerates
-        // a short source — when they aren't.
+        // Copy-first for the common single-source case; fall back to zip-add when a
+        // source is not exactly vert_count long (copy_from_slice would panic).
         let mut active = self.sources.iter().filter(|s| s.active);
         match active.next() {
             Some(first) if first.offsets.len() == self.combined.len() => {
@@ -327,11 +276,8 @@ impl DeformStack {
         self.generation = next_deform_generation();
     }
 
-    /// Sum the active sources into `out` without touching `combined`,
-    /// the dirty flag, the mask, or the generation. Mesh-group
-    /// propagation reads "the child's deform minus this MG's source"
-    /// every frame; summing read-only avoids a full combine (and its
-    /// generation bump) plus a copy per child per frame.
+    /// Sum the active sources into `out` without touching `combined`, the dirty
+    /// flag, the mask, or the generation.
     pub fn sum_active_into(&self, out: &mut Vec<Vec2>) {
         out.clear();
         let mut active = self.sources.iter().filter(|s| s.active);
@@ -344,9 +290,6 @@ impl DeformStack {
                     }
                 }
             }
-            // No active sources, or a length-mismatched first source:
-            // zero-fill and zip-add everything, mirroring combine()'s
-            // tolerant fallback.
             _ => {
                 out.resize(self.vert_count, Vec2::ZERO);
                 for slot in self.sources.iter().filter(|s| s.active) {
@@ -366,9 +309,6 @@ impl DeformStack {
         self.generation
     }
 
-    /// Vertex `index`'s offset summed over the active sources other than
-    /// `except`: one vertex of what [`Self::sum_active_into`] would give with
-    /// `except` cleared, without clearing it or reading the rest.
     pub fn active_offset_except(&self, except: DeformSource, index: usize) -> Vec2 {
         self.sources
             .iter()
@@ -441,9 +381,6 @@ mod tests {
         assert!(!s.is_active());
     }
 
-    /// A fold re-derives every source but the scratch one, so reset drops
-    /// every source but the scratch one. Otherwise the editor's live drag
-    /// would disappear on the next frame that folded for its own reasons.
     #[test]
     fn reset_keeps_the_scratch_source_and_drops_the_rest() {
         let mut s = DeformStack::new(1);
@@ -454,7 +391,6 @@ mod tests {
         s.reset();
         s.combine();
         assert_eq!(s.combined()[0], Vec2::new(0.0, 7.0));
-        // ...and it is the writer's to end.
         s.clear_source(DeformSource::Scratch);
         s.combine();
         assert_eq!(s.combined()[0], Vec2::ZERO);
@@ -483,10 +419,7 @@ mod tests {
         assert_eq!(s.combined()[0], Vec2::new(9.0, 0.0));
     }
 
-    // sum_active_into must produce combine()'s sum while leaving the
-    // stack's memo state untouched: a follow-up combine() with unchanged
-    // inputs must early-out and keep its generation (the propagation
-    // hot path relies on this to avoid a per-child generation bump).
+    // A follow-up combine() with unchanged inputs must keep its generation.
     #[test]
     fn sum_active_into_matches_combine_and_leaves_state_untouched() {
         let mut s = DeformStack::new(2);
@@ -504,19 +437,15 @@ mod tests {
         s.combine();
         assert_eq!(s.generation(), gen1, "read-only sum must not dirty");
 
-        // Deactivated source drops out of the sum; no state change.
         s.clear_source(DeformSource::Test);
         s.sum_active_into(&mut out);
         assert_eq!(out, vec![Vec2::new(0.5, -1.0); 2]);
 
-        // All inactive: zero-filled at vert_count.
         s.clear_source(DeformSource::Param(0));
         s.sum_active_into(&mut out);
         assert_eq!(out, vec![Vec2::ZERO; 2]);
     }
 
-    // Pooling invariant: reset() + source_buf_mut() on the same source
-    // across frames must not grow the slot's internal allocation.
     #[test]
     fn source_buf_mut_reuses_allocation_across_frames() {
         let mut s = DeformStack::new(4);
@@ -547,10 +476,6 @@ mod tests {
         assert_eq!(cap_before, cap_after, "pool must reuse allocation");
     }
 
-    // The frame loop is reset() -> fold -> combine(). With an unchanged
-    // param value the fold memo-hits, and the recombine must be skipped
-    // entirely: same sum, same generation (the generation gates the
-    // snapshot copy and the GPU upload downstream).
     #[test]
     fn unchanged_param_value_keeps_combined_and_generation() {
         let mut s = DeformStack::new(2);
@@ -571,7 +496,6 @@ mod tests {
         assert_eq!(s.generation(), gen1, "no-op frame must keep the generation");
         assert_eq!(s.combined()[0], Vec2::new(1.0, 2.0));
 
-        // A changed value must rewrite, recombine, and re-generation.
         s.reset();
         s.param_buf_mut(DeformSource::Param(1), Vec2::new(0.4, 0.7))
             .expect("changed value must return the buffer")
@@ -581,9 +505,6 @@ mod tests {
         assert_eq!(s.combined()[0], Vec2::new(3.0, 0.0));
     }
 
-    // Activation-set changes must recombine even when no buffer was
-    // rewritten: a memo-hit slot dropping out (param back at an identity
-    // cell) or coming back must change the sum.
     #[test]
     fn active_set_change_recombines_without_writes() {
         let mut s = DeformStack::new(1);
@@ -597,27 +518,22 @@ mod tests {
         assert_eq!(s.combined()[0], Vec2::new(1.0, 1.0));
         let gen1 = s.generation();
 
-        // Param(1) memo-hits, Test stays inactive: sum must drop it.
         s.reset();
         assert!(s.param_buf_mut(DeformSource::Param(1), v).is_none());
         s.combine();
         assert_ne!(s.generation(), gen1);
         assert_eq!(s.combined()[0], Vec2::new(1.0, 0.0));
 
-        // All sources inactive: sum must go to zero.
         s.reset();
         s.combine();
         assert_eq!(s.combined()[0], Vec2::ZERO);
 
-        // Reactivation via memo-hit alone must restore the contribution.
         s.reset();
         assert!(s.param_buf_mut(DeformSource::Param(1), v).is_none());
         s.combine();
         assert_eq!(s.combined()[0], Vec2::new(1.0, 0.0));
     }
 
-    // The unkeyed write path must invalidate the memo: contents no
-    // longer correspond to any param value.
     #[test]
     fn source_buf_mut_invalidates_param_memo() {
         let mut s = DeformStack::new(1);
@@ -639,11 +555,8 @@ mod tests {
         );
     }
 
-    // The renderer skips a deform upload when (mesh_id, generation) is
-    // already resident. A puppet cloned from a pristine snapshot rewinds
-    // each stack's generation to the source's value; the next combine must
-    // still produce a generation distinct from any previous combine, or two
-    // different deforms would alias and the GPU would keep stale data.
+    // A cloned stack rewinds its generation; the next combine must still not
+    // alias a generation the renderer already uploaded.
     #[test]
     fn combine_after_clone_does_not_reuse_a_prior_generation() {
         let mut original = DeformStack::new(1);
@@ -653,8 +566,6 @@ mod tests {
         original.combine();
         let uploaded = original.generation();
 
-        // Mirror the harness: clone the stack, then drive it to a *different*
-        // deform. The clone starts at `uploaded` but must move past it.
         let mut cloned = original.clone();
         assert_eq!(cloned.generation(), uploaded);
         cloned
@@ -668,8 +579,6 @@ mod tests {
         );
     }
 
-    /// Writing a source the numbers it already holds is not a change: the
-    /// stack stays clean, so `combine` keeps the sum and its generation.
     #[test]
     fn write_source_marks_dirty_only_when_the_offsets_change() {
         let mut s = DeformStack::new(2);
@@ -679,7 +588,6 @@ mod tests {
         let generation = s.generation();
         assert_eq!(s.combined(), &offsets);
 
-        // A fold: reset, then the same pass writes the same numbers.
         s.reset();
         assert!(s.write_source(DeformSource::Node(NodeIdx(7)), &offsets));
         s.combine();
@@ -692,7 +600,6 @@ mod tests {
         assert_ne!(s.generation(), generation);
         assert_eq!(s.combined(), &moved);
 
-        // A source that does not come back is a change too.
         let generation = s.generation();
         s.reset();
         s.combine();
@@ -707,8 +614,6 @@ mod tests {
         assert!(!s.is_active());
     }
 
-    /// The accumulate-then-settle pair a multi-step pass uses: unchanged
-    /// contents settle clean, changed ones settle dirty.
     #[test]
     fn an_unsettled_write_is_dirty_only_if_it_moved() {
         let mut s = DeformStack::new(1);

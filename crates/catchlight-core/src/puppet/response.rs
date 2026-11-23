@@ -1,9 +1,6 @@
-//! Responses read posed inputs and the unclipped position of their immediate
-//! parent. Slot sampling holds response outputs at zero, even when those
-//! outputs move the rendered vertex. The parent input is the only edge
-//! between springs, so cuts propagate in tree order. Sample external inputs once
-//! per tick; on long intervals subdivide the entire cascade together, so a
-//! child sees both parent endpoints on the same substep.
+//! Motion responses. The parent input is the only edge between springs, so
+//! cuts propagate in tree order; long intervals subdivide the whole cascade
+//! together so a child sees both parent endpoints on the same substep.
 use std::collections::{HashMap, HashSet};
 
 use super::Puppet;
@@ -12,8 +9,6 @@ use crate::{
     Mat4, Model, ModelNodeKind, MotionResponse, NodeId, NodeIdx, ParamId, ResponseSource, Vec2,
 };
 
-/// One term as actually sampled by the most recent tick. Unfilled slots
-/// yield no position or scalar; consumers can identify which slot to repair.
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct ResponseInputSample {
     pub source: ResponseSource,
@@ -23,16 +18,16 @@ pub struct ResponseInputSample {
     pub contribution: Option<f64>,
 }
 
-/// Time is supplied by the caller. Fixed stepping interpolates emitted art
-/// by the accumulator fraction; dependency edges always read solver values.
+/// Fixed stepping interpolates emitted art by the accumulator fraction;
+/// dependency edges always read solver values.
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ResponseClock {
     #[default]
     InputIntervals,
-    /// A continuous 60 Hz timeline for playback and export. An interval over
-    /// one minute is treated as a discontinuity to bound catch-up work.
+    /// An interval over one minute is treated as a discontinuity to bound
+    /// catch-up work.
     Fixed60,
 }
 
@@ -90,7 +85,6 @@ pub(super) struct Responses {
     remainder: f64,
     points: Vec<(NodeIdx, Option<u32>)>,
     positions: Vec<Option<Vec2>>,
-    /// Pose parameters that can move each sampled point, and their sorted union.
     point_params: Vec<Vec<u32>>,
     pose_slots: Vec<u32>,
     geometry_nodes: HashSet<NodeIdx>,
@@ -232,8 +226,7 @@ impl Responses {
         }
     }
 
-    /// On a clip cut, initialize affected rows and their followers at the new
-    /// pose. Independent springs keep both velocity and fixed-clock phase.
+    /// Independent springs keep both velocity and fixed-clock phase.
     pub(super) fn reset_changed_inputs(&mut self, jumps: &[u32]) {
         if jumps.is_empty() {
             return;
@@ -257,9 +250,8 @@ impl Responses {
         self.reserved.get(slot as usize) == Some(&true)
     }
 
-    /// Trace each observed vertex backwards through sequential welds, then
-    /// through its pose geometry. A clip cut resets only rows reading a
-    /// point that depends on the jumping parameter.
+    /// A clip cut resets only rows reading a point that depends on the jumping
+    /// parameter.
     fn bake_point_dependencies(&mut self, puppet: &Puppet) {
         if self.points.is_empty() {
             return;
@@ -316,9 +308,8 @@ impl Responses {
     }
 
     fn bake_sampler(&mut self, puppet: &Puppet) {
-        // Isolate the pose-only geometry from the render arena's last driver
-        // claims and from a caller-supplied camera/world matrix. The sampler
-        // shares immutable binding grids and is only allocated for slot inputs.
+        // Isolate pose-only geometry from the render arena's last driver claims and
+        // any caller-supplied camera/world matrix.
         let mut pose = puppet.clone();
         pose.set_motion_responses_enabled(false);
         pose.responses.reserved.clone_from(&self.reserved);
@@ -395,9 +386,7 @@ impl Responses {
         const STEP: f64 = 1.0 / 60.0;
         let dt = f64::from(dt);
         let fixed = self.clock == ResponseClock::Fixed60;
-        // The fixed clock also drives offline clips. A slow frame can contain
-        // many solver boundaries. Bound exceptional gaps without resetting
-        // ordinary low-rate clips, including one-second frame intervals.
+        // Bound exceptional gaps without resetting ordinary low-rate clips.
         let max_interval = if fixed { 60. } else { 0.25 };
         let reset = reset || !(0.0..=max_interval).contains(&dt);
         let old_remainder = self.remainder;
@@ -589,8 +578,6 @@ impl Puppet {
         self.responses = bank;
         moving
     }
-    /// Reset after a seek or teleport, initializing every child from its
-    /// parent's new equilibrium in the same tree walk.
     pub fn reset_motion_responses(&mut self, model: &Model) {
         self.sync(model);
         self.advance_responses(model, 0., true);
@@ -659,8 +646,6 @@ mod tests {
             )
             .unwrap();
         let mut puppet = Puppet::new(&model);
-        // Exercise a partial runtime map directly. A normally loaded complete
-        // model validates all these references before reaching the baker.
         let index = puppet.node_idx(&parent).unwrap();
         std::sync::Arc::make_mut(&mut puppet.id_of_node)[index.0 as usize] =
             NodeId::new("missing").unwrap();

@@ -1,20 +1,11 @@
 //! Derive a binding's dense evaluation grid from its sparse authored cells.
 //!
-//! `.clm` stores only authored keypoint cells; the dense grid the runtime
-//! interpolates over (see `crate::puppet`'s fold and `crate::interpolate`) is
-//! a derived cache computed here, at load (runtime) or on model change
-//! (editor). This is the single fill
-//! implementation both sides call. Pixel stability depends on runtime and
-//! editor deriving identical values for unauthored cells.
-//!
-//! The escalation order per round is: pairwise 1D
-//! interpolation along each axis (second axis averages where both passes
-//! computed the same cell), then parallelogram completion of 2×2 corners,
+//! Runtime and editor must derive identical unauthored cells for pixel
+//! stability. Each round: pairwise 1D interpolation along each axis (averaged
+//! where both compute a cell), then parallelogram completion of 2×2 corners,
 //! then constant outward extension with inverse-square-distance averaging at
-//! crossings. Each round commits what it computed and repeats until dense.
+//! crossings; repeated until dense.
 
-/// A grid cell value the fill can mix. Deform cells are per-vertex offset
-/// arrays; scalars are plain `f32`.
 pub trait FillCell: Clone {
     fn lerp(a: &Self, b: &Self, t: f32) -> Self;
     fn add(&self, other: &Self) -> Self;
@@ -33,9 +24,7 @@ impl FillCell for f32 {
     }
 }
 
-/// Element-wise over flat offset arrays. Authored deform cells within one
-/// binding always share a length; a foreign shorter cell contributes zeros
-/// past its end rather than panicking.
+/// A foreign shorter cell contributes zeros past its end rather than panicking.
 impl FillCell for Vec<f32> {
     fn lerp(a: &Self, b: &Self, t: f32) -> Self {
         zip_longest(a, b, |x, y| x * (1.0 - t) + y * t)
@@ -60,9 +49,7 @@ fn zip_longest(a: &[f32], b: &[f32], f: impl Fn(f32, f32) -> f32) -> Vec<f32> {
         .collect()
 }
 
-/// Fill the dense row-major grid (`data[y * width + x]`) from authored cells.
-/// Out-of-range authored cells are ignored. Zero authored cells derive the
-/// all-identity grid (an everywhere-unset binding contributes nothing).
+/// Row-major (`data[y * width + x]`). Out-of-range authored cells are ignored.
 pub fn derive_dense<T: FillCell>(
     width: usize,
     height: usize,
@@ -91,8 +78,6 @@ pub fn derive_dense<T: FillCell>(
     }
 
     let axis_pos = |y_major: bool, idx: usize| -> f32 {
-        // Minor axis positions: pass one (y_major=false) walks along Y,
-        // pass two along X.
         if y_major {
             axis_x.get(idx).copied().unwrap_or(idx as f32)
         } else {
@@ -392,9 +377,7 @@ mod tests {
 
     #[test]
     fn one_d_interpolates_between_and_extends_past_endpoints() {
-        // axis 0..4, authored at 1 and 3.
         let out = grid(5, 1, &[((1, 0), 10.0), ((3, 0), 30.0)]);
-        // between: linear; outside: constant extension (reference semantics).
         assert_eq!(out, vec![10.0, 10.0, 20.0, 30.0, 30.0]);
     }
 
@@ -413,7 +396,6 @@ mod tests {
 
     #[test]
     fn corner_completion_is_parallelogram() {
-        // 2x2 with 3 corners authored: missing corner = vx + vy - base.
         let out = grid(2, 2, &[((0, 0), 1.0), ((1, 0), 3.0), ((0, 1), 5.0)]);
         assert_eq!(out[3], 3.0 + 5.0 - 1.0);
     }
@@ -426,13 +408,11 @@ mod tests {
 
     #[test]
     fn cross_axis_interpolation_averages_at_intersections() {
-        // A plus-shape: authored at the four edge midpoints of a 3x3.
         let out = grid(
             3,
             3,
             &[((1, 0), 0.0), ((0, 1), 2.0), ((2, 1), 4.0), ((1, 2), 6.0)],
         );
-        // center is interpolated by both passes: x-pass gives 3, y-pass 3 → 3.
         assert!((out[4] - 3.0).abs() < 1e-6);
     }
 

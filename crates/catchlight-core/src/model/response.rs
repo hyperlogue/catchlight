@@ -6,8 +6,8 @@ use std::collections::HashMap;
 use super::{Model, ModelError, ModelNode, ModelNodeKind};
 use crate::{MotionResponse, NodeId, ParamId, ResponseSource};
 
-/// Rebuilt when response rows or their output IDs change. Stable order fixes which
-/// diagnostic a native server and a separately loaded replica return first.
+/// Stable order fixes which diagnostic a native server and a separately
+/// loaded replica return first.
 #[derive(Clone, Debug, Default)]
 pub(super) struct ResponseIndex {
     rows: Vec<NodeId>,
@@ -60,7 +60,6 @@ impl Model {
         })
     }
 
-    /// A new ID can satisfy a fragment's previously external input or output.
     pub(super) fn resolves_response_node(&self, id: &NodeId) -> bool {
         self.is_fragment()
             && self.responses().any(|(node, r)| {
@@ -111,8 +110,7 @@ impl Model {
         self.validate_response_rename(None, None)
     }
 
-    /// A fragment may already reference the destination ID. Check how those
-    /// references will resolve before mutating nodes, bindings or animation lanes.
+    /// Check how existing fragment references will resolve before mutating.
     pub(super) fn validate_response_rename(
         &self,
         node_rename: Option<(&NodeId, &NodeId)>,

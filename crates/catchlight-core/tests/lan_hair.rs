@@ -1,28 +1,15 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-//! The bundled model's long strands swing from a rolling head while its short
-//! swept fringe retains its shape. Exercise Puppet and the evaluated meshes
-//! so attachments, output params, limits and visible deformation participate.
-//! Requires the Lan Git LFS object, like the visual suite.
-//!
-//! Lan's head turns, tilts and bobs through mesh group deforms. The front and
-//! back hair are each one painted part; chains of motion responses read a
-//! named root vertex on that pose-only art and drive deform keys on the hair
-//! and its follow group. The lift responses project vertical motion into
-//! the lift deforms. The strand spines are guides that run along the painted
-//! strands; tests sample the art at points on those guides.
+//! Lan's hair responses under head motion. Requires the Lan Git LFS object.
 
 use catchlight_core::{Model, NodeId, ParamId, Puppet, Vec2, Vec3};
 
 const DT: f32 = 1.0 / 60.0;
 
-/// The two long front strands either side of the face.
 const FRONT_LONG: [&str; 2] = ["Front-Hair-Strand-2-Spine", "Front-Hair-Strand-5-Spine"];
-/// The short swept fringe.
 const FRINGE: [&str; 2] = ["Front-Hair-Strand-3-Spine", "Front-Hair-Strand-4-Spine"];
 
-/// Where the art renders a point of a part, given in the part's authored
-/// space: the point carried by the evaluated triangle that holds it at rest.
-/// `None` when the point lies off the part's mesh.
+/// Where the art renders a point given in the part's authored space. `None`
+/// when the point lies off the part's mesh.
 fn rendered(model: &Model, puppet: &Puppet, part: &NodeId, rest: Vec2) -> Option<Vec2> {
     let geometry = catchlight_core::geometry::EvaluatedGeometry::new(model, puppet).unwrap();
     rendered_in(&geometry, part, rest)
@@ -50,7 +37,6 @@ fn rendered_in(
     None
 }
 
-/// The hair part a strand guide runs along.
 fn hair_part(spine: &str) -> NodeId {
     NodeId::new(if spine.starts_with("Front") {
         "front-hair"
@@ -60,14 +46,13 @@ fn hair_part(spine: &str) -> NodeId {
     .unwrap()
 }
 
-/// The strand guides of the painted hair.
 fn strand_spines(model: &Model) -> impl Iterator<Item = &NodeId> {
     model
         .node_ids()
         .filter(|id| id.as_str().contains("Hair-Strand"))
 }
 
-/// A spine's drawn guide in model space: its root, then each joint.
+/// Model space: its root, then each joint.
 fn guide(model: &Model, spine: &str) -> Vec<Vec2> {
     let id = NodeId::new(spine).unwrap();
     let mut to_model = catchlight_core::Mat4::IDENTITY;
@@ -86,7 +71,6 @@ fn guide(model: &Model, spine: &str) -> Vec<Vec2> {
         .collect()
 }
 
-/// The point a fraction of the way along a polyline, by length.
 fn along(line: &[Vec2], f: f32) -> Vec2 {
     let total: f32 = line.windows(2).map(|w| w[0].distance(w[1])).sum();
     let mut left = total * f;
@@ -100,7 +84,6 @@ fn along(line: &[Vec2], f: f32) -> Vec2 {
     *line.last().unwrap()
 }
 
-/// A material point on a strand, a fraction of the way from its root.
 #[derive(Clone)]
 struct Sample {
     spine: &'static str,
@@ -108,8 +91,8 @@ struct Sample {
     rest: Vec2,
 }
 
-/// A guide drifts a few pixels off the painted strand near its tip, so the
-/// sample sits at the centre of the strand's cross-section nearest the guide.
+/// A guide drifts off the painted strand near its tip, so the sample sits at
+/// the strand's cross-section centre nearest the guide.
 fn sample(model: &Model, spine: &'static str, f: f32) -> Sample {
     let part = hair_part(spine);
     let mut puppet = Puppet::new(model);
@@ -155,7 +138,6 @@ fn at(model: &Model, puppet: &Puppet, s: &Sample) -> Vec2 {
     points(model, puppet, std::slice::from_ref(s))[0]
 }
 
-/// Several samples off one evaluation.
 fn points(model: &Model, puppet: &Puppet, samples: &[Sample]) -> Vec<Vec2> {
     let geometry = catchlight_core::geometry::EvaluatedGeometry::new(model, puppet).unwrap();
     samples
@@ -167,7 +149,6 @@ fn points(model: &Model, puppet: &Puppet, samples: &[Sample]) -> Vec<Vec2> {
         .collect()
 }
 
-/// Points along the fringe, root to tip.
 fn fringe(model: &Model) -> Vec<Sample> {
     FRINGE
         .iter()
@@ -175,8 +156,6 @@ fn fringe(model: &Model) -> Vec<Sample> {
         .collect()
 }
 
-/// Read the named root a response samples, through an independently posed
-/// puppet. This checks the rendered deform and the slot reference together.
 fn root_on_art(
     model: &Model,
     puppet: &Puppet,
@@ -220,7 +199,6 @@ fn worst_root_gap(model: &Model, live: &Puppet, posed: &Puppet) -> (f32, String)
 fn front_strands_keep_their_length_while_the_head_rolls() {
     let model = lan();
     let roll = ParamId::new("head_roll").unwrap();
-    // Points from the scalp to the painted tip along each long strand.
     let strands =
         FRONT_LONG.map(|spine| [0.02, 0.2, 0.4, 0.6, 0.8, 0.95].map(|f| sample(&model, spine, f)));
     let length = |puppet: &Puppet, points: &[Sample]| -> f32 {
@@ -230,8 +208,7 @@ fn front_strands_keep_their_length_while_the_head_rolls() {
     let mut rest = Puppet::new(&model);
     rest.set_motion_responses_enabled(false);
     rest.tick(&model, DT);
-    // A strand that grows and shrinks with the head reads as jelly. The roll
-    // deform stretches this build's strands by under 4% at full reach.
+    // The roll deform stretches this build's strands by under 4% at full reach.
     for responses_enabled in [false, true] {
         for angle in [-30.0, -15.0, 15.0, 30.0] {
             let mut puppet = Puppet::new(&model);
@@ -266,9 +243,8 @@ fn front_strands_settle_promptly_after_a_head_roll() {
         sample(&model, FRONT_LONG[1], 0.6),
         sample(&model, FRONT_LONG[1], 0.95),
     ];
-    // Roll 12 units over a quarter second, then hold. The tip should come
-    // to within half a pixel of rest in about a second (the design measured
-    // 1.2 s for a 10 degree step); much longer reads as goo.
+    // Roll 12 units over a quarter second, then hold. The tip should settle
+    // within half a pixel in about a second.
     let mut held = Vec::new();
     for frame in 0..150 {
         let t = (frame as f32 / 15.0).min(1.0);
@@ -302,10 +278,7 @@ fn back_hair_falls_beside_the_neck_under_a_rolled_head() {
     puppet.reset_motion_responses(&model);
     puppet.tick(&model, DT);
     let geometry = catchlight_core::geometry::EvaluatedGeometry::new(&model, &puppet).unwrap();
-    // The outer back-hair contour beside the cheek and neck. Mesh boundaries
-    // include a small transparent margin around the painted silhouette.
-    // Measured on this build, where the roll deform shapes the fall: a
-    // settled response adds nothing to a held pose.
+    // Mesh boundaries include a small transparent margin around the silhouette.
     for (y, expected_x) in BACK_HAIR_EDGE {
         let mut left = f32::INFINITY;
         let mesh = geometry.mesh(&NodeId::new("back-hair").unwrap()).unwrap();
@@ -341,11 +314,8 @@ fn front_strands_do_not_ring_after_a_tiny_head_roll() {
     let roll = ParamId::new("head_roll").unwrap();
     let samples = FRONT_LONG.map(|spine| sample(&model, spine, 0.95));
     let mut swing = Vec::new();
-    // A half-unit roll over a quarter second, then hold the head still. What
-    // the response adds to the visible tips is one lag and one follow-through;
-    // three quarters of a second after the head stops, under a third of
-    // that swing may be left. Hair that keeps wobbling after a small
-    // movement reads as jelly.
+    // After a half-unit roll, under a third of the swing may remain 0.75 s after
+    // the head stops.
     for frame in 0..=75 {
         let t = (frame as f32 / 15.0).min(1.0);
         let value = 0.5 * t * t * (3.0 - 2.0 * t);
@@ -380,10 +350,7 @@ fn front_strands_do_not_ring_after_a_tiny_head_roll() {
     }
 }
 
-/// The head reaches the hair through its mesh group deforms alone: no hair spine, and no
-/// part directly under one, carries a translation key on a head param.
-/// A spine slid one way with its art slid back renders the same, but leaves
-/// the node somewhere the art is not.
+/// The head reaches the hair through mesh group deforms alone.
 #[test]
 fn no_hair_spine_is_slid_against_its_art() {
     let model = lan();
@@ -428,8 +395,6 @@ fn lan() -> Model {
     .unwrap()
 }
 
-/// Each sampled root agrees with an independently posed copy of the part,
-/// including nested mesh groups on this frame.
 #[test]
 fn simulation_roots_stay_on_the_art_through_every_mesh_group() {
     let model = lan();
@@ -481,7 +446,6 @@ fn shaped_fringe_stays_close_to_its_drawing_across_head_poses() {
     let mut simulated = Puppet::new(&model);
     let mut drawn = Puppet::new(&model);
     drawn.set_motion_responses_enabled(false);
-    // Held poses keep the shaped fringe close to its painted position.
     for (name, value) in [
         ("head_roll", 0.0),
         ("head_roll", -30.0),
@@ -541,9 +505,6 @@ fn fringe_keeps_its_shape_while_the_head_rolls() {
     drawn.set_motion_responses_enabled(false);
     simulated.reset_motion_responses(&model);
     let roll = ParamId::new("head_roll").unwrap();
-    // A full roll each way within a second is the hardest shake the head
-    // has. The fringe swings with it, and its stops hold the swing well
-    // short of the eyes.
     for frame in 0..120 {
         let value = 30.0 * (std::f32::consts::TAU * frame as f32 * DT).sin();
         simulated.set_param_value(&roll, value);
@@ -567,8 +528,6 @@ fn long_hair_hangs_down_under_a_rolled_head() {
     let mut puppet = Puppet::new(&model);
     let roll = ParamId::new("head_roll").unwrap();
     puppet.reset_motion_responses(&model);
-    // The lower length of every long strand, and the face, read off the
-    // evaluated art.
     let long: Vec<_> = strand_spines(&model)
         .filter(|id| guide(&model, id.as_str()).len() > 3)
         .map(|id| {
@@ -611,10 +570,6 @@ fn long_hair_hangs_down_under_a_rolled_head() {
     }
 }
 
-/// Body roll is a mesh group deform in Lan's rig: it moves the art, and the
-/// responses follow the deformed art, so the long strands swing with it.
-/// Since the move is a translation of the head they come back to their
-/// drawing once the body holds still.
 #[test]
 fn long_strands_swing_with_a_body_roll_and_return_to_the_drawing() {
     let model = lan();
@@ -660,10 +615,7 @@ fn long_strands_swing_with_a_body_roll_and_return_to_the_drawing() {
     }
 }
 
-/// **The frame rate does not change the swing.** A head roll ramp under a yaw
-/// sine reaches the hair through the deformed root and the keyformed deforms,
-/// all evaluated on the frame they render; 30 and 60 fps land on the 240 fps
-/// trajectory at the same instants.
+/// 30 and 60 fps land on the 240 fps trajectory at the same instants.
 #[test]
 fn hair_swings_alike_at_any_frame_rate() {
     let model = lan();
@@ -702,10 +654,7 @@ fn hair_swings_alike_at_any_frame_rate() {
     }
 }
 
-/// **Hair sleeps wherever the caller places the puppet.** A viewport passes a
-/// root transform; the responses read posed slots in model space,
-/// so the render fold under that root cannot feed rounding back in and keep
-/// them awake.
+/// Hair sleeps under any root transform: responses read model-space slots.
 #[test]
 fn hair_sleeps_under_a_placed_root() {
     let model = lan();
@@ -727,9 +676,7 @@ fn hair_sleeps_under_a_placed_root() {
     }
 }
 
-/// **A held drag on the hair lets it settle.** The slot sampler sees the
-/// same scratch transform the render does, so the slot follows the dragged
-/// art instead of alternating between it and the undragged one.
+/// A held drag on the hair lets it settle.
 #[test]
 fn a_held_drag_on_the_hair_lets_it_settle() {
     let model = lan();
@@ -757,8 +704,6 @@ fn a_held_drag_on_the_hair_lets_it_settle() {
     assert_eq!(awake, 0, "the hair never settled under a held drag");
 }
 
-/// The vertical response drives the authored lift deform during a nod and
-/// returns the fringe and long strand to the held drawing.
 #[test]
 fn hair_lifts_as_the_head_drops_and_comes_back_to_the_drawing() {
     let model = lan();
@@ -775,7 +720,6 @@ fn hair_lifts_as_the_head_drops_and_comes_back_to_the_drawing() {
     carried.set_motion_responses_enabled(false);
     carried.tick(&model, DT);
     let rest = heights(&carried);
-    // Whichever way the pitch param drops the fringe.
     carried.set_param_value(&pitch, 15.0);
     carried.tick(&model, DT);
     let down = if heights(&carried)[0] < rest[0] {
@@ -817,9 +761,6 @@ fn hair_lifts_as_the_head_drops_and_comes_back_to_the_drawing() {
     assert!(!awake, "the hair is still moving 8 s after the nod");
 }
 
-/// **Every guide runs along its strand.** Each joint but the last lies on the
-/// hair's art, and the last sits at the painted tip, so samples taken along
-/// a guide land on the strand it names.
 #[test]
 fn every_guide_runs_along_its_strand() {
     let model = lan();

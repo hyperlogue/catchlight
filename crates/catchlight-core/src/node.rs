@@ -9,15 +9,10 @@ pub struct NodeTree {
     pub root: NodeIdx,
     arena: Arena<NodeIdx>,
     node_to_tree: HashMap<NodeIdx, TreeNodeId>,
-    // Dense parent lookup indexed by NodeIdx slot, maintained by
-    // add_child (the tree's only mutator). get_parent is hit once per
-    // node per transform walk, so it must not pay the node_to_tree
-    // hash probe + arena hop.
+    // Dense parent lookup indexed by NodeIdx slot, maintained by add_child.
+    // Avoids a hash probe on the per-node transform walk.
     parent: Vec<Option<NodeIdx>>,
-    // Cached pre-order DFS of all nodes. Invalidated on structural changes
-    // (add_child). Populated lazily on the first dfs_order() call. Mutex
-    // rather than RefCell so the whole tree is Sync (required by bevy
-    // Components).
+    // Pre-order DFS cache, invalidated by add_child. Mutex so the tree is Sync.
     dfs_cache: Mutex<Option<Vec<NodeIdx>>>,
 }
 
@@ -28,8 +23,6 @@ impl Clone for NodeTree {
             arena: self.arena.clone(),
             node_to_tree: self.node_to_tree.clone(),
             parent: self.parent.clone(),
-            // The cache can always be rebuilt from the arena; don't bother
-            // cloning it through the Mutex.
             dfs_cache: Mutex::new(None),
         }
     }
@@ -96,8 +89,7 @@ impl NodeTree {
         let Some(&tree_node) = self.node_to_tree.get(&node) else {
             return Vec::new();
         };
-        // indextree::descendants() is iterative and includes the root itself,
-        // so skip it to match the "descendants of `node`" contract.
+        // descendants() includes the root itself.
         tree_node
             .descendants(&self.arena)
             .skip(1)
@@ -115,7 +107,6 @@ impl NodeTree {
 
         let mut descendants = Vec::new();
         let mut iter = tree_node.traverse(&self.arena);
-        // Consume the root's Start event so we don't record the node itself.
         iter.next();
 
         let mut skipping_under: Option<TreeNodeId> = None;
@@ -153,14 +144,8 @@ impl NodeTree {
         }
     }
 
-    /// Run `f` with a borrowed slice of the pre-order DFS, cached until
-    /// the tree mutates. A callback (rather than returning an owned
-    /// Vec) keeps hot-path callers allocation-free.
-    // `f` runs while the guard is held, so a panic in it would poison the
-    // mutex. Poison carries no information here: the cache is a pure function
-    // of the tree and is only ever written whole, so both accessors recover the
-    // inner value instead of propagating. Without this a single panicking `f`
-    // would wedge every later traversal of this tree.
+    // A panic in `f` poisons the mutex. The cache is a pure function of the tree
+    // written whole, so poison is recovered rather than propagated.
     pub fn with_dfs_order<R>(&self, f: impl FnOnce(&[NodeIdx]) -> R) -> R {
         let mut guard = self.dfs_cache.lock().unwrap_or_else(|e| e.into_inner());
         let order = guard.get_or_insert_with(|| {
@@ -248,11 +233,9 @@ mod tests {
         let mut tree = NodeTree::new(root);
         tree.add_child(root, NodeIdx::new(1)).unwrap();
 
-        // Prime the cache.
         let first_len = tree.with_dfs_order(|o| o.len());
         assert_eq!(first_len, 2);
 
-        // Add a child after priming — cache must reflect the new node.
         tree.add_child(root, NodeIdx::new(2)).unwrap();
         assert_eq!(tree.with_dfs_order(|o| o.len()), 3);
     }
@@ -271,8 +254,6 @@ mod tests {
         std::panic::set_hook(prev);
         assert!(caught.is_err());
 
-        // The guard was live across the panic, so the mutex is poisoned.
-        // Reads and cache invalidation must both still work.
         assert_eq!(tree.with_dfs_order(|o| o.len()), 2);
         tree.add_child(root, NodeIdx::new(2)).unwrap();
         assert_eq!(tree.with_dfs_order(|o| o.len()), 3);

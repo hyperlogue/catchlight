@@ -1,46 +1,21 @@
 //! Authored-content comparison for transactional model publication.
 //!
-//! Runtime identity, generation and derived caches are not authored state.
-//! The CLM structure defines authored ordering and sparse-cell semantics;
-//! encoded asset bytes are compared directly without image decoding or copying.
-//!
-//! The answer is the one comparing the two written structures would give —
-//! the same fields, in the orders [`Model::to_clm_structure`] writes them —
-//! but it is read off the models themselves, so nothing is cloned to give it.
-//! Two things make the usual question, "did this edit change anything",
-//! cost what changed rather than what the model holds:
-//!
-//! - **The same model at the same generation is the same state.** A
-//!   generation is drawn from a process-wide clock that never reissues a
-//!   number, and nothing mutates a model without bumping it, so a snapshot
-//!   and the model it was taken from compare equal without being read for as
-//!   long as neither has been edited.
-//! - **A leaf both models share is equal without being read.** Meshes, mask
-//!   and slot lists, binding cells and texture payloads sit behind `Arc`s
-//!   that a clone shares and an edit copies out, so after an edit only the
-//!   leaves it touched are compared by value.
+//! A model's generation is never reissued, so the same model at the same
+//! generation compares equal without being read; `Arc`-shared leaves compare
+//! equal without being read.
 
 use super::{same, Model, ModelBinding, ModelError, ModelNode, ModelNodeKind};
 
 impl Model {
-    /// Whether both models contain exactly the same authored structure and
-    /// assets. Ignores runtime identity, generation and derived caches.
-    ///
-    /// Texture order, encoding, alpha convention and encoded bytes all matter,
-    /// as do sparse binding holes, animations and extension values. Nothing
-    /// is materialized: large payloads remain borrowed and the structure is
-    /// compared in place. A model that could not be written has no structure
-    /// to compare, and returns the error its export would.
+    /// Whether both models would write the same authored structure and assets.
+    /// A model that could not be written returns the error its export would.
     pub fn authored_eq(&self, other: &Self) -> Result<bool, ModelError> {
-        // See the module docs: one model, one generation, one state.
         if self.identity == other.identity && self.generation == other.generation {
             return Ok(true);
         }
         if self.texture_order != other.texture_order || self.extensions != other.extensions {
             return Ok(false);
         }
-        // Carried bytes are part of what a save writes, so two models that
-        // differ in them are two different files.
         if self.unknown_sections != other.unknown_sections {
             return Ok(false);
         }
@@ -56,12 +31,8 @@ impl Model {
         Ok(self.structure_eq(other))
     }
 
-    /// Whether the two models would write the same `Structure` section, bar
-    /// the extensions [`Self::authored_eq`] has already compared: nodes in
-    /// tree order, params, bindings, welds and animations, each in the
-    /// model's own order, field for field.
+    /// Extensions are compared by [`Self::authored_eq`] already.
     fn structure_eq(&self, other: &Self) -> bool {
-        // The cheap disagreements first.
         if self.param_order != other.param_order
             || self.bindings.len() != other.bindings.len()
             || self.welds.len() != other.welds.len()
@@ -70,10 +41,6 @@ impl Model {
             return false;
         }
 
-        // Tree order is what the structure writes, so two models agree on
-        // their nodes exactly when the walks agree and each node does. A
-        // node's place among its siblings is in the walk; its `children` list
-        // is not compared again.
         let order = self.nodes_in_order();
         if order != other.nodes_in_order() {
             return false;
@@ -109,8 +76,6 @@ impl Model {
     }
 }
 
-/// One node as the structure writes it: where it hangs, its properties and
-/// its kind. `children` is the tree order's business.
 fn node_eq(a: &ModelNode, b: &ModelNode) -> bool {
     a.parent == b.parent
         && a.name.as_str() == b.name.as_str()
@@ -156,8 +121,7 @@ fn kind_eq(a: &ModelNodeKind, b: &ModelNodeKind) -> bool {
     }
 }
 
-/// One binding as the structure writes it. The target is not compared apart
-/// from the values: the variant of the values *is* the target.
+/// The variant of the values *is* the target.
 fn binding_eq(a: &ModelBinding, b: &ModelBinding) -> bool {
     a.key.params == b.key.params
         && a.key.node == b.key.node
@@ -227,9 +191,7 @@ mod tests {
             )
             .unwrap();
         let mut other = model.clone();
-        // The pokes below write fields directly and so skip the bump every
-        // real edit makes. Without one the two are the same model at the same
-        // generation, which `authored_eq` takes at its word.
+        // The pokes below skip the generation bump every real edit makes.
         other.bump();
         other.textures.get_mut(&texture).unwrap().data = vec![1, 2, 3].into();
         assert!(model.authored_eq(&other).unwrap());
@@ -302,10 +264,6 @@ mod tests {
         assert!(!model.authored_eq(&other).unwrap());
     }
 
-    /// The same model at the same generation is equal without a field being
-    /// read. Shown the only way it can be: by writing a field behind the
-    /// model's back, which no real edit does, and seeing the comparison not
-    /// notice until the generation moves.
     #[test]
     fn the_same_model_at_the_same_generation_is_equal_without_being_read() {
         let r = rich();
@@ -325,15 +283,12 @@ mod tests {
             "once the generation moves, the content is what answers"
         );
 
-        // Another model with the same contents shares neither identity nor
-        // any allocation, and is equal by value.
         let twin = rich();
         assert_ne!(r.model.identity(), twin.model.identity());
         assert!(r.model.authored_eq(&twin.model).unwrap());
     }
 
-    /// What `authored_eq` was before it stopped materializing: compare the
-    /// two written structures. Every answer has to match it.
+    /// Reference: compare the two written structures.
     fn by_writing_both(a: &Model, b: &Model) -> bool {
         a.texture_order == b.texture_order
             && a.extensions == b.extensions
@@ -344,9 +299,6 @@ mod tests {
             && a.to_clm_structure().unwrap() == b.to_clm_structure().unwrap()
     }
 
-    /// Every kind of authored state, changed one edit at a time: the in-place
-    /// comparison says what comparing the two written structures says, in
-    /// both directions, and an edit taken back is equal again.
     #[test]
     fn the_in_place_comparison_agrees_with_comparing_written_structures() {
         let r = rich();
@@ -583,16 +535,12 @@ mod tests {
             assert!(!r.model.authored_eq(&edited).unwrap(), "{what}");
             assert!(!edited.authored_eq(&r.model).unwrap(), "{what}, reversed");
 
-            // The same edit made twice from one snapshot: equal by value,
-            // with only the touched leaves no longer shared.
             let mut again = r.model.clone();
             edit(&mut again, &r, &mut SeededHex::new(77));
             assert!(by_writing_both(&edited, &again), "{what}");
             assert!(edited.authored_eq(&again).unwrap(), "{what}, made twice");
         }
 
-        // An edit that bumps without changing anything leaves the content to
-        // answer, and every leaf is still shared with the snapshot.
         let mut touched = r.model.clone();
         let name = touched.node(&r.upper).unwrap().name.clone();
         touched.update_node(&r.upper, |n| n.name = name).unwrap();
@@ -601,13 +549,10 @@ mod tests {
         assert!(r.model.authored_eq(&touched).unwrap());
     }
 
-    /// A model that cannot be written still says so, as its export would,
-    /// when the comparison has to look at it.
     #[test]
     fn an_unwritable_model_reports_its_export_error() {
         let r = rich();
         let mut broken = r.model.clone();
-        // No edit builds this any more; it is what a kind swap used to leave.
         broken.nodes.get_mut(&r.lower).unwrap().kind = ModelNodeKind::Group;
         broken.bindings.retain(|b| b.key.node != r.lower);
         broken.bump();
@@ -660,7 +605,6 @@ mod tests {
         }
     }
 
-    /// One model holding every kind of authored state the structure writes.
     struct Rich {
         model: Model,
         upper: NodeId,

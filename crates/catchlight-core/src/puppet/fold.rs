@@ -1,17 +1,4 @@
 //! Folding a pose through a model's bindings into the arena.
-//!
-//! One binding, one write: a scalar target adds to or multiplies the node
-//! property it names, and a deform target fills the binding's own slot in the
-//! node's deform stack, which `combine` later sums. A binding is skipped
-//! outright when every cell with non-zero interpolation weight holds the
-//! target's identity — the fold is then provably a no-op, and skipping keeps
-//! the deform source inactive so nothing downstream re-uploads it.
-//!
-//! Two params interpolate bilinearly over the binding's own position axes;
-//! one param is the same evaluation with the second axis collapsed to a single
-//! position. That is the same arithmetic [`crate::model::Model::eval_scalar`]
-//! does, in the same four modes, over the same grid — the model evaluates one
-//! binding for the editor, this evaluates all of them into a frame.
 
 use glam::Vec2;
 
@@ -27,10 +14,8 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
 }
 
-/// The bracket cell a `Stepped` binding holds: the lower one, except at the
-/// very top of an axis, where the bracket stops advancing and the last cell
-/// would otherwise be unreachable. `crate::interpolate::bracket` opens a new
-/// bracket at each interior key, so the lower cell at a key is that key's own.
+/// The lower cell, except at the very top of an axis, where the last cell
+/// would otherwise be unreachable.
 fn stepped_cell(
     b: &BakedBinding,
     x: (usize, usize),
@@ -50,8 +35,6 @@ fn stepped_cell(
     (cx, cy)
 }
 
-/// Whether every cell the interpolation actually weighs is the identity, so
-/// the whole binding can be skipped.
 fn interpolated_cell_zero(
     b: &BakedBinding,
     x: (usize, usize),
@@ -86,11 +69,8 @@ fn interpolated_cell_zero(
             }
             true
         }
-        // Cubic mixes the bracket's neighbours through the tangent terms, so a
-        // corner-only test can wrongly skip a binding whose inner corners are
-        // identity but whose neighbours bend the curve off it. Skip only when
-        // the whole 4x4 neighbourhood is identity; `cell_zero_at` clamps the
-        // out-of-range outer indices.
+        // Cubic reads the bracket's neighbours through the tangents, so only the
+        // whole 4x4 neighbourhood being identity proves a no-op.
         InterpolateMode::Cubic => {
             let cx = [x0.saturating_sub(1), x0, x1, x1 + 1];
             let cy = [y0.saturating_sub(1), y0, y1, y1 + 1];
@@ -110,10 +90,8 @@ impl Puppet {
             Some(slot) => self.located_at(slot, &b.key_positions[1]),
             None => Located::REST,
         };
-        // The bracket comes from the binding's own positions; a well-formed
-        // binding's grid has exactly those dimensions. Clamp to the grid's own
-        // dims so a malformed model evaluates approximately instead of
-        // indexing out of bounds.
+        // Clamp to the grid's own dims so a malformed model evaluates approximately
+        // instead of indexing out of bounds.
         let xs = (x.lo.min(b.width - 1), x.hi.min(b.width - 1));
         let ys = (y.lo.min(b.height - 1), y.hi.min(b.height - 1));
         let f = (x.frac, y.frac);
@@ -134,8 +112,7 @@ impl Puppet {
                 }
                 self.write_deform(b, dense, xs, ys, f, Vec2::new(x.value, y.value));
             }
-            // A grid whose shape disagrees with the target is a model bug; the
-            // fold renders the rest of the frame rather than refusing it.
+            // A shape mismatch is a model bug; render the rest of the frame.
             _ => {}
         }
     }
@@ -188,8 +165,6 @@ impl Puppet {
                         &mut c.screen_tint,
                         value,
                     ),
-                    // Only drawables carry colour. Every node contributes its
-                    // z order to the draw order of its descendants.
                     _ => {}
                 }
                 if other == ScalarTarget::ZOrder {
@@ -216,13 +191,10 @@ impl Puppet {
         };
         let stack = match &mut node.kind {
             NodeKind::Part(p) => &mut p.deform_stack,
-            // Propagation samples this stack after all bindings have been folded.
             NodeKind::MeshGroup(mg) => &mut mg.deform_stack,
             _ => return,
         };
         let vert_len = stack.vert_count;
-        // A grid whose longest cell is shorter than the target's mesh cannot
-        // be folded into it; short cells within a grid read as zero offsets.
         if dense.iter().map(Vec::len).max().unwrap_or(0) < vert_len * 2 {
             return;
         }
@@ -307,7 +279,6 @@ fn write_colour(
     }
 }
 
-/// One scalar cell value, interpolated in the binding's own mode.
 fn sample(
     b: &BakedBinding,
     dense: &[f32],
@@ -335,9 +306,7 @@ fn sample(
             lerp(top, bottom, fy)
         }
         InterpolateMode::Cubic => {
-            // The spline reaches one cell past the bracket on each side;
-            // clamping the outer indices makes edge cells degrade to linear
-            // rather than index out of the grid.
+            // Clamping the outer indices degrades edge cells to linear.
             let cx = [x0.saturating_sub(1), x0, x1, (x1 + 1).min(w - 1)];
             let cy = [y0.saturating_sub(1), y0, y1, (y1 + 1).min(b.height - 1)];
             let row = |r: usize| cubic(at(cx[0], r), at(cx[1], r), at(cx[2], r), at(cx[3], r), fx);
@@ -346,8 +315,7 @@ fn sample(
     }
 }
 
-/// The deform-stack slot a binding writes. One per binding, so two bindings on
-/// one node never share a buffer however they are keyed.
+/// One per binding, so two bindings on one node never share a buffer.
 pub(super) fn deform_source(index: usize) -> DeformSource {
     DeformSource::Param(index as u32)
 }

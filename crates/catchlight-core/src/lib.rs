@@ -17,9 +17,6 @@ pub mod spine;
 pub mod texture;
 pub mod weld;
 
-// The root names the types a caller builds with, each listed: a module's
-// helpers stay behind its path, and a new `pub` item reaches the root only
-// by being added here.
 pub use components::{
     BlendMode, CompositeData, DecodedTexture, Mask, MaskMode, Mesh, MeshGroupData, MeshIndices,
     Node, NodeIdx, NodeKind, PartData, TextureIdx, Transform,

@@ -1,27 +1,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! What a tick evaluates, pinned against a committed baseline.
 //!
-//! Each fixture here is a synthetic model exercising one part of the pipeline the
-//! committed `.clm` fixtures do not reach: mesh groups in both
-//! `translate_children` states, two-param bindings in all
-//! four interpolation modes, two params deforming one node, welds, a spine
-//! composing two turns, and a playing animation. Each evaluated frame
-//! — every node's global transform, z order, enabled flag, colour and
-//! combined deform — is compared against
-//! `tests/fixtures/evaluated_frame.json`.
-//!
-//! The combined deform is what proves the passes downstream of the fold: a
-//! mesh group's pins, the mesh-group pass that shifts its `translate_children`
-//! targets, and the weld solve all land in a node's deform stack or in a
-//! shifted node's transform, so a difference in any of them shows up here.
-//! Nothing else observes them.
-//!
-//! **Where the numbers came from.** They are the output of the runtime this
-//! suite used to compare against the one it replaced, frame for frame, at the
-//! same `1e-5`. That comparison retired with the old runtime; these are the
-//! values it had proven equal, captured. The mesh-group labels were
-//! regenerated when static mesh groups were removed and every group became
-//! the deform-at-the-current-position kind.
+//! Synthetic fixtures reach what the committed `.clm` fixtures do not; every
+//! node's global transform, z order, enabled flag, colour and combined deform
+//! is compared against `tests/fixtures/evaluated_frame.json`.
 //!
 //! Regenerate after an intentional behaviour change:
 //!   UPDATE_FRAME_BASELINE=1 cargo test -p catchlight-core --test evaluated_frame
@@ -38,32 +20,22 @@ use catchlight_core::{Model, NodeId, NodeIdx, NodeKind, ParamId, SlotId};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-/// Absolute tolerance on every compared number, the one the retired
-/// two-runtime comparison used.
 const TOL: f32 = 1e-5;
 
 const DT: f32 = 1.0 / 60.0;
 
-/// Frames between samples of clip playback at 60 Hz.
 const SAMPLE_EVERY: usize = 10;
 
-/// One evaluated frame, flattened: per node, the global transform's sixteen
-/// elements, its z order and enabled flag, then its colour if it has one,
-/// then its combined deform if it has one.
+/// Per node: the sixteen transform elements, z order, enabled flag, then
+/// colour and combined deform when present.
 type Frame = Vec<Vec<f32>>;
 
-/// Every label this suite captures, in name order.
 type Baseline = BTreeMap<String, Frame>;
-
-// ---------------------------------------------------------------------------
-// Driving one fixture
-// ---------------------------------------------------------------------------
 
 struct Fixture {
     file: FixtureFile,
     model: Model,
     puppet: Puppet,
-    /// Baked index of each node, in tree order.
     nodes: Vec<NodeIdx>,
 }
 
@@ -99,7 +71,6 @@ impl Fixture {
         self.puppet.tick(&self.model, DT);
     }
 
-    /// The evaluated frame, flattened for the baseline.
     fn frame(&self) -> Frame {
         self.nodes
             .iter()
@@ -131,9 +102,8 @@ fn colour(kind: &NodeKind) -> Option<(f32, [f32; 3], [f32; 3])> {
     }
 }
 
-/// Poses to drive a fixture through: everything at rest, everything at each
-/// extreme and at the middle, then each param swept on its own so a binding
-/// that only one param reaches is still exercised.
+/// Each param is also swept on its own so a binding only one param reaches
+/// is still exercised.
 fn pose_grid(file: &FixtureFile) -> Vec<Vec<(f32, f32)>> {
     let params = &file.slots;
     let at = |k: usize| -> Vec<(f32, f32)> {
@@ -162,9 +132,7 @@ fn pose_grid(file: &FixtureFile) -> Vec<Vec<(f32, f32)>> {
     poses
 }
 
-/// Run one fixture's whole schedule into `out`.
-///
-/// Tick twice per pose to verify that the memoized frame matches the first.
+/// Ticks twice per pose to verify that the memoized frame matches the first.
 fn capture(label: &str, file: FixtureFile, out: &mut Baseline) {
     let mut fixture = Fixture::load(file);
 
@@ -194,10 +162,6 @@ fn compare(where_: &str, expected: &Frame, got: &Frame) {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// The whole matrix, against the committed baseline
-// ---------------------------------------------------------------------------
 
 fn current() -> Baseline {
     let mut out = Baseline::new();
@@ -231,8 +195,6 @@ fn current() -> Baseline {
     out
 }
 
-/// A clip the puppet plays, sampled over 120 frames: the loop region, the
-/// lead-in and the keyframe interpolator, all reaching bindings.
 fn animation_frames(out: &mut Baseline) {
     let mut fixture = Fixture::load(animation_fixture());
     fixture.puppet.set_animations(vec![ClmAnimation {
@@ -334,19 +296,10 @@ fn every_fixture_evaluates_the_frame_it_always_has() -> Result<(), Box<dyn std::
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Authoring a fixture
-// ---------------------------------------------------------------------------
-//
-// The fixtures author the `.clm` structure directly and mint the Ids an import
-// would: `root` / `node-<i>` by position, `param-<i>` per source param, or
-// `param-<i>.x` / `param-<i>.y` for one the pose schedule drives on two axes.
-// That second shape is why [`Slot`] exists — a model has only scalar params,
-// but this suite's poses are defined per *source* param, and they have to stay
-// the ones the committed baseline was captured at.
+// Fixtures mint the Ids an import would. [`Slot`] exists because poses are
+// defined per *source* param, which a 2-D param splits into `.x` / `.y`, and
+// must stay the ones the baseline was captured at.
 
-/// One source param: the model params it became, and the range the pose
-/// schedule sweeps it over.
 struct Slot {
     ids: Vec<ParamId>,
     min: [f32; 2],
@@ -354,14 +307,11 @@ struct Slot {
     defaults: [f32; 2],
 }
 
-/// A fixture: the structure a [`Model`] is read from, and the slots that pose it.
 struct FixtureFile {
     file: ClmFile,
     slots: Vec<Slot>,
 }
 
-/// One fixture param before it is split: `vec2` means two scalar params, `.x` and
-/// `.y`, the way an import splits a 2-D inochi2d param.
 struct FixtureParam {
     name: &'static str,
     vec2: bool,
@@ -428,12 +378,10 @@ fn nid(i: usize) -> NodeId {
     .unwrap()
 }
 
-/// The one param a scalar slot became.
 fn one(i: usize) -> Vec<ParamId> {
     vec![ParamId::new(format!("param-{i}")).unwrap()]
 }
 
-/// The two params a 2-D slot split into, `x` first.
 fn two(i: usize) -> Vec<ParamId> {
     vec![
         ParamId::new(format!("param-{i}.x")).unwrap(),
@@ -472,7 +420,6 @@ fn part(mesh: ClmMesh) -> ClmPart {
     }
 }
 
-/// A part whose slots `s0..` name the vertices `verts` — what a weld pairs.
 fn welded_part(mesh: ClmMesh, verts: &[u32]) -> ClmPart {
     ClmPart {
         slots: verts
@@ -489,7 +436,6 @@ fn welded_part(mesh: ClmMesh, verts: &[u32]) -> ClmPart {
 
 fn node(parent: Option<usize>, name: &str, kind: ClmNodeKind) -> ClmNode {
     ClmNode {
-        // Overwritten by `file`, which numbers the nodes by position.
         id: nid(0),
         parent: parent.map(nid),
         name: name.into(),
@@ -531,8 +477,6 @@ fn cells<T>(entries: Vec<(u32, u32, T)>) -> ClmCells<T> {
     }
 }
 
-/// Number the nodes by position, split every 2-D param into its `.x` / `.y`
-/// pair, and lift the bindings out from under their params.
 fn file(
     nodes: Vec<ClmNode>,
     fixture_params: Vec<FixtureParam>,
@@ -610,9 +554,6 @@ fn file(
     }
 }
 
-/// A part under a group, driven by one 2-D param whose deform binding is
-/// authored at scattered cells of a 3x3 grid, plus scalar bindings on every
-/// other target the runtime folds.
 fn two_param_fixture(mode: InterpolateMode) -> FixtureFile {
     let nodes = vec![
         node(None, "Root", ClmNodeKind::Group),
@@ -689,8 +630,6 @@ fn two_param_fixture(mode: InterpolateMode) -> FixtureFile {
     file(nodes, params, Vec::new())
 }
 
-/// Two one-param bindings on one node, from different params — one deform
-/// slot per binding.
 fn two_params_deforming_one_node() -> FixtureFile {
     let nodes = vec![
         node(None, "Root", ClmNodeKind::Group),
@@ -711,8 +650,6 @@ fn two_params_deforming_one_node() -> FixtureFile {
     file(nodes, params, Vec::new())
 }
 
-/// A mesh group over two parts, keyed by a param: the descent, the pin
-/// bake and the `translate_children` filter all have to land the same.
 fn mesh_group_fixture(translate_children: bool) -> FixtureFile {
     let nodes = vec![
         node(None, "Root", ClmNodeKind::Group),
@@ -763,8 +700,6 @@ fn mesh_group_fixture(translate_children: bool) -> FixtureFile {
     file(nodes, params, Vec::new())
 }
 
-/// Two parts welded slot to slot, each with its own deform binding, so the
-/// weld pass has something to pull together.
 fn weld_fixture() -> FixtureFile {
     let nodes = vec![
         node(None, "Root", ClmNodeKind::Group),
@@ -823,15 +758,8 @@ fn weld_fixture() -> FixtureFile {
     file(nodes, params, welds)
 }
 
-/// A spine turning a strip that reaches past both its links and above its
-/// root.
-///
-/// A param moves vertices without a binding of any kind: a spine reads the
-/// value straight off and composes the turns itself. The art runs from 10 px
-/// above the spine's root to 10 px past its tip, so one pose pins all three
-/// cases at once — the vertices above the root that must not move, the ones
-/// inside each link's ramp, and the ones past the tip that take the last
-/// link's turn in full.
+/// The art runs from 10 px above the spine's root to 10 px past its tip, so
+/// one pose pins vertices above the root, inside each link, and past the tip.
 fn spine_fixture() -> FixtureFile {
     let nodes = vec![
         node(None, "Root", ClmNodeKind::Group),
@@ -851,20 +779,13 @@ fn spine_fixture() -> FixtureFile {
             ClmNodeKind::Part(part(quad(6.0, 40.0))),
         ),
     ];
-    // A quarter turn each way at the ends of the range, so the pose grid
-    // reaches bends that visibly compose rather than nearly-straight ones.
     let params = (0..2)
         .map(|_| FixtureParam::scalar("Bend", -0.5, 0.5, 0.0, vec![0.0, 0.5, 1.0]))
         .collect();
     file(nodes, params, Vec::new())
 }
 
-// ---------------------------------------------------------------------------
-// The generation gate
-// ---------------------------------------------------------------------------
-
-/// A model edited between two ticks must reach the puppet on the next one,
-/// and the pose the caller set must survive the rebake.
+/// The pose the caller set must survive the rebake.
 #[test]
 fn a_model_edit_between_ticks_rebakes_and_keeps_the_pose() {
     let f = two_param_fixture(InterpolateMode::Linear);
@@ -919,8 +840,6 @@ fn a_model_edit_between_ticks_rebakes_and_keeps_the_pose() {
     }
 }
 
-/// A part whose transform and deform a single param drives, for a clip's lane
-/// to reach.
 fn animation_fixture() -> FixtureFile {
     let nodes = vec![
         node(None, "Root", ClmNodeKind::Group),

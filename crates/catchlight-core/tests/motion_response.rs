@@ -1,6 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-//! Cross the model-file, live editing and puppet interfaces with the same
-//! two-spring fixture. These invariants do not depend on a particular artwork.
+//! Model-file, live editing and puppet interfaces on one two-spring fixture.
 use catchlight_core::{
     BindingKey, BindingTarget, Model, ModelNode, ModelNodeKind, ModelParam, MotionResponse, Name,
     NodeId, ParamId, Pose, Puppet, ResponseInput, ResponseSource, ScalarTarget,
@@ -448,8 +447,6 @@ fn playback_started_after_an_edit_uses_the_new_slot_dependencies() {
 #[test]
 fn arbitrary_projection_reads_this_poses_slot_and_rebinding_resets_the_branch() {
     let (mut m, slot) = slot_model();
-    // A custom mesh refit is another binding writer. Reject a displaced
-    // neutral cell before changing the mesh, slot, or any other binding.
     let corrective = BindingKey::new(pid("bend"), nid("art"), BindingTarget::Deform);
     m.add_binding(&corrective).unwrap();
     let before = m.to_clm_bytes().unwrap();

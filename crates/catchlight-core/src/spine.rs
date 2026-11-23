@@ -1,79 +1,10 @@
 //! Spines: a chain of joints drawn on the art, turning the geometry beneath.
 //!
-//! **Bend 0 is the art.** A spine holds no cells and no grid; a link's bend is
-//! its param's value read straight off, in half turns, and with every bend at
-//! zero the spine's contribution is exactly `Vec2::ZERO` on every vertex. The
-//! pass returns before it writes anything in that case, so an unbent spine
-//! leaves its deform source inactive and nothing downstream re-uploads.
-//!
-//! **A link's bend turns at the joint above it.** `joints[i]` is the far end
-//! of link `i`, so link 0 runs from the node's own origin to `joints[0]`; the
-//! hinge link `i` turns about is the node's origin for link 0 and
-//! `joints[i - 1]` after that. Positive bend turns a downward link toward +X:
-//! the turn is `bend * pi` counterclockwise in the model's Y-up frame.
-//!
-//! **The joint path is composed; the visible strand rounds its corners.**
-//! The physical links still turn rigidly about their parent joints, root to
-//! tip. Between adjacent link midpoints, the art follows a quadratic Bezier
-//! whose middle control is their shared joint. These nonnegative weights keep
-//! the curve within the joint path's convex hull: a hanging length cannot
-//! curl outward and back merely because its upper link changed direction.
-//! The root and tip are exact; interior joints are controls, not interpolation
-//! points. Rounding slightly shortens the visible path rather than inflating
-//! it into the spiral made by a partial rotation about each hinge.
-//!
-//! **Transport the art from its rest curve to its posed curve.** Each baked
-//! link coordinate samples both curves. Their tangent difference rotates the
-//! vertex's offset from the rest curve, then translates it onto the posed
-//! curve. Width and pre-existing deforms therefore travel with the strand.
-//! The root cross-section remains attached, with its orientation eased into
-//! the first link over that link's first half. Art above the root stays fixed;
-//! art beyond the tip follows the last link. All-zero bends remain exactly
-//! inactive. This is O(N) per spine and O(1) per vertex.
-//!
-//! The authored guide should follow the painted strand. Its tip controls the
-//! centerline of the deformation. Coarse triangles and discontinuous rest
-//! assignments can still produce visible corners.
-//!
-//! **The guide is embedded in the art.** The bake binds the root and every
-//! joint to the rest triangle of the spine's guide part (its largest meshed
-//! part) that holds it, or the nearest one, as barycentric weights. Each fold,
-//! before the turn, the posed guide is those points read through the part's
-//! current deform (every source but this spine's own) and its current
-//! transform, in spine space. The transport runs from the posed guide, not the
-//! drawing, so a keyform that reshapes or moves the art moves the curve the
-//! bends turn it about. Where no guide point moves off the drawing by more
-//! than rounding (`GUIDE_STILL_SQ`), the posed guide is left empty and reads
-//! as the drawing exactly; with no deform and the part placed as at rest,
-//! reading it costs one transform compare.
-//!
-//! **The assignment comes from rest geometry, once per bake.** Each descendant
-//! vertex is mapped into spine space through the rest transforms and projected
-//! onto the nearest link; the arc length `s` to that projection gives the link
-//! `k` whose span contains it and the ramp `f = clamp((s - S_k) / L_k, 0, 1)`.
-//! A vertex above the root projects to the root and lands on `k = 0, f = 0`,
-//! whose transform is the identity, so it does not move; one past the tip
-//! lands on the last link at `f = 1` and turns with it in full. The assignment
-//! never moves after that — it describes the art as drawn, and re-deriving it
-//! from a bent pose would let the shape creep.
-//!
-//! **The pass runs before the mesh groups, and the mesh groups warp its
-//! output.** A spine writes `DeformSource::Node(spine_idx)` on each meshed
-//! descendant, reading that node's current deform sum the way
-//! `meshgroup::propagate_to_child` does — clear the source, read the rest, add
-//! the turn. A mesh group above a spine reaches those same parts and folds
-//! from their current position, so the group warps art the spine has already
-//! bent.
-//!
-//! **Descent halts at a mesh group and at a nested spine.** A mesh group
-//! carries the deform to its own children, so binding them here too would
-//! apply it twice — the same rule `meshgroup::descendant_meshed_nodes` keeps.
-//! The walk passes through motion responses to reach the art below them.
-//! A composite with `propagate_mesh_group` unset halts the walk for the same
-//! reason it halts a group's. **Nested spines do not compose exactly:** an
-//! outer spine's walk stops at an inner one, so the subtree below the inner
-//! spine turns with the inner bends alone and the outer spine's rotations
-//! never reach it. Rig one spine per strand until that changes.
+//! Bends are in half turns, counterclockwise in the model's Y-up frame. Link `i`
+//! turns about `joints[i - 1]` (the node origin for link 0). The per-vertex
+//! assignment comes from rest geometry once per bake; re-deriving it from a bent
+//! pose would let the shape creep. Nested spines do not compose: an outer
+//! spine's walk stops at an inner one.
 
 use std::collections::HashMap;
 
@@ -85,22 +16,15 @@ use crate::meshgroup::affine2_from_mat4;
 use crate::node::NodeTree;
 use crate::puppet::{Arena, GlobalTransforms};
 
-/// Which link turns one vertex, and how far into that link it sits.
-///
-/// Derived from rest geometry at bake. `ramp` is already clamped to `0..=1`,
-/// and `link` always indexes a real link, so the per-frame loop reads both
-/// without a bounds decision of its own.
+/// `ramp` is clamped to `0..=1` and `link` always indexes a real link.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct VertexBend {
     pub(crate) link: u32,
     pub(crate) ramp: f32,
 }
 
-/// One guide point bound into the guide part's rest mesh: its part-local
-/// rest position and the triangle corners and weights it reads the part's
-/// deform through. A point outside the mesh reads the deform at its nearest
-/// point on the nearest triangle, with weights in [0, 1], so a sliver
-/// triangle cannot amplify a small keyform into a large move.
+/// A point outside the mesh reads the deform at its nearest point on the
+/// nearest triangle (weights in [0, 1]), so a sliver cannot amplify a keyform.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct GuidePoint {
     rest: Vec2,
@@ -108,40 +32,29 @@ pub(crate) struct GuidePoint {
     weights: [f32; 3],
 }
 
-/// The spine's guide, bound into its guide part at bake.
 #[derive(Debug, Clone)]
 pub(crate) struct GuideBinding {
     part: NodeIdx,
-    /// The part's local space to the spine's, at rest.
+    /// Part-local to spine space, at rest.
     rest_to_spine: Affine2,
     /// The root, then each joint.
     points: Vec<GuidePoint>,
 }
 
-/// One spine's per-vertex assignment, keyed by the node the vertices belong
-/// to, and its guide. Empty until the bake fills it.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct SpinePins {
     pub(crate) per_child: HashMap<NodeIdx, Vec<VertexBend>>,
     pub(crate) guide: Option<GuideBinding>,
 }
 
-/// A spine's rest polyline, current bends and baked vertex assignments.
-///
-/// `bends` is written from the params every frame the fold runs, so nothing
-/// here needs resetting; `joints` and `pins` are rest data a rebake replaces.
 #[derive(Debug, Clone, Default)]
 pub struct SpineData {
-    /// The far end of each link, in the node's own space. `joints[0]` ends the
-    /// link that starts at the node itself.
+    /// The far end of each link, in the node's own space.
     pub joints: Vec<Vec2>,
-    /// This frame's bend per link, in half turns. As long as `joints`.
+    /// Per link, in half turns. As long as `joints`.
     pub bends: Vec<f32>,
-    /// Rest data, shared between clones of a puppet.
     pub(crate) pins: std::sync::Arc<SpinePins>,
-    /// The last fold's posed guide in the node's own space: the root, then
-    /// each joint. Empty reads as the drawing, the root at the origin. What
-    /// the transport turns the art about.
+    /// Root, then each joint, in the node's own space. Empty reads as the drawing.
     pub(crate) posed_guide: Vec<Vec2>,
 }
 
@@ -150,7 +63,6 @@ impl SpineData {
         self.pins.guide.as_ref().map(|guide| guide.part)
     }
 
-    /// A spine over `joints`, unbent and carrying nothing.
     pub fn new(joints: Vec<Vec2>) -> Self {
         let bends = vec![0.0; joints.len()];
         Self {
@@ -161,23 +73,18 @@ impl SpineData {
         }
     }
 
-    /// The last render fold's posed guide in the node's own space, root
-    /// first, then each joint; empty while it is the drawing. The transport
-    /// turns the art about it.
+    /// Root first, in the node's own space; empty while it is the drawing.
     pub fn posed_guide(&self) -> &[Vec2] {
         &self.posed_guide
     }
 }
 
-/// A rotation of `angle` radians about `pivot`, counterclockwise in a Y-up
-/// frame.
+/// Counterclockwise in a Y-up frame.
 fn rotate_about(pivot: Vec2, angle: f32) -> Affine2 {
     let r = Mat2::from_angle(angle);
     Affine2::from_mat2_translation(r, pivot - r * pivot)
 }
 
-/// One physical link in its rest and composed frames. Adjacent links supply
-/// the three controls used to reconstruct the visible curve.
 #[derive(Debug, Clone, Copy)]
 struct ComposedLink {
     rest_start: Vec2,
@@ -186,11 +93,7 @@ struct ComposedLink {
     posed_end: Vec2,
 }
 
-/// Compose the joints root to tip, once per spine per frame.
-///
-/// `root` and `joints` are the curve the art sits on: the drawing, or the
-/// posed guide. Returns `None` when every bend is zero, which is the whole
-/// spine's identity and the caller's cue to write nothing.
+/// `None` when every bend is zero; the caller then writes nothing.
 fn compose(root: Vec2, joints: &[Vec2], bends: &[f32]) -> Option<Vec<ComposedLink>> {
     let n = joints.len();
     let angle = |k: usize| {
@@ -207,8 +110,6 @@ fn compose(root: Vec2, joints: &[Vec2], bends: &[f32]) -> Option<Vec<ComposedLin
     let mut out = Vec::with_capacity(n);
     let mut above = Affine2::IDENTITY;
     for k in 0..n {
-        // The hinge above link k, as drawn: the root for the first link, the
-        // joint that ends the link above it after that.
         let rest_hinge = if k == 0 { root } else { joints[k - 1] };
         let hinge = above.transform_point2(rest_hinge);
         let angle = angle(k);
@@ -223,11 +124,9 @@ fn compose(root: Vec2, joints: &[Vec2], bends: &[f32]) -> Option<Vec<ComposedLin
     Some(out)
 }
 
-/// Round the joint path with quadratic Beziers between link midpoints.
-/// The curve stays inside the control polygon: a vertical hanging section
-/// cannot acquire the outward curl produced by rotating vertices about a
-/// hinge through only a fraction of its angle. Root and tip remain exact;
-/// internal joints are controls, not points the visible curve must pass through.
+/// Quadratic Beziers between link midpoints keep the curve inside the control
+/// polygon, so a hanging section cannot curl outward as a partial hinge rotation
+/// would.
 fn curve_sample(links: &[ComposedLink], bend: VertexBend, posed: bool) -> (Vec2, Vec2) {
     let endpoints = |k: usize| {
         let l = &links[k];
@@ -287,8 +186,7 @@ fn curve_transform(links: &[ComposedLink], bend: VertexBend) -> Affine2 {
     Affine2::from_mat2_translation(rotation, posed - rotation * rest)
 }
 
-/// Arc length at the head of each link, and each link's own length. `out[k]`
-/// is `(S_k, L_k)`.
+/// `out[k]` is `(S_k, L_k)`: arc length at the head of link `k`, and its length.
 fn spans(joints: &[Vec2]) -> Vec<(f32, f32)> {
     let mut out = Vec::with_capacity(joints.len());
     let mut here = Vec2::ZERO;
@@ -302,12 +200,6 @@ fn spans(joints: &[Vec2]) -> Vec<(f32, f32)> {
     out
 }
 
-/// Where one rest vertex sits on the polyline: the nearest link by distance,
-/// then the link whose span holds the arc length of that projection.
-///
-/// The projection is clamped to its link, so a vertex above the root lands on
-/// the root at `s = 0` — link 0 at ramp 0, whose transform is the identity —
-/// and one past the tip lands on the last link at ramp 1.
 fn assign(joints: &[Vec2], spans: &[(f32, f32)], p: Vec2) -> VertexBend {
     let mut best = (f32::INFINITY, 0.0f32);
     let mut here = Vec2::ZERO;
@@ -326,9 +218,8 @@ fn assign(joints: &[Vec2], spans: &[(f32, f32)], p: Vec2) -> VertexBend {
         here = joint;
     }
     let s = best.1;
-    // The last link whose head is at or before `s`, so the tip's own arc
-    // length reads as the end of the last link rather than the start of one
-    // past it.
+    // The last link whose head is at or before `s`, so the tip reads as the end of
+    // the last link rather than the start of one past it.
     let mut link = 0usize;
     for (k, &(start, _)) in spans.iter().enumerate() {
         if s >= start {
@@ -347,9 +238,7 @@ fn assign(joints: &[Vec2], spans: &[(f32, f32)], p: Vec2) -> VertexBend {
     }
 }
 
-/// Collect parts and mesh groups a spine turns. Descend through parts,
-/// propagating composites and motion responses. Mesh groups and nested
-/// spines handle their own children.
+/// Mesh groups and nested spines handle their own children.
 fn descendant_turned_nodes(tree: &NodeTree, spine_id: NodeIdx, arena: &Arena) -> Vec<NodeIdx> {
     let mut out = Vec::new();
     let mut stack: Vec<NodeIdx> = tree.get_children(spine_id);
@@ -372,9 +261,7 @@ fn descendant_turned_nodes(tree: &NodeTree, spine_id: NodeIdx, arena: &Arena) ->
     out
 }
 
-/// Pre-order among spines, so an outer spine runs before an inner one. The
-/// two do not compose (see the module doc), but the order still decides which
-/// writes its source first and keeps the pass deterministic.
+/// Pre-order, so the pass is deterministic.
 fn spine_pre_order(arena: &Arena) -> Vec<NodeIdx> {
     arena.tree.with_dfs_order(|dfs| {
         dfs.iter()
@@ -384,11 +271,7 @@ fn spine_pre_order(arena: &Arena) -> Vec<NodeIdx> {
     })
 }
 
-/// Derive every spine's per-vertex assignment from the arena's rest pose.
-///
-/// `transforms` must be the rest globals — the caller resets the dynamic state
-/// and computes them immediately before calling, exactly as
-/// `Arena::rebuild_all_mesh_group_pins` does.
+/// `transforms` must be the rest globals.
 pub(crate) fn bake_spine_pins(
     arena: &Arena,
     transforms: &GlobalTransforms,
@@ -434,8 +317,6 @@ pub(crate) fn bake_spine_pins(
     pins
 }
 
-/// Bind the root and joints into the spine's guide part: the meshed part
-/// under it with the largest rest area in spine space.
 fn bind_guide(
     arena: &Arena,
     transforms: &GlobalTransforms,
@@ -462,9 +343,8 @@ fn bind_guide(
             .iter()
             .filter_map(|&[a, b, c]| Some((v(b)? - v(a)?).perp_dot(v(c)? - v(a)?).abs()))
             .sum();
-        // A broken mesh counts as no area rather than poisoning the choice.
-        // Equal areas keep the first part in walk order, which is the tree's
-        // child order, so the choice is stable until the art itself changes.
+        // A broken mesh counts as no area. Ties keep the first in walk order so
+        // the choice is stable.
         let area = if area.is_finite() { area } else { 0.0 };
         if best.is_none_or(|(a, ..)| area > a) {
             best = Some((area, child_id, to_spine));
@@ -494,7 +374,6 @@ fn bind_guide(
     })
 }
 
-/// The triangle that holds `q`, or the nearest one, with `q`'s weights in it.
 fn bind_point(local: &[Vec2], indices: &[u32], q: Vec2) -> Option<GuidePoint> {
     let mut best: Option<(f32, GuidePoint)> = None;
     for &corners in indices.as_chunks::<3>().0 {
@@ -506,8 +385,7 @@ fn bind_point(local: &[Vec2], indices: &[u32], q: Vec2) -> Option<GuidePoint> {
         if !inside.iter().all(|w| w.is_finite()) {
             continue;
         }
-        // Outside every triangle, read the deform at the nearest point on
-        // this one: extrapolated weights would scale a sliver triangle's
+        // Outside every triangle: extrapolated weights would scale a sliver's
         // deform by many times its size.
         let (distance, weights) = if inside.iter().all(|w| *w >= 0.0) {
             (0.0, inside)
@@ -544,15 +422,10 @@ fn bind_point(local: &[Vec2], indices: &[u32], q: Vec2) -> Option<GuidePoint> {
     best.map(|(_, p)| p)
 }
 
-/// Squared displacement (px²) under which every guide point counts as still
-/// on the drawing: the rounding of composing a turned parent's transforms.
+/// Squared displacement (px²) below which the guide counts as still drawn.
 const GUIDE_STILL_SQ: f32 = 1e-8;
 
-/// This fold's posed guide for `spine_id`: the bound points read through the
-/// guide part's deform (all but the spine's own source) and its current
-/// placement, in spine space. Empty when no point moves off the drawing by
-/// more than rounding, so the drawing is read exactly; otherwise the drawing
-/// plus each point's displacement.
+/// Empty when no point moves off the drawing by more than rounding.
 fn pose_guide(
     arena: &Arena,
     transforms: &GlobalTransforms,
@@ -607,11 +480,7 @@ fn pose_guide(
     }
 }
 
-/// Apply each spine’s posed bends to its meshed descendants.
-///
-/// Runs in its own pre-order pass after the transforms are computed and before
-/// the mesh groups, and writes `DeformSource::Node(spine_id)` on each meshed
-/// descendant. `transforms` is read only: a spine moves vertices, never nodes.
+/// Runs after transforms and before the mesh groups.
 pub(crate) fn propagate_spine_deforms(arena: &mut Arena, transforms: &GlobalTransforms) {
     let _span = tracing::debug_span!("propagate_spine_deforms").entered();
     let order = spine_pre_order(arena);
@@ -638,8 +507,6 @@ pub(crate) fn propagate_spine_deforms(arena: &mut Arena, transforms: &GlobalTran
         if let Some(NodeKind::Spine(spine)) = arena.get_mut(spine_id).map(|n| &mut n.kind) {
             std::mem::swap(&mut spine.posed_guide, &mut guide);
         }
-        // Composed once per spine, not once per child: the joints move
-        // together and the per-vertex loop only samples the result.
         let links = {
             let Some(NodeKind::Spine(spine)) = arena.get(spine_id).map(|n| &n.kind) else {
                 continue;
@@ -650,8 +517,6 @@ pub(crate) fn propagate_spine_deforms(arena: &mut Arena, transforms: &GlobalTran
             };
             match composed {
                 Some(links) => links,
-                // Every bend at zero is the art as drawn. The sources were
-                // dropped above, so leaving them inactive is exactly zero.
                 None => {
                     for &child_id in &child_ids {
                         clear_turn(arena, spine_id, child_id);
@@ -684,8 +549,6 @@ pub(crate) fn propagate_spine_deforms(arena: &mut Arena, transforms: &GlobalTran
     arena.spine_cur_deform_scratch = cur_deform;
 }
 
-/// Drop one spine's turn from a child's stack without writing a new one — the
-/// unbent case, where the contribution is exactly zero.
 fn clear_turn(arena: &mut Arena, spine_id: NodeIdx, child_id: NodeIdx) {
     let Some(child) = arena.get_mut(child_id) else {
         return;
@@ -697,13 +560,8 @@ fn clear_turn(arena: &mut Arena, spine_id: NodeIdx, child_id: NodeIdx) {
     }
 }
 
-/// One spine, one meshed descendant: clear the spine's own source, read what
-/// is left, turn each vertex from where it currently sits, and write the
-/// difference back into the source.
-///
-/// Reading the current position rather than the rest one is what lets a
-/// vertex's own deform bindings and the spine's turn compose: the spine bends
-/// the art as it stands this frame, not as it was drawn.
+/// Reads the current position rather than rest so the vertex's own deform
+/// bindings and the spine's turn compose.
 #[allow(clippy::too_many_arguments)]
 fn turn_child(
     arena: &mut Arena,
@@ -724,9 +582,7 @@ fn turn_child(
             NodeKind::MeshGroup(mg) => &mut mg.deform_stack,
             _ => return,
         };
-        // Dropping the source first keeps every early return below correct:
-        // a path that bails leaves this spine's stale turn dropped, exactly
-        // as if it had never run.
+        // Drop the source first so every early return leaves no stale turn.
         stack.clear_source(DeformSource::Node(spine_id));
         stack.sum_active_into(cur_deform);
         cur_deform.len()

@@ -16,10 +16,7 @@ use catchlight_core::{
     Puppet, ScalarTarget, SlotPair,
 };
 
-// ---------------------------------------------------------------- generator
-
-/// The one source of randomness in this file. `SeededHex` is the crate's own
-/// deterministic bit source, so a failing seed is a failing test forever.
+/// `SeededHex` is deterministic, so a failing seed is a failing test forever.
 struct Rng(SeededHex);
 
 impl Rng {
@@ -31,7 +28,6 @@ impl Rng {
         self.0.next_bits()
     }
 
-    /// Uniform-enough over `0..n`; `n` is always tiny here.
     fn below(&mut self, n: usize) -> usize {
         if n == 0 {
             return 0;
@@ -68,9 +64,6 @@ const SCALARS: [ScalarTarget; 4] = [
     ScalarTarget::ZOrder,
 ];
 
-/// A random but well-formed model: a tree of every node kind, params, shared
-/// textures, masks, motion response inputs, one- and two-param bindings, welded slots
-/// and an animation.
 fn random_model(rng: &mut Rng) -> Model {
     let mut hex = SeededHex::new(rng.bits());
     let mut m = Model::new();
@@ -111,10 +104,7 @@ fn random_model(rng: &mut Rng) -> Model {
         nodes.push(id);
     }
 
-    // A texture goes to the part that draws it, so the parts come first: one
-    // each, then a few repointed so some are shared and some parts unmapped.
-    // A repoint that takes the last user takes the texture with it, which is
-    // churn this generator should produce.
+    // A texture goes to the part that draws it, so parts come first.
     for (i, id) in parts.iter().enumerate() {
         m.add_texture(
             id,
@@ -205,7 +195,6 @@ fn random_model(rng: &mut Rng) -> Model {
         }
     }
 
-    // One weld between two parts, if there are two to weld.
     if parts.len() >= 2 {
         let a = parts[0].clone();
         let b = parts[1].clone();
@@ -254,11 +243,8 @@ fn random_model(rng: &mut Rng) -> Model {
     m
 }
 
-// ------------------------------------------------------------ canonical form
-
-/// A model as its `.clm` file with every order the round trip is allowed
-/// to change taken out: sibling order (nodes carry their parent, so sorting
-/// them by Id erases it) and the order of the flat lists.
+/// A model's `.clm` file with sibling and flat-list orders the round trip may
+/// change taken out.
 fn canonical(m: &Model) -> ClmFile {
     let mut file = m.to_clm_file().unwrap();
     let doc = &mut file.doc;
@@ -280,7 +266,6 @@ fn binding_key(b: &ClmBinding) -> (String, Vec<String>, String) {
     )
 }
 
-/// Everything below `id`, `id` included.
 fn subtree(m: &Model, id: &NodeId) -> HashSet<NodeId> {
     let mut out = HashSet::new();
     let mut stack = vec![id.clone()];
@@ -293,10 +278,8 @@ fn subtree(m: &Model, id: &NodeId) -> HashSet<NodeId> {
     out
 }
 
-/// Nodes that can be cut out and put back: everything but the root, minus the
-/// subtrees something *outside* them masks with. A mask lives on the node it
-/// clips, so a base drawable masked by an addon's part is not something an
-/// addon can carry — see `a_mask_on_a_base_node_is_not_the_addons_to_carry`.
+/// Everything but the root, minus subtrees something outside them masks with:
+/// a mask lives on the node it clips.
 fn extractable(m: &Model) -> Vec<NodeId> {
     m.nodes_in_order()
         .into_iter()
@@ -320,9 +303,6 @@ fn masks_of(n: &ModelNode) -> Vec<&NodeId> {
     }
 }
 
-/// Cut `root` out of `base` the way an author would: delete the subtree. The
-/// textures nothing else draws go with it — that is `delete_node`'s job now,
-/// not the caller's.
 fn without(base: &Model, root: &NodeId) -> Model {
     let mut cut = base.clone();
     cut.delete_node(root).unwrap();
@@ -354,10 +334,8 @@ fn removing_a_subtree_and_installing_it_back_restores_the_model() {
         );
 
         let mut cut = without(&base, &root);
-        // A texture the cut base still draws is one the addon carries a copy
-        // of: `extract` copies rather than requiring, and an Id an addon
-        // provides is exclusive. Those two together say this is not a round
-        // trip, and the install says so rather than merging silently.
+        // A texture the cut base still draws is one the addon also provides, which
+        // install refuses.
         if let Some(shared) = addon
             .texture_ids()
             .iter()
@@ -394,8 +372,6 @@ fn removing_a_subtree_and_installing_it_back_restores_the_model() {
     assert!(clashed > 0, "no seed shared a texture across the cut");
 }
 
-/// The receipt is exact both ways: install then uninstall is the identity, on
-/// the same random models.
 #[test]
 fn uninstalling_an_addon_undoes_installing_it() {
     for seed in 100..120u32 {
@@ -408,8 +384,6 @@ fn uninstalling_an_addon_undoes_installing_it() {
         let root = rng.pick(&candidates).clone();
         let addon = base.extract(std::slice::from_ref(&root));
         let cut = without(&base, &root);
-        // See the note in the round-trip test: a texture the cut base kept is
-        // one the addon now provides too, and install refuses that.
         if addon.texture_ids().iter().any(|t| cut.texture(t).is_some()) {
             continue;
         }
@@ -421,9 +395,6 @@ fn uninstalling_an_addon_undoes_installing_it() {
     }
 }
 
-/// Extracting a subtree that another addon's requirements point into is fine;
-/// what an addon cannot carry is a mask on a node it does not provide, since a
-/// mask lives on the node it clips.
 #[test]
 fn a_mask_on_a_base_node_is_not_the_addons_to_carry() {
     let mut hex = SeededHex::new(3);
@@ -461,10 +432,6 @@ fn a_mask_on_a_base_node_is_not_the_addons_to_carry() {
     );
 }
 
-// ------------------------------------------------------------------- puppets
-
-/// One base model plus a hat addon for it, both hand-built so the assertions
-/// can name what they check.
 fn puppet_rig() -> (Model, Model, ParamId, NodeId) {
     let mut hex = SeededHex::new(21);
     let mut m = Model::new();
@@ -491,7 +458,6 @@ fn puppet_rig() -> (Model, Model, ParamId, NodeId) {
     m.set_binding_key(&key, [0, 0], -4.0).unwrap();
     m.set_binding_key(&key, [1, 0], 4.0).unwrap();
 
-    // The addon: a hat under the root, deformed by the base's own param.
     let mut scratch = m.clone();
     let hat = scratch
         .add_node(
@@ -550,23 +516,18 @@ fn an_addon_installed_between_two_ticks_keeps_the_pose() {
     );
 }
 
-/// A puppet of an addon is empty: an addon is installed into a model, not
-/// animated on its own.
 #[test]
 fn a_puppet_of_a_fragment_holds_nothing() {
     let (_, addon, param, _) = puppet_rig();
     let mut puppet = Puppet::new(&addon);
     assert_eq!(puppet.len(), 1, "just the arena's own empty root slot");
     assert!(puppet.param_ids().next().is_none());
-    // And it is inert rather than broken: ticking it does nothing at all.
     puppet.set_param_value(&param, 0.5);
     puppet.reset_motion_responses(&addon);
     puppet.tick(&addon, 1.0 / 60.0);
     assert_eq!(puppet.len(), 1);
 }
 
-/// The `.clm` shapes are disjoint, so a tool that does not know which it has
-/// decodes once and tries both readers.
 #[test]
 fn a_file_is_one_shape_or_the_other() {
     let (model, addon, _, _) = puppet_rig();
@@ -587,8 +548,6 @@ fn a_file_is_one_shape_or_the_other() {
     }
 }
 
-/// `install` refuses an addon whose requirements the base cannot meet, and
-/// says which Id it was.
 #[test]
 fn installing_into_the_wrong_base_names_what_is_missing() {
     let (model, addon, param, _) = puppet_rig();
@@ -599,8 +558,6 @@ fn installing_into_the_wrong_base_names_what_is_missing() {
     assert!(err.to_string().contains(param.as_str()), "{err}");
 }
 
-/// Guards the generator itself: the models it builds are the shape the tests
-/// above assume.
 #[test]
 fn the_generator_builds_complete_models() {
     let mut seen_kinds: HashMap<&str, usize> = HashMap::new();
