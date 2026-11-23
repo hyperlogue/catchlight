@@ -67,6 +67,15 @@ pub struct EncodedTexture {
 }
 
 impl EncodedTexture {
+    /// Width/height from the image header alone — no pixel decode. What
+    /// [`prepare_textures`] holds to the caller's budget before it decodes
+    /// anything.
+    pub fn dimensions(&self) -> Result<(u32, u32), image::ImageError> {
+        let mut reader = image::ImageReader::new(std::io::Cursor::new(&self.data[..]));
+        reader.set_format(self.format.to_image_format());
+        reader.into_dimensions()
+    }
+
     /// Decode into the canonical [`DecodedTexture`] form: bytes encoding
     /// premultiplied LINEAR color, ready to upload as `Rgba8UnormSrgb`.
     /// The sampler then decodes sRGB→linear and returns premultiplied
@@ -83,16 +92,9 @@ impl EncodedTexture {
     /// Premultiplied storage handles alpha-edge bilinear correctly
     /// without an explicit alpha-bleed pass: at an edge, the filter
     /// mixes `(rgb·α, α)` with `(0, 0)` and the resulting gradient is
-    /// already premultiplied.
-    /// Width/height from the image header alone — no pixel decode. Lets
-    /// the importer plan every texture crop before paying
-    /// for any full decode.
-    pub fn dimensions(&self) -> Result<(u32, u32), image::ImageError> {
-        let mut reader = image::ImageReader::new(std::io::Cursor::new(&self.data[..]));
-        reader.set_format(self.format.to_image_format());
-        reader.into_dimensions()
-    }
-
+    /// already premultiplied. That holds for a straight-alpha source too:
+    /// it is premultiplied here, on the way in, so nothing downstream ever
+    /// filters straight-alpha texels.
     pub fn decode(&self) -> Result<DecodedTexture, image::ImageError> {
         let img = image::load_from_memory_with_format(&self.data, self.format.to_image_format())?;
         let (width, height) = (img.width(), img.height());
@@ -256,75 +258,6 @@ pub fn unpremultiply_linear_from_srgb_inplace(rgba: &mut [u8]) {
         let inv = 255.0 / a as f32;
         for c in &mut px[..3] {
             *c = srgb_encode_to_byte((decode[*c as usize] * inv).min(1.0));
-        }
-    }
-}
-
-/// Edge-bleed (a.k.a. alpha bleed / edge padding): for every α=0 pixel,
-/// copy the RGB of the nearest α>0 pixel, leaving α=0 untouched. Without
-/// this, bilinear texture filtering at a Part's alpha boundary mixes
-/// `(rgb, 1)` with `(0, 0)` and produces a darkening colour shift that
-/// shows up as faint mesh-edge halos on top of underlying parts. The imported
-/// format gets the same effect for free because it stores premultiplied bytes:
-/// at the boundary the filter mixes `rgb·α` with `0` and the gradient is
-/// already premultiplied. Catchlight stores straight-alpha so we have to
-/// stage the boundary RGB manually.
-///
-/// BFS from every α>0 pixel; each α=0 neighbour reached for the first
-/// time copies the source's RGB. O(W·H), runs once per texture at load.
-pub fn alpha_bleed_inplace(rgba: &mut [u8], width: u32, height: u32) {
-    let w = width as usize;
-    let h = height as usize;
-    debug_assert_eq!(rgba.len(), w * h * 4);
-    if w == 0 || h == 0 {
-        return;
-    }
-
-    // `seen[i]` is true when pixel i has α>0, OR has already been bled
-    // from a neighbour. Doubles as the "in queue" marker.
-    let mut seen = vec![false; w * h];
-    let mut queue: std::collections::VecDeque<u32> = std::collections::VecDeque::new();
-    for i in 0..(w * h) {
-        if rgba[i * 4 + 3] > 0 {
-            seen[i] = true;
-            queue.push_back(i as u32);
-        }
-    }
-
-    while let Some(idx) = queue.pop_front() {
-        let idx = idx as usize;
-        let x = idx % w;
-        let y = idx / w;
-        let r = rgba[idx * 4];
-        let g = rgba[idx * 4 + 1];
-        let b = rgba[idx * 4 + 2];
-        let visit = |nx: usize,
-                     ny: usize,
-                     queue: &mut std::collections::VecDeque<u32>,
-                     seen: &mut [bool],
-                     rgba: &mut [u8]| {
-            let ni = ny * w + nx;
-            if seen[ni] {
-                return;
-            }
-            seen[ni] = true;
-            rgba[ni * 4] = r;
-            rgba[ni * 4 + 1] = g;
-            rgba[ni * 4 + 2] = b;
-            // alpha stays 0 — the pixel is still invisible
-            queue.push_back(ni as u32);
-        };
-        if x > 0 {
-            visit(x - 1, y, &mut queue, &mut seen, rgba);
-        }
-        if x + 1 < w {
-            visit(x + 1, y, &mut queue, &mut seen, rgba);
-        }
-        if y > 0 {
-            visit(x, y - 1, &mut queue, &mut seen, rgba);
-        }
-        if y + 1 < h {
-            visit(x, y + 1, &mut queue, &mut seen, rgba);
         }
     }
 }
@@ -1239,49 +1172,5 @@ mod tests {
             );
         }
         assert_eq!(px[3], 128, "alpha unchanged");
-    }
-
-    #[test]
-    fn alpha_bleed_extends_visible_rgb_into_transparent_neighbors() {
-        // 3x3 with a single visible (red, opaque) centre pixel and an
-        // 8-pixel transparent ring around it. After bleed, every ring
-        // pixel must hold the centre's RGB (alpha still 0).
-        let mut rgba = vec![0u8; 3 * 3 * 4];
-        // centre at (1, 1)
-        rgba[(1 * 3 + 1) * 4] = 220;
-        rgba[(1 * 3 + 1) * 4 + 1] = 30;
-        rgba[(1 * 3 + 1) * 4 + 2] = 60;
-        rgba[(1 * 3 + 1) * 4 + 3] = 255;
-
-        alpha_bleed_inplace(&mut rgba, 3, 3);
-
-        for i in 0..9 {
-            let r = rgba[i * 4];
-            let g = rgba[i * 4 + 1];
-            let b = rgba[i * 4 + 2];
-            let a = rgba[i * 4 + 3];
-            assert_eq!((r, g, b), (220, 30, 60), "pixel {} RGB", i);
-            if i == 4 {
-                assert_eq!(a, 255, "centre alpha");
-            } else {
-                assert_eq!(a, 0, "ring pixel {} alpha", i);
-            }
-        }
-    }
-
-    #[test]
-    fn alpha_bleed_no_op_when_fully_opaque_or_fully_transparent() {
-        // Fully opaque buffer: no α=0 pixels, nothing to bleed into.
-        let mut opaque = vec![10u8, 20, 30, 255, 40, 50, 60, 255];
-        let snapshot = opaque.clone();
-        alpha_bleed_inplace(&mut opaque, 2, 1);
-        assert_eq!(opaque, snapshot);
-
-        // Fully transparent buffer: no α>0 source — every pixel stays
-        // at its initial RGB (the BFS queue is empty so the function
-        // exits immediately).
-        let mut blank = vec![0u8; 2 * 1 * 4];
-        alpha_bleed_inplace(&mut blank, 2, 1);
-        assert_eq!(blank, vec![0u8; 8]);
     }
 }

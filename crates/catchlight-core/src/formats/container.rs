@@ -6,7 +6,7 @@
 //! validated against the buffer size before use, so a malformed or hostile
 //! file errors instead of panicking or over-allocating.
 //!
-//! **Whatever [`write`] returns, [`read`] accepts.** The writer holds its
+//! **Whatever [`write()`] returns, [`read`] accepts.** The writer holds its
 //! input to the reader's caps — [`MAX_SECTION_COUNT`] sections, each at most
 //! [`MAX_SECTION_LEN`] bytes — and refuses what is over them, rather than
 //! truncating a length into the table's `u32` and leaving a file that only
@@ -22,7 +22,7 @@ const HEADER_LEN: usize = 8 + 2 + 4;
 const SECTION_ENTRY_LEN: usize = 4 + 8 + 4;
 
 /// The most sections one container may frame. A cap on an untrusted count
-/// read from the file, and on what [`write`] will frame.
+/// read from the file, and on what [`write()`] will frame.
 pub const MAX_SECTION_COUNT: u32 = 4096;
 /// The most bytes one section may hold. A section can hold a whole texture
 /// atlas, so the cap is generous; on the way in it turns a corrupt `u32::MAX`
@@ -133,13 +133,13 @@ pub fn write(
 }
 
 /// Builds a container in place: each section's payload is produced straight
-/// into the file's buffer, where [`write`] needs every section finished in a
+/// into the file's buffer, where [`write()`] needs every section finished in a
 /// buffer of its own and then copies it in. For a section that is mostly
 /// texture payloads that copy is the size of the file.
 ///
 /// The table is reserved up front, so the section count is fixed when the
 /// writer is made; each section's entry is filled in once its length is
-/// known. Holds to the same caps as [`write`].
+/// known. Holds to the same caps as [`write()`].
 pub struct Writer {
     out: Vec<u8>,
     declared: usize,
@@ -386,7 +386,10 @@ mod tests {
             3,
             &[
                 Section { kind: 7, data: &a },
-                Section { kind: 42, data: &[] },
+                Section {
+                    kind: 42,
+                    data: &[],
+                },
                 Section { kind: 9, data: &b },
             ],
         )

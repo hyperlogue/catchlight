@@ -26,9 +26,14 @@ impl TextureIdx {
 /// A decoded texture: pre-decoded bytes
 /// encoding premultiplied LINEAR colour, ready for any renderer to upload
 /// as `Rgba8UnormSrgb` (the sampler's decode then hands shaders
-/// premultiplied linear). The importer owns the conversion from source-file
-/// alpha conventions, including premultiplied sRGB, into
-/// this shape; consumers downstream never need to know the origin format.
+/// premultiplied linear).
+/// [`EncodedTexture::decode`](crate::EncodedTexture::decode) owns the
+/// conversion from each source alpha convention — straight, or
+/// premultiplied in sRGB — into this shape, when a model's textures are
+/// prepared for a renderer. Nothing earlier does it: an importer writes a
+/// texture's bytes as it found them and records the convention beside them,
+/// and a model stores them the same way. Consumers downstream of the decode
+/// never need to know the origin format.
 ///
 /// Premultiplied storage is what makes filtering correct at an alpha edge
 /// without a separate bleed pass: the filter mixes `(rgb*a, a)` with
