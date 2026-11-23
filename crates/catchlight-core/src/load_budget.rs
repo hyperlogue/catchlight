@@ -19,7 +19,6 @@ pub enum LoadResource {
     Indices,
     BindingCells,
     DeformOffsets,
-    MeshGroupBitmapCells,
     ManifestGridCells,
     ResponseInputs,
     Slots,
@@ -51,7 +50,6 @@ impl LoadResource {
             Self::Indices => "indices",
             Self::BindingCells => "binding cells",
             Self::DeformOffsets => "deform offsets",
-            Self::MeshGroupBitmapCells => "mesh-group bitmap cells",
             Self::ManifestGridCells => "manifest grid cells",
             Self::ResponseInputs => "response inputs",
             Self::Slots => "slots",
@@ -77,7 +75,6 @@ pub struct LoadLimits {
     pub indices: u64,
     pub binding_cells: u64,
     pub deform_offsets: u64,
-    pub mesh_group_bitmap_cells: u64,
     pub manifest_grid_cells: u64,
     pub response_inputs: u64,
     pub slots: u64,
@@ -114,7 +111,6 @@ impl Default for LoadLimits {
             indices: 48_000_000,
             binding_cells: 16_000_000,
             deform_offsets: 64_000_000,
-            mesh_group_bitmap_cells: 32_000_000,
             manifest_grid_cells: 1_000_000,
             response_inputs: 1_000_000,
             slots: 4_000_000,
@@ -161,7 +157,6 @@ impl LoadBudget {
                 indices: 0,
                 binding_cells: 0,
                 deform_offsets: 0,
-                mesh_group_bitmap_cells: 0,
                 manifest_grid_cells: 0,
                 response_inputs: 0,
                 slots: 0,
@@ -190,10 +185,6 @@ impl LoadBudget {
             LoadResource::DeformOffsets => {
                 (&mut self.used.deform_offsets, self.limits.deform_offsets)
             }
-            LoadResource::MeshGroupBitmapCells => (
-                &mut self.used.mesh_group_bitmap_cells,
-                self.limits.mesh_group_bitmap_cells,
-            ),
             LoadResource::ManifestGridCells => (
                 &mut self.used.manifest_grid_cells,
                 self.limits.manifest_grid_cells,
@@ -277,7 +268,6 @@ impl LoadBudget {
             LoadResource::Indices => self.limits.indices,
             LoadResource::BindingCells => self.limits.binding_cells,
             LoadResource::DeformOffsets => self.limits.deform_offsets,
-            LoadResource::MeshGroupBitmapCells => self.limits.mesh_group_bitmap_cells,
             LoadResource::ManifestGridCells => self.limits.manifest_grid_cells,
             LoadResource::ResponseInputs => self.limits.response_inputs,
             LoadResource::Slots => self.limits.slots,
@@ -399,12 +389,6 @@ pub fn charge_clm_structure(
         meshes.insert(&node.id, mesh);
         budget.charge(LoadResource::Vertices, mesh.vertex_count() as u64)?;
         budget.charge(LoadResource::Indices, index_count(mesh) as u64)?;
-        if matches!(node.kind, ClmNodeKind::MeshGroup(_)) {
-            budget.charge(
-                LoadResource::MeshGroupBitmapCells,
-                mesh_group_bitmap_cells(mesh),
-            )?;
-        }
     }
 
     for binding in &doc.bindings {
@@ -464,33 +448,6 @@ fn index_count(mesh: &crate::formats::clm::ClmMesh) -> usize {
         crate::formats::clm::ClmIndices::U16(indices) => indices.len(),
         crate::formats::clm::ClmIndices::U32(indices) => indices.len(),
     }
-}
-
-fn mesh_group_bitmap_cells(mesh: &crate::formats::clm::ClmMesh) -> u64 {
-    let index_count = match &mesh.indices {
-        crate::formats::clm::ClmIndices::U16(indices) => indices.len(),
-        crate::formats::clm::ClmIndices::U32(indices) => indices.len(),
-    };
-    if mesh.verts.len() < 2 || index_count < 3 || index_count / 3 + 1 > u16::MAX as usize {
-        return 0;
-    }
-    let mut min = glam::Vec2::splat(f32::MAX);
-    let mut max = glam::Vec2::splat(f32::MIN);
-    let origin = glam::Vec2::from_array(mesh.origin);
-    for pair in mesh.verts.as_chunks::<2>().0 {
-        let point = glam::Vec2::new(pair[0], pair[1]) - origin;
-        min = min.min(point);
-        max = max.max(point);
-    }
-    if !min.x.is_finite() || !min.y.is_finite() || !max.x.is_finite() || !max.y.is_finite() {
-        return 0;
-    }
-    let width = (max.x.ceil() - min.x.floor() + 1.0).max(1.0) as u32;
-    let height = (max.y.ceil() - min.y.floor() + 1.0).max(1.0) as u32;
-    if width > 4_096 || height > 4_096 {
-        return 0;
-    }
-    u64::from(width) * u64::from(height)
 }
 
 #[cfg(test)]
