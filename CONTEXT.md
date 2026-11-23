@@ -417,6 +417,12 @@ same model through shared editor sessions. It runs locally against a
 connected editor, or in the browser alone as the demo.
 _Avoid_: editor (the thing that edits, which the studio talks to)
 
+**Stage**:
+Catchlight's planned live-performance application, not yet built: it
+animates a puppet from a performer's tracking and hands its frames to
+streaming software. It performs a model and never authors one.
+_Avoid_: studio (that's authoring)
+
 **Editor**:
 The one thing that edits: it holds sessions, takes commands and keeps each
 session's history. It runs in the tab or as a local server, and every client
