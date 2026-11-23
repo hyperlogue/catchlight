@@ -1,4 +1,3 @@
-/** Remove test fixtures without masking persistent filesystem failures. */
 import { rm } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 

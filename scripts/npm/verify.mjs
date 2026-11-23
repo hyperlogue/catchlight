@@ -56,8 +56,7 @@ export async function createEditor() {
 }
 `);
   execFileSync(process.execPath, [resolve(root, 'node_modules/typescript/bin/tsc'), '--noEmit', '--strict', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', '--target', 'ES2022', '--lib', 'ES2022,DOM,DOM.Iterable,ESNext.Disposable', 'smoke.ts'], { cwd: dir, stdio: 'inherit' });
-  // Build an installed-package consumer, not a workspace alias. This catches
-  // generated loader URLs that work in Node but break when a bundler moves JS.
+  // Catches generated loader URLs that work in Node but break when a bundler moves JS.
   writeFileSync(resolve(dir, 'index.html'), '<script type="module" src="/browser.js"></script>');
   writeFileSync(resolve(dir, 'browser.js'), `
 import { Editor, InTabBackend, MemoryStorage } from '@catchlight/core';

@@ -1,12 +1,4 @@
-/**
- * A file the page holds, opened as a model.
- *
- * The bytes are read here because only the page can read them: a picked file
- * is asynchronous and the editor reads keys synchronously, so `openFile` is
- * where that asynchrony stops. The input is reset afterwards so picking the
- * same file twice fires twice — a host that just saved and wants to reload is
- * otherwise met with silence.
- */
+/** Opens a picked file as a model. The input is reset so picking the same file again fires again. */
 
 import type { Session } from "@catchlight/core";
 import type { ChangeEvent, ComponentProps } from "react";

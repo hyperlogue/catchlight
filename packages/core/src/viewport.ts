@@ -1,42 +1,9 @@
 /**
- * The canvas half of the viewport: sizing, lifecycle, and what makes a frame
- * happen.
- *
- * The division of labour with Rust is the whole design. The renderer owns the
- * frame loop, ticks the puppet and decides whether a frame is needed; this side
- * owns the element, because only the page knows how big it is in CSS and only
- * the browser can say what that is in device pixels. Nothing here draws,
- * measures a frame time, or holds a copy of the scene.
- *
- * **The backing store is measured in device pixels, exactly once, by the
- * browser.** `ResizeObserver` with `box: "device-pixel-content-box"` reports
- * the number of real pixels the element occupies — already correct across
- * fractional zoom, per-monitor DPI and a page moved between screens.
- * Multiplying a CSS size by `devicePixelRatio` is the same number rounded
- * twice, and the rounding error is a blurry canvas or a one-pixel seam. That
- * multiplication is the fallback, not the plan.
- *
- * **A repaint is asked for, never performed.** Every path that could change
- * the picture calls `invalidate`, including a pointer move that will call it
- * again in four milliseconds. The renderer coalesces: one animation frame
- * draws once no matter how many times it was told.
- *
- * **The canvas carries a way to read its own frame, and only tests use it.**
- * Renderer readback redraws the frame and returns RGBA pixels. Browser
- * screenshots separately verify presentation. A live viewport hangs
- * [`READBACK`] off the element a driver already has a handle to and
- * takes it back on dispose. What answers is the tier's business and reads the
- * same either way: device pixels, RGBA, row-major. Nothing in the editor reads
- * that property, and nothing about the drawing depends on it.
- *
- * **A viewport nobody can see does not run.** Started is what the host asked
- * for; running is that *and* the canvas being on screen *and* the page being
- * visible. A background tab already stops firing `requestAnimationFrame`, but
- * an editor scrolled off screen, behind a full-screen dialog, or in a collapsed
- * panel does not — it keeps advancing motion responses on a GPU nobody is looking at. The
- * two observers below are what close that gap; the renderer itself is told
- * nothing more than `start` and `stop`, which it already had to make
- * repeatable.
+ * The canvas half of the viewport: sizing and lifecycle. The renderer owns the
+ * frame loop; this side owns the element. The backing store comes from
+ * `device-pixel-content-box`, because multiplying a CSS size by
+ * `devicePixelRatio` rounds twice and blurs. A viewport runs only while
+ * started, on screen, and the page is visible.
  */
 
 import type { Unsubscribe } from "./backend.js";
@@ -44,51 +11,36 @@ import type { Session } from "./session.js";
 import type { WasmFrame, WasmViewport } from "./wasm.js";
 
 /**
- * The backing-store ceiling to use when nobody names one.
- *
- * The real limit is the device's `max_texture_dimension_2d`, which `Gpu`
- * reports once it exists — a canvas above it fails surface configuration and
- * the viewport goes black with no other symptom. This is the floor of that
- * limit across the tiers a browser offers, used only when the caller had no
- * device to ask, so the clamp is never a guess when a fact is on hand.
+ * Fallback backing-store ceiling: the floor of `max_texture_dimension_2d`
+ * across browser tiers, used only without a device to ask. Exceeding the real
+ * limit fails surface configuration and the viewport goes black silently.
  */
 const FALLBACK_MAX_BACKING_STORE = 8192;
 
 /**
- * The property a canvas carries while a viewport is drawing it: a function
- * resolving to that viewport's current frame.
- *
- * A property rather than an export, because the code that wants it runs in a
- * page and cannot import from this bundle. See the header.
+ * Canvas property resolving to the current frame, for test drivers that run in
+ * the page and cannot import this bundle.
  */
 export const READBACK = "__catchlightReadback";
 
-/** One canvas drawing one session. */
 export class Viewport {
   #wasm: WasmViewport;
   #canvas: HTMLCanvasElement;
-  /** What this viewport put on the canvas, so it only ever takes back its own. */
   #readback: () => Promise<WasmFrame>;
   #observer: ResizeObserver | undefined;
   #onScreen: IntersectionObserver | undefined;
   #unsubscribe: Unsubscribe | undefined;
   #size = { width: 0, height: 0 };
   #maxSize: number;
-  /** What the host asked for. */
   #started = false;
-  /** Whether any part of the canvas is on screen. Assumed true until observed. */
+  /** Assumed true until observed. */
   #visible = true;
-  /** Whether the page itself is visible. */
   #pageVisible = true;
   #onPageVisibility = (): void => {
     this.#pageVisible = pageIsVisible();
     this.#sync();
   };
 
-  /**
-   * `maxSize` is the device's limit, which the editor asked its `Gpu` for
-   * once; a viewport built without one clamps to the conservative floor.
-   */
   constructor(
     wasm: WasmViewport,
     canvas: HTMLCanvasElement,
@@ -101,28 +53,15 @@ export class Viewport {
       typeof maxSize === "number" && maxSize > 0 ? maxSize : FALLBACK_MAX_BACKING_STORE;
     if (session) this.#unsubscribe = session.onInvalidate(() => this.invalidate());
     this.#readback = (): Promise<WasmFrame> => this.readback();
-    // Not enumerable, so nothing that walks the element trips over it.
     Object.defineProperty(canvas, READBACK, { value: this.#readback, configurable: true });
   }
 
-  /**
-   * The frame this canvas is showing, as device pixels in RGBA order.
-   *
-   * For tests. It draws the current frame once more and copies it back off the
-   * GPU; it starts nothing, stops nothing and advances no puppet, so a
-   * viewport cannot tell it happened.
-   */
+  /** Device pixels, RGBA. For tests; redraws once and advances nothing. */
   readback(): Promise<WasmFrame> {
     return this.#wasm.readback();
   }
 
-  /**
-   * Starts drawing, and starts following the element's size and visibility.
-   *
-   * Safe to call on a viewport that is already started, and safe to call again
-   * after `stop` — which is what a React effect does on every remount, twice
-   * over in StrictMode.
-   */
+  /** Idempotent, and restartable after `stop` (React StrictMode remounts). */
   start(): void {
     this.#started = true;
     this.#observe();
@@ -130,10 +69,7 @@ export class Viewport {
     this.#sync();
   }
 
-  /**
-   * Stops drawing and stops observing. The canvas and the GPU state stay, so
-   * `start` picks up where this left off.
-   */
+  /** The canvas and GPU state stay, so `start` resumes. */
   stop(): void {
     this.#started = false;
     this.#observer?.disconnect();
@@ -144,11 +80,6 @@ export class Viewport {
     this.#wasm.stop();
   }
 
-  /**
-   * Runs the renderer exactly when the host wants it *and* someone could see
-   * it. Idempotent on both sides, which is why the renderer's `start`/`stop`
-   * had to be.
-   */
   #sync(): void {
     if (this.#started && this.#visible && this.#pageVisible) {
       this.#wasm.start();
@@ -157,14 +88,7 @@ export class Viewport {
     }
   }
 
-  /**
-   * Follows whether the canvas is on screen at all.
-   *
-   * A zero threshold is deliberate: one visible pixel is enough to owe the user
-   * a correct picture, and a partially scrolled viewport must not stutter.
-   * Where `IntersectionObserver` is missing the viewport simply always runs,
-   * which is what it did before.
-   */
+  /** Zero threshold: one visible pixel owes the user a correct picture. */
   #watchVisibility(): void {
     this.#pageVisible = pageIsVisible();
     globalThis.document?.addEventListener("visibilitychange", this.#onPageVisibility);
@@ -179,7 +103,7 @@ export class Viewport {
     this.#onScreen = observer;
   }
 
-  /** Asks for one more frame. Cheap enough to call per pointer move. */
+  /** Cheap enough to call per pointer move. */
   invalidate(): void {
     this.#wasm.invalidate();
   }
@@ -189,16 +113,12 @@ export class Viewport {
     this.#wasm.setCamera(x, y, height);
   }
 
-  /** Stops everything and releases the GPU resources. */
   dispose(): void {
     this.stop();
     this.#unsubscribe?.();
     this.#unsubscribe = undefined;
-    // Before the free, because the function it holds would reach a freed
-    // renderer — and only if it is still this viewport's. A host that swaps
-    // the model on one canvas builds the next viewport before an attach
-    // that lost its race gets here, and that one must not take the live
-    // viewport's hook away with it.
+    // Before the free, and only if still ours: a host swapping models on one
+    // canvas may already have installed the next viewport's hook.
     const element = this.#canvas as unknown as Record<string, unknown>;
     if (element[READBACK] === this.#readback) delete element[READBACK];
     this.#wasm.free();
@@ -213,14 +133,11 @@ export class Viewport {
     try {
       observer.observe(this.#canvas, { box: "device-pixel-content-box" });
     } catch {
-      // Safari only learned the box in 16.4. Observing the default box still
-      // fires on every change; `devicePixelSize` falls back to the multiply.
+      // Safari < 16.4 lacks the box; `devicePixelSize` falls back to the multiply.
       observer.observe(this.#canvas);
     }
     this.#observer = observer;
-    // The observer fires once on observe, but not before the next frame — and
-    // the renderer would spend that frame configured for whatever the canvas
-    // was constructed at. Measure now.
+    // The observer's first report waits a frame; measure now.
     this.#resize({
       width: this.#canvas.clientWidth * window.devicePixelRatio,
       height: this.#canvas.clientHeight * window.devicePixelRatio,
@@ -232,28 +149,20 @@ export class Viewport {
     const height = clampBackingStore(size.height, this.#maxSize);
     if (width === this.#size.width && height === this.#size.height) return;
     this.#size = { width, height };
-    // Assigning these clears the canvas, so it happens only on a real change —
-    // and it has to happen before the surface is reconfigured to match.
+    // Assigning clears the canvas, so only on change, and before reconfiguring.
     this.#canvas.width = width;
     this.#canvas.height = height;
     this.#wasm.resize(width, height);
   }
 }
 
-/**
- * The device-pixel size of an observed element, preferring what the browser
- * measured over what a multiplication would guess.
- *
- * Exported for its own test: this is the one piece of arithmetic in the
- * viewport, and it is the piece that makes a canvas blurry when it is wrong.
- */
+/** Prefers the browser-measured device pixels over `devicePixelRatio` math. */
 export function devicePixelSize(
   entry: ResizeObserverEntry,
   ratio: number,
 ): { width: number; height: number } {
   const devicePixels = entry.devicePixelContentBoxSize?.[0];
   if (devicePixels) {
-    // Already device pixels, already integral. Nothing to round.
     return { width: devicePixels.inlineSize, height: devicePixels.blockSize };
   }
   const cssPixels = entry.contentBoxSize?.[0];
@@ -269,16 +178,11 @@ export function devicePixelSize(
   };
 }
 
-/**
- * Whether the page is on screen. Absent `model` — a non-browser host, or a
- * unit test — counts as visible: the visibility rule may only ever stop a
- * viewport that is provably hidden.
- */
+/** Absent `model` counts as visible: only a provably hidden viewport stops. */
 function pageIsVisible(): boolean {
   return globalThis.document?.visibilityState !== "hidden";
 }
 
-/** At least one pixel, at most one a surface can be configured for. */
 function clampBackingStore(value: number, max: number): number {
   if (!Number.isFinite(value)) return 1;
   return Math.min(max, Math.max(1, Math.round(value)));

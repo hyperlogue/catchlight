@@ -1,45 +1,7 @@
 /**
- * The editor running in a local process, reached over HTTP and a WebSocket.
- *
- * The socket carries the protocol verbatim — one JSON object per text frame,
- * a `Request` up, a `Reply` down — so the same messages the Unix socket and
- * the CLI speak are what a tab sends. Correlation is by the request's `id`,
- * because replies may arrive out of order and events arrive unbidden between
- * them.
- *
- * **Bulk goes over HTTP, never the socket.** A structure is megabytes and a
- * texture more; a frame that large blocks every command behind it, and a
- * `fetch` gets range requests, caching and a progress bar for free. So the
- * socket is small JSON only: [`feed`] is three plain GETs, and a command that
- * carries bytes is one `POST /request` as `multipart/form-data` — which the
- * server refuses on the socket anyway. Its promise keeps the same contract a
- * socket send does, resolving once the reply is in hand.
- *
- * **A payload a structure names is fetched before the structure is applied.**
- * Textures by Id and byte extensions by hash: both are named in the structure
- * and carried outside it, so [`feed`] fetches what the replica lacks and only
- * then applies. An unrelated edit fetches neither.
- *
- * **The revision a feed applies is the one the response header names.** The
- * editor may have moved on between the event and the GET, and the bytes are
- * what they are; trusting the asked-for revision would file newer state under
- * an older number and the next feed would be skipped as backwards.
- *
- * **A dead socket fails everything.** Every pending request rejects with
- * `closed` the moment the socket does, rather than hanging until a caller's
- * own timeout — an editor that cannot be reached is not a slow editor. A frame
- * lost on a socket that stays up is the case this cannot see: a `Session`
- * bounds its own wait and asks for [`feed`] again, which is why nothing here
- * tracks which events it should have received.
- *
- * **The server keeps the socket warm, and nothing here does.** It pings an
- * idle connection and hangs up on one that has stayed silent for two of its
- * intervals. The platform's `WebSocket` answers a ping on its own, underneath
- * [`SocketLike`], which is why this class schedules no heartbeat and why
- * [`SocketLike`] models no control frames.
- *
- * `fetch` and the socket constructor are injected so the whole class can be
- * tested against fakes, with no network and no DOM.
+ * The editor in a local process, over a WebSocket for JSON and HTTP for bulk.
+ * The server pings idle sockets and the platform answers, so this schedules
+ * no heartbeat and `SocketLike` models no control frames.
  */
 
 import type { Command, Event, Reply } from "./protocol.gen.js";
@@ -60,13 +22,11 @@ import {
 } from "./backend.js";
 import type { ExtensionRequest, TextureRequest, WasmReplica } from "./wasm.js";
 
-/** The `fetch` surface this backend calls. The platform's own satisfies it. */
 export type FetchLike = (url: string, init?: FetchInit) => Promise<HttpResponse>;
 
 export interface FetchInit {
   method?: string;
   headers?: Record<string, string>;
-  /** A `FormData` for a multipart post; raw bytes for everything else. */
   body?: Uint8Array | FormData;
 }
 
@@ -79,10 +39,6 @@ export interface HttpResponse {
   json(): Promise<unknown>;
 }
 
-/**
- * The WebSocket surface, as callbacks rather than listeners: a fake is then a
- * dozen lines, and this backend never needs more than one handler each.
- */
 export interface SocketLike {
   send(data: string): void;
   close(): void;
@@ -92,22 +48,15 @@ export interface SocketLike {
   onerror: ((event: unknown) => void) | null;
 }
 
-/** Opens one socket. A factory rather than a class, so the platform's own
- *  `WebSocket` and a fake are named the same way. */
 export type SocketFactory = (url: string) => SocketLike;
 
 export interface ConnectOptions {
   fetch?: FetchLike;
   socket?: SocketFactory;
-  /**
-   * The bearer token, when the host already holds it — a launcher that hands
-   * it to its own page in the URL fragment. Skips `GET /token`, which such a
-   * server does not serve.
-   */
+  /** Skips `GET /token`, which a launcher that hands over the token does not serve. */
   token?: string;
 }
 
-/** A request that has gone out and not been answered. */
 interface Pending {
   cmd: string;
   resolve(reply: OkReply): void;
@@ -138,13 +87,8 @@ export class ConnectedBackend implements Backend {
   }
 
   /**
-   * Asks `baseUrl` for a token, unless `options.token` already is one, then
-   * opens the socket with it.
-   *
-   * The token request is a plain `fetch`: whatever authorizes this tab —
-   * a cookie, an origin allowance — is what CORS already carries, and a
-   * WebSocket cannot send an `Authorization` header, so the query parameter is
-   * the only place a socket can be given one.
+   * A WebSocket cannot send an `Authorization` header, so the token goes in a
+   * query parameter.
    */
   static async connect(baseUrl: string, options?: ConnectOptions): Promise<ConnectedBackend> {
     const base = baseUrl.replace(/\/+$/, "");
@@ -175,8 +119,7 @@ export class ConnectedBackend implements Backend {
   }
 
   send(command: Command): Promise<OkReply> {
-    // A rejection rather than a throw: every other failure on this method is
-    // one, and a caller should not need two ways to catch the same call.
+    // Rejection, not throw, so a caller has one way to catch this call.
     try {
       refuseIfItCarriesBytes(command);
     } catch (cause) {
@@ -200,12 +143,8 @@ export class ConnectedBackend implements Backend {
   }
 
   /**
-   * One `POST /request` as `multipart/form-data`: a part named `request`
-   * holding the command, one part per attachment named for the attachment.
-   *
-   * The socket refuses a byte-bearing command, and this is where it goes
-   * instead. A reply that carries bytes comes back as the response body under
-   * its own content type, with the reply itself in `X-Catchlight-Reply`.
+   * The socket refuses byte-bearing commands. A byte reply comes back as the
+   * response body, with the reply itself in `X-Catchlight-Reply`.
    */
   async sendWith(
     command: Command,
@@ -218,8 +157,7 @@ export class ConnectedBackend implements Backend {
     const form = new FormData();
     form.append("request", JSON.stringify(request));
     for (const [name, bytes] of attachments) {
-      // A Blob rather than a string: a `.clm` is not text, and `FormData`
-      // would otherwise encode it as one.
+      // A Blob: `FormData` would encode a `.clm` as text.
       form.append(name, new Blob([bytes as BlobPart]));
     }
 
@@ -238,17 +176,11 @@ export class ConnectedBackend implements Backend {
       });
     }
     const reply = takeReply(parsed, command.cmd);
-    // An edit's promise means the same thing whichever route it
-    // took: the caller may read the model the reply describes.
     if (inHeader === null) return reply;
     return { ...reply, payload: bytes };
   }
 
-  /**
-   * `undefined`: a save landed in the editor's own store, on the machine the
-   * person is sitting at, and there is no route that reads a key back — nor a
-   * reason for one while the file is already where it was asked to go.
-   */
+  /** `undefined`: the save landed in the editor's own store, which has no read route. */
   readFile(_key: string): Promise<Uint8Array | undefined> {
     return Promise.resolve(undefined);
   }
@@ -279,8 +211,8 @@ export class ConnectedBackend implements Backend {
     const header = response.headers.get("X-Catchlight-Rev");
     const at = header === null || header.trim() === "" ? NaN : Number(header);
     if (!Number.isFinite(at)) {
-      // Filing newer bytes under an older number makes the next feed look
-      // backwards, and a replica applies forward only: it would never load.
+      // Use the header's revision: filing newer bytes under an older number
+      // makes the next feed look backwards, and a replica applies forward only.
       throw new ProtocolError({
         code: "feed",
         message: `the structure of session ${session} named no revision`,
@@ -302,10 +234,7 @@ export class ConnectedBackend implements Backend {
       replica.putTexture(texture.id, new Uint8Array(await payload.arrayBuffer()));
     }
 
-    // The same shape for byte extensions, and the same reason: a structure
-    // names them and never carries them. The difference is what "needed"
-    // means — a texture is immutable under its Id, so having it once is
-    // enough, while an extension's bytes change under a key that does not.
+    // A texture is immutable under its Id; an extension's bytes change under its key.
     let extensions: ExtensionRequest[];
     try {
       extensions = JSON.parse(replica.extensionsNeeded(structure)) as ExtensionRequest[];
@@ -321,9 +250,7 @@ export class ConnectedBackend implements Backend {
     }
 
     try {
-      // Forward only: an older structure than the replica holds is ignored,
-      // which is what makes an out-of-order feed harmless rather than a
-      // rollback.
+      // Forward only, so an out-of-order feed is harmless rather than a rollback.
       replica.applyStructure(structure, at);
     } catch (cause) {
       throw asProtocolError(cause);
@@ -353,8 +280,6 @@ export class ConnectedBackend implements Backend {
     try {
       reply = JSON.parse(text) as Reply;
     } catch {
-      // A frame that is not a reply answers no request and moves no replica;
-      // there is nobody to reject and nothing to apply.
       return;
     }
 
@@ -374,7 +299,6 @@ export class ConnectedBackend implements Backend {
     for (const listener of [...this.#listeners]) listener(event);
   }
 
-  /** Rejects everything in flight. What a closed socket does to its requests. */
   #fail(message: string): void {
     this.#closed = true;
     const pending = [...this.#pending.values()];
@@ -385,11 +309,7 @@ export class ConnectedBackend implements Backend {
   }
 }
 
-/**
- * An event frame as the event itself. The `reply` tag is how a socket frame
- * says which of the three it is; in-tab events arrive without it, and a
- * listener must not have to know which backend it is behind.
- */
+/** Strips the socket's `reply` tag so listeners match in-tab events. */
 function asEvent(frame: Reply): Event {
   const { reply: _tag, ...event } = frame as { reply: string } & Record<string, unknown>;
   return event as unknown as Event;
@@ -423,14 +343,12 @@ function openSocket(open: SocketFactory, url: string): Promise<SocketLike> {
   });
 }
 
-/** The platform's `fetch`, bound — an unbound one throws in a browser. */
+/** Bound: an unbound `fetch` throws in a browser. */
 const defaultFetch: FetchLike = (url, init) =>
   globalThis.fetch(url, init as RequestInit) as unknown as Promise<HttpResponse>;
 
 /**
- * The platform's `WebSocket`. The cast is the one place a real event type is
- * adapted to the callback shapes above; a `MessageEvent` is not assignable to
- * `{ data: unknown }` in the contravariant position, and widening the
- * interface to `any` to say so would lose more than it buys.
+ * A `MessageEvent` is not assignable to `{ data: unknown }` in the
+ * contravariant position, hence the cast.
  */
 const defaultSocket: SocketFactory = (url) => new WebSocket(url) as unknown as SocketLike;

@@ -1,10 +1,4 @@
-/**
- * The editor page a local `catchlight-editor` serves.
- *
- * The page and the editor share an origin, so the backend is always that
- * origin, and the model lives in the process that served this page. Sessions an agent opens over the CLI appear
- * in the session list as they are opened.
- */
+/** The editor page a local `catchlight-editor` serves; the backend is this origin. */
 import { ConnectedBackend, Editor } from "@catchlight/core";
 import { CatchlightEditor } from "@catchlight/editor-ui";
 import "@catchlight/editor-ui/theme.css";
@@ -16,9 +10,8 @@ import { createRoot } from "react-dom/client";
 import "./app.css";
 
 /**
- * The launcher opens this page at `/#token=…`. The fragment never reaches a
- * server, and it is dropped from the address bar (and so from history) as soon
- * as it is read; the session keeps it so a reload still connects.
+ * The launcher opens `/#token=…`. The fragment is dropped from the address bar
+ * once read; session storage keeps it so a reload still connects.
  */
 function takeToken(): string | undefined {
   const fromHash = new URLSearchParams(location.hash.slice(1)).get("token");

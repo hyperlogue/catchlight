@@ -1,28 +1,6 @@
 /**
- * Editing the tree: one call per command, and the arithmetic a row needs to
- * build one.
- *
- * **Every action is a command, and nothing here touches the model.** The tree
- * a panel draws comes back from the replica when the editor says the model
- * moved, so an action's whole job is to send the right command and hand its
- * promise on. A caller that wants to report a failure awaits it; a caller that
- * does not, ignores it.
- *
- * **The index is read at call time, not captured.** `moveUp` and `moveDown`
- * are "one place earlier/later among your siblings", which is a fact about the
- * tree as it is right now — an agent on the socket may have reordered it since
- * this component rendered. The replica answers synchronously, so reading it in
- * the callback costs nothing and cannot be stale.
- *
- * **The index a reorder carries is the index after the node is taken out.**
- * The model removes the node from its parent's children and reinserts it, so
- * moving down one place is `index + 1` rather than `index`, and a drop that
- * lands next to a sibling counts the siblings with the dragged node already
- * gone. [`dropIndex`] is that arithmetic, written once.
- *
- * **A delete decides about the selection before it sends.** Once the node is
- * gone the tree cannot answer whether the selection was inside it, so the
- * question is asked first and acted on when the command lands.
+ * Tree edits as commands. Indices are read from the replica at call time, not
+ * captured, since another client may have reordered the tree since render.
  */
 
 import type { NodeId, NodeKindArg, ResponseBody, Session, TreeNode } from "@catchlight/core";
@@ -31,39 +9,25 @@ import { useMemo } from "react";
 import { useLatest } from "./latest.js";
 import { useSelection } from "./selection.js";
 
-/** Where a drop lands relative to the row it was made on. */
 export type DropAt = "into" | "before" | "after";
 
-/** The tree edits a panel makes, each one command. */
 export interface NodeActions {
-  /** Adds a child under `parent` and hands back the Id the editor minted. */
   addChild(parent: NodeId, kind: NodeKindArg, name?: string): Promise<NodeId>;
   /** Deletes the node and its subtree, clearing the selection if it was in it. */
   remove(node: NodeId): Promise<ResponseBody>;
   /** Deep-copies the node's subtree as its next sibling. */
   duplicate(node: NodeId): Promise<ResponseBody>;
-  /** Sets the label a person reads. Addresses nothing; the Id is unchanged. */
   rename(node: NodeId, name: string): Promise<ResponseBody>;
-  /** Draws the node and its subtree, or does not. */
   setEnabled(node: NodeId, enabled: boolean): Promise<ResponseBody>;
   /** Puts the node under `parent` at `index`, counted with the node removed. */
   move(node: NodeId, parent: NodeId, index: number): Promise<ResponseBody>;
-  /** One place earlier among its siblings. A no-op on the first one. */
   moveUp(node: NodeId): Promise<ResponseBody>;
-  /** One place later among its siblings. A no-op on the last one. */
   moveDown(node: NodeId): Promise<ResponseBody>;
 }
 
-/**
- * The tree edits, bound to one session.
- *
- * Must sit under a `<SelectionProvider>`: deleting the selected node has to
- * clear the selection, and a selection only this hook's caller knew about
- * would leave the panels pointing at a node that is gone.
- */
+/** Must sit under a `<SelectionProvider>`: deleting the selected node clears the selection. */
 export function useNodeActions(session: Session): NodeActions {
-  // The newest selection, in a box: an action that reads it must not rebuild
-  // every callback each time something else is clicked.
+  // Boxed so a selection change does not rebuild every callback.
   const selection = useLatest(useSelection());
 
   return useMemo<NodeActions>(
@@ -82,8 +46,7 @@ export function useNodeActions(session: Session): NodeActions {
       },
 
       async remove(node) {
-        // Asked before the delete: afterwards neither node is in the tree, so
-        // the tree can no longer say whether one held the other.
+        // Asked before the delete: afterwards the tree cannot answer it.
         const held = subtreeHolds(findNode(session.tree(), node), selection.current.node);
         const body = await session.send({ cmd: "node_delete", node });
         if (held) selection.current.select(undefined);
@@ -117,7 +80,6 @@ export function useNodeActions(session: Session): NodeActions {
   );
 }
 
-/** The node with this Id, anywhere under `tree`. */
 export function findNode(tree: TreeNode, node: NodeId): TreeNode | undefined {
   if (tree.id === node) return tree;
   for (const child of tree.children) {
@@ -127,17 +89,12 @@ export function findNode(tree: TreeNode, node: NodeId): TreeNode | undefined {
   return undefined;
 }
 
-/** A node's parent and its place among that parent's children. */
 export interface SiblingIndex {
   parent: TreeNode;
   index: number;
 }
 
-/**
- * Where `node` sits among its siblings, or `undefined` for the root and for a
- * node the tree does not carry — the two cases in which reordering means
- * nothing.
- */
+/** `undefined` for the root and for a node the tree does not carry. */
 export function siblingIndex(tree: TreeNode, node: NodeId): SiblingIndex | undefined {
   const index = tree.children.findIndex((child) => child.id === node);
   if (index >= 0) return { parent: tree, index };
@@ -165,22 +122,15 @@ export function subtreeIds(tree: TreeNode): Set<NodeId> {
   return ids;
 }
 
-/** The parent and index a drop of `node` at `where` on `target` should move to. */
 export interface Drop {
   parent: NodeId;
   index: number;
 }
 
 /**
- * What `move` a drop means, in the model's own counting.
- *
- * A drop *into* a row appends, so it is the target's child count. A drop
- * beside one counts the target's siblings **with the dragged node already
- * taken out**, because that is the list the model reinserts into — dropping a
- * node just below its own next sibling is otherwise off by one.
- *
- * `undefined` when the drop cannot happen: onto the dragged node itself, into
- * its own subtree, or beside the root, which has no siblings.
+ * A drop beside a row counts the target's siblings with the dragged node
+ * already removed, the list the model reinserts into. `undefined` for a drop
+ * onto the node itself, into its own subtree, or beside the root.
  */
 export function dropIndex(
   tree: TreeNode,
@@ -202,5 +152,4 @@ export function dropIndex(
   return { parent: at.parent.id, index: where === "before" ? index : index + 1 };
 }
 
-/** What an action that decided there was nothing to send answers. */
 const NOTHING = (): Promise<ResponseBody> => Promise.resolve({ result: "empty" });

@@ -1,5 +1,3 @@
-/** Model-wide and relational authoring parts. Lists read the replica; every
- * mutation goes through an editor command and can be undone. */
 import type { Session, NodeInfo, SlotPair } from "@catchlight/core";
 import { useState } from "react";
 import {
@@ -394,7 +392,6 @@ export function ModelHealth({ session }: { session: Session }) {
     </>
   );
 }
-
 
 export function ExtensionsPanel({ session, onError }: { session: Session; onError: ErrorHandler }) {
   const { extensions } = useModelQuery(session, { cmd: "extension_list" }, "extensions");

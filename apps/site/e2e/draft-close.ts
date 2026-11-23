@@ -1,4 +1,3 @@
-/** Closing after Apply must protect the newly authored mesh before releasing the session. */
 import assert from "node:assert/strict";
 import { openModel, selectNode } from "./model.ts";
 import type { Editor } from "@catchlight/core";

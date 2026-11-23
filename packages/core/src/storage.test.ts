@@ -1,7 +1,3 @@
-/**
- * The byte store: what a missing key does, and what runs where.
- */
-
 import { describe, expect, test } from "bun:test";
 
 import { MemoryStorage, NotFoundError, OpfsStorage } from "./storage.js";
@@ -34,8 +30,6 @@ describe("MemoryStorage", () => {
 
 describe("OpfsStorage", () => {
   test("refuses up front where there is no origin private file system", async () => {
-    // Under bun there is no OPFS, and a store that fails on the first read
-    // instead of on construction is one every caller has to check.
     expect(OpfsStorage.available()).toBe(false);
     await expect(OpfsStorage.open()).rejects.toBeInstanceOf(Error);
   });

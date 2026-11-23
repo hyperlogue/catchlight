@@ -1,4 +1,3 @@
-/** Startup and file routing; the E2E driver checks rendered presentation. */
 import { expect, test } from "bun:test";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
@@ -59,8 +58,6 @@ test.skipIf(!executablePath)("the demo preloads Lan and reopens it from the empt
     await page.getByRole("button", { name: "Start camera" }).click();
     await page.getByRole("status").filter({ hasText: "Tracking stopped" }).waitFor();
     expect(await page.getByRole("button", { name: "Start camera" }).isVisible()).toBe(true);
-    // Supply deterministic detections while using a real browser MediaStream.
-    // This checks the Lan mapping and shutdown without a physical webcam.
     await page.route(/@mediapipe_tasks-vision.*\.js/, route => route.fulfill({
       contentType: "application/javascript",
       body: `export const FilesetResolver = { forVisionTasks: async () => ({}) };

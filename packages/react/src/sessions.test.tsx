@@ -1,8 +1,3 @@
-/**
- * The two parts that talk to the editor rather than to a model: what is
- * open, and opening a file the page holds.
- */
-
 import "./test/setup.js";
 
 import { describe, expect, test } from "bun:test";
@@ -24,8 +19,6 @@ describe("the open models", () => {
     await settle();
     expect(view.container.querySelectorAll("[data-catchlight-session]")).toHaveLength(0);
 
-    // Not through this component, and not through any of its props: the editor
-    // said the set changed, which is the only thing it is watching.
     await run(() => editor.newSession("akari"));
     await settle();
 
@@ -77,7 +70,6 @@ describe("the open models", () => {
 
     expect(picked).toHaveLength(1);
     expect(picked[0]).toMatchObject({ title: "akari" });
-    // The id is on the element too, for a host that styles the current one.
     expect(view.container.querySelector("[data-catchlight-session]")?.getAttribute("data-session"))
       .toBe(String(picked[0]?.session));
     await view.unmount();
@@ -107,7 +99,6 @@ describe("the open models", () => {
     );
     const controls = view.container.querySelectorAll<HTMLButtonElement>("[data-catchlight-session-close]");
     expect(controls).toHaveLength(2);
-    // The select button stays first in its row, and the close names its model.
     expect(controls[1]?.getAttribute("aria-label")).toBe("Close beni");
     await act(async () => {
       controls[1]?.click();
@@ -158,13 +149,10 @@ describe("opening a file", () => {
     await settle();
 
     expect(opened).toHaveLength(1);
-    // A file the page holds is a fresh session and an import into it; the name
-    // is sanitized on the way, by the editor.
     expect(wasm.requests.map((request) => request.cmd)).toContain("session_create");
     expect(wasm.requests.find((request) => request.cmd === "session_create")).toMatchObject({
       name: "Akari_Final.clm",
     });
-    // Reset, so picking the same file again fires again.
     expect(input.value).toBe("");
     await view.unmount();
   });

@@ -1,10 +1,4 @@
-/**
- * Every model the editor has open, kept current.
- *
- * The list is not a replica read: a session another tab or an agent on the
- * socket opened is not in this tab's memory at all, so this is one round trip,
- * repeated whenever the editor says the set changed.
- */
+/** Open sessions, re-fetched whenever the editor says the set changed. */
 
 import type { SessionInfo } from "@catchlight/core";
 import { useCallback, useEffect, useRef, useState } from "react";

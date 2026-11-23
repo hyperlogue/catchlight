@@ -1,13 +1,3 @@
-/**
- * The param half of the panel: what each control sends, and what the strip
- * deliberately does not.
- *
- * Every assertion here is about the *wire*. A param is metadata and its key
- * positions are part of the model, so adding, renaming, re-ranging or
- * keying one has to be a command the editor sees — while posing the puppet at
- * a key has to be none.
- */
-
 import "./test/setup.js";
 
 import { describe, expect, test } from "bun:test";
@@ -17,7 +7,6 @@ import { act } from "react";
 import { EditorProvider, ParamAdd, ParamFields, ParamKeys } from "./index.js";
 import { fire, harness, mount, run } from "./test/harness.js";
 
-/** One param, keyed at both ends and in the middle. */
 const yaw = (): SessionEditCommand => ({
   cmd: "param_add",
   name: "head:yaw",
@@ -27,7 +16,6 @@ const yaw = (): SessionEditCommand => ({
 
 });
 
-/** Every command the editor was sent, newest last. */
 function sent(requests: Request[]): Request[] {
   return requests.filter((request) => request.cmd !== "session_create");
 }
@@ -75,7 +63,6 @@ describe("editing params", () => {
       default: 0.5,
 
     });
-    // The form empties, so the next param does not inherit this one's name.
     expect(field("name").value).toBe("");
     await view.unmount();
   });
@@ -98,7 +85,6 @@ describe("editing params", () => {
     expect(name.value).toBe("head:yaw");
     name.value = "head:turn";
     await fire(name, new Event("focusout", { bubbles: true }));
-    // Absent and null mean the same thing to the editor: leave it alone.
     expect(last(wasm.requests)).toMatchObject({
       cmd: "param_set",
       param: param.id,
@@ -115,7 +101,6 @@ describe("editing params", () => {
     await fire(max, new Event("focusout", { bubbles: true }));
     expect(last(wasm.requests)).toMatchObject({ cmd: "param_set", max: 3, name: null });
 
-    // A field left at what the param already says changes nothing.
     const before = sent(wasm.requests).length;
     max.value = String(param.max);
     await fire(max, new Event("focusout", { bubbles: true }));
@@ -147,7 +132,6 @@ describe("the keypoint strip", () => {
 
     const markers = [...view.container.querySelectorAll("[data-catchlight-param-key]")];
     expect(markers.length).toBe(3);
-    // Without a binding selected, these shortcuts only pose the input.
     expect(markers.map((m) => m.getAttribute("data-editable"))).toEqual([null, null, null]);
 
     const commands = sent(wasm.requests).length;
@@ -155,7 +139,6 @@ describe("the keypoint strip", () => {
       (markers[2] as HTMLButtonElement).click();
     });
 
-    // Key position 1 on a param that runs -1..1 is the top of the range.
     expect(session.paramValue(param.id)).toBe(1);
     expect(sent(wasm.requests).length).toBe(commands);
     await view.unmount();
@@ -182,8 +165,6 @@ describe("the keypoint strip", () => {
       "[data-catchlight-param-key-delete]",
     ) as HTMLButtonElement;
 
-    // The pose starts at the default, which is already a key: there is
-    // nothing to insert there, and that key is the one delete would take.
     expect(insert.disabled).toBe(true);
     expect(remove.disabled).toBe(false);
 
@@ -194,7 +175,6 @@ describe("the keypoint strip", () => {
     await act(async () => {
       insert.click();
     });
-    // Normalized across [-1, 1], a pose of 0.5 is three quarters along.
     expect(last(wasm.requests)).toMatchObject({
       cmd: "binding_key_insert",
       param: param.id,
@@ -235,8 +215,6 @@ describe("the keypoint strip", () => {
 
       await fire(marker, pointer("pointerdown", 100));
       await fire(marker, pointer("pointermove", 150));
-      // Nothing is authored while the pointer is down: a drag of any length
-      // is one revision and one undo entry.
       expect(sent(wasm.requests).length).toBe(commands);
 
       await fire(marker, pointer("pointerup", 150));
@@ -253,7 +231,6 @@ describe("the keypoint strip", () => {
   });
 });
 
-/** A pointer event at `x` across the page, with the capture calls stubbed. */
 function pointer(type: string, x: number): Event {
   const event = new Event(type, { bubbles: true }) as Event & {
     clientX: number;
@@ -264,10 +241,7 @@ function pointer(type: string, x: number): Event {
   return event;
 }
 
-/**
- * A 200px-wide strip starting at the left edge, plus the pointer-capture calls
- * happy-dom does not implement. Returns a restore function.
- */
+// A 200px strip at the left edge; stubs pointer capture, which happy-dom lacks.
 function stubTrack(width: number): () => void {
   const rect = Element.prototype.getBoundingClientRect;
   const capture = Element.prototype.setPointerCapture;

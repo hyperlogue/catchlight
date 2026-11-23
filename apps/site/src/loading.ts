@@ -1,4 +1,3 @@
-/** Startup-only feedback; after React mounts, these elements no longer exist. */
 export function showLoading(label: string, detail: string, fraction?: number): void {
   const title = document.getElementById("loading-label");
   const description = document.getElementById("loading-detail");
@@ -12,7 +11,6 @@ export function showLoading(label: string, detail: string, fraction?: number): v
   }
 }
 
-/** The bundled asset's decoded size stays accurate across HTTP compression. */
 export async function downloadModel(url: string, name: string, modelSize?: number): Promise<Uint8Array> {
   let total = modelSize !== undefined && Number.isFinite(modelSize) && modelSize > 0 ? modelSize : undefined;
   const describe = (received: number) => {

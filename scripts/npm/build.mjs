@@ -1,6 +1,4 @@
 // Build standalone npm artifacts without changing workspace source exports.
-// Only this explicit set is released. Core owns the optional, explicitly
-// initialized WASM subpath; importing its root never loads the binary.
 import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';

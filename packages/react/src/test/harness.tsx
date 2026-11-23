@@ -1,12 +1,3 @@
-/**
- * What every suite here needs: a real `Editor` over the fake wasm module, a
- * React root to mount into, and the two browser measurements happy-dom does
- * not make.
- *
- * The editor is the real one — the point of these tests is the layer above it,
- * so the only thing faked is the wasm module underneath.
- */
-
 import { Editor, InTabBackend, MemoryStorage } from "@catchlight/core";
 import type { Session } from "@catchlight/core";
 import { FakeEditor, fakeWasm } from "@catchlight/core/fakes";
@@ -29,7 +20,6 @@ export async function harness(): Promise<Harness> {
   return { editor, wasm, replicas: module.replicas, viewports: module.viewports };
 }
 
-/** The replica behind a session, as the fake implements it. */
 export function fakeReplica(session: Session): FakeReplica {
   return session.replica as FakeReplica;
 }
@@ -40,7 +30,6 @@ export interface Mounted {
   unmount(): Promise<void>;
 }
 
-/** Mounts into a detached container and gives back the two things a test drives. */
 export async function mount(ui: ReactNode): Promise<Mounted> {
   const container = document.createElement("div");
   document.body.append(container);
@@ -63,7 +52,6 @@ export async function mount(ui: ReactNode): Promise<Mounted> {
   };
 }
 
-/** Runs an action that moves the session, letting React commit what it caused. */
 export async function run<T>(action: () => Promise<T> | T): Promise<T> {
   let result: T | undefined;
   await act(async () => {
@@ -72,7 +60,6 @@ export async function run<T>(action: () => Promise<T> | T): Promise<T> {
   return result as T;
 }
 
-/** Lets whatever a handler started settle before a test looks at the result. */
 export async function settle(): Promise<void> {
   await act(async () => {
     await Promise.resolve();
@@ -80,11 +67,7 @@ export async function settle(): Promise<void> {
   });
 }
 
-/**
- * Gives every observed element a fixed CSS size and screen position — the two
- * things a layout engine would have decided and happy-dom reports as zero.
- * Returns a restore function.
- */
+// Fixed CSS size and position for observed elements; happy-dom reports zero.
 export function stubLayout(width: number, height: number, left = 0, top = 0): () => void {
   const saved = {
     ResizeObserver: globalThis.ResizeObserver,
@@ -140,7 +123,6 @@ export function stubLayout(width: number, height: number, left = 0, top = 0): ()
   };
 }
 
-/** A pointer event with the fields the viewport reads. */
 export function pointer(
   type: string,
   parts: { clientX?: number; clientY?: number; button?: number; pointerId?: number },
@@ -152,13 +134,11 @@ export function pointer(
     clientY: parts.clientY ?? 0,
     button: parts.button ?? 0,
   });
-  // happy-dom does not carry `pointerId` through the constructor, and the
-  // viewport matches moves to the pointer that started the gesture by it.
+  // happy-dom drops `pointerId` from the constructor init.
   Object.defineProperty(event, "pointerId", { value: parts.pointerId ?? 1 });
   return event;
 }
 
-/** A wheel event with the fields the zoom reads. */
 export function wheel(deltaY: number, clientX: number, clientY: number): WheelEvent {
   const event = new WheelEvent("wheel", { deltaY, bubbles: true, cancelable: true });
   // happy-dom's `WheelEvent` drops the mouse half of the init dictionary.
@@ -167,7 +147,6 @@ export function wheel(deltaY: number, clientX: number, clientY: number): WheelEv
   return event;
 }
 
-/** Dispatches `event` on `target` inside `act`, so React commits before the test looks. */
 export async function fire(target: EventTarget, event: Event): Promise<void> {
   await act(async () => {
     target.dispatchEvent(event);

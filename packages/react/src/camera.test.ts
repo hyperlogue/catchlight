@@ -1,7 +1,3 @@
-/**
- * The arithmetic on its own, where an off-by-a-half-pixel is visible.
- */
-
 import { describe, expect, test } from "bun:test";
 import type { Camera } from "@catchlight/core";
 
@@ -26,8 +22,6 @@ describe("screen against world", () => {
   });
 
   test("one screen height is the camera's height, on both axes", () => {
-    // The width follows from the aspect: nothing divides by the canvas width,
-    // so a wide canvas shows more world rather than a stretched one.
     expect(worldPerPixel(camera, size)).toBe(1);
     expect(worldAt(camera, size, [800, 300])[0]).toBe(400);
     expect(worldAt({ ...camera, height: 1200 }, size, [800, 300])[0]).toBe(800);
@@ -79,8 +73,6 @@ describe("panning", () => {
   });
 
   test("a pan back to where it started restores the camera exactly", () => {
-    // The property an incremental pan only approximates: every move is
-    // measured from the gesture's own start, so nothing accumulates.
     const from: [number, number] = [400, 300];
     panTo(camera, from, size, [500, 250]);
     expect(panTo(camera, from, size, from).center).toEqual(camera.center);
@@ -92,15 +84,13 @@ describe("wheel deltas", () => {
     expect(wheelNotches(100, 0)).toBe(1);
     expect(wheelNotches(3, 1)).toBe(1);
     expect(wheelNotches(1, 2)).toBe(1);
-    // A trackpad's small pixel deltas stay small rather than rounding to a notch.
     expect(wheelNotches(4, 0)).toBeCloseTo(0.04, 12);
   });
 });
 
 describe("framing a model", () => {
   test("a wide box is framed by the width, on a canvas wider than it is tall", () => {
-    // 16 x 2 on a 4:3 canvas: the height that shows 16 world units across is
-    // 12, and that is what has to cover the box, not the box's own 2.
+    // 16 x 2 on 4:3: showing 16 across needs a height of 12.
     const framed = fitCamera([-8, -1, 8, 1], size);
     expect(framed?.center).toEqual([0, 0]);
     expect(framed?.height).toBeCloseTo(16.2, 9);
@@ -124,7 +114,6 @@ describe("framing a model", () => {
 
   test("nothing to frame leaves the camera to the caller", () => {
     expect(fitCamera(undefined, size)).toBeUndefined();
-    // What an empty box degrades to: min past max on both axes.
     expect(fitCamera([1, 1, -1, -1], size)).toBeUndefined();
     expect(fitCamera([0, 0, NaN, 1], size)).toBeUndefined();
     expect(fitCamera([-Infinity, 0, Infinity, 1], size)).toBeUndefined();
@@ -138,7 +127,6 @@ describe("framing a model", () => {
 
   test("a canvas with no size yet frames as if it were square", () => {
     const framed = fitCamera([-8, -1, 8, 1], { width: 0, height: 0 });
-    // Aspect 1, so the box's 16 across needs 16 of height.
     expect(framed?.height).toBeCloseTo(21.6, 9);
   });
 
@@ -148,7 +136,6 @@ describe("framing a model", () => {
   });
 });
 
-/** Whether every corner of `box` lands inside the canvas under `camera`. */
 function contains(camera: Camera, canvas: Size, box: Bounds): boolean {
   const [minX, minY, maxX, maxY] = box;
   const corners: Array<[number, number]> = [

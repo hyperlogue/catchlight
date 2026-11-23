@@ -1,8 +1,3 @@
-/**
- * The two backends against the same contract: what `send` guarantees, when a
- * key gets staged, and what a feed fetches.
- */
-
 import { describe, expect, test } from "bun:test";
 
 import { ProtocolError, readReply } from "./backend.js";
@@ -34,8 +29,7 @@ describe("in-tab", () => {
     const reply = await backend.send({ cmd: "session_create", name: "akari" });
     order.push("resolved");
 
-    // A caller about to wait on the reply's revision needs the feed that this
-    // event starts to already be in flight.
+    // A caller waiting on the reply's revision needs this event's feed in flight.
     expect(order).toEqual(["sessions_changed", "resolved"]);
     expect(reply.body).toEqual({ result: "session", session: 1 });
     expect(reply.rev).toBe(0);
@@ -53,7 +47,6 @@ describe("in-tab", () => {
 
     expect(reply.body).toMatchObject({ result: "session" });
     expect(editor.attached.at(-1)).toEqual({ model: bytes });
-    // Nothing was parked under a key on the way through.
     expect(editor.writtenKeys()).toEqual([]);
   });
 
@@ -67,7 +60,6 @@ describe("in-tab", () => {
       backend.send({ cmd: "session_create", name: null, source: { format: "clm" } }),
     ).rejects.toBeInstanceOf(ProtocolError);
 
-    // Refused here, where the mistake is, rather than a round trip away.
     expect(editor.requests).toHaveLength(before);
   });
 
@@ -90,7 +82,7 @@ describe("in-tab", () => {
 
     expect(reply.body).toEqual({ result: "saved", path: "out/akari.clm" });
     expect(await storage.list()).toEqual(["out/akari.clm"]);
-    // Drained: a map that is never emptied holds every texture twice.
+    // Drained: a map never emptied holds every texture twice.
     expect(editor.writtenKeys()).toEqual([]);
   });
 
@@ -110,7 +102,6 @@ describe("in-tab", () => {
     const editor = new FakeEditor();
     const backend = new InTabBackend(editor, new MemoryStorage());
     await backend.send({ cmd: "session_create", name: null });
-    // The shape of an editor-side bug: success reported, nothing written.
     editor.handle = ((requestJson: string) => {
       const { id } = JSON.parse(requestJson) as { id: number };
       return JSON.stringify({ reply: "ok", id, rev: 1, body: { result: "saved", path: "ghost.clm" } });
@@ -155,7 +146,6 @@ describe("in-tab", () => {
   });
 });
 
-/** A connected backend over a fake socket and a fake origin. */
 async function connect(routes: Record<string, () => ReturnType<typeof httpResponse>> = {}) {
   FakeSocket.opened = [];
   const http = fakeFetch({
@@ -232,7 +222,6 @@ describe("connected", () => {
 
     await expect(first).rejects.toMatchObject({ code: "closed" });
     await expect(second).rejects.toMatchObject({ code: "closed" });
-    // And an editor that cannot be reached is not a slow editor.
     await expect(backend.send({ cmd: "session_list" })).rejects.toMatchObject({ code: "closed" });
   });
 
@@ -265,14 +254,11 @@ describe("connected", () => {
     const replica = new FakeReplica();
     replica.held.add("tex-1");
 
-    // Asked for 7; the editor had moved on, and the bytes are what they are.
     const rev = await backend.feed(replica, 1, 7);
 
     expect(rev).toBe(12);
     expect(replica.applied.map((a) => a.rev)).toEqual([12]);
     const fetched = http.calls.map((call) => call.url).filter((url) => url.includes("/textures/"));
-    // tex-1 was already held; refetching it is a texture's worth of bandwidth
-    // per edit.
     expect(fetched).toEqual(["http://editor.local/sessions/1/textures/tex-2"]);
   });
 
@@ -290,15 +276,13 @@ describe("connected", () => {
         httpResponse(new TextEncoder().encode("first")),
     });
     const replica = new FakeReplica();
-    // One held at the hash the structure names, one held at an older hash.
     replica.heldExtensions.set("acme.other", "held");
     replica.heldExtensions.set("acme.thumb", "stale");
 
     expect(await backend.feed(replica, 1, 3)).toBe(3);
 
     const fetched = http.calls.map((call) => call.url).filter((url) => url.includes("/extensions/"));
-    // Only the one whose hash moved: an unchanged marker costs nothing, and a
-    // json extension is already in the structure.
+    // An unchanged marker costs nothing; a json extension is already inline.
     expect(fetched).toEqual(["http://editor.local/sessions/1/extensions/acme.thumb"]);
     expect(replica.heldExtensions.get("acme.thumb")).toBe("first");
   });
@@ -353,7 +337,6 @@ describe("connected", () => {
     await Promise.all(feeds);
     await tick();
 
-    // Three events, two fetches: the two behind the one in flight collapse.
     expect(http.calls.filter((call) => call.url.endsWith("/structure"))).toHaveLength(2);
     expect(replica.rev()).toBe(3);
   });

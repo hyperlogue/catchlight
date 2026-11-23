@@ -1,7 +1,3 @@
-// The blank-canvas assertion is only as good as the two judgements under it,
-// and they are the one piece of the drive a browser is not needed to exercise.
-// Every picture here is built in the test, so this needs no fixture and no LFS
-// object.
 import { describe, expect, test } from "bun:test";
 
 import { fingerprint, hex, uniformity } from "./frame.ts";

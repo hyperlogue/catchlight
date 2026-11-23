@@ -1,5 +1,4 @@
-/** Fixed-texture mesh placement. SVG displays the original artwork and the
- * Rust draft's geometry; dragging never touches the posed model's scratch. */
+/** Dragging never touches the posed model's scratch. */
 import type { Camera, MeshDraftView } from "@catchlight/core";
 import { useEffect, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";

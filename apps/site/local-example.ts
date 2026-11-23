@@ -1,4 +1,3 @@
-/** A private starter is served only by the loopback development server. */
 import { createReadStream } from "node:fs";
 import { open, realpath } from "node:fs/promises";
 import { basename, extname, resolve } from "node:path";

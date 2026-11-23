@@ -1,13 +1,3 @@
-/**
- * That the assembled screen is wired to one session, and to the right one.
- *
- * There is no logic here to test — every behaviour belongs to a part or a hook
- * in `@catchlight/react`, which has its own suites. What can only break at this
- * layer is the wiring: which model the panels are showing, whether a part
- * that needs the selection is under the provider that supplies it, and whether
- * the toolbar reaches the editor at all. So this mounts the whole thing over
- * the fake wasm module and reads the DOM.
- */
 
 import "./test/setup.js";
 
@@ -39,8 +29,6 @@ describe("the assembled editor", () => {
     expect(save(view).disabled).toBe(true);
     expect(view.querySelector("[data-catchlight-stage][data-empty]")).not.toBeNull();
 
-    // Not opened through this component: the editor said the set changed, and
-    // the first model it lists is the one the panels take.
     await run(() => editor.newSession("akari"));
     await settle();
 
@@ -86,7 +74,6 @@ describe("the assembled editor", () => {
     expect(view.querySelector("[data-catchlight-node][data-selected]")).not.toBeNull();
     expect(text(view, "[data-catchlight-status]")).toContain("selected");
 
-    // Posing is immediately reachable; definitions have an explicit editor.
     expect(text(view, "[data-catchlight-param-name]")).toContain("head:yaw");
     await run(() => button(view, '[aria-label="Edit head:yaw"]').click());
     const name = view.querySelector<HTMLInputElement>("[data-catchlight-param-rename]");
@@ -106,20 +93,16 @@ describe("the assembled editor", () => {
     const { container: view, unmount } = await mount(<CatchlightEditor editor={editor} />);
     await settle();
 
-    // Nothing to frame without a model, the same rule the Save button is on.
     expect(fit(view).disabled).toBe(true);
 
     const session = await run(() => editor.newSession("akari"));
     await settle();
     expect(fit(view).disabled).toBe(false);
 
-    // Two facts a person cannot get by looking at the picture, and both change
-    // what a bug report means.
     expect(text(view, "[data-catchlight-backend]")).toBe("in-tab");
     expect(text(view, "[data-catchlight-tier]")).toBe("webgpu");
 
-    // A box off the origin, so a camera that landed on it could not have been
-    // the default one.
+    // Off the origin, so the default camera cannot pass.
     (session.replica as FakeReplica).box = [10, 20, 12, 24];
     await run(() => fit(view).click());
     await settle();
@@ -160,8 +143,6 @@ describe("the assembled editor", () => {
     await settle();
     await settle();
 
-    // The command named the key, the bytes came back out as a file of that
-    // name, and the status line says so.
     expect(wasm.requests.find((request) => request.cmd === "session_save")).toMatchObject({
       path: "copy.clm",
     });
@@ -202,7 +183,6 @@ describe("the assembled editor", () => {
     expect(view.querySelectorAll("[data-catchlight-session]")).toHaveLength(1);
     expect(text(view, "[data-catchlight-status]")).toContain("beni");
     expect(view.querySelector("[data-catchlight-stage][data-empty]")).toBeNull();
-    // The closed one's replica is gone, and the screen never read it again.
     expect((first.replica as FakeReplica).freed).toBe(true);
 
     await run(() => editor.newSession("chika"));
@@ -294,7 +274,6 @@ describe("the assembled editor", () => {
     const { container: view, unmount } = await mount(<CatchlightEditor editor={editor} />);
     await settle();
 
-    // Empty, and the canvas is already there, drawn on by nothing.
     const canvas = view.querySelector("canvas");
     if (!canvas) throw new Error("no canvas in the empty state");
     expect(view.querySelector("[data-catchlight-stage][data-empty]")).not.toBeNull();
@@ -317,10 +296,8 @@ describe("the assembled editor", () => {
     await settle();
     expect(view.querySelector("canvas")).toBe(canvas);
     expect(viewports.filter((viewport) => viewport.freed === 0)).toHaveLength(1);
-    // One device for the editor, acquired once from that one element,
-    // whatever came and went above it: the canvas outlived two models and
-    // the device outlived both. On the fallback tier that element is also the
-    // only one the device can present into, which is why the stage keeps it.
+    // On the WebGL2 tier the device can only present into the canvas it was
+    // acquired from, so the stage keeps one canvas across models.
     expect(gpu.acquiredFrom).toEqual([canvas]);
 
     await unmount();
@@ -331,8 +308,6 @@ describe("the assembled editor", () => {
   test("a canvas that cannot be attached says so, instead of coming up blank", async () => {
     const stop = stubObservers();
     const { editor, module } = await fakeStack();
-    // What a browser with neither tier does: the device the first attach asks
-    // for never arrives, and the stage is the one cell with nothing else to say.
     module.failNextAcquire =
       "the catchlight editor needs WebGPU or WebGL2 to draw and this browser offered neither";
     const { container: view, unmount } = await mount(<CatchlightEditor editor={editor} />);
@@ -356,14 +331,12 @@ describe("the assembled editor", () => {
     const session = await run(() => editor.newSession("akari"));
     await settle();
 
-    // Before a fit, the camera starts at its default 100% scale.
     expect(text(view, "[data-catchlight-zoom]")).toBe("100%");
 
     (session.replica as FakeReplica).box = [10, 20, 12, 24];
     await run(() => fit(view).click());
     expect(text(view, "[data-catchlight-zoom]")).toBe("100%");
 
-    // One notch in on the canvas, the wheel gesture the viewport owns.
     const canvas = view.querySelector("canvas");
     if (!canvas) throw new Error("no canvas");
     await run(() =>
@@ -386,12 +359,10 @@ describe("the assembled editor", () => {
   });
 });
 
-/** A real editor over the fake wasm module: the layer under this one, working. */
 async function fakeEditor(): Promise<Editor> {
   return (await fakeStack()).editor;
 }
 
-/** The same, plus the fakes underneath, for a test that reads what was drawn. */
 async function fakeStack(): Promise<{
   editor: Editor;
   wasm: FakeEditor;
@@ -405,7 +376,7 @@ async function fakeStack(): Promise<{
   return { editor, wasm, gpu: module.gpu, viewports: module.viewports, module };
 }
 
-/** Catches the name a download went out under; happy-dom would navigate to it otherwise. */
+/** happy-dom would navigate to a download otherwise. */
 function stubDownload(): { names: string[]; restore(): void } {
   const names: string[] = [];
   const saved = {
@@ -451,7 +422,6 @@ async function mount(ui: ReactNode): Promise<Mounted> {
   };
 }
 
-/** Runs something that moves the editor, letting React commit what it caused. */
 async function run<T>(action: () => Promise<T> | T): Promise<T> {
   let result: T | undefined;
   await act(async () => {
@@ -460,7 +430,6 @@ async function run<T>(action: () => Promise<T> | T): Promise<T> {
   return result as T;
 }
 
-/** Lets the round trips a render started settle before the DOM is read. */
 async function settle(): Promise<void> {
   await act(async () => {
     for (let i = 0; i < 4; i += 1) await Promise.resolve();
@@ -485,10 +454,7 @@ function text(view: HTMLElement, selector: string): string {
   return view.querySelector(selector)?.textContent ?? "";
 }
 
-/**
- * The two observers the viewport builds. happy-dom lays nothing out, so a real
- * one would report zeroes; what this suite reads is the DOM, not a frame.
- */
+/** happy-dom lays nothing out, so a real observer would report zeroes. */
 function stubObservers(): () => void {
   const saved = {
     ResizeObserver: globalThis.ResizeObserver,

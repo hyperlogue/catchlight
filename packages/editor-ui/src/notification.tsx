@@ -1,6 +1,4 @@
-/** Keep a failure visible even when a native modal is in the top layer.
- * The notification follows the active dialog, and returns to the workspace
- * when that dialog closes. Its React owner and dismiss action never move. */
+/** Follows the active native dialog into the top layer so a failure stays visible. */
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { createPortal } from "react-dom";

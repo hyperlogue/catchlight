@@ -1,18 +1,6 @@
 /**
- * Saving, and getting the bytes out of the tab.
- *
- * A save is a command, and in a tab it lands in the browser's own store — where
- * a reload finds it, and nowhere a person can take it. So a save here is two
- * steps: the command, then the bytes read back and handed to the browser as a
- * download. When the editor keeps no copy this tab can read — it is a process
- * on the machine, writing where it was told — the second step is skipped and
- * the outcome says so, which is a host's cue to show the path instead. Nothing
- * here asks which backend it is on; it asks for the bytes.
- *
- * **The name typed is a storage key.** It is flattened to its last segment and
- * its charset the way every key is (`fileKey`), and given the `.clm` extension
- * when it has none, because that tail is what picks a decoder when the file is
- * opened again.
+ * Save, then download the bytes when this tab can read them back. A backend
+ * that keeps no readable copy skips the download, and the outcome says so.
  */
 
 import type { Session } from "@catchlight/core";
@@ -23,17 +11,12 @@ import type { ComponentProps, FormEvent, ReactNode } from "react";
 import { useEditor } from "./editor-context.js";
 
 export interface SaveOutcome {
-  /** The key the model landed under. */
   key: string;
-  /** Whether the bytes were handed to the browser as a download. */
   downloaded: boolean;
 }
 
 export interface FileSaver {
-  /**
-   * Saves under `name`, or where the model was opened from when there is
-   * none, and downloads the result when this tab can read it back.
-   */
+  /** Without `name`, saves where the model was opened from. */
   save(name?: string): Promise<SaveOutcome>;
 }
 
@@ -55,15 +38,12 @@ export function useFileSave(session: Session | undefined): FileSaver {
 // `onError` is also a DOM event on every element; this one wins.
 export interface FileSaveRootProps extends Omit<ComponentProps<"form">, "onSubmit" | "onError"> {
   session: Session;
-  /** What the name input starts with. */
   defaultName?: string | undefined;
   onSaved?: (outcome: SaveOutcome) => void;
   onError?: (cause: unknown) => void;
-  /** The submit control's label. */
   children?: ReactNode;
 }
 
-/** A name input and a submit: "Save As". */
 export function FileSaveRoot({
   session,
   defaultName,
@@ -111,25 +91,18 @@ export function FileSaveRoot({
 
 export const FileSave = { Root: FileSaveRoot };
 
-/** The key a typed name saves under: flattened, sanitized, and ending in `.clm`. */
 export function saveKey(name: string): string {
   const key = fileKey(name);
   return /\.clm$/i.test(key) ? key : `${key}.clm`;
 }
 
-/** The file name a download gets: the key's last segment. */
 export function downloadName(key: string): string {
   return key.split("/").pop() || "untitled.clm";
 }
 
-/**
- * Hands `bytes` to the browser as a file called `name`.
- *
- * An anchor with a `download` attribute is the one way a page starts a save
- * dialog without a permission prompt. It is put in the document for the click
- * — some browsers ignore a detached one — and removed at once; the object URL
- * outlives it, because the download it names may still be starting.
- */
+// An attached `download` anchor starts a save without a permission prompt;
+// some browsers ignore a detached one. The object URL outlives the anchor
+// because the download may still be starting.
 export function downloadBytes(bytes: Uint8Array, name: string): void {
   const blob = new Blob([bytes as BlobPart], {
     type: "application/octet-stream",
@@ -149,5 +122,4 @@ export function downloadBytes(bytes: Uint8Array, name: string): void {
   }
 }
 
-/** Long enough for a browser to have opened the blob the anchor named. */
 const REVOKE_AFTER_MS = 60_000;

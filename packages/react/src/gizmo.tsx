@@ -1,6 +1,5 @@
-/** The canvas's transform and mesh handles. A gesture captures its authored
- * and evaluated starting values, previews only scratch, then commits once.
- * Cancel, loss of focus, and a model switch roll the preview back. */
+/** A gesture previews only scratch, then commits once. Cancel, loss of
+ * focus, and a model switch roll the preview back. */
 import type {
   Camera,
   NodeId,

@@ -1,8 +1,3 @@
-/**
- * The surface a host actually calls: opening models, and what is true about
- * a `Session` the moment it is handed over.
- */
-
 import { describe, expect, test } from "bun:test";
 
 import { Editor, fileKey } from "./editor.js";
@@ -72,9 +67,7 @@ describe("opening models", () => {
 
     const session = await editor.newSession("akari");
 
-    // Fed before the caller ever saw it: the first thing a panel does is a
-    // read, and a read that answers "nothing loaded yet" is a bug a host
-    // would have to work around forever.
+    // Fed before handover: a panel's first read must not see an empty model.
     expect(session.tree().id).toBe("root");
     expect(session.getRevision()).toBe(0);
     expect(editor.session(session.id)).toBe(session);
@@ -115,8 +108,6 @@ describe("opening models", () => {
     const body = await session.send({ cmd: "node_add", parent: "root", kind: "part", name: "hair" });
     const node = body.result === "node" ? body.node : "";
 
-    // The whole reason `send` waits on the reply's revision: the Id it minted
-    // resolves in the very next line, with no poll and no second round trip.
     const children = session.tree().children.map((child) => child.id);
     expect(children).toEqual([node]);
     expect(session.getRevision()).toBe(1);
@@ -126,7 +117,6 @@ describe("opening models", () => {
     const { editor, storage, wasm } = await inTab();
     await storage.write("project/akari.clm", new TextEncoder().encode("a model"));
 
-    // The store here is the editor's, so the key names a file it can read.
     wasm.written.set("project/akari.clm", new TextEncoder().encode("a model"));
     const session = await editor.openSession("project/akari.clm");
 
@@ -143,10 +133,8 @@ describe("opening models", () => {
     expect(session.id).toBe(1);
     expect(wasm.requests.map((r) => r.cmd)).toEqual(["session_create"]);
     expect(wasm.requests[0]).toMatchObject({ cmd: "session_create", name: "Akari_Final.clm" });
-    // The bytes went with the command that reads them, not under a key.
     expect(wasm.attached[0]).toEqual({ model: bytes });
     expect(wasm.writtenKeys()).toEqual([]);
-    // A dropped file is not written to the store until somebody saves it.
     expect(await storage.list()).toEqual([]);
   });
 
@@ -164,11 +152,7 @@ describe("opening models", () => {
     const session = await editor.importManifest("rig/model.json");
 
     expect(session.id).toBe(1);
-    // No round trip to ask what it needs: the manifest says, and reading it is
-    // a pure function.
     expect(wasm.requests.map((r) => r.cmd)).toEqual(["session_create"]);
-    // Each reference resolved against the manifest's own key, and attached
-    // under the name the import matches it by.
     expect(wasm.attached[0]).toEqual({
       manifest,
       "texture:tex0.png": tex0,
@@ -183,8 +167,6 @@ describe("opening models", () => {
     await editor.openFile(new TextEncoder().encode("a model"), "akari.clm");
     expect(wasm.writtenKeys()).toEqual([]);
 
-    // The same name again is a second model, not a failure: nothing here
-    // depends on the first open's bytes still being around.
     const second = await editor.openFile(new TextEncoder().encode("a newer model"), "akari.clm");
     expect(second.id).toBe(2);
     expect(wasm.writtenKeys()).toEqual([]);
@@ -197,7 +179,6 @@ describe("opening models", () => {
     expect(await editor.saveSession(session, "out/akari.clm")).toBe("out/akari.clm");
     expect(await storage.list()).toEqual(["out/akari.clm"]);
 
-    // With no key it saves where it saved last.
     expect(await editor.saveSession(session)).toBe("out/akari.clm");
   });
 
@@ -208,11 +189,9 @@ describe("opening models", () => {
     const key = await editor.saveSession(session, "akari.clm");
     const bytes = await editor.readFile(key);
 
-    // What a download hands the browser: the store's copy, which is what the
-    // editor wrote for the save — not a re-serialization here.
+    // The store's copy, not a re-serialization here.
     if (!bytes) throw new Error("the store handed back nothing");
     expect(readStructure(bytes).title).toBe(wasm.snapshot(session.id).title);
-    // And a key nobody wrote is an error, never an empty download.
     await expect(editor.readFile("nowhere.clm")).rejects.toThrow("nowhere.clm");
   });
 
@@ -233,7 +212,6 @@ describe("opening models", () => {
     expect(changes).toBe(1);
     off();
 
-    // A session this tab never attached — one an agent opened — closes too.
     wasm.handle(JSON.stringify({ id: 99, cmd: "session_create", name: "from an agent" }));
     wasm.drainEvents();
     const [info] = await editor.listSessions();
@@ -250,9 +228,7 @@ describe("opening models", () => {
       changes += 1;
     });
 
-    // The list carries the revision, the node count and the dirty flag, and
-    // an edit moves all three — a list that only refreshed on open and close
-    // would show a model as clean forever.
+    // A list refreshed only on open and close would show a model clean forever.
     await session.send({ cmd: "node_add", parent: "root", kind: "part", name: "hair" });
     expect(changes).toBe(1);
     off();
@@ -260,7 +236,6 @@ describe("opening models", () => {
 
   test("a session an agent opened can be followed by id", async () => {
     const { editor, wasm } = await inTab();
-    // Something else opened it: the editor knows, this tab does not.
     wasm.handle(JSON.stringify({ id: 99, cmd: "session_create", name: "from an agent" }));
     wasm.drainEvents();
 
@@ -270,7 +245,6 @@ describe("opening models", () => {
 
     expect(session.id).toBe(info.session);
     expect(session.tree().id).toBe("root");
-    // Twice is the same session, not a second replica of it.
     expect(await editor.attachSession(info)).toBe(session);
   });
 
@@ -307,8 +281,6 @@ describe("viewports and lifetime", () => {
     const { editor, module } = await inTab();
     const session = await editor.newSession();
 
-    // Reading a tree never needed a GPU, and a tab that only lists models
-    // should not be holding a device.
     expect(module.gpu.acquires).toBe(0);
     expect(session.tree().id).toBe("root");
   });
@@ -324,10 +296,8 @@ describe("viewports and lifetime", () => {
       editor.attach(session, second),
     ]);
 
-    // Two viewports mounting in one tick is a React remount, not a reason for
-    // two devices; the second waits on the first one's acquisition. Which
-    // canvas the device came from matters on the fallback tier, where it is
-    // the one the device can present into: it is the first.
+    // One device for two same-tick mounts. On the fallback tier it must come
+    // from the first canvas, the one it can present into.
     expect(module.gpu.acquires).toBe(1);
     expect(module.gpu.acquiredFrom).toEqual([first]);
     expect(module.viewports).toHaveLength(2);
@@ -343,8 +313,6 @@ describe("viewports and lifetime", () => {
       "this browser needs WebGPU or WebGL2",
     );
 
-    // The next mount is a new chance — StrictMode's second one, or a canvas
-    // that can be acquired from where the first could not.
     const canvas = { id: "second" } as unknown as HTMLCanvasElement;
     await editor.attach(session, canvas);
     expect(module.gpu.acquiredFrom).toEqual([canvas]);
@@ -386,8 +354,6 @@ describe("what the editor says about itself", () => {
     const session = await editor.newSession();
     module.gpu.tierName = "webgl2";
 
-    // Opening a model, reading it and running a drag need no device, so
-    // there is nothing truthful to say until an attach happens.
     expect(editor.gpuTier()).toBeUndefined();
 
     let told = 0;
@@ -397,7 +363,6 @@ describe("what the editor says about itself", () => {
     expect(editor.gpuTier()).toBe("webgl2");
     expect(told).toBe(1);
 
-    // One device per editor, acquired once: a second canvas says nothing new.
     await editor.attach(session, {} as HTMLCanvasElement);
     expect(told).toBe(1);
     off();

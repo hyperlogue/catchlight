@@ -229,7 +229,6 @@
     scrollbar-width: thin;
     scrollbar-color: var(--cl-surface-active) transparent;
   }
-  /* The workspace's fixed chrome surrounds independently scrolling tools. */
   .catchlight [data-catchlight-workspace] {
     display: grid;
     grid-template-columns: var(--cl-panel-width) minmax(0, 1fr) var(
@@ -508,7 +507,6 @@
   .catchlight [data-catchlight-search] input:focus-visible {
     outline: none;
   }
-  /* Tree rows carry their own selection, depth and visibility state. */
   .catchlight [data-catchlight-tree-tools] {
     display: flex;
     gap: 5px;

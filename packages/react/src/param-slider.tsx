@@ -1,13 +1,6 @@
 /**
- * One param: the range input that poses it, and the strip of its key
- * positions.
- *
- * **A pose is not an edit.** Moving this changes what the puppet is showing
- * and nothing in the model: no revision, no undo entry, nothing to save. So
- * the value cannot come from the revision the way a tree does — it comes from
- * the replica's pose, which announces itself on the repaint channel. Reading a
- * number there per repaint costs a map lookup, and React re-renders only when
- * the number actually differs.
+ * One param's range input and key-position strip. Posing is not an edit: the
+ * value comes from the replica's pose on the repaint channel, not a revision.
  */
 
 import type { BindingInfo, NodeId, ParamInfo, Session } from "@catchlight/core";
@@ -17,10 +10,8 @@ import type { ComponentProps, PointerEvent as ReactPointerEvent } from "react";
 import { keyIndexNear, normalizedValue, valueAtKey } from "./bindings.js";
 import { useParamActions } from "./param-actions.js";
 
-/** What a failed edit is told to, when a host passed nothing. */
 type ErrorSink = ((cause: unknown) => void) | undefined;
 
-/** Whatever React currently calls a range input's live-value event. */
 type InputHandler = NonNullable<ComponentProps<"input">["onInput"]>;
 
 export interface ParamSliderRootProps extends Omit<
@@ -59,7 +50,6 @@ export function ParamSliderRoot({ session, param, onInput, ...rest }: ParamSlide
   );
 }
 
-/** A marker being dragged, and how far it has come. */
 interface KeyDrag {
   index: number;
   at: number;
@@ -96,7 +86,7 @@ export function ParamKeysRoot({ session, param, binding, node, onError, ...rest 
   const on = keyIndexNear(param, value, positions);
   const editable = (index: number): boolean => !!address && index >= 0 && index <= last;
 
-  /** Where along the track a pointer is, on the 0..1 scale key positions use. */
+/** On the 0..1 scale key positions use. */
   const positionOf = (event: ReactPointerEvent<HTMLElement>): number => {
     const box = track.current?.getBoundingClientRect();
     if (!box || box.width <= 0) return at;
@@ -123,7 +113,6 @@ export function ParamKeysRoot({ session, param, binding, node, onError, ...rest 
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
-    // A press that never moved is a click, and a click is a pose.
     if (!held || held.index !== index || !held.moved) {
       session.setParam(param.id, valueAtKey(param, index, positions));
       return;
@@ -136,9 +125,7 @@ export function ParamKeysRoot({ session, param, binding, node, onError, ...rest 
 
   return (
     <div data-catchlight-param-keys="" data-param={param.id} {...rest}>
-      {/* The one inline style in this package's parts other than the
-          viewport's: where a marker sits along the track *is* the key
-          position, so it is data, not decoration a theme could supply. */}
+      {/* Marker position inline: it is data, not something a theme could supply. */}
       <div ref={track} data-catchlight-param-key-track="">
         {positions.map((position, index) => (
           <button
@@ -196,14 +183,8 @@ export function ParamKeysRoot({ session, param, binding, node, onError, ...rest 
 export const ParamSlider = { Root: ParamSliderRoot };
 export const ParamKeys = { Root: ParamKeysRoot };
 
-/**
- * `to`, held strictly between key `index`'s neighbours — which is where the
- * model requires a moved key position to land.
- *
- * Clamping here rather than letting the editor refuse keeps a drag continuous:
- * the marker stops at the neighbour instead of the whole gesture failing at
- * the moment it went one pixel too far.
- */
+// Clamped strictly between the neighbours, where the model requires a moved key
+// to land, so a drag stops at a neighbour instead of failing.
 function between(positions: number[], index: number, to: number): number {
   const gap = 1e-4;
   const low = index === 0 ? 0 : positions[index - 1]! + gap;
@@ -212,7 +193,6 @@ function between(positions: number[], index: number, to: number): number {
   return Math.min(high, Math.max(low, to));
 }
 
-/** Hands a failed edit to the host, or says so where a developer will see it. */
 function report(onError: ErrorSink, work: Promise<unknown>): void {
   void work.catch((cause: unknown) => {
     if (onError) onError(cause);
@@ -220,7 +200,6 @@ function report(onError: ErrorSink, work: Promise<unknown>): void {
   });
 }
 
-/** What the puppet is posed at, or the param's default before anything posed it. */
 export function useParamValue(session: Session, param: ParamInfo): number {
   const read = useCallback(
     () => session.paramValue(param.id) ?? param.default,
@@ -229,10 +208,6 @@ export function useParamValue(session: Session, param: ParamInfo): number {
   return useSyncExternalStore(session.onInvalidate, read, read);
 }
 
-/**
- * React wants a controlled input to declare a change handler, and its
- * `onChange` is the same native `input` event `onInput` already took. Handling
- * it once, under the name the DOM uses, is what keeps a host's own `onInput`
- * from firing twice.
- */
+// React requires a controlled input's `onChange`; handling the native input
+// event once through `onInput` keeps a host's `onInput` from firing twice.
 function noop(): void {}

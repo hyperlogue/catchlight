@@ -12,8 +12,6 @@ import type { ViewportCamera } from "@catchlight/react";
 import { useCallback, useEffect, useState } from "react";
 import type { RefObject } from "react";
 
-/** Selection decoration follows the same evaluated vertices as picking. The
- * handles capture their gestures; other pointers reach the persistent canvas. */
 export function Stage({
   session,
   view,

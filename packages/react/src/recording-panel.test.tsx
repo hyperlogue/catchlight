@@ -1,4 +1,3 @@
-/** Recording navigation preserves binding-local cells and bounds its shelf. */
 import "./test/setup.js";
 
 import { expect, test } from "bun:test";

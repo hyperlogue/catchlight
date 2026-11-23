@@ -1,7 +1,3 @@
-/**
- * The pose reaches the editor without a slider knowing, and a reset is a pose.
- */
-
 import "./test/setup.js";
 
 import { afterEach, describe, expect, jest, test } from "bun:test";
@@ -66,8 +62,6 @@ describe("publishing the pose", () => {
 
     await run(() => jest.advanceTimersByTime(POSE_INTERVAL_MS));
 
-    // The whole pose: the param that moved at its value, the one that did not
-    // at its default, so a follower can set both.
     expect(published(wasm)).toHaveLength(1);
     expect(published(wasm)[0]).toMatchObject({
       pose: [

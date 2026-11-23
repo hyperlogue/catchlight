@@ -9,12 +9,9 @@ import {
 } from "@catchlight/core";
 import type { Backend, Session, Storage } from "@catchlight/core";
 import { CatchlightEditor } from "@catchlight/editor-ui";
-// Only the probe door below uses this, and only when the URL asks for it.
 import { EditorProvider, fitCamera } from "@catchlight/react";
 import "@catchlight/editor-ui/theme.css";
-// The generated module initializes itself on import: `cargo xtask build-wasm` emits
-// wasm-bindgen's bundler target, whose `.wasm` is an ESM import rather than a
-// fetch this page would have to sequence.
+// wasm-bindgen's bundler target initializes itself on import.
 import * as catchlight from "@catchlight/wasm";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
@@ -36,7 +33,6 @@ export async function start(mode: "editor" | "face"): Promise<void> {
     showLoading("Starting editor…", "Preparing your workspace");
     const editor = await Editor.create(catchlight, mode === "face" ? new InTabBackend(new catchlight.CatchlightEditor(), new MemoryStorage()) : await pick(server));
 
-    // A configured starter is opened before the panel chooses its current session.
     const session = server === null
       ? await openStarter(editor, mode === "face" ? lan : example).catch(report)
       : undefined;
@@ -50,18 +46,12 @@ export async function start(mode: "editor" | "face"): Promise<void> {
   }
 }
 
-/** A local editor process when the URL names one, this tab otherwise. */
 async function pick(server: string | null): Promise<Backend> {
   if (server !== null) return ConnectedBackend.connect(server);
   return new InTabBackend(new catchlight.CatchlightEditor(), await store());
 }
 
-/**
- * Where an in-tab editor's bytes live.
- *
- * OPFS survives a reload and a private window does not have it, so the
- * fallback keeps the editor usable rather than refusing to start.
- */
+/** Private windows lack OPFS; fall back rather than refuse to start. */
 async function store(): Promise<Storage> {
   if (!OpfsStorage.available()) return new MemoryStorage();
   try {
@@ -72,12 +62,7 @@ async function store(): Promise<Storage> {
   }
 }
 
-/**
- * Opens Lan, or the configured development override.
- *
- * Reported rather than thrown: a starter that will not load is worth saying out
- * loud, and is no reason to withhold an editor that works.
- */
+/** Reported rather than thrown: a failed starter should not withhold a working editor. */
 async function openStarter(editor: Editor, example: Example): Promise<Session> {
   // `BASE_URL` ends in a slash and is `/<repo>/` on Pages.
   const url = new URL(example.file, new URL(import.meta.env.BASE_URL, location.href)).href;
@@ -100,22 +85,7 @@ function mount(editor: Editor, mode: "editor" | "face", session: Session | void)
   );
 }
 
-/**
- * A door for the browser smoke test, shut unless the URL asks for it.
- *
- * `?probe=1` puts the editor on `globalThis` so a driver in the page can
- * attach a second viewport. That is the one thing about the WebGL2 tier no
- * unit test can show — an extra canvas borrows the main one's surface, and
- * whether the main canvas survives that is a question only a real browser
- * answers. Nothing reaches this on an ordinary load, and nothing in the editor
- * reads it.
- *
- * `fitCamera` rides along because the test's second viewport has to be framed
- * the way the editor frames the first. It is the same function the React
- * viewport calls when it opens a model, so a driver that calls it with the
- * same bounds and the same size gets the same camera, and the two canvases can
- * then be compared pixel for pixel.
- */
+/** `?probe=1` exposes the editor and `fitCamera` to the browser smoke test (`e2e/drive.ts`). */
 function probe(editor: Editor): void {
   if (!new URLSearchParams(globalThis.location.search).has("probe")) return;
   (globalThis as unknown as Record<string, unknown>).__catchlightProbe = {
@@ -124,7 +94,6 @@ function probe(editor: Editor): void {
   };
 }
 
-/** One `<pre>`, appended to. Several things can go wrong on one load. */
 function report(cause: unknown): void {
   const pre = document.getElementById("failure");
   console.error(cause);

@@ -1,5 +1,3 @@
-/** Mesh and recording workflows on Lan with isolated authoring controls.
- * The probe reads assertions and separately simulates a concurrent editor. */
 import assert from "node:assert/strict";
 import { openModel, selectNode, prepareAuthoring } from "./model.ts";
 import type { Editor } from "@catchlight/core";
@@ -110,10 +108,7 @@ export async function workspaces(
     const bounds = canvas.getBoundingClientRect();
     const vertices = canvas.querySelectorAll("[data-catchlight-mesh-hit]");
     const dockHeader = document.querySelector("[data-catchlight-dock-header]");
-    // The host may reserve space above the editor (for example, demo navigation).
-    // Check that Mesh reclaims the pose shelf directly, rather than inferring it
-    // from a fixed canvas height. ResizeObserver and React must also publish the
-    // new SVG size and fitted vertices before this can pass.
+    // The host may reserve space above the editor, so measure the shelf directly.
     return bounds.width > 0 && bounds.height > 0 && vertices.length > 0 &&
       dockHeader !== null && dockHeader.getClientRects().length === 0 &&
       svg.width.baseVal.value === canvas.clientWidth &&
@@ -184,7 +179,6 @@ export async function workspaces(
     assert.equal(applied.revision, before.revision + 1);
     assert.notDeepEqual(applied.mesh!.verts, before.mesh!.verts);
     assert.notDeepEqual(applied.mesh!.uvs, before.mesh!.uvs);
-    // Every remaining UV still follows the same original texture mapping.
     const original = before.mesh!,
       next = applied.mesh!;
     for (const axis of [0, 1] as const) {

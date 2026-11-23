@@ -1,7 +1,5 @@
-/** Recording controls share one explicit destination with canvas gestures.
- * Hollow keypoints are derived; clicking or scrubbing a param never authors.
- * A shelf displays at most 256 combined cells. Larger unions retain continuous
- * pose controls and step through each axis without expanding their product. */
+/** A shelf displays at most 256 combined cells; larger unions keep continuous
+ * pose controls and step each axis without expanding their product. */
 import { useRef } from "react";
 import { useEditing } from "./editing.js";
 import {

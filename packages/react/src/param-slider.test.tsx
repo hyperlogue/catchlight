@@ -1,7 +1,3 @@
-/**
- * A slider poses the puppet. It must never author anything.
- */
-
 import "./test/setup.js";
 
 import { describe, expect, test } from "bun:test";
@@ -10,7 +6,6 @@ import type { ParamInfo, SessionEditCommand } from "@catchlight/core";
 import { EditorProvider, ParamList, ParamSlider } from "./index.js";
 import { fakeReplica, fire, harness, mount, run } from "./test/harness.js";
 
-/** One continuous param, keyed at both ends. */
 const eyeOpen = (name = "eye_open"): SessionEditCommand => ({
   cmd: "param_add",
   name,
@@ -36,7 +31,6 @@ describe("posing a param", () => {
     const slider = view.container.querySelector("input") as HTMLInputElement;
     expect(slider.type).toBe("range");
     expect(slider.getAttribute("data-catchlight-param-slider")).toBe("");
-    // The default until something poses it.
     expect(slider.value).toBe("1");
 
     slider.value = "0.25";
@@ -44,7 +38,6 @@ describe("posing a param", () => {
 
     expect(session.paramValue(param.id)).toBe(0.25);
     expect(view.container.querySelector("input")?.value).toBe("0.25");
-    // A pose is not an edit: the editor never heard about it.
     expect(wasm.requests.length).toBe(commands);
     await view.unmount();
   });
@@ -61,8 +54,6 @@ describe("posing a param", () => {
       </EditorProvider>,
     );
 
-    // An animation, an agent, another panel: the repaint channel is what
-    // carries it, because the model did not move.
     await run(() => session.setParam(param.id, 0.5));
 
     expect(view.container.querySelector("input")?.value).toBe("0.5");

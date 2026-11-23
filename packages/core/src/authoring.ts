@@ -1,7 +1,5 @@
-/** Owned Rust authoring drafts and gesture commits. The browser owns their
- * lifetime; Rust owns geometry and key values. Every commit carries the
- * revision it started from, so a delayed HTTP request cannot overwrite a
- * newer edit even when the replica has not received that edit yet. */
+/** Rust authoring drafts. Every commit carries its starting revision, so a
+ * delayed HTTP request cannot overwrite a newer edit. */
 import type {
   BindingCellWrite,
   BindingTarget,
@@ -155,7 +153,6 @@ export class RecordingGesture {
   }
 }
 
-/** A Rust-owned plan for one property's independently sampled binding. */
 interface RecordingWrite {
   target: BindingTarget;
   key_positions: number[][];

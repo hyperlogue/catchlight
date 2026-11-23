@@ -1,73 +1,27 @@
 /**
- * The one seam under everything: where the editor that owns the model is.
- *
- * A `Backend` is either the wasm editor running in this tab or a local editor
- * process reached over HTTP and a WebSocket. Both answer the same commands,
- * emit the same events, and feed the same kind of replica; nothing above this
- * file may branch on which one it has.
- *
- * **The tab holds a replica, not the model.** A command goes to the
- * backend; what comes back is a body and the revision the session is at
- * *after* it. The replica moves only through [`Backend.feed`], which is driven
- * by the `model_changed` event — one path, so a reply and an event can
- * never race to apply two versions of the same state.
- *
- * **`send` resolves after its events are dispatched.** An in-tab editor
- * produces its events synchronously inside `handle`, so draining them and
- * calling the listeners before resolving is what lets a caller wait for a
- * revision that the event it has not seen yet is what delivers. Ordering it
- * the other way deadlocks the first `node_add`.
- *
- * **Feeds for one session never overlap.** [`FeedQueue`] serializes them and
- * coalesces everything waiting into a single feed at the newest revision, so a
- * burst of edits costs one structure fetch rather than one per event.
- *
- * **Bytes ride with the command that uses them, over HTTP and never the
- * socket.** [`COMMAND_BYTES`] says which commands carry bytes; those go
- * through [`Backend.sendWith`], and passing one to [`Backend.send`] throws
- * before anything is sent. There is nothing to stage and no key to name — a
- * blob nothing ever names cannot exist — and a reply that carries bytes hands
- * them back beside it.
+ * Where the editor that owns the model is: in this tab or a local process.
+ * Nothing above this file may branch on which.
  */
 
 import type { Command, ErrorCode, Event, LimitInfo, Reply, ResponseBody } from "./protocol.gen.js";
 import { COMMAND_BYTES } from "./protocol.gen.js";
 import type { WasmReplica } from "./wasm.js";
 
-/**
- * One request on the wire: a command plus the id its reply is correlated by.
- *
- * The Rust side is `Request { id, #[serde(flatten)] command }`; a flattened
- * field has no declaration of its own, so the intersection is written here
- * rather than generated. A backend assigns `id`; callers pass a `Command`.
- */
+/** Hand-written: Rust's `#[serde(flatten)] command` has no generated declaration. */
 export type Request = { id: number } & Command;
 
-/** A successful reply: the body, and the revision the session is at after it. */
 export interface OkReply {
   readonly body: ResponseBody;
-  /**
-   * Absent only for the editor-level commands that name no session, and for a
-   * `session_close`, whose session is gone.
-   */
+  /** Absent for editor-level commands and for `session_close`. */
   readonly rev?: number | undefined;
 }
 
 export type Unsubscribe = () => void;
 
-/**
- * Why a call failed. Most of these are [`ErrorCode`] — the editor's own
- * reasons, generated from Rust.
- *
- * The three client codes exist because a failure can happen on this side of
- * the wire, where the editor never sees it and so has no word for it: the
- * backend was closed, a reply arrived that answers nothing, or the replica
- * could not be brought to the revision a reply promised.
- */
+/** [`ErrorCode`] plus client-side failures the editor never sees. */
 export type ClientErrorCode = "closed" | "bad_reply" | "feed";
 export type FailureCode = ErrorCode | ClientErrorCode;
 
-/** What a refused command tells a client to branch on. */
 export interface ProtocolErrorInfo {
   readonly code: FailureCode;
   readonly message: string;
@@ -76,10 +30,7 @@ export interface ProtocolErrorInfo {
   readonly limit?: LimitInfo | null;
 }
 
-/**
- * A command that failed. `code` is the machine-readable reason and the thing
- * to branch on; `message` is for a person.
- */
+/** Branch on `code`; `message` is for a person. */
 export class ProtocolError extends Error {
   readonly code: FailureCode;
   readonly rev: number | undefined;
@@ -96,84 +47,44 @@ export class ProtocolError extends Error {
   }
 }
 
-/** One attachment: the name the command declares it under, and its bytes. */
 export type Attachment = readonly [name: string, bytes: Uint8Array];
 
-/** What a [`Backend.sendWith`] call answers with. */
 export interface OkReplyWithPayload extends OkReply {
-  /** Present only when the command's reply carries bytes back. */
   readonly payload?: Uint8Array | undefined;
 }
 
-/** Where an editor is, and how it is reached. */
 export interface Backend {
   readonly kind: "in-tab" | "connected";
 
   /**
-   * Sends one command that carries no bytes; resolves with its ok reply,
-   * rejects [`ProtocolError`].
-   *
-   * A command listed in [`COMMAND_BYTES`] belongs to [`sendWith`], and passing
-   * one here throws before anything reaches the editor — it would otherwise be
-   * refused for a missing attachment, one round trip later and further from
-   * the mistake.
+   * Rejects [`ProtocolError`]. A [`COMMAND_BYTES`] command throws before
+   * sending; it belongs to [`sendWith`].
    */
   send(command: Command): Promise<OkReply>;
 
-  /**
-   * Sends one command with the bytes it declares, and hands back whatever
-   * bytes its reply carries.
-   *
-   * The one way bytes reach the editor. `attachments` are `[name, bytes]`
-   * pairs, named as [`COMMAND_BYTES`] spells them; how they are framed is the
-   * backend's business and differs between the two.
-   */
+  /** `attachments` are named as [`COMMAND_BYTES`] spells them. */
   sendWith(command: Command, attachments: readonly Attachment[]): Promise<OkReplyWithPayload>;
 
   /**
-   * The bytes this tab's store holds at `key`, or `undefined` when there is no
-   * copy here to hand out.
-   *
-   * The outward half of the in-tab store, and the only direction it has: a
-   * command that *needs* bytes is handed them. In-tab a save lands in the
-   * browser's own storage, and a model that stays there is one nobody can
-   * take to another machine, so the bytes come back and become a download.
-   * Connected, the save already landed on the machine the person is sitting
-   * at and there is nothing to hand out. A missing key in-tab is an error,
-   * not `undefined`: a save that reported a key wrote it.
+   * `undefined` when there is no copy in this tab (connected). A missing key
+   * in-tab is an error, since a save that reported a key wrote it.
    */
   readFile(key: string): Promise<Uint8Array | undefined>;
 
-  /**
-   * Brings `replica` to at least `rev`, resolving with the revision it holds
-   * afterwards — which may be newer than asked. Feeds for one session are
-   * serialized and coalesced.
-   */
+  /** Resolves with the revision held afterwards, which may be newer than asked. */
   feed(replica: WasmReplica, session: number, rev: number): Promise<number>;
 
-  /** Every event the editor emitted, in order. */
   onEvent(listener: (event: Event) => void): Unsubscribe;
 
   close(): void;
 }
 
-/**
- * Does this command carry bytes? [`COMMAND_BYTES`] is where that is written
- * down, once, for every language.
- */
 export function carriesBytes(command: Command): boolean {
   if (command.cmd === "session_create") return command.source != null;
   if (command.cmd === "extension_set") return command.value.kind === "bytes";
   return COMMAND_BYTES[command.cmd] !== undefined;
 }
 
-/**
- * Throws when a byte-bearing command was passed to [`Backend.send`].
- *
- * Caught here rather than by the editor: the editor would refuse it for a
- * missing attachment, which is a true answer to the wrong question and arrives
- * a round trip away from the call that made the mistake.
- */
 export function refuseIfItCarriesBytes(command: Command): void {
   if (!carriesBytes(command)) return;
   throw new ProtocolError({
@@ -182,7 +93,6 @@ export function refuseIfItCarriesBytes(command: Command): void {
   });
 }
 
-/** Reads a JSON reply, turning anything but an `ok` into a [`ProtocolError`]. */
 export function readReply(text: string, cmd: string): OkReply {
   let reply: Reply;
   try {
@@ -196,12 +106,10 @@ export function readReply(text: string, cmd: string): OkReply {
   return takeReply(reply, cmd);
 }
 
-/** The parsed form of [`readReply`], for a transport that already parsed. */
 export function takeReply(reply: Reply, cmd: string): OkReply {
   if (reply.reply === "err") throw new ProtocolError(reply);
   if (reply.reply !== "ok") {
-    // An unsolicited event answered a request: the correlation is broken, and
-    // resolving would hand the caller someone else's data.
+    // An event answered a request: correlation is broken.
     throw new ProtocolError({
       code: "bad_reply",
       message: `expected a reply to ${cmd}, got an event`,
@@ -212,13 +120,6 @@ export function takeReply(reply: Reply, cmd: string): OkReply {
     : { body: reply.body, rev: reply.rev };
 }
 
-/**
- * Narrows a reply body to the one shape a call asked for.
- *
- * An editor that answered something else is a bug rather than a case to
- * handle, but it has to surface as a [`ProtocolError`] like any other failure
- * instead of as an `undefined` read three frames later.
- */
 export function expectResult<R extends ResponseBody["result"]>(
   body: ResponseBody,
   result: R,
@@ -232,21 +133,15 @@ export function expectResult<R extends ResponseBody["result"]>(
   return body as Extract<ResponseBody, { result: R }>;
 }
 
-/** Whatever was thrown, as the one error type callers branch on. */
 export function asProtocolError(cause: unknown, code: FailureCode = "feed"): ProtocolError {
   if (cause instanceof ProtocolError) return cause;
-  // wasm-bindgen throws strings, `fetch` throws `TypeError`; both end up here.
+  // wasm-bindgen throws strings, `fetch` throws `TypeError`.
   return new ProtocolError({ code, message: String(cause) });
 }
 
 /**
- * Serializes feeds per session and coalesces the ones waiting into one.
- *
- * At most two feeds exist for a session at any moment: the one running and the
- * one queued behind it, whose target revision is the highest anybody asked
- * for. Ten edits during one structure fetch are therefore one more fetch, not
- * ten — and because a replica applies forward only, the skipped revisions were
- * never anything a viewer could have seen.
+ * Serializes feeds per session and coalesces waiting ones into one at the
+ * highest requested revision; safe because a replica applies forward only.
  */
 export class FeedQueue {
   #active = new Map<number, Promise<number>>();
@@ -264,8 +159,7 @@ export class FeedQueue {
     if (queued) return queued;
 
     const next = active
-      // A failed feed must not strand the ones behind it: the next event is
-      // often exactly what recovers from it.
+      // A failure must not strand queued feeds; the next often recovers.
       .catch(() => undefined)
       .then(() => {
         this.#queued.delete(session);
@@ -281,8 +175,7 @@ export class FeedQueue {
   #start(session: number, rev: number, feed: (rev: number) => Promise<number>): Promise<number> {
     const running = (async () => feed(rev))();
     this.#active.set(session, running);
-    // Cleared once it settles, and only if nothing has taken its place — a
-    // queued feed may have started before this handler ran.
+    // Only if nothing replaced it: a queued feed may have started already.
     void running
       .catch(() => undefined)
       .then(() => {

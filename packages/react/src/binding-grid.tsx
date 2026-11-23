@@ -1,24 +1,7 @@
 /**
- * One param's bindings on one node, as grids of keypoints.
- *
- * A row per binding target, a cell per keypoint. The grid is the product of
- * the binding's own key positions, independently of other bindings on the same
- * input. A single-param binding is one row tall.
- *
- * **A cell says whether anybody authored it.** `data-set` and `data-unset` are
- * the whole point of the read behind this: the model stores only the cells a
- * rigger keyed and derives the rest at puppet build, so an empty cell is a
- * state to act on rather than a zero. A `deform` binding's cells are authored
- * with a vertex list instead of a number, so they read as set and hold no
- * value to edit.
- *
- * **Clicking a cell is a pose, not an edit.** It moves the puppet to that
- * cell's key on each of the binding's params, so what the canvas shows and
- * what the cell describes are the same thing. Authoring is the number in the
- * cell, and every other control on the row.
- *
- * A second driving param is optional. The same grid authors one-param curves
- * and two-param surfaces, with both pose coordinates named on every cell.
+ * One param's bindings on one node, as grids of keypoints over each binding's
+ * own key positions. `data-set`/`data-unset` mark authored cells; unset cells
+ * are derived at puppet build. Clicking a cell poses, it does not edit.
  */
 
 import type {
@@ -45,10 +28,8 @@ import { useParamActions } from "./param-actions.js";
 import { ParamKeysRoot } from "./param-slider.js";
 import { useParams } from "./replica.js";
 
-/** What a failed edit is told to, when a host passed nothing. */
 type ErrorSink = ((cause: unknown) => void) | undefined;
 
-/** One cell of one binding, as this panel points at it. */
 interface CellRef {
   binding: string;
   x: number;
@@ -58,9 +39,7 @@ interface CellRef {
 // `onError` is also a DOM event on every element; this one wins.
 export interface BindingGridRootProps extends Omit<ComponentProps<"div">, "children" | "onError"> {
   session: Session;
-  /** The node whose bindings are shown. Nothing selected draws nothing. */
   node: NodeId | undefined;
-  /** The param the panel is showing. Nothing chosen draws nothing. */
   param: ParamId | undefined;
   onError?: ErrorSink;
 }
@@ -81,7 +60,6 @@ export function BindingGridRoot({ session, node, param, onError, ...rest }: Bind
 
   const paramInfo = (id: string): ParamInfo | undefined => params.find((p) => p.id === id);
 
-  /** Poses every param this binding is keyed by at the cell's own key. */
   const pose = (binding: BindingInfo, x: number, y: number): void => {
     const along = paramInfo(binding.param);
     if (along) session.setParam(binding.param, valueAtKey(along, x, binding.key_positions[0]!));
@@ -91,8 +69,7 @@ export function BindingGridRoot({ session, node, param, onError, ...rest }: Bind
 
   const click = (binding: BindingInfo, x: number, y: number): void => {
     const at: CellRef = { binding: keyOf(binding), x, y };
-    // A copy that was armed on this binding lands on the cell that ends it;
-    // anywhere else cancels it rather than copying somewhere unexpected.
+    // An armed copy lands on the cell that ends it; anywhere else cancels.
     if (copying) {
       setCopying(undefined);
       if (copying.binding === at.binding) {
@@ -108,8 +85,7 @@ export function BindingGridRoot({ session, node, param, onError, ...rest }: Bind
   };
 
   const commit = (binding: BindingInfo, x: number, y: number, text: string): void => {
-    // A deform cell holds a vertex list, so there is no number to type into
-    // it so scalar inputs do not edit it.
+    // A deform cell holds a vertex list, which scalar inputs cannot edit.
     if (binding.target === "deform") return;
     const value = Number(text);
     const was = binding.keys[y]?.[x];
@@ -243,8 +219,7 @@ export function BindingGridRoot({ session, node, param, onError, ...rest }: Bind
                     selected?.binding === id && selected.x === x && selected.y === y;
                   return (
                     <input
-                      // Keyed on what it was built from, so an edit from
-                      // anywhere redraws it and nothing is mirrored.
+                      // Keyed on its source value so an edit from anywhere redraws it.
                       key={`${x}:${value ?? "-"}:${String(authored)}`}
                       type="number"
                       step="any"
@@ -256,8 +231,6 @@ export function BindingGridRoot({ session, node, param, onError, ...rest }: Bind
                       aria-label={`${binding.target} cell ${x},${y}`}
                       title={`${paramInfo(binding.param)?.name ?? binding.param}: ${valueAtKey(paramInfo(binding.param)!, x, binding.key_positions[0]!)}${binding.param_y ? ` · ${paramInfo(binding.param_y)?.name}: ${valueAtKey(paramInfo(binding.param_y)!, y, binding.key_positions[1]!)}` : ""}${binding.target.startsWith("r") ? " · radians" : ""}${authored ? " · authored key" : " · interpolated"}`}
                       placeholder={binding.target === "deform" ? (authored ? "Set" : "—") : "Auto"}
-                      // A deform cell holds a vertex list; there is no number
-                      // to type into it, and scalar inputs cannot represent it.
                       readOnly={binding.target === "deform"}
                       defaultValue={value === null ? "" : String(value)}
                       onClick={() => click(binding, x, y)}
@@ -322,12 +295,10 @@ export function BindingGridRoot({ session, node, param, onError, ...rest }: Bind
 
 export const BindingGrid = { Root: BindingGridRoot };
 
-/** What names this binding among a node's: its target and its params. */
 function keyOf(binding: BindingInfo): string {
   return `${binding.target}|${binding.param}|${binding.param_y ?? ""}`;
 }
 
-/** The binding's params, as every binding command carries them. */
 function paramsOf(binding: BindingInfo): {
   param: ParamId;
   param_y?: ParamId | null;
@@ -335,12 +306,10 @@ function paramsOf(binding: BindingInfo): {
   return { param: binding.param, param_y: binding.param_y ?? null };
 }
 
-/** Enter commits the cell the way leaving it does. */
 function commitOnEnter(event: KeyboardEvent<HTMLInputElement>): void {
   if (event.key === "Enter") event.currentTarget.blur();
 }
 
-/** Hands a failed edit to the host, or says so where a developer will see it. */
 function report(onError: ErrorSink, work: Promise<unknown>): void {
   void work.catch((cause: unknown) => {
     if (onError) onError(cause);

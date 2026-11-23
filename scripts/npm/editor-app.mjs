@@ -2,16 +2,8 @@
 //
 //   node scripts/npm/editor-app.mjs <binaries-dir> [--verify]
 //
-// `<binaries-dir>/<rust target>/catchlight-editor[.exe]` holds one binary per
-// platform (any subset, for a local check). Each becomes
-// `@catchlight/editor-<platform>-<arch>`, restricted by `os`/`cpu` so npm
-// installs only the one that runs; `@catchlight/editor` is a small launcher
-// that lists them all as optional dependencies and runs the installed one.
-// Tarballs and `releases.json` (publish order, integrity) land in
-// `dist/npm-app/`, which `publish.mjs` publishes after the libraries.
-//
-// `--verify` installs the launcher and this machine's platform package from
-// the tarballs into a temporary project and runs `catchlight-editor --version`.
+// `<binaries-dir>/<rust target>/catchlight-editor[.exe]`, any subset of
+// platforms. Output lands in `dist/npm-app/`.
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
@@ -104,8 +96,6 @@ if (flags.includes('--verify')) {
   const dir = mkdtempSync(resolve(tmpdir(), 'catchlight-editor-npm-'));
   try {
     writeFileSync(resolve(dir, 'package.json'), JSON.stringify({ private: true }));
-    // The launcher's other optional dependencies are not on any registry yet;
-    // installing the two tarballs alone is what a user's install resolves to.
     execFileSync('npm', ['install', '--no-audit', '--no-fund', '--omit=optional',
       resolve(output, own.filename), resolve(output, main.filename)], { cwd: dir, stdio: 'inherit' });
     const shown = execFileSync(resolve(dir, 'node_modules/.bin/catchlight-editor'), ['--version'], { encoding: 'utf8' });

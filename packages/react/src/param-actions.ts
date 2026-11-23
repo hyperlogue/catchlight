@@ -1,21 +1,7 @@
 /**
- * Editing params and bindings through primitive commands and atomic batches.
- *
- * **Every action is a command, and nothing here touches the model.** What a
- * panel draws comes back from the replica once the editor says the model
- * moved, so an action's whole job is to send the right command and hand its
- * promise on. The same shape as `useNodeActions`, for the same reason.
- *
- * **A pose is not in here.** Clicking a keypoint or a grid cell moves the
- * puppet to that key and authors nothing — that is `session.setParam`, on the
- * repaint channel, and it stays out of this hook so a panel cannot reach for a
- * edit by accident.
- *
- * **A binding is addressed the way the wire addresses it**: the node, the
- * target, and the one or two params driving its binding-owned grid.
- * There is no handle and no local index, so an action built from what a panel
- * read a moment ago still names the same binding after somebody else edited
- * the model.
+ * Param and binding edits as commands. Posing is `session.setParam` and stays
+ * out of this hook. A binding is addressed by node, target and params, never a
+ * local handle, so it stays valid across other clients' edits.
  */
 
 import type {
@@ -32,12 +18,12 @@ import type {
 } from "@catchlight/core";
 import { useMemo } from "react";
 
-/** A cell of a binding's grid, `[x, y]` — `y` is 0 for a one-param binding. */
+/** `[x, y]`; `y` is 0 for a one-param binding. */
 export type BindingCell = [number, number];
 
 export type BindingAddress = BindingParams & { node: NodeId; target: BindingTarget };
 
-/** What a new param needs. The continuous range defaults to 0..1. */
+/** The range defaults to 0..1. */
 export interface NewParam {
   name: string;
   min?: number;
@@ -45,7 +31,7 @@ export interface NewParam {
   default?: number;
 }
 
-/** What a `param_set` can change. An absent field is left alone. */
+/** An absent field is left alone. */
 export interface ParamPatch {
   name?: string;
   min?: number;
@@ -53,25 +39,19 @@ export interface ParamPatch {
   default?: number;
 }
 
-/** The param and binding edits a panel makes, each one command. */
 export interface ParamActions {
-  /** Creates a param and hands back the Id the editor minted. */
   add(param: NewParam): Promise<ParamId>;
-  /** Changes a param's label or its range. Key positions are normalized, so a
-   * range change does not move them. */
+  /** Key positions are normalized, so a range change does not move them. */
   set(param: ParamId, patch: ParamPatch): Promise<ResponseBody>;
-  /** Deletes the param and every binding it drove. */
   remove(param: ParamId): Promise<ResponseBody>;
-  /** Edit one binding's normalized axis, without changing any other binding. */
   insertKey(binding: BindingAddress, axis: ParamId, value: number): Promise<ResponseBody>;
   deleteKey(binding: BindingAddress, axis: ParamId, index: number): Promise<ResponseBody>;
   moveKey(binding: BindingAddress, axis: ParamId, index: number, value: number, ifRev?: number): Promise<ResponseBody>;
 
-  /** Creates an everywhere-unset binding on one of the node's properties. */
+  /** Creates an everywhere-unset binding. */
   addBinding(node: NodeId, target: ScalarTarget, params: BindingParams): Promise<ResponseBody>;
-  /** Deletes the whole binding. */
   deleteBinding(node: NodeId, target: BindingTarget, params: BindingParams): Promise<ResponseBody>;
-  /** Authors one cell. Creates the binding if this is its first key. */
+  /** Creates the binding if this is its first key. */
   setKey(
     node: NodeId,
     target: ScalarTarget,
@@ -79,30 +59,27 @@ export interface ParamActions {
     cell: BindingCell,
     value: number,
   ): Promise<ResponseBody>;
-  /** Authors the target's identity at a cell (1 for scale and opacity, 0 else). */
+  /** 1 for scale and opacity, 0 otherwise. */
   resetKey(
     node: NodeId,
     target: BindingTarget,
     params: BindingParams,
     cell: BindingCell,
   ): Promise<ResponseBody>;
-  /** Un-authors a cell, so the model derives it again. */
+  /** The model derives the cell again. */
   unsetKey(
     node: NodeId,
     target: BindingTarget,
     params: BindingParams,
     cell: BindingCell,
   ): Promise<ResponseBody>;
-  /** How the binding reads between its cells. */
   interpolate(
     node: NodeId,
     target: BindingTarget,
     params: BindingParams,
     mode: Interpolate,
   ): Promise<ResponseBody>;
-  /** Negates every authored value. */
   invert(node: NodeId, target: BindingTarget, params: BindingParams): Promise<ResponseBody>;
-  /** Authors the value the binding evaluates at `from` into the cell `to`. */
   copyKey(
     node: NodeId,
     target: BindingTarget,
@@ -112,7 +89,6 @@ export interface ParamActions {
   ): Promise<ResponseBody>;
 }
 
-/** The param and binding edits, bound to one session. */
 export function useParamActions(session: Session): ParamActions {
   return useMemo<ParamActions>(
     () => ({
@@ -131,8 +107,7 @@ export function useParamActions(session: Session): ParamActions {
       },
 
       set(param, patch) {
-        // Every field travels, because absent and null mean the same thing to
-        // the editor: leave it alone.
+        // Absent and null both mean "leave alone" to the editor.
         return session.send({
           cmd: "param_set",
           param,

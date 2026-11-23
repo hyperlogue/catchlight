@@ -1,5 +1,4 @@
-/** Workspace intentions and draft lifetime. The replica remains authoritative;
- * only a mesh draft and an armed recording destination live in React state.
+/** Only a mesh draft and an armed recording destination live in React state.
  * Every route out of a dirty draft goes through the same finish dialog. */
 import { MeshDraft, RecordingGesture } from "@catchlight/core";
 import type {
@@ -241,7 +240,6 @@ function useEditingController(
   };
   const reloadMesh = () => {
     discardMesh();
-    // Opening reads the latest replica after disposing the obsolete draft.
     openMesh();
   };
   const refreshMesh = () => {
@@ -299,7 +297,7 @@ function useEditingController(
     if (!target) return;
     if (recordTool === "shape" && !info.vertex_count) return;
     try {
-      // Validate with Rust before showing the armed state. This authors nothing.
+      // Validated in Rust before showing the armed state; authors nothing.
       const check = new RecordingGesture(session, target);
       check.dispose();
       setArmed({ address, pose: readPose() });

@@ -1,8 +1,3 @@
-/**
- * The rule the whole package rests on: a panel reads the replica, and the
- * revision is the only thing it subscribes to.
- */
-
 import "./test/setup.js";
 
 import { describe, expect, test } from "bun:test";
@@ -66,8 +61,6 @@ describe("reading the replica", () => {
       }),
     );
 
-    // Nothing told this component anything: the revision moved, so the read
-    // ran again and the new param is simply there.
     expect(view.container.textContent).toBe("0/1");
     await view.unmount();
   });
@@ -96,8 +89,7 @@ describe("reading the replica", () => {
     );
     expect(view.container.textContent).toBe("hair/part/root");
 
-    // The revision has not moved: a hook that only watched it would still be
-    // showing the node the panel just navigated away from.
+    // Same revision: a hook keyed only on it would show the previous node.
     await view.render(
       <EditorProvider editor={editor}>
         <Inspector node={torso} />
@@ -112,7 +104,6 @@ describe("reading the replica", () => {
     );
     expect(view.container.textContent).toBe("gone");
 
-    // Nothing selected reads the same way, so a panel needs no second branch.
     await view.render(
       <EditorProvider editor={editor}>
         <Inspector node={undefined} />

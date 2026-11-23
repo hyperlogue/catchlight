@@ -1,10 +1,4 @@
-/**
- * A DOM for one test file.
- *
- * Imported explicitly at the top of every suite here rather than preloaded for
- * the workspace: `@catchlight/core`'s suites prove that package works without a
- * browser, and a global DOM would quietly take that proof away.
- */
+// Imported per suite, not preloaded: `@catchlight/core`'s suites must run without a DOM.
 
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 

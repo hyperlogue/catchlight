@@ -1,6 +1,4 @@
-/** The assembled workspace. Its canvas survives every session switch. A close
- * first moves the screen to a live session; only then does an effect free the
- * old replica. Authoring behavior lives in the public React parts and hooks. */
+/** A close moves the screen to a live session before an effect frees the old replica. */
 import type { Editor, ParamId, Session, SessionInfo } from "@catchlight/core";
 import {
   AssetsPanel,

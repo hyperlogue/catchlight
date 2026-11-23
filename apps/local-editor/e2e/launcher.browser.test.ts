@@ -1,9 +1,6 @@
 /**
- * The downloadable editor end to end: `catchlight-editor` serves this page,
- * a browser opens it, and an agent drives the same session through
- * `catchlight-editor <command>` while the tab watches.
- *
- * Needs the launcher built with its page compiled in:
+ * The downloadable editor end to end. Needs the launcher built with its page
+ * compiled in:
  *
  * ```text
  * cargo xtask bundle-ui --debug && cargo build -p catchlight-editor
@@ -11,11 +8,6 @@
  *   CATCHLIGHT_EDITOR_BIN=<exe>  overrides target/debug/catchlight-editor
  *   CHROMIUM=<exe>               overrides the `chromium` on PATH
  * ```
- *
- * Everything the launcher and the cli share — the connection file, the
- * remembered session, the default socket — is pointed into a temporary
- * directory, so the run neither finds nor disturbs an editor the developer
- * already has open.
  */
 import { expect, test } from "bun:test";
 import { existsSync } from "node:fs";
@@ -75,7 +67,6 @@ test.skipIf(!browserExe || !existsSync(exe))(
       await page.getByRole("button", { name: "Open a model", exact: true }).waitFor();
       expect(new URL(page.url()).hash).toBe("");
 
-      // The agent opens a model; the tab lists it without a reload.
       expect(cli("session", "open", model)).toContain("session 1");
       const listed = page.locator("[data-catchlight-session]").filter({ hasText: "blend_modes" });
       await listed.waitFor();
@@ -84,7 +75,6 @@ test.skipIf(!browserExe || !existsSync(exe))(
       }
       await page.locator("[data-catchlight-session][data-current]").filter({ hasText: "blend_modes" }).waitFor();
 
-      // An agent edit lands in the tab's replica.
       cli("node", "set", "node-2", "--name", "Renamed by agent");
       await page.getByText("Renamed by agent").first().waitFor();
 

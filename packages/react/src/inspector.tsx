@@ -1,28 +1,9 @@
 /**
- * One node in full: what it is, and every field a `node_set` can change.
+ * One node's settable fields, as `node_info` reports them for its kind.
  *
- * **The reply is the form.** `node_info` hands back the settable fields under
- * [`NodePatch`]'s own names, and leaves out the ones the node's kind does not
- * carry — colour on a group, `mg_*` on anything but a mesh group. So which
- * controls exist is read off the reply rather than decided from a table here:
- * a kind that grows a field grows a row, and this file does not learn about
- * it. The one exception is `texture`, absent both on a part that draws none
- * and on a node that could never have one; `kind` is what tells those apart.
- *
- * **What is being typed is local; everything else is the replica.** A number
- * a person is halfway through entering is React state until it commits, or a
- * revision landing mid-edit — an agent on the socket, another tab — would
- * replace the text under the cursor. Nothing else is mirrored: after a commit
- * the read wins, and the read re-runs when the revision moves.
- *
- * **A commit is one field.** Numbers and text go on Enter or blur and only
- * when the value actually changed; checkboxes and selects go immediately. An
- * unchanged blur authors nothing, so tabbing through the panel costs no undo
- * entries.
- *
- * There is no live preview here. A drag previews through the scratch because
- * it runs per pointer move; a number typed into a box does not, and showing it
- * before it commits would be a second uncommitted value to reconcile.
+ * A field being typed is local state until it commits, so a revision landing
+ * mid-edit does not replace the text under the cursor. An unchanged blur
+ * authors nothing, so tabbing through the panel costs no undo entries.
  */
 
 import type { BlendMode, NodeInfo, NodePatch, Session, TexInfo } from "@catchlight/core";
@@ -33,13 +14,7 @@ import { useNodePatch } from "./node-patch.js";
 import { useNodeInfo, useReplica } from "./replica.js";
 import { useSelection } from "./selection.js";
 
-/**
- * Every blend mode the model has, in the order `BlendMode` declares them
- * (`crates/catchlight-core/src/components.rs`). The names are the wire
- * spelling: `node_set` refuses one it cannot parse rather than falling back to
- * normal, so a select built from anything else is a command that fails. The
- * check below is what says a mode added in Rust is missing from here.
- */
+/** Wire spellings, in `BlendMode` declaration order; `node_set` rejects any other name. */
 export const BLEND_MODES: readonly BlendMode[] = [
   "normal",
   "multiply",
@@ -74,11 +49,7 @@ export function InspectorRoot({ session, onError, ...rest }: InspectorRootProps)
   const textures = useReplica(session, readTextures);
   const id = info?.id;
 
-  /**
-   * Sends one patch and reports a refusal, without ever rejecting: a control
-   * clears the text it was holding once the send settles, and a promise that
-   * throws would leave that text on screen for a value the model never took.
-   */
+  // Never rejects: a control clears its draft once the send settles.
   const submit = useCallback(
     (fields: NodePatch): Promise<void> => {
       if (id === undefined) return Promise.resolve();
@@ -90,8 +61,7 @@ export function InspectorRoot({ session, onError, ...rest }: InspectorRootProps)
     [patch, id, onError],
   );
 
-  // Nothing selected, and a selection that outlived its node, are one state: a
-  // selection is view state and does not follow a deletion.
+  // A selection is view state and outlives a deleted node.
   if (!info) {
     return (
       <div data-catchlight-inspector="" data-catchlight-inspector-empty="" {...rest}>
@@ -102,8 +72,7 @@ export function InspectorRoot({ session, onError, ...rest }: InspectorRootProps)
 
   return (
     <div data-catchlight-inspector="" {...rest}>
-      {/* Keyed on the node, so moving the selection drops every draft rather
-          than showing one node's half-typed number against another's. */}
+      {/* Keyed on the node so a selection change drops every draft. */}
       <Fields info={info} textures={textures} submit={submit} key={info.id} />
     </div>
   );
@@ -111,7 +80,6 @@ export function InspectorRoot({ session, onError, ...rest }: InspectorRootProps)
 
 export const Inspector = { Root: InspectorRoot };
 
-/** What a control does with a value it decided to author. */
 type Submit = (fields: NodePatch) => Promise<void>;
 
 function Fields({
@@ -123,8 +91,7 @@ function Fields({
   textures: TexInfo[];
   submit: Submit;
 }): ReactNode {
-  // Pulled out as constants so a `!= null` here narrows inside the handlers
-  // too: TypeScript keeps that for a `const`, and drops it for `info.tint`.
+  // Destructured so `!= null` narrows inside the handlers too.
   const { translate, rotate, scale, opacity, mask_threshold, blend_mode, tint, screen_tint } = info;
   const { propagate_meshgroup, mg_translate_children } = info;
 
@@ -304,7 +271,6 @@ function Fields({
   );
 }
 
-/** One labelled line. The label is visual; every control names itself. */
 function Row({
   label,
   field,
@@ -322,7 +288,6 @@ function Row({
   );
 }
 
-/** The components of one vector field, each its own box over the same key. */
 function Axes({
   field,
   label,
@@ -385,8 +350,7 @@ function NumberInput({
 }): ReactNode {
   const draft = useDraft(String(Math.round(value * 1000) / 1000), (text) => {
     const next = Number(text);
-    // A box holding nothing, or `1.2.3`, is not an edit. Reverting is what a
-    // person who typed it expects, and there is nothing to send.
+    // Empty or unparseable text is not an edit; the box reverts.
     if (
       text.trim() === "" ||
       !Number.isFinite(next) ||
@@ -406,7 +370,6 @@ function NumberInput({
       aria-label={label}
       min={min}
       max={max}
-      // A transform is continuous; the arrows are a convenience, not the grid.
       step="any"
       value={draft.text}
       onInput={draft.type}
@@ -467,7 +430,6 @@ function CheckInput({
   );
 }
 
-/** One option in a select: what is sent, and what is read. */
 interface Option<T extends string = string> {
   value: T;
   label: string;
@@ -492,7 +454,6 @@ function SelectInput<T extends string>({
       aria-label={label}
       value={value}
       onChange={(event) => {
-        // Every option came from `options`, so the value is one of them.
         const next = event.currentTarget.value as T;
         if (next === value) return;
         void commit(next);
@@ -507,15 +468,10 @@ function SelectInput<T extends string>({
   );
 }
 
-/**
- * React wants a controlled input to declare a change handler, and its
- * `onChange` is the same native `input` event `onInput` already took. Taking
- * it once, under the name the DOM uses, is what keeps a host's own handler
- * from firing twice — and what `ParamSliderRoot` does for the same reason.
- */
+// React requires a controlled input's `onChange`; the native input event is
+// taken once through `onInput` so a host's handler does not fire twice.
 function noop(): void {}
 
-/** What a text box is showing, and the three things that can happen to it. */
 interface Draft {
   text: string;
   type(event: { currentTarget: { value: string } }): void;
@@ -523,14 +479,8 @@ interface Draft {
   keys(event: { key: string; preventDefault(): void }): void;
 }
 
-/**
- * A box holding what is being typed, and the rules for letting go of it.
- *
- * `authored` decides whether the text is worth a command and sends it, or
- * answers `undefined` for the two cases that are not an edit: unchanged, and
- * unparseable. The draft outlives the send so the box does not flash the old
- * value for the length of a round trip; once the model has it, the read wins.
- */
+// The draft outlives the send so the box does not flash the old value for a
+// round trip. `authored` returns `undefined` when the text is not an edit.
 function useDraft(shown: string, authored: (text: string) => Promise<void> | undefined): Draft {
   const [draft, setDraft] = useState<string | undefined>(undefined);
 
@@ -553,8 +503,6 @@ function useDraft(shown: string, authored: (text: string) => Promise<void> | und
         event.preventDefault();
         commit();
       } else if (event.key === "Escape") {
-        // Dropping the draft is the whole of a cancel: the box goes back to
-        // what the model says, and the blur that follows finds nothing to do.
         setDraft(undefined);
       }
     },
@@ -565,20 +513,13 @@ const XYZ = ["x", "y", "z"] as const;
 const XY = ["x", "y"] as const;
 const RGB = ["r", "g", "b"] as const;
 
-/**
- * What a part with no albedo shows, and what picking it authors.
- *
- * A select's value is a string, and the empty one is not a `TexId`. `texture`
- * on `node_set` is a merge patch — absent is "unchanged", `null` is "draw
- * none", an Id is "draw this" — so this option is the one that sends `null`
- * under the same key as every other one.
- */
+// `texture` is a merge patch: absent is unchanged, `null` draws none. This
+// option is the one that sends `null`.
 const NO_TEXTURE = "";
 
 function blendOptions(current: BlendMode): Option<BlendMode>[] {
   const names: BlendMode[] = [...BLEND_MODES];
-  // A file can carry a mode this build does not list. Showing it is how the
-  // select stays a readout as well as a control.
+  // A file can carry a mode this build does not list.
   if (!names.includes(current)) names.unshift(current);
   return names.map((name) => ({
     value: name,

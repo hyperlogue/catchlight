@@ -1,5 +1,3 @@
-/* Both demo shells share a full-height host and a startup failure line. */
-
 html,
 body {
   margin: 0;
@@ -28,9 +26,7 @@ body {
   border-block-end: 1px solid #ffffff21;
 }
 
-/* Row 2 by name, not by order: `#failure` is `hidden` until something goes
-   wrong, and a hidden element is no grid item — without this the editor lands
-   in the auto row and is as tall as its own content instead of the window. */
+/* Row 2 by name: a hidden `#failure` is no grid item. */
 #editor {
   grid-row: 2;
   min-block-size: 0;

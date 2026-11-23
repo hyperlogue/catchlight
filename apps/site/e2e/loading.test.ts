@@ -1,4 +1,3 @@
-/** Download accounting must survive missing lengths and HTTP compression. */
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import { downloadModel } from "../src/loading.ts";
 

@@ -1,9 +1,9 @@
 /**
- * The web editor's smoke test: serve what Pages would ship, and drive it.
+ * The web editor's smoke test: serve the built site and drive it.
  *
- * Run it from the dev shell: `bun run --filter catchlight-demo e2e`. The
- * Chromium and Xvfb are in that shell. On Linux without DISPLAY, this
- * re-launches under Xvfb so the WebGPU pass can verify actual presentation.
+ * Run it from the dev shell, which supplies Chromium and Xvfb. On Linux
+ * without DISPLAY, this re-launches under Xvfb so the WebGPU pass can verify
+ * presentation. The Lan fixture is Git LFS; fetch it first.
  *
  * ```text
  * bun run --filter catchlight-demo e2e
@@ -13,32 +13,10 @@
  *   E2E_SERVER_PORT=9377  where `catchlight-editor-server` listens; likewise
  * ```
  *
- * **The built site, not the dev server.** `vite preview` serves `dist/`, so
- * this exercises the bundle and the asset URLs a visitor gets rather than
- * Vite's module graph — the two differ in exactly the places a browser test is
- * for. CI builds the site in the step before this one and this reuses it.
- *
- * **Both backends, one run.** The tab is the same editor either way, but the
- * seam underneath is not: in-tab it drives the wasm module against OPFS, and
- * connected it drives `catchlight-editor-server` over a WebSocket and HTTP.
- * The connected pass also makes an agent edit the model over the Unix
- * socket, which is the one thing no unit test can show: a command from outside
- * the browser landing in the tab's replica.
- *
- * **Both graphics tiers, and the browser that has neither.** The editor draws
- * on WebGPU where a browser offers it and on WebGL2 where it does not, and the
- * fallback is not a detail: it is what an iOS device that cannot run Safari 26
- * gets. So a third pass launches the same in-tab tab with WebGPU switched off
- * and asserts the picture on the tier underneath, and a fourth switches both
- * off and asserts the sentence the tab shows instead of a blank canvas. Which
- * tier a pass ran on is asserted in the tab, not assumed from the flags: see
- * `drive.ts`.
- *
- * **The socket is private to the run.** `default_socket_path` is derived from
- * `XDG_RUNTIME_DIR`, so pointing that at a temporary directory keeps the
- * server and the CLI talking to each other and not to whatever editor the
- * developer already has open. `XDG_CACHE_HOME` moves for the same reason: the
- * CLI remembers a current session there.
+ * `vite preview` serves `dist/`, so the run exercises the shipped bundle, not
+ * Vite's module graph. `XDG_RUNTIME_DIR` and `XDG_CACHE_HOME` point at a
+ * temporary directory so the server and CLI do not reach an editor the
+ * developer already has open.
  */
 
 import { closeSync, openSync, readFileSync, writeSync } from "node:fs";
@@ -65,7 +43,6 @@ if (process.platform === "linux" && !process.env.DISPLAY && !process.env.CHROMIU
   process.exit(await child.exited);
 }
 
-/** What the agent calls the node it adds; the drive only needs the tree to grow. */
 const AGENT_NODE = "agent-added";
 
 const root = fileURLToPath(new URL("../../..", import.meta.url));
@@ -75,8 +52,7 @@ const sitePort = await pick("the site", process.env.E2E_SITE_PORT, 4173);
 const serverPort = await pick("the editor", process.env.E2E_SERVER_PORT, 9377);
 const origin = `http://127.0.0.1:${sitePort}`;
 const serverBase = `http://127.0.0.1:${serverPort}`;
-// Under `target/` because it is already ignored, already the directory build
-// leavings go in, and `*.png` is a Git LFS pattern everywhere else.
+// Under `target/` because `*.png` is a Git LFS pattern everywhere else.
 const shots = at("target", "e2e");
 
 const chromium = process.env.CHROMIUM ?? Bun.which("chromium");
@@ -136,9 +112,7 @@ try {
   await reachable(`${origin}/`, "site", preview);
   await reachable(`${serverBase}/token`, "server", server);
 
-  // In order: the two backends on WebGPU, then the fallback tier, then the
-  // browser that has neither. Sequential because they share one site, one
-  // editor server and one machine's GPU.
+  // Sequential: the passes share one site, one editor server and one GPU.
   const passes = [
     await drive("in-tab, WebGPU", [chromium, `${origin}/`], { TIER: "webgpu" }),
     await drive("connected, WebGPU", [chromium, `${origin}/`, serverBase], {
@@ -167,7 +141,6 @@ try {
   process.exit(code);
 }
 
-/** One pass of `drive.ts`, with the shared environment already in place. */
 async function drive(name: string, args: string[], extra: Record<string, string>): Promise<number> {
   console.log(`\n=== ${name} ===`);
   const child = Bun.spawn(["bun", "run", "apps/site/e2e/drive.ts", ...args], {
@@ -179,7 +152,6 @@ async function drive(name: string, args: string[], extra: Record<string, string>
   return await child.exited;
 }
 
-/** A long-lived child whose output goes to a log this can print on failure. */
 function serve(name: string, exe: string, args: string[], cwd: string) {
   const log = openSync(join(shots, `${name}.log`), "w");
   const child = Bun.spawn([exe, ...args], {
@@ -188,8 +160,7 @@ function serve(name: string, exe: string, args: string[], cwd: string) {
     stdout: "pipe",
     stderr: "pipe",
   });
-  // The server announces its launch credential and local paths. Keep useful
-  // diagnostics without persisting either in a test artifact.
+  // Keep the launch credential and local paths out of the test artifact.
   const record = (line: string) =>
     writeSync(
       log,
@@ -219,13 +190,7 @@ function serve(name: string, exe: string, args: string[], cwd: string) {
   return child;
 }
 
-/**
- * Waits for `url` to answer, so a drive never races a server's startup.
- *
- * The child is watched as well as the port: a server that failed to bind is
- * the case where waiting on the URL alone is actively wrong, because whatever
- * already holds that port answers happily and the run then tests it instead.
- */
+/** The child is watched too: if it failed to bind, whatever holds the port would answer. */
 async function reachable(url: string, name: string, child: Bun.Subprocess): Promise<void> {
   const deadline = Date.now() + 60_000;
   for (;;) {
@@ -246,15 +211,7 @@ async function reachable(url: string, name: string, child: Bun.Subprocess): Prom
   }
 }
 
-/**
- * A port to listen on: the familiar one when it is free, any free one when it
- * is not.
- *
- * A developer running the editor server, or a second copy of this, holds 9377
- * — and a run that quietly drove *that* server would report a passing tab
- * against a model nobody set up. Binding here first is the cheap way to
- * find out, and moving is better than refusing to run.
- */
+/** The preferred port when free, otherwise any, so a run never drives a developer's own server. */
 async function pick(
   name: string,
   override: string | undefined,

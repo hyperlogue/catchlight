@@ -1,6 +1,4 @@
 import { useBindings } from "./bindings.js";
-/** Posing is preview state. Param definitions and binding cells are authored
- * only through their explicit editors, so a slider never creates undo work. */
 import type { BindingParams, NodeId, ParamId, ParamInfo, Session } from "@catchlight/core";
 import { useEffect, useState } from "react";
 import { useNodeInfo, useParams } from "./replica.js";
@@ -300,8 +298,7 @@ export function BindingsPanel({
   );
 }
 
-/** A deliberate preview sweep, never an authored animation. Stopping restores
- * the value from before playback; switching params or models stops it too. */
+/** A preview sweep, never authored. Stopping restores the pre-playback value. */
 export function usePoseSweep(session: Session | undefined, param: ParamId | undefined) {
   const [playing, setPlaying] = useState(false);
   useEffect(() => {

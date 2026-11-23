@@ -1,5 +1,3 @@
-/** The selected node's authoring surface, composed from independently usable
- * parts. Each section is conditional on what that kind actually carries. */
 import type { Session } from "@catchlight/core";
 import { useEffect, useRef, useState } from "react";
 import { useSelection } from "./selection.js";

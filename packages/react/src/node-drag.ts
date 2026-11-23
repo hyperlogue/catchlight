@@ -1,22 +1,8 @@
 /**
- * Dragging a node, as a set of handlers to spread onto the viewport.
- *
- * The split this hook exists to hold: TypeScript owns the gesture — which
- * pointer, where it started, when it ends — and Rust owns every number that
- * comes out of the model. A world delta goes down as a delta and comes back as
- * the local translation the node would then have, so the parent's frame is
- * resolved once, in the place a native editor also resolves it.
- *
- * **The scratch is held until the revision lands.** A preview cleared the
- * moment `node_set` is sent leaves the node back where it started for as long
- * as the round trip takes, which reads as the drag snapping back. `send`
- * resolves only once the replica can answer at the new revision, so clearing
- * after it is the one point where the preview and the model agree. A
- * refused send clears too, because then the model never moved and the
- * preview is a lie.
- *
- * With no session — a stage that is showing nothing — every handler is a
- * no-op, so a host can keep the canvas mounted between models.
+ * Node-drag handlers to spread onto the viewport. A world delta goes to Rust,
+ * which resolves the parent's frame. The scratch preview is cleared only once
+ * the commit's revision lands (or the send is refused), so the node does not
+ * snap back during the round trip. With no session, every handler is a no-op.
  */
 
 import type { NodeId, Session } from "@catchlight/core";
@@ -34,7 +20,6 @@ export interface NodeDrag {
   dragging: boolean;
 }
 
-/** A drag in flight: what is being moved, from where, and to what so far. */
 interface Drag {
   pointerId: number;
   node: NodeId;
@@ -77,12 +62,10 @@ export function useNodeDrag(session: Session | undefined, node: NodeId | undefin
       if (!active || active.pointerId !== event.pointerId) return;
       drag.current = undefined;
       setDragging(false);
-      // The model went away under the gesture: nothing to author or clear.
       if (!session) return;
       const translate = active.translate;
       if (!translate) {
-        // A press that never moved: nothing to author, and authoring it anyway
-        // would put an undo entry behind every click.
+        // A click with no movement must not create an undo entry.
         session.clearScratchTransform(active.node);
         return;
       }

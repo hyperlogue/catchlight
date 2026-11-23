@@ -1,21 +1,4 @@
-/**
- * `@catchlight/core` — the web-platform glue between a catchlight editor and a
- * UI.
- *
- * The layering rule, in one line: if a native iOS or Android editor would have
- * to reimplement it, it does not belong here. See `editor.ts`.
- *
- * The shape of the whole package: an [`Editor`] over a [`Backend`], which is
- * either the wasm editor in this tab ([`InTabBackend`]) or a local editor
- * process ([`ConnectedBackend`]). Each open model is a [`Session`] holding
- * a replica — this tab's copy of the model, which answers reads synchronously,
- * is what a [`Viewport`] draws, and moves only when the backend feeds it.
- *
- * The wire types are re-exported whole from `protocol.gen.ts`, which
- * `cargo xtask generate` writes from the Rust enums. A consumer builds
- * commands and reads replies against the same declarations the editor
- * compiles.
- */
+/** `@catchlight/core`: web-platform glue between a Catchlight editor and a UI. */
 
 export * from "./protocol.gen.js";
 

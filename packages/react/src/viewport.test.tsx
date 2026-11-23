@@ -1,9 +1,3 @@
-/**
- * The canvas: that attach and detach are inverses, that an attach that failed
- * is reported rather than logged, that a pointer arrives in world units, and
- * that the two camera gestures are the component's own.
- */
-
 import "./test/setup.js";
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -28,7 +22,6 @@ import {
   wheel,
 } from "./test/harness.js";
 
-/** An 800x600 canvas at the top-left of the page. */
 let restore: () => void;
 beforeEach(() => {
   restore = stubLayout(800, 600);
@@ -47,8 +40,6 @@ describe("attaching", () => {
         </EditorProvider>
       </StrictMode>,
     );
-    // `attach` is asynchronous, so the first mount's renderer can arrive after
-    // its own cleanup ran; it is disposed on arrival rather than kept.
     await settle();
 
     expect(viewports.length).toBeGreaterThan(0);
@@ -161,12 +152,9 @@ describe("a stage with nothing to draw", () => {
 
     await view.render(stage(session));
     await settle();
-    // The same element: the canvas is the stage, and a fresh one per model
-    // would rebuild its observers and lose the camera it was framed with.
     expect(view.container.querySelector("canvas")).toBe(canvas);
     expect(viewports.filter((viewport) => viewport.freed === 0)).toHaveLength(1);
 
-    // Back to nothing: the renderer goes, the element stays.
     await view.render(stage(undefined));
     await settle();
     expect(view.container.querySelector("canvas")).toBe(canvas);
@@ -200,7 +188,6 @@ describe("pointers", () => {
     expect(seen).toHaveLength(1);
     expect(seen[0]?.screen).toEqual([600, 200]);
     expect(seen[0]?.world[0]).toBeCloseTo((600 - 400) * (2 / 600), 12);
-    // Screen Y grows downward and world Y grows upward.
     expect(seen[0]?.world[1]).toBeCloseTo(-(200 - 300) * (2 / 600), 12);
     await view.unmount();
   });
@@ -222,7 +209,6 @@ describe("pointers", () => {
     await settle();
     const canvas = view.container.querySelector("canvas") as HTMLCanvasElement;
 
-    // One world unit per pixel now.
     await fire(canvas, pointer("pointerdown", { clientX: 500, clientY: 400, button: 0 }));
 
     expect(seen[0]?.world[0]).toBeCloseTo(110, 12);
@@ -258,12 +244,10 @@ describe("the camera gestures", () => {
     await fire(canvas, pointer("pointerup", { clientX: 500, clientY: 350, button: 1 }));
 
     expect(cameras).toHaveLength(1);
-    // The world under the pointer follows it: 100 px right and 50 px down at
-    // 1/300 of a unit per pixel.
+    // 100 px right and 50 px down at 1/300 of a unit per pixel.
     expect(cameras[0]?.center[0]).toBeCloseTo(-100 / 300, 12);
     expect(cameras[0]?.center[1]).toBeCloseTo(50 / 300, 12);
     expect(cameras[0]?.height).toBe(2);
-    // A pan is the component's gesture, not something the host has to filter.
     expect(pointers).toEqual([]);
     await view.unmount();
   });
@@ -296,7 +280,6 @@ describe("the camera gestures", () => {
     await fire(canvas, pointer("pointerup", { clientX: 420, clientY: 300 }));
     await fire(globalThis, new KeyboardEvent("keyup", { code: "Space" }));
 
-    // Space released: the same drag is the host's again.
     await fire(canvas, pointer("pointerdown", { clientX: 400, clientY: 300, button: 0 }));
     expect(pointers).toEqual(["down"]);
     await view.unmount();
@@ -319,7 +302,6 @@ describe("the camera gestures", () => {
     await settle();
     const canvas = view.container.querySelector("canvas") as HTMLCanvasElement;
 
-    // Dead centre: one notch out changes the height and nothing else.
     await fire(canvas, wheel(100, 400, 300));
     expect(cameras[0]?.height).toBeCloseTo(660, 12);
     expect(cameras[0]?.center).toEqual([0, 0]);
@@ -333,8 +315,7 @@ describe("the camera gestures", () => {
         />
       </EditorProvider>,
     );
-    // 100 px right of centre, so that world point has to stay 100 px right of
-    // centre after the zoom: the centre moves by the change in world-per-pixel.
+    // The world point 100 px right of centre must stay there after the zoom.
     await fire(canvas, wheel(100, 500, 300));
     expect(cameras[1]?.height).toBeCloseTo(660, 12);
     expect(cameras[1]?.center[0]).toBeCloseTo(100 - 100 * 1.1, 12);
@@ -364,7 +345,6 @@ describe("the camera gestures", () => {
     await fire(canvas, pointer("pointerdown", { clientX: 400, clientY: 300, button: 1 }));
     await fire(canvas, pointer("pointermove", { clientX: 500, clientY: 300, button: 1 }));
 
-    // The host was told, and ignored it. The renderer must not have moved.
     expect(cameras).toHaveLength(1);
     expect(live?.camera).toEqual([0, 0, 2]);
 
@@ -392,8 +372,6 @@ describe("framing the model", () => {
     );
     await settle();
 
-    // The box is posed, so a replica that has not drawn has none — and the
-    // camera must not jump to an invented one meanwhile.
     await frames.flush();
     expect(cameras).toEqual([]);
 
@@ -404,8 +382,6 @@ describe("framing the model", () => {
     expect(cameras[0]?.center).toEqual([0, 0]);
     expect(cameras[0]?.height).toBeCloseTo(16.2, 9);
 
-    // Once, and not again: an edit that moves the revision must not undo the
-    // zoom the user chose after the model came up.
     await run(() => session.send({ cmd: "node_add", parent: "root", kind: "part", name: "hair" }));
     await frames.flush();
     await frames.flush();
@@ -455,7 +431,6 @@ describe("framing the model", () => {
           camera={camera.camera}
           onCameraChange={camera.onCameraChange}
           onResize={camera.onResize}
-          // The automatic fit off, so what this measures is the button's path.
           defaultCamera={DEFAULT_CAMERA}
         />
       );
@@ -468,22 +443,18 @@ describe("framing the model", () => {
     );
     await settle();
 
-    // Nothing drawn yet: it says so and leaves the camera alone.
     expect(api?.fit(session)).toBe(false);
     expect(api?.camera).toEqual(DEFAULT_CAMERA);
 
     fakeReplica(session).box = [-8, -1, 8, 1];
     await run(() => api?.fit(session));
 
-    // 800x600, so the height that covers 16 world units across is 12, plus the
-    // margin.
+    // 800x600: covering 16 world units across needs a height of 12, plus margin.
     expect(api?.camera.center).toEqual([0, 0]);
     expect(api?.camera.height).toBeCloseTo(16.2, 9);
-    // A fitted model remains fully framed as a sidebar or window narrows.
     await run(() => api?.onResize({ width: 300, height: 600 }));
     expect(api?.camera.height).toBeCloseTo(43.2, 9);
     expect(api?.zoom).toBeCloseTo(1, 9);
-    // A deliberate pan belongs to the user, even at the fitted zoom level.
     await run(() => api?.setCamera({ center: [3, 4], height: 43.2 }));
     await run(() => api?.onResize({ width: 800, height: 600 }));
     expect(api?.camera.center).toEqual([3, 4]);
@@ -517,21 +488,17 @@ describe("framing the model", () => {
       </EditorProvider>,
     );
     await settle();
-    // Nothing framed yet: there is nothing to be relative to.
     expect(api?.zoom).toBeUndefined();
 
-    // The component's own fit, reported through `onFit`, is the reference.
     fakeReplica(session).box = [-8, -1, 8, 1];
     await run(() => frames.flush());
     expect(api?.camera.height).toBeCloseTo(16.2, 9);
     expect(api?.zoom).toBeCloseTo(1, 9);
 
-    // A wheel notch in: the height shrinks and the zoom grows by the same factor.
     const canvas = view.container.querySelector("canvas") as HTMLCanvasElement;
     await fire(canvas, wheel(-100, 400, 300));
     expect(api?.zoom).toBeCloseTo(1.1, 9);
 
-    // The button's fit is the reference again.
     await run(() => api?.fit(session));
     expect(api?.zoom).toBeCloseTo(1, 9);
 
@@ -540,17 +507,10 @@ describe("framing the model", () => {
   });
 });
 
-/** What the wasm module says when the browser has no device to give. */
 const NO_DEVICE =
   "the catchlight editor needs WebGPU or WebGL2 to draw and this browser offered neither";
 
-/**
- * The harness's stack, with the one device acquisition rigged to fail.
- *
- * The failure is the real path rather than a stubbed `attach`: the editor
- * acquires its device on the first attach, so a browser with neither tier
- * rejects exactly here and with exactly this message.
- */
+// The real device-acquisition failure path, not a stubbed `attach`.
 async function editorWithoutADevice(message: string): Promise<Editor> {
   const module = fakeWasm();
   module.failNextAcquire = message;
@@ -558,7 +518,6 @@ async function editorWithoutADevice(message: string): Promise<Editor> {
   return Editor.create(module.module, new InTabBackend(wasm, new MemoryStorage()));
 }
 
-/** Catches the fallback's warning, so the suite reads it instead of printing it. */
 function stubWarn(): { calls: unknown[][]; restore(): void } {
   const calls: unknown[][] = [];
   const saved = console.warn;
@@ -573,12 +532,6 @@ function stubWarn(): { calls: unknown[][]; restore(): void } {
   };
 }
 
-/**
- * A hand-driven `requestAnimationFrame`, so a test says when a frame happens.
- *
- * The auto-fit retries on frames until the renderer has left a box behind, and
- * a suite that waited on a real timer would be asserting on a race.
- */
 function stubFrames(): { flush(): Promise<void>; restore(): void } {
   const queued = new Map<number, () => void>();
   let next = 1;

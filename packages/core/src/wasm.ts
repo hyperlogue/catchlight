@@ -1,128 +1,59 @@
 /**
- * The wasm module's JS surface, declared structurally rather than imported.
- *
- * The published `@catchlight/core/wasm` subpath contains the generated runtime
- * with explicit initialization. It is never imported by this package's root:
- * the host initializes and passes it in, and tests can supply a fake. The
- * workspace demo uses the separate generated `@catchlight/wasm` package.
- *
- * The split these types encode is the whole architecture. The **editor** owns
- * the model and is the only thing that answers a command. The **replica**
- * is this tab's copy of one session — model, puppet and render cache — and it
- * is never mutated locally: it moves only when a backend feeds it a model
- * state at a revision, forward only. The **viewport** draws a replica on a
- * canvas and owns its own frame loop. The **gpu** is one device, shared by
- * everything under one editor, on whichever of the two graphics tiers the
- * browser has.
- *
- * Two things cross the boundary as JSON strings — a command and a query — and
- * everything per-frame or per-pointer-move is a typed method instead, because
- * a drag must not spend a `JSON.parse` per event.
+ * The wasm module's JS surface, declared structurally so the host injects the
+ * module and tests can supply a fake. Per-frame calls are typed methods, not
+ * JSON, so a drag spends no `JSON.parse` per event.
  */
 
 import type { NodeId, ParamId, TexId } from "./protocol.gen.js";
 import type { Attachment } from "./backend.js";
 
 /**
- * What wasm-bindgen puts on every class it exports.
- *
- * Both members are required rather than optional, and that is not a style
- * choice: [`WasmModule`]'s `Viewport` is a construct signature taking a `Gpu`
- * and a `Replica`, and a construct signature's parameters are checked
- * contravariantly — so the generated module is assignable to [`WasmModule`]
- * only if the types here are assignable to the generated classes, and an
- * optional member is not assignable to a required one. Writing them down is
- * what lets a host pass the module in without an assertion.
- *
- * Nothing in this package calls either one on a value it did not create; a
- * fake implements both in a line.
+ * Members are required: `Viewport`'s construct signature checks parameters
+ * contravariantly, so optional members would stop the generated module from
+ * being assignable to [`WasmModule`].
  */
 export interface WasmOwned {
   free(): void;
-  /** What `using` calls. */
   [Symbol.dispose](): void;
 }
 
-/** The in-tab editor: an `Editor` from `catchlight-editor-server`. */
 export interface WasmEditor extends WasmOwned {
-  /** One JSON `Request` in, one JSON `Reply` out — the wire protocol verbatim. */
   handle(requestJson: string): string;
-  /**
-   * The same, with the bytes the command declares and the bytes its reply
-   * carries. The one way an image or a model reaches the editor.
-   */
   handleWith(
     requestJson: string,
     attachments: Attachment[],
   ): { reply: string; payload?: Uint8Array };
-  /**
-   * The JSON `Event`s emitted since the last drain, in order. A pull, not a
-   * callback: Rust never calls back into JS, so a backend drains after every
-   * `handle` and dispatches what it got.
-   */
+  /** Events since the last drain; Rust never calls back into JS. */
   drainEvents(): string[];
-  /**
-   * The tab's store, outward only: what a `session_save` or a `manifest_export`
-   * wrote, until a backend drains it into the browser's own storage.
-   */
+  /** Outward only: what a save or export wrote, until a backend drains it. */
   takeBytes(key: string): Uint8Array | undefined;
   writtenKeys(): string[];
 }
 
 /**
- * One device, shared by everything below one editor.
- *
- * It is acquired with the first canvas an editor draws on. WebGPU ignores
- * that canvas, since an adapter there presents to any number of them. WebGL2
- * cannot: its device *is* that canvas's rendering context, so the first canvas
- * to attach becomes the one the device presents into, and every later canvas
- * on that tier is fed as pixels instead. Either way a viewport is built on any
- * canvas and this package never has to know which tier it got. A browser with
- * neither rejects the acquisition with a message saying so.
+ * Acquired from the first canvas. On WebGL2 the device is that canvas's
+ * context and later canvases are fed pixels; WebGPU ignores the canvas.
  */
 export interface WasmGpu extends WasmOwned {
-  /**
-   * `max_texture_dimension_2d`: the largest backing store a canvas may have on
-   * either axis. Configuring a surface past it fails and the viewport goes
-   * black with no other symptom, which is why the sizing clamps to it.
-   */
+  /** `max_texture_dimension_2d`; the viewport goes black silently past it. */
   maxSize(): number;
-  /**
-   * `"webgpu"` or `"webgl2"`.
-   *
-   * Reportable, never actionable: the two tiers differ in what a frame costs
-   * and in nothing a caller may branch on. A status line shows it because a
-   * bug report means different things on each.
-   */
+  /** `"webgpu"` or `"webgl2"`. For display; never branch on it. */
   tier(): string;
 }
 
-/**
- * What a structure names that the replica does not hold yet, with the hints a
- * fetched payload is decoded by.
- *
- * Only `id` is read here — the encoding and alpha hints exist for whoever
- * fetches the bytes, and this package passes them to nobody.
- */
+/** Only `id` is read here; the hints are for whoever decodes the bytes. */
 export interface TextureRequest {
   id: TexId;
   encoding: string;
   alpha: string;
 }
 
-/**
- * One byte extension a structure names and the replica has yet to fetch.
- *
- * By hash rather than by key alone: an extension's bytes change under a key
- * that does not, so a feed after an unrelated edit needs none of them and a
- * feed after a changed thumbnail needs exactly one.
- */
+/** Keyed by hash too: an extension's bytes change under an unchanged key. */
 export interface ExtensionRequest {
   key: string;
   hash: string;
 }
 
-/** One session's model, puppet and render cache, in this tab. */
 export interface WasmReplica extends WasmOwned {
   meshDraft(node: NodeId): WasmMeshDraft;
   recordingPairs(node: NodeId, param: ParamId): string;
@@ -135,37 +66,27 @@ export interface WasmReplica extends WasmOwned {
   ): WasmRecording;
   setEditing(editing: boolean): void;
   textureImage(texture: string): ReturnType<WasmReplica["textureThumbnail"]>;
-  /** The model revision this replica currently holds. */
   rev(): number;
 
-  /** The `TextureRequest[]` a structure names and this replica lacks, as JSON. */
   texturesNeeded(structure: Uint8Array): string;
-  /** Holds a texture payload under its id, for the structures that name it. */
   putTexture(id: TexId, bytes: Uint8Array): void;
-  /**
-   * The `ExtensionRequest[]` a structure names whose bytes this replica does
-   * not hold, as JSON. A JSON extension is never among them: it rides inline
-   * in the structure.
-   */
+  /** JSON extensions are never listed: they ride inline in the structure. */
   extensionsNeeded(structure: Uint8Array): string;
-  /** Holds a byte extension's payload under its key, by the hash it carries. */
   putExtension(key: string, bytes: Uint8Array): void;
   /**
-   * Applies a structure-only container at `rev`. Forward only: a `rev` at or
-   * below the current one is ignored and returns false. Throws a string when
-   * the structure is malformed or names a texture or extension that was not
-   * put, leaving the model untouched.
+   * Forward only: a `rev` at or below the current one returns false. Throws a
+   * string on a malformed structure or a missing payload, leaving the model
+   * untouched.
    */
   applyStructure(structure: Uint8Array, rev: number): boolean;
-  /** In-tab handoff: replace from the editor's own model. Returns the rev. */
+  /** In-tab handoff from the editor's own model. Returns the rev. */
   syncFromEditor(editor: WasmEditor, session: number): number;
 
-  /** A `ReplicaQuery` as a JSON `Request`, answered as a JSON `Reply`. */
   query(requestJson: string): string;
 
   setParam(id: ParamId, value: number): boolean;
   paramValue(id: ParamId): number | undefined;
-  /** Per-vertex offsets as pairs `[dx0, dy0, dx1, dy1, ...]`. */
+  /** Packed `[dx0, dy0, dx1, dy1, ...]`. */
   scratchDeform(node: NodeId, offsets: Float32Array): boolean;
   clearScratchDeform(node: NodeId): boolean;
   /** Absolute values; `NaN` leaves what the fold produced for that field. */
@@ -185,14 +106,10 @@ export interface WasmReplica extends WasmOwned {
   clearScratchTransform(node: NodeId): boolean;
   clearAllScratch(): void;
 
-  /**
-   * The node's evaluated world transform after the last tick: 16 floats,
-   * column-major. `undefined` when the model holds no such node.
-   */
+  /** 16 floats, column-major. */
   nodeWorldTransform(node: NodeId): Float32Array | undefined;
-  /** Frontmost visible part under a world-space point. */
   pickNode(x: number, y: number): string | undefined;
-  /** Evaluated part vertices, flattened world-space pairs. */
+  /** Flattened world-space pairs. */
   nodeVertices(node: NodeId): Float32Array | undefined;
   nodeLocalTransform(node: NodeId): Float32Array | undefined;
   nodeDeltaFromWorld(
@@ -209,27 +126,20 @@ export interface WasmReplica extends WasmOwned {
         [Symbol.dispose](): void;
       }
     | undefined;
-  /**
-   * The node's authored local translation `[x, y, z]` moved by a world-space
-   * delta, expressed in its parent's frame — what a drag previews and then
-   * commits. `undefined` when the model holds no such node.
-   */
+  /** Result is in the parent's frame. */
   translationAfterWorldDelta(
     node: NodeId,
     dx: number,
     dy: number,
   ): Float32Array | undefined;
   /**
-   * The world-space box the last tick left the drawn geometry in:
-   * `[min_x, min_y, max_x, max_y]` in world units, Y-up. `undefined` when the
-   * model draws nothing — an empty model, or one whose every part is
-   * disabled, untextured or fully transparent. A camera framing the model uses
-   * this posed box so it includes limbs displaced by motion responses.
+   * Posed world box `[min_x, min_y, max_x, max_y]`, Y-up; `undefined` when
+   * nothing draws.
    */
   bounds(): Float32Array | undefined;
 }
 
-/** Local authoring owners. Releasing one never changes the model. */
+/** Releasing one never changes the model. */
 export interface WasmMeshDraft extends WasmOwned {
   view(): string;
   finish(): string;
@@ -254,59 +164,38 @@ export interface WasmRecording extends WasmOwned {
   deform(deltas: Float32Array): string;
 }
 
-/** One frame of a canvas, as the renderer copied it back off the GPU. */
 export interface WasmFrame {
-  /** Device pixels, which is the canvas's backing store and not its CSS size. */
+  /** Device pixels, not CSS size. */
   width: number;
   height: number;
-  /** `width * height * 4` bytes, RGBA in that order whatever the surface prefers. */
+  /** `width * height * 4` bytes, RGBA whatever the surface prefers. */
   rgba: Uint8Array;
 }
 
-/**
- * The renderer's surface. It owns the frame loop; this side owns the element,
- * because only the page knows how big it is.
- */
 export interface WasmViewport extends WasmOwned {
-  /** Marks the picture stale; at most one frame follows. */
+  /** At most one frame follows. */
   invalidate(): void;
-  /** Backing store in device pixels; the caller has set the canvas to match. */
+  /** Device pixels; the caller has already resized the canvas. */
   resize(width: number, height: number): void;
   setCamera(centerX: number, centerY: number, height: number): void;
-  /** Starts the rAF loop; idempotent. */
+  /** Idempotent. */
   start(): void;
-  /** Cancels it; idempotent, and `start` works again afterwards. */
+  /** Idempotent; `start` works again afterwards. */
   stop(): void;
   /**
-   * The frame on the canvas right now.
-   *
-   * The one asynchronous method here, and it is the browser smoke test's: a
-   * headless Chromium holding a WebGPU device never composites the canvas, so
-   * a screenshot of one is blank while the picture is correct. Nothing in the
-   * editor calls it, and it changes nothing about the loop.
+   * For browser tests: headless Chromium with WebGPU never composites the
+   * canvas, so screenshots are blank.
    */
   readback(): Promise<WasmFrame>;
 }
 
 /**
- * The named exports of `@catchlight/wasm`, as this package uses them.
- *
- * `Gpu.acquire` is the one asynchronous call a running editor makes into the
- * module — an adapter and a device are promises. It takes a canvas because
- * WebGL2 has no other way in: an adapter there is enumerated from a canvas's
- * context, so no device can exist before the first canvas does. WebGPU ignores
- * the argument. A `Replica` therefore holds no device at all; the viewport
- * built on it brings one. Everything after that call is synchronous, which is
- * what lets a query answer inside a React render and a drag run without an
- * `await`.
+ * `Gpu.acquire` takes a canvas because WebGL2 enumerates adapters from a
+ * canvas context; everything after it is synchronous.
  */
 export interface WasmModule {
   CatchlightEditor: new () => WasmEditor;
-  /**
-   * Every texture reference a manifest names, verbatim. A pure function of
-   * the JSON — no session, no editor — so a tab can read what it has to
-   * attach before there is anything to attach it to.
-   */
+  /** A pure function of the JSON; needs no session. */
   manifestRequirements(json: string): string[];
   Gpu: { acquire(canvas: HTMLCanvasElement): Promise<WasmGpu> };
   Replica: new () => WasmReplica;

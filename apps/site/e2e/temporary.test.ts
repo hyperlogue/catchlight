@@ -21,7 +21,6 @@ test("temporary cleanup finishes after a partial deletion reports EFAULT", async
       await rm(path, options);
     });
     expect(existsSync(root)).toBe(false);
-    // Repeating cleanup remains safe when the first attempt removed everything.
     await removeTemporaryDirectory(root);
   } finally {
     rmSync(root, { recursive: true, force: true });

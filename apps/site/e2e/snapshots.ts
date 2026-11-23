@@ -1,5 +1,3 @@
-/** Check export receipts using the browser's independent SHA-256 implementation,
- * and verify a fork is an immediately usable model with independent history. */
 import assert from "node:assert/strict";
 import type { Editor } from "@catchlight/core";
 import type { Page } from "playwright-core";

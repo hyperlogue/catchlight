@@ -1,15 +1,9 @@
-/**
- * The canvas half: the one piece of arithmetic, and the rule that a viewport
- * nobody can see does not run.
- */
-
 import { describe, expect, test } from "bun:test";
 
 import { FakeReplica, FakeViewport, ScriptedBackend } from "./fakes.js";
 import { Session } from "./session.js";
 import { READBACK, Viewport, devicePixelSize } from "./viewport.js";
 
-/** Just enough of a `ResizeObserverEntry` for the size arithmetic. */
 function entry(parts: {
   devicePixelContentBoxSize?: ResizeObserverSize[];
   contentBoxSize?: ResizeObserverSize[];
@@ -18,11 +12,7 @@ function entry(parts: {
   return { contentRect: { width: 0, height: 0 }, ...parts } as unknown as ResizeObserverEntry;
 }
 
-/**
- * A canvas and the two observers the viewport reaches for, with the callbacks
- * exposed so a test can fire them. Restores whatever was there when it is
- * done, so one test's fakes never leak into the next.
- */
+/** Fake canvas and observers with exposed callbacks; restores globals when done. */
 function stubBrowser(cssWidth: number, cssHeight: number, ratio: number) {
   const saved = {
     ResizeObserver: globalThis.ResizeObserver,
@@ -79,8 +69,7 @@ function session(): Session {
 
 describe("device pixels", () => {
   test("are taken from the browser, not multiplied out", () => {
-    // The observed box is already device pixels: 393.6 CSS px at 1.25 zoom is
-    // 492 real pixels, which no rounding of 393.6 × 1.25 has to reproduce.
+    // The observed box is already device pixels; no rounding to reproduce.
     expect(
       devicePixelSize(
         entry({
@@ -118,8 +107,7 @@ describe("the picture and the model", () => {
 
     for (let i = 0; i < 20; i++) open.setParam("param-1", i / 20);
 
-    // Twenty repaints asked for, no revision: React saw nothing, the canvas
-    // saw everything. That split is the whole reason there are two channels.
+    // Twenty repaints, no revision: the reason there are two channels.
     expect(view.invalidated).toBe(20);
     expect(revisions).toBe(0);
   });
@@ -134,8 +122,6 @@ describe("the picture and the model", () => {
 
     expect(view.stopped).toBe(1);
     expect(view.freed).toBe(1);
-    // A disposed viewport that stayed subscribed would keep the whole GPU
-    // state alive behind the session for as long as the model is open.
     expect(view.invalidated).toBe(0);
   });
 });
@@ -151,7 +137,6 @@ describe("visibility", () => {
 
     browser.scroll(false);
     expect(view.stopped).toBe(1);
-    // Still started as far as the host is concerned — nothing was disposed.
     browser.scroll(true);
     expect(view.started).toBe(2);
 
@@ -169,8 +154,7 @@ describe("visibility", () => {
     viewport.stop();
     const startedBefore = view.started;
 
-    // The observer is disconnected, but even a stale callback must not revive
-    // a viewport the host stopped: `#started` gates it, not the observer.
+    // A stale callback must not revive a stopped viewport.
     browser.scroll(true);
     expect(view.started).toBe(startedBefore);
 
@@ -186,9 +170,6 @@ describe("the backing store", () => {
 
     viewport.start();
 
-    // 800x600 CSS pixels on a retina screen is a 1600x1200 backing store, and
-    // the canvas attributes and the surface configuration have to agree — a
-    // canvas sized in CSS pixels is the classic blurry-viewport bug.
     expect(view.size).toEqual([1600, 1200]);
     expect(browser.canvas.width).toBe(1600);
     expect(browser.canvas.height).toBe(1200);
@@ -198,8 +179,7 @@ describe("the backing store", () => {
   });
 
   test("never exceeds what the device reported", () => {
-    // 5000 CSS pixels at 2x is a 10000-pixel backing store; the device allows
-    // 4096, and a surface configured past it fails outright.
+    // The device allows 4096; configuring past it fails.
     const browser = stubBrowser(5000, 5000, 2);
     const view = new FakeViewport();
     const viewport = new Viewport(view, browser.canvas, undefined, 4096);
@@ -231,22 +211,17 @@ describe("reading a frame back", () => {
     const canvas = {} as HTMLCanvasElement;
     const viewport = new Viewport(view, canvas);
 
-    // A driver in the page has the element and nothing else, so this is where
-    // it has to be.
     const read = (canvas as unknown as Record<string, () => Promise<unknown>>)[READBACK];
     expect(typeof read).toBe("function");
     expect(await read?.()).toEqual(view.frame);
 
-    // Gone before the renderer is freed: a function reaching a freed viewport
-    // is a trap rather than an error.
+    // Gone before the renderer is freed: calling a freed viewport traps.
     viewport.dispose();
     expect((canvas as unknown as Record<string, unknown>)[READBACK]).toBeUndefined();
   });
 
   test("a late dispose does not take a newer viewport's hook away", async () => {
     const canvas = {} as HTMLCanvasElement;
-    // What a model swap on one canvas does: the outgoing attach loses its
-    // race, the next viewport is already drawing, and the loser disposes.
     const outgoing = new Viewport(new FakeViewport(), canvas);
     const live = new FakeViewport();
     live.frame = { width: 3, height: 1, rgba: new Uint8Array(12) };

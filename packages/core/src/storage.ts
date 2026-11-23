@@ -1,47 +1,25 @@
-/**
- * Where model bytes live in the browser.
- *
- * A store is not a transport, and the split is deliberate: a backend carries
- * small JSON messages and answers in milliseconds, a store carries a rig whose
- * textures are most of its size and wants progress, resumability and a quota.
- * So "the file lives somewhere else" is a `Storage`, never a second command
- * channel.
- *
- * Keys are opaque to everything but their reader, which reads one thing out of
- * them: `/` separates segments, so a manifest's texture references resolve
- * relative to the manifest ([`parentKey`], [`joinKey`]).
- *
- * Bytes reach the editor as attachments on the command that uses them, so a
- * store is never in that path: what a caller does is read the key here and
- * hand the bytes over, and nothing above has to know an order.
- */
+/** Where model bytes live in the browser. Keys use `/` to separate segments. */
 
-/** A byte store addressed by opaque keys. */
 export interface Storage {
   read(key: string): Promise<Uint8Array>;
   write(key: string, bytes: Uint8Array): Promise<void>;
   /** Every key, sorted. `prefix` filters by string prefix, not by directory. */
   list(prefix?: string): Promise<string[]>;
-  /** Removes `key`. Removing one that is not there is not an error. */
+  /** Removing a missing key is not an error. */
   delete(key: string): Promise<void>;
 }
 
-/**
- * The key a relative reference inside `key`'s model resolves against —
- * everything before the last `/`, or `""` when the key has no separator.
- */
+/** Everything before the last `/`, or `""`. */
 export function parentKey(key: string): string {
   const at = key.lastIndexOf("/");
   return at < 0 ? "" : key.slice(0, at);
 }
 
-/** `name` resolved against `base`, the way a manifest's references resolve. */
 export function joinKey(base: string, name: string): string {
   const trimmed = base.replace(/\/+$/, "");
   return trimmed === "" ? name : `${trimmed}/${name}`;
 }
 
-/** A key that is not in the store. Distinguishable from a backend failure. */
 export class NotFoundError extends Error {
   readonly key: string;
   constructor(key: string) {
@@ -51,7 +29,6 @@ export class NotFoundError extends Error {
   }
 }
 
-/** A store held in this tab and nowhere else. The default for a scratch model. */
 export class MemoryStorage implements Storage {
   #entries = new Map<string, Uint8Array>();
 
@@ -76,17 +53,8 @@ export class MemoryStorage implements Storage {
 }
 
 /**
- * The origin private file system: the browser's own disk, per origin.
- *
- * What a self-contained web editor keeps models in — no picker, no upload,
- * survives a reload, and the only quota that applies is the origin's. A key's
- * `/` segments become directories, which is what makes a manifest and its
- * textures land next to each other the way the editor resolves them.
- *
- * [`OpfsStorage.open`] is the only constructor, because the root handle is a
- * promise and a store that might not be usable yet is a store every caller has
- * to check. Under bun, or any host without the API, it refuses up front rather
- * than failing on the first read.
+ * The origin private file system. Key segments become directories.
+ * [`OpfsStorage.open`] refuses up front on hosts without OPFS.
  */
 export class OpfsStorage implements Storage {
   #root: DirectoryHandle;
@@ -95,7 +63,6 @@ export class OpfsStorage implements Storage {
     this.#root = root;
   }
 
-  /** Whether this host has OPFS at all. False under bun and in a plain Node. */
   static available(): boolean {
     return typeof navigator !== "undefined" && !!opfs(navigator)?.storage?.getDirectory;
   }
@@ -136,7 +103,6 @@ export class OpfsStorage implements Storage {
     const name = segments.pop();
     if (!name) return;
     const dir = await this.#dir(segments, false);
-    // Missing is not a failure: delete's promise is "it is gone", and it is.
     if (!dir) return;
     await dir.removeEntry(name).catch(() => undefined);
   }
@@ -176,11 +142,7 @@ async function walk(dir: DirectoryHandle, prefix: string, out: string[]): Promis
   }
 }
 
-/**
- * The slice of the file system access API this store calls, declared here
- * rather than taken from `lib.dom` — the directory iteration is newer than the
- * types some toolchains ship, and a fake needs four methods, not the API.
- */
+/** Declared here: some toolchains' `lib.dom` lacks directory iteration. */
 interface DirectoryHandle {
   kind: "directory";
   getFileHandle(name: string, options?: { create?: boolean }): Promise<FileHandle>;
@@ -195,7 +157,6 @@ interface FileHandle {
   createWritable(): Promise<{ write(data: Uint8Array): Promise<void>; close(): Promise<void> }>;
 }
 
-/** `navigator.storage.getDirectory`, without asserting the host has either. */
 function opfs(
   nav: unknown,
 ): { storage?: { getDirectory?(): Promise<DirectoryHandle> } } | undefined {

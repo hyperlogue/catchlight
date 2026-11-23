@@ -1,5 +1,3 @@
-/** Editor workflows against real wasm, GPU and protocol. Fixture setup adds
- * isolated controls; the interactions under test use the visible UI. */
 import assert from "node:assert/strict";
 import { AUTHORING_PART, openModel, selectNode, prepareAuthoring } from "./model.ts";
 import type { Editor } from "@catchlight/core";

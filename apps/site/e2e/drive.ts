@@ -11,41 +11,12 @@
  *   CHROMIUM_ARGS=<args>  replaces the flag set `TIER` would choose
  * ```
  *
- * `e2e/run.ts` is what starts the servers and calls this once per pass; run it
- * by hand only to drive something they do not set up.
- *
- * **The browser is a real one, and `TIER` says which tier it may draw on.**
- * Playwright's own Chromium download does not run on NixOS, so the executable
- * is an argument and the dev shell puts one on `PATH`. The editor draws on
- * WebGPU where a browser has it and on WebGL2 where it does not, and both are
- * worth a pass because the fallback is what an iOS device below Safari 26
- * gets. So this launches Chromium with the flag set for the tier under test
- * ([`ARGS`]) and then asserts that the tab reports *that* tier: a WebGPU run
- * that quietly fell back would otherwise pass as a WebGPU run, which is the
- * one failure this file exists to catch. `TIER=none` is the negative case —
- * both tiers switched off — and it passes when the tab says what it needs.
- *
- * **Rendering and presentation are checked separately.** Compositor
- * screenshots verify that the model is visible. [`canvasFrame`] redraws and
- * reads the renderer's surface for pose and multi-canvas pixel comparisons.
- * A healthy readback alone cannot prove that the browser displays the frame.
- *
- * **A step that cannot see the picture is not a passing step.** For every pose
- * but the deliberate extreme, a frame that is one flat colour is a failure: a
- * dead device leaves the page running, the DOM correct and the canvas the
- * colour it was cleared to, and every other check here would still report ok.
- * For the same reason a panic, a trap, a lost device or a tab saying it has no
- * tier to draw on aborts the run where it happens instead of being counted in
- * the summary — after one of those, the next step's timeout would report the
- * wrong failure.
- *
- * **The tripwire watches the page, not only its console.** A console line and
- * an uncaught error are two of the three places such a death shows up. The
- * third is the editor's own problem line, and it is the one a failed attach
- * lands in: a viewport that cannot attach hands the reason to its host, which
- * writes it into the status line and logs nothing. So [`checkProblem`] reads
- * that element wherever a step is about to depend on the picture — and the
- * negative run waits for that same element to fill in.
+ * `e2e/run.ts` starts the servers and calls this once per pass. Playwright's
+ * Chromium download does not run on NixOS, so the executable is an argument;
+ * the dev shell puts one on `PATH`. WebGPU needs an X11 display (`run.ts`
+ * supplies Xvfb). The tab must report the tier under test, so a WebGPU run
+ * that silently falls back to WebGL2 fails. `TIER=none` passes when the tab
+ * says it needs WebGPU or WebGL2.
  */
 
 import { READBACK } from "@catchlight/core";
@@ -62,32 +33,14 @@ import type { Image } from "./frame.ts";
 
 /**
  * How much of the canvas one colour may cover before the frame reads as blank.
- *
- * A canvas nothing drew on is its clear colour and scores exactly 1; the
- * margin below that is for antialiasing along a model's edge. What makes this
- * worth asserting is that a dead GPU device is invisible from everywhere else
- * in this file — the page runs, the DOM fills in, the status line moves, and
- * the picture never appears.
+ * A dead GPU device leaves the DOM healthy, so this is the only place it shows;
+ * the margin below 1 is for antialiasing along a model's edge.
  */
 const MAX_FLAT_SHARE = 0.995;
 
-/**
- * What the tab says when it found neither tier, verbatim enough to match.
- *
- * The expected end of a `TIER=none` run and a fatality in every other one:
- * `Gpu::acquire` rejects with this and the editor mounts over a canvas nothing
- * will ever reach.
- */
+/** What the tab says when it found neither tier: expected for `TIER=none`, fatal otherwise. */
 const NO_DEVICE = /needs WebGPU or WebGL2/i;
 
-/**
- * Lines that mean the page is no longer able to draw, whatever it still shows.
- *
- * Catching them is what makes a run say why rather than time out on a missing
- * viewport — from the console when nothing handled the rejection, and from the
- * problem line when the editor did. [`NO_DEVICE`] is on the list for every run
- * but the negative one, where it is the answer being asked for.
- */
 const CONSOLE_FATAL = [
   /panicked at/,
   /device (?:is |was )?lost/i,
@@ -98,7 +51,6 @@ const CONSOLE_FATAL = [
 /** A wasm trap reaches the page as an error and nothing else; hence the extra pattern. */
 const PAGE_FATAL = [...CONSOLE_FATAL, /unreachable/i];
 
-/** Shared browser process options. */
 const BASE_ARGS = [
   "--no-sandbox",
   "--no-first-run",
@@ -114,10 +66,8 @@ const WEBGL_GPU = [
 ];
 
 /**
- * These defaults target Linux/Mesa. WebGPU uses Graphite on X11 so frames
- * reach the compositor; `run.ts` supplies Xvfb when no display exists.
- * WebGL2 also supports headless capture.
- * `CHROMIUM_ARGS` replaces the defaults for other browser environments.
+ * Linux/Mesa defaults. WebGPU uses Graphite on X11 so frames reach the
+ * compositor; WebGL2 can capture headless.
  */
 const ARGS: Record<string, string[]> = {
   webgpu: [
@@ -136,14 +86,12 @@ const ARGS: Record<string, string[]> = {
 const [exe, site, server] = process.argv.slice(2);
 if (!exe || !site)
   throw new Error("usage: drive.ts <chromium> <site-url> [server-base]");
-/** The probe door is asked for only where a second viewport is under test. */
 const probe = "probe=1";
 const query = [server ? `server=${encodeURIComponent(server)}` : "", probe]
   .filter(Boolean)
   .join("&");
 const url = query ? `${site}?${query}` : site;
 const shots = process.env.SHOTS ?? ".";
-/** Which tier this pass is for: what the browser is launched as, and what the tab must report. */
 const tier = process.env.TIER ?? "webgpu";
 const chosen = ARGS[tier];
 if (!chosen)
@@ -154,7 +102,6 @@ const tag = `${server ? "connected" : "intab"}-${tier}`;
 if (tier === "webgpu" && !process.env.CHROMIUM_ARGS && !process.env.DISPLAY) {
   throw new Error("WebGPU presentation needs X11; use e2e/run.ts or xvfb-run -a");
 }
-// The selected flag set controls whether this pass needs a display.
 const browser = await chromium.launch({
   executablePath: exe,
   headless: false,
@@ -165,9 +112,7 @@ const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
 let failed = false;
 let fatal: string | null = null;
 let trip: (reason: string) => void = () => {};
-// The promise every step races against. Nothing polls it: the console handler
-// rejects it, and whichever step is waiting at that moment loses the race and
-// reports the death rather than its own timeout.
+// Every step races this, so a page death is reported instead of a later timeout.
 const tripwire = new Promise<never>((_, reject) => {
   trip = (reason) => {
     if (fatal !== null) return;
@@ -193,8 +138,6 @@ const step = async (name: string, body: () => Promise<void>) => {
   if (fatal !== null) throw new Error(`the page can no longer draw: ${fatal}`);
   try {
     const running = body();
-    // It keeps running when the tripwire wins the race, and would then reject
-    // with nobody left waiting on it.
     running.catch(() => {});
     await Promise.race([running, tripwire]);
     console.log(`ok   ${name}`);
@@ -211,15 +154,9 @@ const step = async (name: string, body: () => Promise<void>) => {
 };
 
 /**
- * The editor's own problem line, read for a reason to stop.
- *
- * A failure the editor *handles* reaches neither of the tripwire's other two
- * sources: the viewport hands a failed attach to its host, and the host puts
- * the sentence in this one element. Without this read the negative case dies
- * on the next step's fifteen-second timeout and never says WebGPU.
- *
- * `evaluate` rather than a locator, because the element is absent on a healthy
- * page and a locator would wait thirty seconds to discover that.
+ * A failed attach is handled by the editor and logs nothing; it only reaches
+ * the problem line. `evaluate` rather than a locator, because the element is
+ * absent on a healthy page and a locator would wait for it.
  */
 const checkProblem = async (): Promise<void> => {
   const said = await page
@@ -234,12 +171,9 @@ const checkProblem = async (): Promise<void> => {
   const line = `[problem] ${said}`;
   if (!PAGE_FATAL.some((pattern) => pattern.test(line))) return;
   watch(line, PAGE_FATAL);
-  // The tripwire has already rejected; this only stops the caller walking into
-  // a wait whose answer no longer matters.
   throw new Error(`the page can no longer draw: ${line}`);
 };
 
-/** What the status line says the device came up on, or "" before there is one. */
 const tierSaid = async (): Promise<string> =>
   await page
     .evaluate(
@@ -254,21 +188,12 @@ interface Shot {
   hash: number;
   share: number;
   colour: string;
-  /** The pixels behind the numbers, for a step that compares two canvases. */
   image: Image;
 }
 
-/**
- * How far two canvases drawing the same thing may differ, per channel.
- *
- * Zero is what a correct blit gives, and what the WebGL2 run has been
- * observed to give. The margin is for an sRGB surface rounding a channel by
- * one on the way through, which is a rounding difference and not a drawing
- * one; anything larger is a different picture.
- */
+/** Per-channel tolerance between two canvases: an sRGB surface may round by one. */
 const MAX_CHANNEL_DRIFT = 2;
 
-/** The largest absolute per-channel difference between two frames. */
 const maxChannelDifference = (a: Image, b: Image): number => {
   let worst = 0;
   const length = Math.min(a.data.length, b.data.length);
@@ -280,25 +205,17 @@ const maxChannelDifference = (a: Image, b: Image): number => {
 };
 
 /**
- * Redraw and read the renderer's surface for pixel assertions.
- * Browser screenshots separately check that the frame is presented.
- *
- * `flat` is for the one shot where a single colour is the right answer: a
- * param at the end of its range can pose a fixture so a flat-coloured part
- * covers the whole frame. That shot still has to differ from the one before
- * it, which is what catches a canvas that stopped drawing at that moment.
+ * Redraw and read the renderer's surface; screenshots separately check that
+ * the frame is presented. `"may be flat"` is for a param at the end of its
+ * range, which can pose a flat-coloured part over the whole frame.
  */
 const canvasFrame = async (
   what: string,
   flat: "must vary" | "may be flat" = "must vary",
   selector = "canvas[data-catchlight-viewport]",
 ): Promise<Shot> => {
-  // Before the wait below, so a viewport that will never arrive is reported as
-  // the reason it did not rather than as this step timing out.
   await checkProblem();
-  // A model swap rebuilds the viewport, and the rebuild is asynchronous.
-  // Waiting is not the assertion — a canvas that never gets one fails here
-  // with a timeout naming this step, which is the same verdict.
+  // A model swap rebuilds the viewport asynchronously.
   await page.waitForFunction(
     ([property, which]: string[]) =>
       typeof (
@@ -326,8 +243,7 @@ const canvasFrame = async (
         height: number;
         rgba: Uint8Array;
       };
-      // Through the CDP boundary as an ordinary array of bytes: a typed array is
-      // not part of what `evaluate` is guaranteed to carry across.
+      // `evaluate` is not guaranteed to carry a typed array across CDP.
       return {
         width: frame.width,
         height: frame.height,
@@ -387,10 +303,6 @@ try {
 
   if (tier === "none") {
     await step("the tab says what it needs", async () => {
-      // The device is asked for at the first attach, so the sentence appears
-      // once the editor has mounted and its viewport has tried. A wait rather
-      // than a read: the mount, the sample and the attach are three awaits
-      // deep and none of them is this file's to sequence.
       await page.waitForFunction(
         (want: string) =>
           new RegExp(want, "i").test(
@@ -421,18 +333,12 @@ try {
   process.exit(failed ? 1 : 0);
 }
 
-/** Everything a run that is supposed to draw does once the page has loaded. */
 async function draws(): Promise<void> {
   await step(`the tab draws on ${tier}`, async () => {
-    // Before anything looks at a picture: a WebGPU run that quietly fell
-    // back to WebGL2 draws a perfectly good frame, and every other check
-    // here would pass while the tier under test went untested.
     await page.locator("[data-catchlight-tier]")
       .filter({ hasText: /^(webgpu|webgl2)$/ })
       .waitFor()
       .catch(async (cause: unknown) => {
-        // A device that never arrived says so in the problem line, and that
-        // sentence is a better failure than this wait running out.
         await checkProblem();
         throw cause;
       });
@@ -452,8 +358,6 @@ async function draws(): Promise<void> {
       .first()
       .waitFor({ timeout: 20000 });
     await page.waitForTimeout(1500);
-    // The device is acquired at the first attach, so this is the earliest step
-    // a browser with no tier at all can be told apart from a slow one.
     await checkProblem();
   });
   await step("startup canvas is visible", () =>
@@ -546,15 +450,8 @@ async function draws(): Promise<void> {
     await step(
       "a second canvas draws the same picture, and the first is untouched",
       async () => {
-        // The whole of what the fallback tier does differently: an extra
-        // viewport has no surface of its own, so it borrows the main canvas's,
-        // presents through it and copies the rectangle out before the main view
-        // takes the surface back. Two things can go wrong and only a browser can
-        // say so. The extra's picture could come out upside down, mis-scaled or
-        // in the wrong colours, which is why it is compared to the main one
-        // rather than merely checked for not being flat. And the borrowing could
-        // leave a mark on the main canvas, which is why that hash has to be the
-        // one it had before the extra existed.
+        // On WebGL2 an extra viewport borrows the main canvas's surface. Its
+        // picture must match the main one, and the main one must be unchanged.
         const before = await canvasFrame(
           "the main canvas before a second one exists",
         );
@@ -567,11 +464,8 @@ async function draws(): Promise<void> {
             "canvas[data-catchlight-viewport]",
           );
           if (!main) return "no main canvas to match";
-          // Two different measurements of the same element, and both are
-          // needed. The layout box is fractional and is what the resize
-          // observer turns into a backing store, and the rounded pair is what
-          // the React viewport passed to `fitCamera` when it framed this
-          // model, so it is what reproduces the camera.
+          // The fractional box sizes the backing store; the rounded pair is
+          // what the React viewport passed to `fitCamera`.
           const box = main.getBoundingClientRect();
           const framing = {
             width: main.clientWidth,
@@ -584,14 +478,8 @@ async function draws(): Promise<void> {
 
           const canvas = document.createElement("canvas");
           canvas.setAttribute("data-e2e-extra", "");
-          // Laid over the main canvas, at its position and its size, and
-          // invisible. The position is not decoration: a fractional CSS box
-          // snaps to a different number of device rows depending on where it
-          // starts, so the same 732.42 css pixels are 733 device rows here and
-          // 732 in the corner of the page — a difference the comparison below
-          // would rightly call a different picture. `opacity` keeps it out of
-          // the screenshots and out of nobody's way; the readback goes to the
-          // renderer and never to the compositor.
+          // Same position as the main canvas: a fractional CSS box snaps to
+          // a different number of device rows depending on where it starts.
           canvas.style.cssText =
             `position:fixed;left:${box.left}px;top:${box.top}px;` +
             `pointer-events:none;opacity:0;` +
@@ -599,8 +487,6 @@ async function draws(): Promise<void> {
           document.body.appendChild(canvas);
           const view = await editor.attach(session, canvas);
 
-          // The camera the React viewport computed when it opened this
-          // model: same function, same bounds, same size, same padding.
           const framed = fitCamera(session.bounds(), framing);
           if (!framed) return "the model has no bounds to frame";
           view.setCamera(framed.center[0], framed.center[1], framed.height);
@@ -654,8 +540,6 @@ async function draws(): Promise<void> {
           );
         }
 
-        // Taken down before the steps below, so what they measure is the editor
-        // and not this.
         await page.evaluate(() => {
           const held = globalThis as unknown as Record<string, any>;
           held.__catchlightProbeView?.dispose?.();
@@ -687,7 +571,6 @@ async function draws(): Promise<void> {
     );
     if (after.hash === before.hash)
       throw new Error("canvas unchanged after slider");
-    // Back to the rest pose, so the drag below moves a picture with structure in it.
     const min = await slider.getAttribute("min");
     await slider.evaluate((el, v) => {
       const input = el as HTMLInputElement;
@@ -729,6 +612,5 @@ async function draws(): Promise<void> {
   await studio(page, step, shots, tag);
   await draftClose(page, step, shots, tag);
   await drawerKeyboard(page, step, shots, tag);
-  // Save the complete editor for visual review.
   await page.screenshot({ path: `${shots}/${tag}-final.png` });
 }

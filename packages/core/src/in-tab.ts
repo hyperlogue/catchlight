@@ -1,29 +1,7 @@
 /**
- * The editor running inside this tab.
- *
- * `handle` is a synchronous call into wasm, so every promise here resolves
- * without ever yielding to the network. The class exists anyway, and exists
- * behind the same [`Backend`] interface as the connected one, so that nothing
- * above it can be written against "the model is right here" — and so the
- * whole thing can move into a Worker without touching a caller.
- *
- * **Bytes go in with the command and come out of the tab's store.** A command
- * that needs bytes is handed them ([`sendWith`]), so nothing is parked under a
- * key first and the browser's asynchrony stops in the caller, which awaits its
- * own file read and then calls in synchronously.
- *
- * The other direction is the one thing this class still drains. A `save` or an
- * `export_manifest` leaves what it wrote in the editor's own map, and this
- * moves it into the tab's [`Storage`] — draining rather than copying, because
- * a map nothing empties holds a second copy of every texture in the model.
- * `save` names its one key in the reply; `export_manifest` writes a manifest
- * and a file per texture, so what it left is whatever appeared while it ran.
- *
- * **Events are dispatched before `send` resolves.** They come out of the same
- * synchronous `handle` call, and a caller waiting for the revision its reply
- * promised is waiting for the feed that this dispatch starts. Nothing here can
- * lose one either, which is why a `Session`'s bounded wait never fires against
- * this backend: the replica is already at the revision when `send` returns.
+ * The editor inside this tab, behind the same [`Backend`] seam so it can move
+ * into a Worker untouched. Events are dispatched before `send` resolves, so a
+ * `Session`'s bounded wait never fires here.
  */
 
 import type { Command, Event } from "./protocol.gen.js";
@@ -54,10 +32,7 @@ export class InTabBackend implements Backend {
   #feeds = new FeedQueue();
   #nextId = 1;
 
-  /**
-   * Takes ownership of `editor`: [`close`] frees it. `storage` is where the
-   * keys commands name are read from and written back to.
-   */
+  /** Takes ownership of `editor`: [`close`] frees it. */
   constructor(editor: WasmEditor, storage: Storage) {
     this.#editor = editor;
     this.#storage = storage;
@@ -83,9 +58,7 @@ export class InTabBackend implements Backend {
       throw asProtocolError(cause, "bad_reply");
     }
 
-    // Before the reply is read, and before it resolves: an `err` is still an
-    // event's cause, and a caller about to wait on a revision needs the feed
-    // this starts to be in flight already.
+    // Dispatch first: a caller about to wait on a revision needs this feed in flight.
     this.#dispatch(editor);
 
     const reply = readReply(answer.reply, command.cmd);
@@ -93,26 +66,12 @@ export class InTabBackend implements Backend {
     return answer.payload === undefined ? reply : { ...reply, payload: answer.payload };
   }
 
-  /**
-   * The bytes the tab's store holds at `key`, or `undefined` when it has
-   * none.
-   *
-   * Read out of the store rather than out of the editor: [`sendWith`] moves
-   * what a command wrote into the store before it resolves, so what is there
-   * is what was written.
-   */
   readFile(key: string): Promise<Uint8Array | undefined> {
     this.#live();
     return this.#storage.read(key);
   }
 
-  /**
-   * Hands the editor's own model to the replica.
-   *
-   * `rev` is not passed on: the event that asked for this came from the editor
-   * itself, so its session is already at or past that revision, and what the
-   * replica should hold is whatever the editor holds now.
-   */
+  /** `rev` is unused: the editor already holds that revision or newer. */
   feed(replica: WasmReplica, session: number, rev: number): Promise<number> {
     return this.#feeds.run(session, rev, () => {
       try {
@@ -130,7 +89,7 @@ export class InTabBackend implements Backend {
     };
   }
 
-  /** Frees the wasm editor. Idempotent; every later call rejects as closed. */
+  /** Idempotent; every later call rejects as closed. */
   close(): void {
     this.#editor?.free();
     this.#editor = undefined;
@@ -149,23 +108,17 @@ export class InTabBackend implements Backend {
       try {
         event = JSON.parse(text) as Event;
       } catch {
-        // serde wrote it; an unreadable one is a memory bug, and failing the
-        // command that happened to drain it would blame the wrong caller.
+        // An unreadable event is a memory bug; don't blame this command.
         continue;
       }
-      // Copy: a listener that unsubscribes while being told must not shift the
-      // set out from under this loop.
+      // Copy: a listener may unsubscribe while being told.
       for (const listener of [...this.#listeners]) listener(event);
     }
   }
 
   /**
-   * Moves what the command wrote into the store, emptying the editor's map as
-   * it goes.
-   *
-   * A `saved` reply names its key outright — it may have overwritten a key
-   * that was already there, which no before/after difference would show — and
-   * anything else that appeared came from the same command.
+   * Drains rather than copies, so the map never holds a second copy of every
+   * texture. A `saved` reply names its key, since it may overwrite one.
    */
   async #drainBytes(editor: WasmEditor, before: Set<string>, reply: OkReply): Promise<void> {
     const keys = editor.writtenKeys().filter((key) => !before.has(key));
@@ -176,8 +129,7 @@ export class InTabBackend implements Backend {
       const bytes = editor.takeBytes(key);
       if (!bytes) {
         if (key !== saved) continue;
-        // Reporting a write that produced no bytes is the worst outcome an
-        // authoring tool has: the caller believes the model is on disk.
+        // A write reporting no bytes would make the caller believe it is on disk.
         throw new ProtocolError({
           code: "bad_reply",
           message: `save reported ${key} but staged no bytes for it`,
@@ -188,7 +140,6 @@ export class InTabBackend implements Backend {
   }
 }
 
-/** Whether a command leaves bytes in the editor's store for the tab to drain. */
 function writesBytes(command: Command): boolean {
   return command.cmd === "session_save" || command.cmd === "manifest_export";
 }

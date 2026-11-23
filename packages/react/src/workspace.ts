@@ -1,5 +1,3 @@
-/** Shared workspace actions and canvas gestures. Layouts call intentions;
- * selection, protocol routing and gesture rollback live here. */
 import type {
   NodeId,
   NodeKind,
@@ -308,8 +306,7 @@ export function useCanvasSelection(
   };
 }
 
-/** The overlay follows the evaluated mesh, including motion responses. State only
- * changes when coordinates do, and a hidden tab pauses requestAnimationFrame. */
+/** State changes only when coordinates do; a hidden tab pauses requestAnimationFrame. */
 export function useSelectionVertices(
   session: Session | undefined,
   node: NodeId | undefined,

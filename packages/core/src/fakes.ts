@@ -1,19 +1,4 @@
-/**
- * Hand-written stand-ins for the wasm module and the network, for the tests.
- *
- * Deliberately not the real module: the suites assert the *contract* — that a
- * edit resolves only once the replica can answer for it, that a
- * drag never becomes a revision, that a feed fetches exactly the textures a
- * structure named — and each of those is a few lines here against 2 MiB of
- * WebAssembly, a GPU and a fixture model. The real module gets its own thin
- * integration suite; that one proves the wiring, these prove the rules.
- *
- * The fake editor keeps one small model per session and emits the events
- * the real one would. The fake replica holds whatever it was last fed and
- * answers the two reads the panels want. A "structure" here is JSON, because
- * the only thing these tests care about is that the right bytes reached the
- * right call.
- */
+/** Hand-written stand-ins for the wasm module and the network, for tests. */
 
 import type {
   BindingInfo,
@@ -50,7 +35,6 @@ import type {
   WasmViewport,
 } from "./wasm.js";
 
-/** One model, as both the fake editor and the fake replica hold it. */
 export interface FakeDoc {
   rev: number;
   title: string;
@@ -58,34 +42,18 @@ export interface FakeDoc {
   root: TreeNode;
   params: ParamInfo[];
   textures: TexInfo[];
-  /**
-   * What each part draws, keyed by node Id — the model's albedo, which is the
-   * one node field this fake tracks. A part missing here draws nothing, and
-   * that is a state a panel renders differently from an unmapped kind.
-   */
+  /** Albedo per part; a missing entry draws nothing. */
   albedo: Record<string, string>;
   bindings: FakeBinding[];
-  /**
-   * The extensions the model carries. A JSON one rides here whole; a byte
-   * one is the marker a feed compares, which is the only part a structure
-   * ever carries.
-   */
+  /** A byte extension holds only the marker a feed compares. */
   extensions: FakeExtension[];
 }
 
-/** One extension in a fake structure: JSON inline, or a marker by hash. */
 export type FakeExtension =
   | { key: string; kind: "json"; value: unknown }
   | { key: string; kind: "bytes"; hash: string };
 
-/**
- * A binding as the fake stores it: the cells a command authored, and nothing
- * derived.
- *
- * Sparse like the model's own, so `binding_list` has holes to report — but
- * *only* the cells a command named. Recording, rather than raw writes, owns
- * explicit rest identity authorship; Rust recording tests cover that policy.
- */
+/** Only the cells a command authored, sparse like the model's own. */
 export interface FakeBinding {
   node: string;
   target: BindingTarget;
@@ -118,7 +86,6 @@ export function emptyDoc(title: string): FakeDoc {
   };
 }
 
-/** A model as bytes, the way a structure container travels. */
 export function structureBytes(doc: FakeDoc): Uint8Array {
   return new TextEncoder().encode(JSON.stringify(doc));
 }
@@ -127,17 +94,13 @@ export function readStructure(bytes: Uint8Array): FakeDoc {
   return JSON.parse(new TextDecoder().decode(bytes)) as FakeDoc;
 }
 
-/** The wasm editor, answering the commands these tests send. */
 export class FakeEditor implements WasmEditor {
   docs = new Map<number, FakeDoc>();
-  /** The tab's store: what a `save` wrote, until something drains it. */
   written = new Map<string, Uint8Array>();
   requests: Request[] = [];
-  /** The attachments each request arrived with, in order. */
   attached: Array<Record<string, Uint8Array>> = [];
   /** Commands to refuse instead of running, keyed by `cmd`. */
   refuse = new Map<string, { code: string; message: string }>();
-  /** What `presence_set` last stored per session, and `presence_get` answers. */
   presence = new Map<number, Presence>();
   freed = false;
 
@@ -228,9 +191,7 @@ export class FakeEditor implements WasmEditor {
         });
         return this.#ok(id, { result: "node", node }, doc.rev);
       }
-      // Only the albedo: it is the one node field the fake holds, and its
-      // three states are what a panel has to be able to tell apart — absent
-      // is unchanged, null is "draw none", an Id is "draw this".
+      // Albedo states: absent is unchanged, null is "draw none", an Id draws.
       case "node_set": {
         const doc = this.docs.get(request.session);
         if (!doc) return this.#noSession(id, request.session);
@@ -245,8 +206,6 @@ export class FakeEditor implements WasmEditor {
         });
         return this.#ok(id, { result: "node", node: request.node }, doc.rev);
       }
-      // A texture belongs to a part: it arrives named by the node that draws
-      // it, and the model gains both in one edit.
       case "texture_add": {
         const doc = this.docs.get(request.session);
         if (!doc) return this.#noSession(id, request.session);
@@ -360,7 +319,6 @@ export class FakeEditor implements WasmEditor {
           return this.#noSession(id, request.session);
         this.presence.delete(request.session);
         this.#emit({ event: "sessions_changed" });
-        // No rev: the session it would have named is gone.
         return this.#ok(id, { result: "empty" });
       }
       case "presence_set": {
@@ -388,14 +346,12 @@ export class FakeEditor implements WasmEditor {
     }
   }
 
-  /** Moves the model on and answers `empty`, as an edit with no Id does. */
   #changed(id: number, session: number, doc: FakeDoc): string {
     doc.rev += 1;
     this.#emit({ event: "model_changed", session, rev: doc.rev });
     return this.#ok(id, { result: "empty" }, doc.rev);
   }
 
-  /** What a replica gets when it syncs from this editor. */
   snapshot(session: number): FakeDoc {
     const doc = this.docs.get(session);
     if (!doc) throw `no session ${session}`;
@@ -458,10 +414,10 @@ export class FakeEditor implements WasmEditor {
   }
 }
 
-/** One device. Reports a small limit so the clamp is testable. */
+/** Reports a small limit so the clamp is testable. */
 export class FakeGpu implements WasmGpu {
   freed = false;
-  /** How many times `acquire` ran. One per editor, however many canvases ask. */
+  /** One per editor, however many canvases ask. */
   acquires = 0;
   maxSize(): number {
     return 4096;
@@ -472,16 +428,13 @@ export class FakeGpu implements WasmGpu {
   [Symbol.dispose](): void {
     this.free();
   }
-  /** What `tier()` answers. A test that cares which tier it is on sets it. */
   tierName = "webgpu";
   tier(): string {
     return this.tierName;
   }
-  /** Every canvas `acquire` was called with. A device comes from a canvas. */
   acquiredFrom: HTMLCanvasElement[] = [];
 }
 
-/** This tab's copy of one model, and what it was told. */
 export class FakeReplica implements WasmReplica {
   setEditing(_editing: boolean): void {}
   recordingPairs(_node: string, _param: string): string {
@@ -506,14 +459,11 @@ export class FakeReplica implements WasmReplica {
   applied: Array<{ rev: number; textures: string[] }> = [];
   syncs: number[] = [];
   held = new Set<string>();
-  /** Byte extensions this replica holds, by key, keyed to the hash it has. */
   heldExtensions = new Map<string, string>();
   pose = new Map<string, number>();
   scratchDeforms = new Map<string, Float32Array>();
   scratchTransforms = new Map<string, number[]>();
-  /** Authored local translations, which `translationAfterWorldDelta` reads. */
   translations = new Map<string, [number, number, number]>();
-  /** What `bounds()` answers: `[min_x, min_y, max_x, max_y]`, or nothing drawn. */
   box: [number, number, number, number] | undefined;
   freed = false;
 
@@ -550,8 +500,6 @@ export class FakeReplica implements WasmReplica {
   }
 
   putExtension(key: string, bytes: Uint8Array): void {
-    // The fake's "hash" is the bytes as text, which is all a test needs: what
-    // matters is that a changed value is a changed hash.
     this.heldExtensions.set(key, new TextDecoder().decode(bytes));
   }
 
@@ -710,7 +658,6 @@ export class FakeReplica implements WasmReplica {
     return this.scratchTransforms.delete(node);
   }
 
-  /** Identity: the fake has no fold, and nothing here reads the rotation. */
   pickNode(_x: number, _y: number): string | undefined {
     return undefined;
   }
@@ -735,7 +682,7 @@ export class FakeReplica implements WasmReplica {
     return world;
   }
 
-  /** The stored local translation plus the delta, the parent frame being identity. */
+  /** The parent frame is identity. */
   translationAfterWorldDelta(
     node: string,
     dx: number,
@@ -746,7 +693,6 @@ export class FakeReplica implements WasmReplica {
     return new Float32Array([x + dx, y + dy, z]);
   }
 
-  /** Whether the fed model names `node` anywhere in its tree. */
   #holds(node: string): boolean {
     return this.doc ? holds(this.doc.root, node) : false;
   }
@@ -756,11 +702,6 @@ export class FakeReplica implements WasmReplica {
     this.scratchTransforms.clear();
   }
 
-  /**
-   * Whatever a test set, and `undefined` until one does — the fake has no
-   * geometry, and a replica that has drawn nothing is exactly the case a fit
-   * has to survive.
-   */
   bounds(): Float32Array | undefined {
     return this.box ? new Float32Array(this.box) : undefined;
   }
@@ -775,16 +716,8 @@ export class FakeReplica implements WasmReplica {
 }
 
 /**
- * The tree row for `node`, as the `node_info` reply carries it.
- *
- * A fake model holds a tree and its albedo, so the transform is the rest
- * pose and the values are defaults. Which fields are *present* is not a
- * default: a panel decides what to draw from the kind carrying a field or not,
- * so the fake omits the same ones the model does — colour on anything but a
- * part or a composite, `mg_*` off a mesh group, and `texture` off a part that
- * draws none. A fake holds no mesh, so the two kinds that carry one report an
- * empty mesh rather than no mesh at all, which is what an unmeshed part in a
- * real model reports.
+ * Omits the same fields the model does per kind, since panels branch on
+ * presence. A meshed kind reports an empty mesh, as an unmeshed real part does.
  */
 function nodeInfo(
   doc: FakeDoc,
@@ -831,12 +764,10 @@ function nodeInfo(
   return undefined;
 }
 
-/** Whether `tree` names `node` anywhere under it. */
 function holds(tree: TreeNode, node: string): boolean {
   return tree.id === node || tree.children.some((child) => holds(child, node));
 }
 
-/** Whether `binding` is the one a command addresses. */
 function addresses(
   binding: FakeBinding,
   at: {
@@ -854,7 +785,6 @@ function addresses(
   );
 }
 
-/** The binding a command addresses, created if this is the first mention. */
 function binding(
   doc: FakeDoc,
   at: {
@@ -880,14 +810,7 @@ function binding(
   return made;
 }
 
-/**
- * A binding's grid, as `binding_list` reports it: the product of its own
- * key positions, with the cells nobody authored left null.
- *
- * Built here rather than stored, because axes determine grid size and
- * the model stores only the authored cells — a fake that stored a rectangle
- * would answer a question the real one derives.
- */
+/** Derived, not stored: the real model stores only authored cells. */
 function bindingInfo(doc: FakeDoc, b: FakeBinding): BindingInfo {
   const width = b.key_positions[0]!.length;
   const height = b.key_positions[1]?.length ?? 1;
@@ -918,7 +841,6 @@ function bindingInfo(doc: FakeDoc, b: FakeBinding): BindingInfo {
   };
 }
 
-/** A renderer that counts what it was told, and draws nothing. */
 export class FakeViewport implements WasmViewport {
   started = 0;
   stopped = 0;
@@ -926,7 +848,6 @@ export class FakeViewport implements WasmViewport {
   freed = 0;
   size: [number, number] | undefined;
   camera: [number, number, number] | undefined;
-  /** What `readback` resolves with. One grey pixel unless a test says more. */
   frame = {
     width: 1,
     height: 1,
@@ -965,11 +886,9 @@ export interface FakeModule {
   gpu: FakeGpu;
   replicas: FakeReplica[];
   viewports: FakeViewport[];
-  /** Set to make the next `Gpu.acquire` reject with this message, once. */
   failNextAcquire: string | undefined;
 }
 
-/** The four classes `@catchlight/wasm` exports, in memory. */
 export function fakeWasm(): FakeModule {
   const gpu = new FakeGpu();
   const replicas: FakeReplica[] = [];
@@ -1026,31 +945,20 @@ export function fakeWasm(): FakeModule {
 }
 
 /**
- * A backend whose every step a test drives by hand.
- *
- * What the in-tab and connected backends cannot show between them: a reply
- * that arrives before its event, and one that arrives after. Both orders are
- * real — an in-tab editor emits inside the same call, a connected one over a
- * socket that may deliver either way round — and `Session` has to resolve the
- * same way for both.
+ * A backend a test steps by hand, so a reply can arrive before or after its
+ * event — both orders are real and `Session` must resolve the same way.
  */
 export class ScriptedBackend implements Backend {
   readonly kind = "in-tab";
   sent: Command[] = [];
-  /** The attachments each `sendWith` carried, in order. */
   attached: Array<readonly Attachment[]> = [];
-  /** The tab's store, for `readFile`. */
   stored = new Map<string, Uint8Array>();
   feeds: Array<{ session: number; rev: number }> = [];
-  /** The target of each feed that actually ran, coalescing included. */
+  /** Feeds that actually ran, after coalescing. */
   runs: number[] = [];
-  /** The rev each session is at, as far as the editor is concerned. */
   revs = new Map<number, number>();
-  /** Set to make a feed wait; resolve it to let the feed finish. */
   hold: Promise<void> | undefined;
-  /** Set to make the next feed fail. */
   failFeed: string | undefined;
-  /** What `send` answers, by command. */
   replies = new Map<string, OkReplyWithPayload>();
 
   #listeners = new Set<(event: Event) => void>();
@@ -1078,7 +986,6 @@ export class ScriptedBackend implements Backend {
     return this.send(command);
   }
 
-  /** Whatever a test put under `key`; nothing there is "not in this tab". */
   readFile(key: string): Promise<Uint8Array | undefined> {
     return Promise.resolve(this.stored.get(key));
   }
@@ -1111,7 +1018,6 @@ export class ScriptedBackend implements Backend {
     this.#listeners.clear();
   }
 
-  /** The editor moved a session forward, and said so. */
   changed(session: number, rev: number): void {
     this.revs.set(session, rev);
     this.emit({ event: "model_changed", session, rev });
@@ -1122,7 +1028,6 @@ export class ScriptedBackend implements Backend {
   }
 }
 
-/** A WebSocket a test writes both ends of. */
 export class FakeSocket implements SocketLike {
   static opened: FakeSocket[] = [];
   url: string;
@@ -1136,7 +1041,6 @@ export class FakeSocket implements SocketLike {
   constructor(url: string) {
     this.url = url;
     FakeSocket.opened.push(this);
-    // Open on the next microtask, the way a real one never opens inline.
     queueMicrotask(() => this.onopen?.({}));
   }
 
@@ -1149,18 +1053,15 @@ export class FakeSocket implements SocketLike {
     this.onclose?.({});
   }
 
-  /** The request the client sent at `index`, parsed. */
   request(index: number): Request {
     return JSON.parse(this.sent[index] ?? "{}") as Request;
   }
 
-  /** Delivers a frame from the server. */
   deliver(message: unknown): void {
     this.onmessage?.({ data: JSON.stringify(message) });
   }
 }
 
-/** One canned HTTP response. */
 export function httpResponse(
   body: Uint8Array | unknown,
   init?: { status?: number; headers?: Record<string, string> },
@@ -1190,7 +1091,6 @@ export function httpResponse(
   };
 }
 
-/** A `fetch` that answers from a table and records every call. */
 export function fakeFetch(routes: Record<string, () => HttpResponse>): {
   fetch: (url: string, init?: FetchInit) => Promise<HttpResponse>;
   calls: Array<{ url: string; init: FetchInit | undefined }>;
@@ -1208,17 +1108,8 @@ export function fakeFetch(routes: Record<string, () => HttpResponse>): {
   };
 }
 
-/**
- * A replica that behaves like a freed wasm object: every call into it after
- * `free` throws the way wasm-bindgen does, and says so.
- *
- * [`FakeReplica`] keeps answering after `free`, which is what a fake should do
- * for the suites that only care about the rules. This one is for the one rule
- * that is about the pointer: a feed still reading a replica the session closed
- * out from under it is a use-after-free nobody sees until it reaches Rust.
- */
+/** Throws on every call after `free`, as wasm-bindgen does. */
 export class GuardedReplica extends FakeReplica {
-  /** Every call that reached this replica after it was freed. */
   usedAfterFree: string[] = [];
 
   override rev(): number {
@@ -1256,7 +1147,7 @@ export class GuardedReplica extends FakeReplica {
     return super.syncFromEditor(editor, session);
   }
 
-  /** wasm-bindgen throws a string, so this does too. */
+  /** wasm-bindgen throws a string. */
   #live(call: string): void {
     if (!this.freed) return;
     this.usedAfterFree.push(call);

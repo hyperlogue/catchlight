@@ -1,6 +1,4 @@
 #!/usr/bin/env node
-// Runs the `catchlight-editor` binary from the platform package npm installed
-// beside this launcher, forwarding arguments, stdio and the exit status.
 'use strict';
 const { spawn } = require('node:child_process');
 

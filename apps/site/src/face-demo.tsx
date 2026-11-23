@@ -1,19 +1,10 @@
-/** Browser camera lifetime and demo-specific mapping to the bundled Lan rig.
- * Tracking only poses the replica: no authored keys or saved model changes.
- * Each run owns its stream, detector and frame loop, including late async arrivals.
- * Mirroring is read per frame, so toggling it never restarts the camera.
- * The face detector drives the head, brows and mouth through One Euro filters
- * that damp landmark jitter, leaving blinks raw; a second pose detector
- * drives the torso from the shoulders, eased because pose depth is noisy.
- * A torso param eases back to rest whenever its landmarks are out of view.
- */
+/** Face and pose tracking mapped onto the bundled Lan rig; poses the replica only. */
 import type { Camera, Session } from "@catchlight/core";
 import { useEditor, Viewport } from "@catchlight/react";
 import type { FaceLandmarker, PoseLandmarker, PoseLandmarkerResult } from "@mediapipe/tasks-vision";
 import { useEffect, useRef, useState } from "react";
 import { StatsForNerds, TierBadge, trackingStats, useGpuTier } from "./face-stats.js";
 
-/** Lan's head with room for a turn and a tilt. */
 const FACE_CAMERA: Camera = { center: [-3, 770], height: 520 };
 
 const MODELS = "https://storage.googleapis.com/mediapipe-models";
@@ -26,7 +17,6 @@ const BODY_EASE = 0.35;
  * with speed in rig units per second. Head params are in degrees. */
 const STEADY = { head: { minCutoff: 1, beta: 0.02 }, face: { minCutoff: 1.5, beta: 1 } };
 
-/** Smooths one tracked signal: steady while still, low lag while moving. */
 function oneEuro({ minCutoff, beta }: { minCutoff: number; beta: number }) {
   let last: { t: number; x: number; dx: number } | undefined;
   const alpha = (cutoff: number, dt: number) => 1 / (1 + 1 / (2 * Math.PI * cutoff * dt));
@@ -86,9 +76,7 @@ export function FaceDemo({ session }: { session: Session }) {
     let stream: MediaStream | undefined;
     let detector: FaceLandmarker | undefined;
     let poser: PoseLandmarker | undefined;
-    /** Eased torso values, by param name. */
     const body = new Map<string, number>();
-    /** Jitter filters for steadied face params, by param name. */
     const filters = new Map<string, (x: number, ms: number) => number>();
     let frame = 0;
     const params = session.params();
@@ -197,7 +185,7 @@ export function FaceDemo({ session }: { session: Session }) {
                 steady(`eyebrow_${own}_height`, (score(`browOuterUp${subject}`) - down) * 1.5, "face");
                 steady(`eyebrow_${own}_inner_height`, (score("browInnerUp") - down) * 1.5, "face");
               }
-              // MediaPipe's column-major rotation matrix, converted to degrees.
+              // MediaPipe's rotation matrix is column-major.
               const m = result.facialTransformationMatrixes[0]?.data;
               if (m) {
                 const degrees = 180 / Math.PI;

@@ -1,13 +1,5 @@
-/**
- * What the tree edits put on the wire, and the two things they work out for
- * themselves: where a reorder lands, and when a delete takes the selection
- * with it.
- *
- * Against a scripted backend rather than the fake editor, because what is
- * asserted here is the command — the exact arm, with the exact index — and a
- * fake that also *applies* it would let a wrong index pass as long as it was
- * wrong in both places.
- */
+// A scripted backend rather than the fake editor: a fake that also applied the
+// command would let a wrong index pass if it were wrong in both places.
 
 import "./test/setup.js";
 
@@ -21,12 +13,10 @@ import type { NodeActions } from "./node-actions.js";
 import { SelectionProvider, useSelection } from "./selection.js";
 import { mount, run } from "./test/harness.js";
 
-/** A tree node with the fields the panels read and nothing else. */
 function node(id: string, children: TreeNode[] = []): TreeNode {
   return { id, name: id, kind: "group", z_order: 0, enabled: true, children };
 }
 
-/** A session whose replica holds `root`, over a backend that records commands. */
 function scripted(root: TreeNode): { backend: ScriptedBackend; session: Session } {
   const backend = new ScriptedBackend();
   const replica = new FakeReplica();
@@ -37,7 +27,6 @@ function scripted(root: TreeNode): { backend: ScriptedBackend; session: Session 
   return { backend, session: new SessionClass(backend, 1, replica) };
 }
 
-/** Mounts the hook under a selection, and hands both back. */
 async function open(
   root: TreeNode,
   select?: NodeId,
@@ -77,13 +66,7 @@ async function open(
   };
 }
 
-/**
- * Every edit the backend was sent, in order.
- *
- * Presence is dropped whole rather than by name: a selection publishes one on
- * every click and the provider asks for the session's own on mount, and none
- * of that is what a tree edit put on the wire.
- */
+// Presence is dropped whole: selection and mount both publish it.
 function commands(backend: ScriptedBackend): Command[] {
   return backend.sent.filter((command) => !command.cmd.startsWith("presence_"));
 }
@@ -164,8 +147,7 @@ describe("moving among siblings", () => {
     const { backend, actions, unmount } = await open(tree);
 
     await run(() => actions.moveUp("root/c"));
-    // The model takes the node out before it inserts, so "one later" counts
-    // the siblings that are left: b at 1 becomes index 2, not 1.
+    // The node is removed before reinsertion, so "one later" for b at 1 is 2.
     await run(() => actions.moveDown("root/b"));
 
     expect(commands(backend)).toEqual([
@@ -234,11 +216,8 @@ describe("where a drop lands", () => {
   });
 
   test("beside a row counts the siblings the dragged node is not in", () => {
-    // c sits after b, so dropping c before b is index 1 in [a, b] — the list
-    // the model reinserts into.
     expect(dropIndex(tree, "root/c", "root/b", "before")).toEqual({ parent: "root", index: 1 });
     expect(dropIndex(tree, "root/c", "root/b", "after")).toEqual({ parent: "root", index: 2 });
-    // A node from elsewhere is not in that list at all.
     expect(dropIndex(tree, "root/a/x", "root/b", "before")).toEqual({ parent: "root", index: 1 });
   });
 

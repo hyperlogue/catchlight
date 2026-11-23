@@ -1,27 +1,9 @@
 /**
- * The node tree, as a tree — and the panel that edits it.
+ * The node tree as an ARIA tree, and its editing panel. State is exposed as
+ * data attributes (`data-selected`, `data-kind`, `data-drop`).
  *
- * Real `ul`/`li` with the tree roles on them, because a panel that is a pile
- * of divs is a panel a keyboard cannot walk. State goes out as data
- * attributes — `data-selected`, `data-kind`, `data-drop` — so a host styles
- * the selection and the drop target without this package shipping a
- * stylesheet or a class name.
- *
- * The item is exported for the same reason the render prop exists elsewhere: a
- * host that wants a disclosure triangle, a different toggle or its own drag
- * handle writes its own row, keeps the recursion, and still sends its edits
- * through [`useNodeActions`].
- *
- * **The gesture is this side's, the arithmetic is not.** A row decides which
- * of the three places a drop is aimed at from the pointer's height in it, and
- * hands the answer to `dropIndex`, which turns it into the parent and index
- * the model counts in. The same split the drag on the canvas is built to.
- *
- * **What is being dragged is module state, not React state.** A browser has
- * one drag at a time and `dataTransfer` cannot be read while hovering — only
- * on the drop — so a row that has to decide *now* whether it may accept has
- * nowhere else to look. Putting it in state instead would re-render every row
- * in the tree on the way past.
+ * The dragged node is module state: `dataTransfer` cannot be read during
+ * `dragover`, and React state would re-render every row on the way past.
  */
 
 import type { NodeId, NodeKindArg, Session, TreeNode } from "@catchlight/core";
@@ -35,10 +17,8 @@ import { useSelection } from "./selection.js";
 import { Icon } from "./controls.js";
 import { kindIcons, kindLabels } from "./authoring.js";
 
-/** The node kinds a panel can add, in the order the picker lists them. */
 export const NODE_KINDS: readonly NodeKindArg[] = ["group", "part", "composite", "mesh_group"];
 
-/** What a failed edit is told to, when a host passed nothing. */
 type ErrorSink = ((cause: unknown) => void) | undefined;
 
 interface TreeDisclosure {
@@ -285,13 +265,7 @@ export function NodeTreeItem({ session, node, isRoot, onError, ...rest }: NodeTr
   );
 }
 
-/**
- * The label while it is being edited.
- *
- * Its own component so the input is mounted fresh with the name it started
- * from: an uncontrolled field is the one that lets a person type without every
- * keystroke going through React, and `defaultValue` is only read once.
- */
+// Uncontrolled and mounted fresh, since `defaultValue` is read only once.
 function NodeRename({
   name,
   onCommit,
@@ -338,21 +312,13 @@ export interface NodeTreeActionsProps extends Omit<ComponentProps<"div">, "child
   onError?: ErrorSink;
 }
 
-/**
- * The toolbar over the tree: what to add, and what to do to the selection.
- *
- * Every button reads whether it applies from the tree rather than guessing —
- * the root cannot be deleted, the first child cannot move up — so a disabled
- * button is the panel saying what the editor would refuse anyway.
- */
 export function NodeTreeActions({ session, onError, ...rest }: NodeTreeActionsProps) {
   const tree = useTree(session);
   const { node: selected, select } = useSelection();
   const actions = useNodeActions(session);
   const [kind, setKind] = useState<NodeKindArg>("group");
 
-  // A selection outlives the node it names, so a stale one adds under the root
-  // rather than failing.
+  // A stale selection adds under the root rather than failing.
   const target = selected !== undefined && findNode(tree, selected) ? selected : tree.id;
   const at = selected === undefined ? undefined : siblingIndex(tree, selected);
   const movable = at !== undefined;
@@ -425,17 +391,9 @@ export const NodeTree = {
   Actions: NodeTreeActions,
 };
 
-/** The drag this browser is in the middle of, and what it may not be dropped on. */
 let dragging: { node: NodeId; subtree: Set<NodeId> } | undefined;
 
-/**
- * Which of the three places a pointer at this height is aiming at, or
- * `undefined` when this row cannot take the drag at all.
- *
- * The bands are quarters: the outer ones insert beside the row, and the wide
- * middle one — the easy target — puts the node inside it. The root has no
- * siblings, so every drop on it is an "into".
- */
+/** Outer quarters insert beside the row, the middle half inside; `undefined` if the row cannot take the drag. */
 function placement(
   event: DragEvent<HTMLElement>,
   node: NodeId,
@@ -452,7 +410,6 @@ function placement(
   return "into";
 }
 
-/** Hands a failed edit to the host, or says so where a developer will see it. */
 function report(onError: ErrorSink, work: Promise<unknown>): void {
   void work.catch((cause: unknown) => {
     if (onError) onError(cause);

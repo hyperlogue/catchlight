@@ -1,5 +1,3 @@
-/** Small layout behaviors shared by assembled workspaces. Preferences live
- * in browser storage; storage being unavailable never stops an editor. */
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { KeyboardEvent, PointerEvent, RefObject } from "react";
 
@@ -119,8 +117,7 @@ export function useDismissMenus(root: RefObject<HTMLElement | null>) {
   }, [root]);
 }
 
-/** Export the actual renderer's pixels; a WebGPU canvas's toDataURL can be
- * blank. The readback is the same explicit capture surface tests use. */
+/** A WebGPU canvas's toDataURL can be blank, so this exports the renderer's readback. */
 export function usePreviewExport(canvas: RefObject<HTMLCanvasElement | null>) {
   return useCallback(
     async (name: string) => {

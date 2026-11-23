@@ -2,9 +2,7 @@
 //
 //   node scripts/npm/publish.mjs [--publish] [--with-app]
 //
-// The libraries come from `dist/npm` (`npm:pack`). `--with-app` also requires
-// the downloadable editor's packages from `dist/npm-app` (`editor-app.mjs`):
-// all five platform packages, then the `@catchlight/editor` launcher.
+// `--with-app` also requires all five platform packages in `dist/npm-app`.
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { createHash } from 'node:crypto';

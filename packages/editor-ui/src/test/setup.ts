@@ -1,10 +1,4 @@
-/**
- * A DOM for this package's one suite.
- *
- * Imported first, and from its own module, because a registrator called in the
- * suite's own body would run after `react-dom` had already loaded against no
- * document.
- */
+/** Its own module so the DOM exists before `react-dom` loads. */
 
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 

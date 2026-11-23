@@ -1,6 +1,4 @@
-/** Authoring gestures end at this seam: commands, attachments, busy state and
- * human-visible failures. Queries subscribe to the replica's revision, with
- * their arguments in the key so a changed selection reads immediately. */
+/** Queries key on their arguments too, so a changed selection reads immediately. */
 import { COMMAND_BYTES } from "@catchlight/core";
 import type {
   NodeId,
@@ -18,8 +16,7 @@ import type { IconName } from "./controls.js";
 
 export type ErrorHandler = (cause: unknown) => void;
 
-/** History is editor-owned, so it is read from the backend. Responses are
- * ordered by request and cannot overwrite a newer session's status. */
+/** Responses are ordered by request and cannot overwrite a newer session's status. */
 export function useSessionStatus(session: Session | undefined) {
   const [status, setStatus] = useState<StatusInfo>();
   useEffect(() => {
@@ -105,9 +102,7 @@ export const kindIcons: Record<NodeKind, IconName> = {
   spine: "spine",
 };
 
-/** Import bytes through the same editor commands on both backends. The part
- * is removed if its image cannot be read, so a failed import leaves no broken
- * node. Multiple images are deliberately ordered, matching their tree order. */
+/** A part whose image cannot be read is removed. Multiple images import in tree order. */
 export async function importArtwork(
   session: Session,
   files: readonly File[],

@@ -1,12 +1,4 @@
-/**
- * Every model the editor has open, including the ones this tab did not
- * open.
- *
- * That is the whole point of showing it: an agent driving the same editor over
- * the socket has sessions of its own, and this is where a person finds them —
- * and closes them, since a close is a command on the editor and not on any
- * replica this tab holds.
- */
+/** Every model the editor has open, including other clients' sessions. */
 
 import type { SessionId, SessionInfo } from "@catchlight/core";
 import type { ComponentProps } from "react";
@@ -19,7 +11,6 @@ export interface SessionListRootProps
   onSelect?: (info: SessionInfo) => void;
   /** With this set, every row carries a close control. */
   onClose?: (info: SessionInfo) => void;
-  /** The session a host is showing, marked `data-current` on its row. */
   current?: SessionId | undefined;
 }
 

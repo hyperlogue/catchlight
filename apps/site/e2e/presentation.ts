@@ -1,4 +1,3 @@
-/** Assert browser presentation separately from the renderer's readback. */
 import type { Page } from "playwright-core";
 import { hex, uniformity } from "./frame.ts";
 

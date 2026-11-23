@@ -1,7 +1,3 @@
-/**
- * The tree panel: real tree markup, and a selection other clients can see.
- */
-
 import "./test/setup.js";
 
 import { describe, expect, test } from "bun:test";
@@ -36,7 +32,6 @@ describe("the node tree", () => {
     ]);
     expect(items.map((item) => item.getAttribute("role"))).toEqual(["treeitem", "treeitem"]);
     expect(items[1]?.getAttribute("data-kind")).toBe("part");
-    // The child is inside its parent's group, not a sibling of it.
     expect(items[0]?.querySelector("ul[role=group]")?.contains(items[1] ?? null)).toBe(true);
     await view.unmount();
   });
@@ -73,13 +68,10 @@ describe("the node tree", () => {
     const item = view.container.querySelector("[data-node='root/part-1']");
     expect(item?.getAttribute("data-selected")).toBe("");
     expect(item?.getAttribute("aria-selected")).toBe("true");
-    // The root is not selected, so it carries no attribute at all.
     expect(view.container.querySelector("[data-node='root']")?.hasAttribute("data-selected")).toBe(
       false,
     );
 
-    // An agent on the socket reads what this person is looking at from
-    // presence, so the click has to reach the editor.
     const presence = wasm.requests.filter((request) => request.cmd === "presence_set");
     expect(presence).toHaveLength(1);
     expect(presence[0]).toMatchObject({ selection: "root/part-1", pose: [] });
@@ -241,7 +233,6 @@ describe("editing a row", () => {
     expect(wasm.requests.filter((request) => request.cmd === "node_set")).toEqual([
       expect.objectContaining({ cmd: "node_set", node: "root/part-1", name: "brow" }),
     ]);
-    // The field is gone, and the label is back.
     expect(view.container.querySelector(`${row} [data-catchlight-node-rename]`)).toBeNull();
     await view.unmount();
   });
@@ -279,14 +270,12 @@ describe("editing a row", () => {
 });
 
 describe("dragging a row onto another", () => {
-  /** A drag event with the one measurement the placement reads. */
   function dragEvent(type: string, clientY: number): Event {
     const event = new Event(type, { bubbles: true, cancelable: true });
     Object.defineProperty(event, "clientY", { value: clientY });
     return event;
   }
 
-  /** Two parts under the root, and the panel showing them. */
   async function twoParts() {
     const { editor, wasm } = await harness();
     const session = await editor.newSession();
@@ -307,7 +296,6 @@ describe("dragging a row onto another", () => {
   }
 
   test("a drop in the middle of a row moves the node into it", async () => {
-    // Every row is 20px tall at the top of the page, so a Y says which band.
     const restore = stubLayout(200, 20, 0, 0);
     const { wasm, view, row, item } = await twoParts();
 
@@ -326,7 +314,6 @@ describe("dragging a row onto another", () => {
         ],
       }),
     ]);
-    // The hint is gone with the drag.
     expect(item("root/part-2").hasAttribute("data-drop")).toBe(false);
     await view.unmount();
     restore();
@@ -429,7 +416,6 @@ describe("the tree's toolbar", () => {
       expect.objectContaining({ cmd: "node_add", parent: "root", kind: "group", name: null }),
     ]);
     expect(selection()).toBe("root/group-1");
-    // And the panel now shows it, because the model moved.
     expect(view.container.querySelector("[data-node='root/group-1']")).not.toBeNull();
     await view.unmount();
   });
@@ -468,7 +454,6 @@ describe("the tree's toolbar", () => {
       label.click();
     });
 
-    // The first of two: it can go down, but not up.
     expect(button("up").disabled).toBe(true);
     expect(button("down").disabled).toBe(false);
     await click("down");
@@ -484,7 +469,6 @@ describe("the tree's toolbar", () => {
       { id: 0, cmd: "node_duplicate", session: session.id, node: "root/part-1" },
       { id: 0, cmd: "node_delete", session: session.id, node: "root/part-1" },
     ]);
-    // The node it named is gone, so nothing is selected any more.
     expect(selection()).toBeUndefined();
     await view.unmount();
   });

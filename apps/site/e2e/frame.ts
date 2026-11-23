@@ -3,29 +3,23 @@
 export interface Image {
   width: number;
   height: number;
-  /** Bytes per pixel: 4 for the RGBA a readback is. */
+  /** Bytes per pixel. */
   channels: number;
   /** Tightly packed pixels, row-major, `channels` bytes each. */
   data: Uint8Array;
 }
 
 export interface Uniformity {
-  /** The colour, packed most-significant channel first. */
+  /** Packed most-significant channel first. */
   colour: number;
-  /** Its share of the picture, 0 to 1. */
+  /** 0 to 1. */
   share: number;
 }
 
 /**
- * The colour covering most of a picture, whenever one covers more than half.
- *
- * Blank is the failure being hunted and blank means "one colour", so the
- * number worth being exact about is a share near 1. Boyer-Moore's majority
- * vote finds in one pass, and no memory, the only value that can hold a
- * majority; a second pass counts it exactly. A picture with no majority colour
- * is already not blank, and simply reports a share below a half — which is why
- * this beats a histogram that would allocate a map entry per distinct colour
- * of a megapixel frame.
+ * Boyer-Moore majority vote, then an exact count: only a share near 1 matters,
+ * and this avoids a per-colour histogram over a megapixel frame. Without a
+ * majority colour the share is merely below a half.
  */
 export function uniformity(image: Image): Uniformity {
   const { data, channels } = image;
@@ -62,7 +56,6 @@ export function fingerprint(image: Image): number {
   return hash >>> 0;
 }
 
-/** A packed colour as `#rrggbbaa`, for an error message. */
 export function hex(colour: number, channels: number): string {
   return `#${colour.toString(16).padStart(channels * 2, "0")}`;
 }

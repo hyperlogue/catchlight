@@ -1,8 +1,3 @@
-/**
- * A translate drag end to end: preview while it moves, one command when it
- * ends, and the preview held until the revision lands.
- */
-
 import "./test/setup.js";
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -12,7 +7,7 @@ import { EditorProvider, useNodeDrag, Viewport } from "./index.js";
 import type { ViewportPointerEvent } from "./index.js";
 import { fakeReplica, fire, harness, mount, pointer, run, settle, stubLayout } from "./test/harness.js";
 
-/** An 800x600 canvas at the top-left of the page, so world units are 1/300 of a pixel. */
+/** 800x600 canvas at the page origin: 1/300 world units per pixel. */
 let restore: () => void;
 beforeEach(() => {
   restore = stubLayout(800, 600);
@@ -54,14 +49,12 @@ describe("dragging a node", () => {
     await fire(canvas, pointer("pointerdown", { clientX: 400, clientY: 300, button: 0 }));
     expect(canvas.getAttribute("data-dragging")).toBe("");
 
-    // 30 pixels right at 1/300 world units per pixel. The replica answers in
-    // f32, so the delta comes back rounded to a float's worth of precision.
+    // The replica answers in f32, so the delta is rounded.
     await fire(canvas, pointer("pointermove", { clientX: 430, clientY: 300 }));
 
     const scratch = replica.scratchTransforms.get(node) ?? [];
     expect(scratch[0]).toBeCloseTo(0.1, 6);
     expect(scratch[1]).toBeCloseTo(0, 6);
-    // A gesture of any length is still nothing the editor has heard of.
     expect(wasm.requests.length).toBe(commands);
 
     await fire(canvas, pointer("pointerup", { clientX: 430, clientY: 300 }));
@@ -82,8 +75,6 @@ describe("dragging a node", () => {
     const { editor, wasm, session, node } = await modelWithNode();
     const replica = fakeReplica(session);
 
-    // Hold the command open: everything between posting it and the replica
-    // being able to answer for it is the window this rule is about.
     let land = (): void => {};
     const landed = new Promise<void>((resolve) => {
       land = resolve;
@@ -107,8 +98,6 @@ describe("dragging a node", () => {
     await fire(canvas, pointer("pointerup", { clientX: 430, clientY: 300 }));
     await settle();
 
-    // Clearing here would put the node back where it started for as long as
-    // the round trip takes, which reads as the drag snapping back.
     expect(replica.scratchTransforms.has(node)).toBe(true);
     expect(wasm.requests.filter((request) => request.cmd === "node_set")).toHaveLength(0);
 
@@ -138,7 +127,6 @@ describe("dragging a node", () => {
     await fire(canvas, pointer("pointerup", { clientX: 430, clientY: 300 }));
     await settle();
 
-    // The model never moved, so the preview is a lie and has to go.
     expect(replica.scratchTransforms.has(node)).toBe(false);
     await view.unmount();
   });
@@ -180,7 +168,6 @@ describe("dragging a node", () => {
     await fire(canvas, pointer("pointerup", { clientX: 400, clientY: 300 }));
     await settle();
 
-    // Otherwise every click on the canvas is an undo entry.
     expect(wasm.requests.filter((request) => request.cmd === "node_set")).toHaveLength(0);
     await view.unmount();
   });

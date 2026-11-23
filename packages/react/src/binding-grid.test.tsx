@@ -1,12 +1,3 @@
-/**
- * The binding grid: what a cell shows, and what each control sends.
- *
- * The two rules this suite exists for. A cell has to say whether anybody
- * authored it, because the model derives the ones nobody did and "unset" is a
- * state a rigger acts on. And clicking a cell has to pose the puppet without
- * authoring anything, because looking at a keypoint is not editing it.
- */
-
 import "./test/setup.js";
 
 import { describe, expect, spyOn, test } from "bun:test";
@@ -16,7 +7,6 @@ import { act } from "react";
 import { BindingGrid, EditorProvider } from "./index.js";
 import { fire, harness, mount, run } from "./test/harness.js";
 
-/** One param, keyed at both ends and in the middle. */
 const yaw = (): SessionEditCommand => ({
   cmd: "param_add",
   name: "head:yaw",
@@ -36,7 +26,6 @@ function last(requests: Request[]): Request {
   return request;
 }
 
-/** A model with one part and one param keyed in three places. */
 interface Scene {
   editor: Awaited<ReturnType<typeof harness>>["editor"];
   wasm: Awaited<ReturnType<typeof harness>>["wasm"];
@@ -97,7 +86,6 @@ describe("the binding grid", () => {
     const view = await mountGrid(s);
     const cells = [...view.container.querySelectorAll("[data-catchlight-binding-cell]")];
 
-    // The grid is as wide as the binding has key positions, and one row tall.
     expect(cells.length).toBe(3);
     expect(cells.map((cell) => cell.getAttribute("data-cell"))).toEqual(["0,0", "1,0", "2,0"]);
     expect(cells.map((cell) => cell.getAttribute("data-set"))).toEqual([null, null, ""]);
@@ -125,7 +113,6 @@ describe("the binding grid", () => {
       (cells[2] as HTMLElement).click();
     });
 
-    // Key position 1 on a param running -1..1 is the top of its range.
     expect(s.session.paramValue(s.param.id)).toBe(1);
     expect(sent(s.wasm.requests).length).toBe(commands);
     expect(cells[2]?.getAttribute("data-selected")).toBe("");
@@ -163,7 +150,6 @@ describe("the binding grid", () => {
     const s = await scene();
     const view = await mountGrid(s);
 
-    // Nothing drives this node yet, so there is no grid — only the control.
     expect(view.container.querySelectorAll("[data-catchlight-binding]").length).toBe(0);
 
     const target = view.container.querySelector(
@@ -184,7 +170,6 @@ describe("the binding grid", () => {
       target: "opacity",
       param: s.param.id,
     });
-    // And the binding it made is now a row.
     expect(
       view.container.querySelector("[data-catchlight-binding][data-target=opacity]"),
     ).not.toBeNull();
@@ -225,7 +210,6 @@ describe("the binding grid", () => {
     }));
     expect(last(s.wasm.requests)).toMatchObject({ cmd: "binding_cells_set", ...addressed, cells: [{ cell: [2, 0], value: { scalar: -12 } }] });
 
-    // The cell controls appear once a cell is picked, and address that cell.
     const cells = [...view.container.querySelectorAll("[data-catchlight-binding-cell]")];
     expect(at("[data-catchlight-binding-cell-actions]")).toBeNull();
     await act(async () => {
@@ -246,7 +230,6 @@ describe("the binding grid", () => {
       cmd: "binding_cells_unset", ...addressed, cells: [[0, 0]],
     });
 
-    // A copy is armed on the selected cell and lands on the next one clicked.
     await act(async () => {
       at<HTMLButtonElement>("[data-catchlight-binding-copy]").click();
     });

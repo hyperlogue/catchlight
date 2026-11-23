@@ -1,8 +1,3 @@
-/**
- * What a `Session` promises: when a command resolves, what moves a revision,
- * and what a drag costs.
- */
-
 import { describe, expect, test } from "bun:test";
 
 import { ProtocolError } from "./backend.js";
@@ -12,12 +7,10 @@ import { Session } from "./session.js";
 /** A re-feed timeout a suite can wait out, and no microtask can beat. */
 const TIMEOUT = 5;
 
-/** Lets every pending microtask and timer callback run. */
 function tick(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-/** Waits `ms`, for the timers this suite has to outlast rather than race. */
 function after(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -42,8 +35,7 @@ describe("an edit and its revision", () => {
       });
 
     await tick();
-    // The reply is in, and the replica still holds nothing: resolving here
-    // would hand back an Id that no query can find.
+    // Resolving here would hand back an Id no query can find.
     expect(settled).toBe(false);
     expect(replica.rev()).toBe(0);
 
@@ -61,8 +53,7 @@ describe("an edit and its revision", () => {
     backend.replies.set("node_add", { body: { result: "node", node: "root/group-7" }, rev: 5 });
 
     const sending = session.send({ cmd: "node_add", parent: "root", kind: "group", name: null });
-    // An in-tab editor emits inside the same call the reply came out of, so
-    // the feed is already running when `send` looks at the revision.
+    // In-tab, the feed is already running when `send` checks the revision.
     backend.changed(1, 5);
 
     await sending;
@@ -83,8 +74,7 @@ describe("an edit and its revision", () => {
     await sending;
     await tick();
 
-    // The feed and the send both finish the command; only one of them is a
-    // revision, and React must not render twice for one edit.
+    // React must not render twice for one edit.
     expect(notified).toBe(1);
     expect(session.getRevision()).toBe(3);
   });
@@ -116,7 +106,6 @@ describe("an edit and its revision", () => {
     backend.changed(1, 4);
     await tick();
 
-    // One feed in flight, and everything behind it collapsed into one more.
     expect(backend.runs).toEqual([2]);
     release();
     await tick();
@@ -134,16 +123,13 @@ describe("an edit and its revision", () => {
 
     const sending = session.send({ cmd: "node_add", parent: "root", kind: "group", name: null });
     await tick();
-    // The editor moved to 5 and the frame that says so never arrived: nothing
-    // else will ever bring the replica there.
     expect(replica.rev()).toBe(0);
     expect(backend.feeds).toHaveLength(0);
 
     const body = await sending;
 
     expect(body).toEqual({ result: "node", node: "root/group-7" });
-    // Resolved at the revision it was promised, and by a feed — the one path
-    // into the replica — rather than by giving up on the wait.
+    // Resolved by a feed, not by giving up on the wait.
     expect(replica.rev()).toBe(5);
     expect(session.getRevision()).toBe(5);
     expect(backend.feeds).toEqual([{ session: 1, rev: 5 }]);
@@ -160,8 +146,7 @@ describe("an edit and its revision", () => {
     await sending;
     await after(TIMEOUT * 4);
 
-    // One feed, the event's. A timer left armed behind a settled send is a
-    // second structure fetch for an edit that already landed.
+    // A timer left armed behind a settled send would fetch again.
     expect(backend.runs).toEqual([5]);
     expect(replica.rev()).toBe(5);
   });
@@ -179,8 +164,7 @@ describe("an edit and its revision", () => {
       caught = cause;
     }
 
-    // Awaited rather than asserted through `expect().rejects`, which reports
-    // a rejection arriving on a timer as an error of its own.
+    // Not `expect().rejects`, which reports a timer-delivered rejection as its own error.
     expect(caught).toMatchObject({ code: "feed" });
   });
 
@@ -209,8 +193,6 @@ describe("the quiet paths", () => {
 
     expect(backend.sent).toHaveLength(100);
     expect(revisions).toBe(0);
-    // Presence is what *other* clients read; this tab's own picture moves
-    // through the replica, not through a round trip.
     expect(repaints).toBe(0);
   });
 
@@ -260,7 +242,6 @@ describe("reads", () => {
     const tree = session.tree();
     expect(tree.id).toBe("root");
     expect(session.params()).toEqual([]);
-    // Nothing was asked of the backend: the model is in this tab.
     expect(backend.sent).toHaveLength(0);
   });
 
@@ -282,13 +263,9 @@ describe("reads", () => {
     expect(info?.name).toBe("Body");
     expect(info?.parent).toBe("root");
     expect(info?.z_order).toBe(3);
-    // A part carries a mesh, so it reports its size — an empty one here,
-    // which is what an unmeshed part reports in a real model too.
     expect(info?.vertex_count).toBe(0);
     expect(info?.triangle_count).toBe(0);
 
-    // A selection outlives the node it names, so this is a panel with nothing
-    // to draw rather than a failed read.
     expect(session.nodeInfo("root/part-9")).toBeUndefined();
     expect(backend.sent).toHaveLength(0);
   });
@@ -309,13 +286,10 @@ describe("reads", () => {
   test("the posed bounds come straight off the replica", () => {
     const { backend, replica, session } = open();
 
-    // A replica that has drawn nothing has no box, and a fit has to survive
-    // that rather than invent a camera.
     expect(session.bounds()).toBeUndefined();
 
     replica.box = [-8, -1.5, 8, 1.5];
     expect(session.bounds()).toEqual([-8, -1.5, 8, 1.5]);
-    // A read, so it costs the backend nothing.
     expect(backend.sent).toHaveLength(0);
   });
 
@@ -360,8 +334,7 @@ describe("closing", () => {
     };
     try {
       session.close();
-      // The feed is mid-fetch and holds a pointer into it, so freeing here
-      // is the use-after-free this test exists for.
+      // The feed holds a pointer into the replica: freeing here is use-after-free.
       expect(replica.freed).toBe(false);
       release();
       await tick();
@@ -371,7 +344,6 @@ describe("closing", () => {
 
     expect(replica.usedAfterFree).toEqual([]);
     expect(complaints).toEqual([]);
-    // Freed on the way out of the feed, so closing still ends the model.
     expect(replica.freed).toBe(true);
   });
 });
@@ -380,27 +352,22 @@ describe("one method per kind of command", () => {
   test("the wrong method does not typecheck", () => {
     const { session } = open();
 
-    // @ts-expect-error — presence never edits the model or enters its history.
+    // @ts-expect-error — presence never edits the model.
     void (() => session.send({ cmd: "presence_set", pose: [], selection: null }));
 
-    // @ts-expect-error — `session_get` needs the editor's own state, so a replica
-    // cannot answer it.
+    // @ts-expect-error — the replica cannot answer `session_get`.
     void (() => session.query({ cmd: "session_get" }));
 
-    // @ts-expect-error — `node_set` changes the model, so it cannot go out
-    // as presence: the panels would never learn the edit happened.
+    // @ts-expect-error — `node_set` is an edit, not presence.
     void (() => session.sendPresence({ cmd: "node_set", node: "hair" }));
 
-    // @ts-expect-error — the session fills this in; a caller that could pass
-    // it could address the wrong model.
+    // @ts-expect-error — the session fills this in.
     void (() => session.queryServer({ cmd: "session_get", session: 2 }));
 
-    // @ts-expect-error — `session_create` names no session, so it belongs on the
-    // editor rather than on one.
+    // @ts-expect-error — `session_create` belongs on the editor.
     void (() => session.send({ cmd: "session_create", name: null }));
 
-    // @ts-expect-error — `nod_add` is not a command. The union is the spelling
-    // check a `{ cmd: string }` placeholder could never do.
+    // @ts-expect-error — `nod_add` is not a command.
     void (() => session.send({ cmd: "nod_add", parent: "root" }));
 
     expect(session.id).toBe(1);

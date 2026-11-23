@@ -1,8 +1,4 @@
-/**
- * Unstyled editor controls. A numeric draft belongs to the field until Enter
- * or blur; Escape restores the model value, and invalid text never becomes a
- * command. Native dialogs own focus containment and return focus on close.
- */
+/** Unstyled editor controls. Invalid numeric text never becomes a command. */
 import { useEffect, useId, useRef, useState } from "react";
 import type { ComponentProps, ReactNode } from "react";
 

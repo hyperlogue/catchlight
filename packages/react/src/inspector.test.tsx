@@ -1,12 +1,3 @@
-/**
- * The inspector authors one field at a time, and only when something changed.
- *
- * What can go wrong here is not arithmetic, it is over-sending: a form that
- * puts every box it renders into one command authors a dozen values nobody
- * touched and bundles them into one undo entry. So every assertion is about
- * which commands went out and what keys they carried.
- */
-
 import "./test/setup.js";
 
 import { describe, expect, test } from "bun:test";
@@ -47,7 +38,6 @@ describe("the inspector", () => {
     const { wasm, session, node, view } = await inspecting("part");
 
     const x = field(view.container, "translate", "x");
-    // The node is at the rest pose, so the box shows the model's own number.
     expect(x.value).toBe("0");
 
     await focus(x);
@@ -58,7 +48,6 @@ describe("the inspector", () => {
     const sent = nodeSets(wasm);
     expect(sent).toHaveLength(1);
     expect(sent[0]).toMatchObject({ cmd: "node_set", node, translate: [12, 0, 0] });
-    // Every other box the panel rendered stayed out of it.
     expect(keys(sent[0])).toEqual(["cmd", "id", "node", "session", "translate"]);
     await view.unmount();
   });
@@ -84,8 +73,6 @@ describe("the inspector", () => {
 
   test("the texture select points at one, and clears with a null under the same key", async () => {
     const { wasm, session, node, view } = await inspecting("part");
-    // Something to clear: a part drawing nothing is already at "none", and a
-    // select that did not move authors nothing either way.
     await run(() =>
       session.sendWith({ cmd: "texture_add", node, encoding: "png" }, [
         ["texture", new TextEncoder().encode("not really a png")],
@@ -97,7 +84,6 @@ describe("the inspector", () => {
       'select[data-catchlight-field="texture"]',
     ) as HTMLSelectElement;
     expect(texture.value).toBe("tex-1");
-    // The "none" option is an edit now, not a readout.
     expect([...texture.options].map((option) => option.value)).toEqual(["", "tex-1"]);
 
     texture.value = "";
@@ -106,12 +92,10 @@ describe("the inspector", () => {
 
     const cleared = nodeSets(wasm);
     expect(cleared).toHaveLength(1);
-    // `texture` is a merge patch, so "draw none" is an explicit null under
-    // the same key the Id travels under — not a second field.
+    // `texture` is a merge patch: "draw none" is an explicit null.
     expect(cleared[0]).toMatchObject({ cmd: "node_set", node, texture: null });
     expect(keys(cleared[0])).toEqual(["cmd", "id", "node", "session", "texture"]);
 
-    // And picking a texture again is still the ordinary field.
     texture.value = "tex-1";
     await fire(texture, new Event("change", { bubbles: true }));
     await settle();
@@ -143,8 +127,6 @@ describe("the inspector", () => {
     for (const absent of ["opacity", "blend_mode", "tint", "screen_tint", "mask_threshold"]) {
       expect(group.view.container.querySelector(`[data-catchlight-field="${absent}"]`)).toBeNull();
     }
-    // `texture` is a part's, and the row is decided by the kind rather than by
-    // whether this one happens to draw anything.
     expect(group.view.container.querySelector('[data-catchlight-field="texture"]')).toBeNull();
     await group.view.unmount();
 
@@ -152,7 +134,6 @@ describe("the inspector", () => {
     for (const present of ["opacity", "blend_mode", "tint", "screen_tint", "mask_threshold"]) {
       expect(part.view.container.querySelector(`[data-catchlight-field="${present}"]`)).not.toBeNull();
     }
-    // Three boxes over one key, one per component.
     expect(part.view.container.querySelectorAll('[data-catchlight-field="tint"]')).toHaveLength(3);
     expect(part.view.container.querySelector('[data-catchlight-field="texture"]')).not.toBeNull();
     await part.view.unmount();
@@ -177,7 +158,6 @@ describe("the inspector", () => {
     expect(x.value).toBe("42");
 
     await press(x, "Escape");
-    // The box is back to what the model says, so there is nothing left to send.
     expect(x.value).toBe("0");
     await blur(x);
     await settle();
@@ -194,9 +174,7 @@ describe("the inspector", () => {
     ) as HTMLInputElement;
     expect(name.value).toBe("hair");
 
-    // Tabbed into and straight back out of.
     await blur(name);
-    // And re-typed the same thing, which is the same non-edit.
     await type(name, "hair");
     await blur(name);
     await settle();
@@ -211,7 +189,6 @@ describe("the inspector", () => {
     const x = field(view.container, "translate", "x");
     await type(x, "7");
 
-    // Something else moved the model: another panel, an agent on the socket.
     await run(() => session.send({ cmd: "node_add", parent: "root", kind: "group", name: "hat" }));
     await settle();
 
@@ -221,7 +198,6 @@ describe("the inspector", () => {
   });
 });
 
-/** A panel over one session, selecting `node` as soon as it is mounted. */
 function Panel({ session, node }: { session: Session; node: string | undefined }) {
   return (
     <SelectionProvider session={session}>
@@ -239,7 +215,6 @@ function Pick({ node }: { node: string | undefined }) {
   return null;
 }
 
-/** A model holding one node of `kind`, with the panel mounted on it. */
 async function inspecting(kind: "group" | "part" | "composite" | "mesh_group") {
   const { editor, wasm } = await harness();
   const session = await editor.newSession();
@@ -256,31 +231,22 @@ function named(body: ResponseBody): string {
   return body.result === "node" ? body.node : "";
 }
 
-/** One component of a vector field: the same key, one box per axis. */
 function field(container: HTMLElement, name: string, axis: string): HTMLInputElement {
   return container.querySelector(
     `[data-catchlight-field="${name}"][data-axis="${axis}"]`,
   ) as HTMLInputElement;
 }
 
-/** Every `node_set` the editor was sent, in order. */
 function nodeSets(wasm: FakeEditor) {
   return wasm.requests.filter((request) => request.cmd === "node_set");
 }
 
-/** The keys one command carried, sorted, so "only this field" is testable. */
 function keys(command: object | undefined): string[] {
   return Object.keys(command ?? {}).sort();
 }
 
-/**
- * Types `text` into a controlled box, the way a person replacing it would.
- *
- * Through the prototype's setter rather than `input.value =`, which React has
- * replaced on the instance with one that also updates its own record of what
- * the box holds — assign through that and React concludes nothing changed and
- * fires no `onChange` at all.
- */
+// Through the prototype's setter: React's instance setter would record the
+// value and then fire no `onChange`.
 async function type(input: HTMLInputElement, text: string): Promise<void> {
   const assign = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
   if (!assign) throw new Error("HTMLInputElement.value is not an accessor here");
@@ -288,14 +254,8 @@ async function type(input: HTMLInputElement, text: string): Promise<void> {
   await fire(input, new Event("input", { bubbles: true }));
 }
 
-/**
- * React's `onFocus` is the native `focusin`, and a box has to be focused
- * before it can be typed into — here, unusually, that matters: react-dom
- * decides at load time whether the browser has `input` events, decides "no"
- * against happy-dom, and falls back to its pre-`input` path. That path tracks
- * the *focused* element, and a keydown with nothing focused takes its whole
- * dispatch down. Focusing first is what a person does anyway.
- */
+// react-dom picks its pre-`input` fallback under happy-dom, and that path
+// breaks on a keydown with nothing focused.
 async function focus(input: HTMLInputElement): Promise<void> {
   await fire(input, new FocusEvent("focusin", { bubbles: true }));
 }
@@ -304,16 +264,12 @@ async function press(input: HTMLInputElement, key: string): Promise<void> {
   await fire(input, new KeyboardEvent("keydown", { key, bubbles: true }));
 }
 
-/** React's `onBlur` is the native `focusout`, which is the one that bubbles. */
+// `focusout` because it bubbles; React's `onBlur` listens for it.
 async function blur(input: HTMLInputElement): Promise<void> {
   await fire(input, new FocusEvent("focusout", { bubbles: true }));
 }
 
-/**
- * The two methods react-dom's fallback path calls on the element it is
- * watching. They are Internet Explorer's, so happy-dom has neither, and
- * focusing a text box throws without them.
- */
+// IE methods react-dom's fallback path calls; happy-dom throws without them.
 function stubLegacyEventApi(): void {
   const proto = HTMLElement.prototype as unknown as Record<string, unknown>;
   if (typeof proto["attachEvent"] === "function") return;

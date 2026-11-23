@@ -1,46 +1,16 @@
 /**
- * What this client is looking at, published as one record.
+ * This client's selection and pose, published as one presence record.
  *
- * Presence is view state, not model state: it moves no revision and is
- * never undone. It still goes to the editor, because an agent on the socket
- * and another tab both read "what is this person looking at, and how have they
- * posed it" from there, and a selection only React knows about is invisible
- * to them.
- *
- * **One record, so one command.** The editor keeps a single presence per
- * session and `presence_set` replaces it whole. A selection that published
- * itself with an empty pose would wipe the pose the sliders had published a
- * moment before, and the other way round — so the two are held here together,
- * and every publish carries both.
- *
- * **A selection goes out at once; a pose is coalesced.** A click is one event
- * and the other side should see it now. A slider drag is a stream, and a
- * socket frame per pointer move is the traffic the scratch path exists to
- * avoid — so a pose is sent at most once per [`POSE_INTERVAL_MS`], and what is
- * sent is whatever is current when the timer fires. A pose may be handed over
- * as a thunk, so a caller that hears "the picture changed" per pointer move
- * defers the read to the one moment it is needed.
- *
- * **Nothing goes out twice.** The last command sent is remembered, and an
- * identical one is dropped: a repaint that changed no param costs nothing on
- * the wire.
- *
- * **What was there is adopted.** When a session is taken up, the presence the
- * editor already holds — an agent's pose, another tab's selection — is asked
- * for and applied locally, so a tab joins what is already going on rather
- * than overwriting it with an empty record on its first click.
- *
- * **No model, nobody to tell.** The provider may be given no session at
- * all — a screen that keeps its cells mounted while nothing is open, so that
- * its canvas survives (see `viewport.tsx`). A selection is then held locally
- * and a pose is dropped; both start over when a session arrives.
+ * `presence_set` replaces the record whole, so every publish carries both
+ * selection and pose. A selection goes out at once; a pose is coalesced to one
+ * send per [`POSE_INTERVAL_MS`]. An existing record is adopted when a session
+ * is taken up, so a tab joins rather than overwrites it.
  */
 
 import type { NodeId, ParamPose, Session, SessionPresenceCommand } from "@catchlight/core";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
-/** How long a pose is held before it goes out, and the least time between two. */
 export const POSE_INTERVAL_MS = 150;
 
 export interface Selection {
@@ -48,11 +18,9 @@ export interface Selection {
   select(node: NodeId | undefined): void;
 }
 
-/** A pose, or a read that produces one when the provider is ready to send it. */
 export type PoseSource = ParamPose[] | (() => ParamPose[]);
 
 export interface Pose {
-  /** Publishes `pose` as this client's, coalesced with whatever else is pending. */
   publish(pose: PoseSource): void;
 }
 
@@ -64,13 +32,12 @@ export interface PresenceProviderProps {
   children?: ReactNode;
 }
 
-/** Everything a publish reads, kept out of React state so a timer never sees a stale render. */
+/** Kept out of React state so a timer never sees a stale render. */
 interface Held {
   session: Session | undefined;
   node: NodeId | undefined;
   pose: PoseSource;
   timer: ReturnType<typeof setTimeout> | undefined;
-  /** The last command sent, serialized, so an identical one is not sent again. */
   sent: string | undefined;
 }
 
@@ -85,10 +52,8 @@ function clearTimer(held: Held): void {
 }
 
 export function PresenceProvider({ session, children }: PresenceProviderProps): ReactNode {
-  // The selection is remembered with the session it was made in, so a switch
-  // to another model shows nothing selected rather than a node id that
-  // belongs to the previous one — and does so on the very render that
-  // switches, with no effect and no flash in between.
+  // Keyed by session so a model switch shows no stale selection on the very
+  // render that switches.
   const [chosen, setChosen] = useState<{
     session: Session | undefined;
     node: NodeId | undefined;
@@ -111,8 +76,7 @@ export function PresenceProvider({ session, children }: PresenceProviderProps): 
     const key = JSON.stringify(command);
     if (key === box.sent) return;
     box.sent = key;
-    // Fire and forget: presence is a courtesy to other clients, and a publish
-    // that failed must not fail the click or the drag that caused it.
+    // Presence is a courtesy; a failed publish must not fail the gesture.
     void box.session.sendPresence(command).catch((cause: unknown) => {
       console.warn("catchlight: publishing presence failed", cause);
     });
@@ -123,7 +87,6 @@ export function PresenceProvider({ session, children }: PresenceProviderProps): 
       const box = held.current;
       box.node = next;
       setChosen({ session: box.session, node: next });
-      // At once, and carrying whatever pose was waiting for its turn.
       clearTimer(box);
       send();
     },
@@ -139,8 +102,6 @@ export function PresenceProvider({ session, children }: PresenceProviderProps): 
     [send],
   );
 
-  // A new session starts from nothing pending, and from whatever the editor
-  // already holds for it.
   useEffect(() => {
     const box = fresh(session);
     held.current = box;
@@ -175,14 +136,13 @@ export function PresenceProvider({ session, children }: PresenceProviderProps): 
   );
 }
 
-/** The selection of the nearest [`PresenceProvider`]. */
 export function useSelection(): Selection {
   const selection = useContext(SelectionContext);
   if (!selection) throw new Error("no <PresenceProvider> above this component");
   return selection;
 }
 
-/** The pose channel of the nearest [`PresenceProvider`]. Stable for its life. */
+/** Stable for the provider's life. */
 export function usePose(): Pose {
   const pose = useContext(PoseContext);
   if (!pose) throw new Error("no <PresenceProvider> above this component");

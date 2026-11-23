@@ -1,4 +1,3 @@
-/** The entry page stays lightweight; a demo loads only after selection. */
 import { createRoot } from "react-dom/client";
 import logo from "../../../assets/logo-transparent.svg";
 import "./site.css";

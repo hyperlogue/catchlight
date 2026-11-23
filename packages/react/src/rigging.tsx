@@ -1,5 +1,3 @@
-/** The authoring panels for meshes, spines and motion responses. Each reads the same
- * protocol types it writes; opening a panel never authors defaults. */
 import type {
   NodeInfo,
   MotionResponse,

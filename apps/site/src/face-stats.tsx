@@ -1,7 +1,4 @@
-/** The face demo's graphics badge and its "stats for nerds" overlay.
- * The tracking loop writes `TrackingStats` in place every frame; the overlay
- * samples it a few times a second, so an open panel never re-renders the demo.
- */
+/** `TrackingStats` is mutated in place every frame; the overlay samples it, so it never re-renders the demo. */
 import type { Editor, Session } from "@catchlight/core";
 import { useEffect, useMemo, useRef, useState } from "react";
 
@@ -10,12 +7,10 @@ const HISTORY = 60;
 const SAMPLE_MS = 250;
 
 export interface TrackingStats {
-  /** Detector calls, and how many of those found a face. */
   detections: number;
   faces: number;
   /** Last detector call, in milliseconds. */
   inferenceMs: number;
-  /** The params this frame drove, by name. */
   driven: Map<string, number>;
   /** The strongest blendshapes this frame, highest first. */
   shapes: [string, number][];
@@ -27,7 +22,6 @@ export function trackingStats(): TrackingStats {
 
 const TIER_LABEL: Record<string, string> = { webgpu: "WebGPU", webgl2: "WebGL2" };
 
-/** The graphics tier the editor's device came up on, once there is one. */
 export function useGpuTier(editor: Editor): string | undefined {
   const [tier, setTier] = useState(editor.gpuTier());
   useEffect(() => editor.onGpuChanged(() => setTier(editor.gpuTier())), [editor]);
@@ -60,7 +54,6 @@ async function adapterInfo(tier: string | undefined): Promise<string> {
 }
 
 function Sparkline({ values, max, label }: { values: number[]; max: number; label: string }) {
-  // Newest sample on the right edge, the way a scrolling trace reads.
   const offset = HISTORY - values.length;
   const points = values.map((v, i) => `${((offset + i) / (HISTORY - 1)) * 100},${20 - Math.min(1, v / max) * 18}`).join(" ");
   return <svg className="sparkline" viewBox="0 0 100 20" preserveAspectRatio="none" role="img" aria-label={label}>
@@ -113,7 +106,6 @@ export function StatsForNerds({ editor, session, stats, video, canvasHost, tier,
   }, [tier]);
 
   useEffect(() => {
-    // Display frame rate from the page's own animation frames.
     let frames = 0, raf = 0;
     const count = () => { frames++; raf = requestAnimationFrame(count); };
     raf = requestAnimationFrame(count);
