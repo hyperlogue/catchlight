@@ -1,15 +1,12 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! `extension` over a real file: both kinds round-trip, and the operations
-//! beside it — `patch`, `diff`, `merge` — behave the way an extension needs
-//! them to.
+//! `extension` over a real file, and how `patch`, `diff` and `merge` treat it.
 
 mod common;
 
 use catchlight_cli::{extension, fragment};
 use catchlight_core::formats::clm::ClmExtension;
 
-/// Not text and not an image: an extension's bytes are opaque.
 fn payload() -> Vec<u8> {
     (0u8..=255).cycle().take(3000).collect()
 }
@@ -42,7 +39,6 @@ fn both_kinds_round_trip_through_the_binary() {
     ]);
     assert_eq!(code, 0, "stderr: {stderr}");
 
-    // list: key, kind, and a size for the byte value only.
     let (code, stdout, _) = common::run(&["extension", "list", model.to_str().unwrap()]);
     assert_eq!(code, 0);
     assert_eq!(
@@ -50,7 +46,6 @@ fn both_kinds_round_trip_through_the_binary() {
         vec!["acme.camera\tjson", "acme.thumb\tbytes\t3000"]
     );
 
-    // get: JSON to stdout, bytes to a file, byte-for-byte.
     let (code, stdout, _) =
         common::run(&["extension", "get", model.to_str().unwrap(), "acme.camera"]);
     assert_eq!(code, 0);
@@ -69,11 +64,9 @@ fn both_kinds_round_trip_through_the_binary() {
     assert_eq!(code, 0, "stderr: {stderr}");
     assert_eq!(common::read(&out), payload());
 
-    // The file still loads as a model, which is the real test of the pairing.
     let loaded = catchlight_core::Model::from_clm_bytes(&common::read(&model)).expect("loads");
     assert_eq!(loaded.extensions().len(), 2);
 
-    // delete takes one away and errors on a key that is not there.
     let (code, _, _) = common::run(&["extension", "delete", model.to_str().unwrap(), "acme.thumb"]);
     assert_eq!(code, 0);
     let (code, stdout, _) = common::run(&["extension", "list", model.to_str().unwrap()]);
@@ -129,8 +122,6 @@ fn a_key_that_is_not_a_vendors_is_refused() {
     }
 }
 
-/// A patch of an unrelated field carries extensions through untouched, which
-/// is what "the file ops get them for free" has to mean.
 #[test]
 fn a_patch_leaves_extensions_byte_identical() {
     let dir = common::tmp("extension-patch");
@@ -164,8 +155,6 @@ fn a_patch_leaves_extensions_byte_identical() {
     assert_eq!(after.extensions, before.extensions);
 }
 
-/// `diff` renders a changed key as one line: JSON whole, bytes as what the
-/// marker carries.
 #[test]
 fn diff_renders_a_changed_key_as_one_line() {
     let dir = common::tmp("extension-diff");
@@ -187,7 +176,6 @@ fn diff_renders_a_changed_key_as_one_line() {
     let lines: Vec<&str> = stdout.lines().filter(|l| l.contains("extension")).collect();
     assert_eq!(lines, vec![r#"+ extension acme.camera: {"rig":"v2"}"#]);
 
-    // Change it, and the one line names both sides.
     common::run(&[
         "extension",
         "set",
@@ -205,7 +193,6 @@ fn diff_renders_a_changed_key_as_one_line() {
         vec![r#"~ extension acme.camera: {"rig":"v1"} -> {"rig":"v2"}"#]
     );
 
-    // A byte value shows its size and its hash, never its bytes.
     let source = dir.join("thumb.bin");
     std::fs::write(&source, payload()).unwrap();
     common::run(&[
@@ -264,7 +251,6 @@ fn an_addon_carries_no_extensions() {
     assert!(message.contains("extension"), "{message}");
 }
 
-/// The renderer `diff` uses, on the two shapes.
 #[test]
 fn render_shows_json_whole_and_bytes_as_their_marker() {
     let json = ClmExtension::Json(serde_json::json!({"a": [1, 2]}));

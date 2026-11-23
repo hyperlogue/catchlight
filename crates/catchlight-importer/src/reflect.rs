@@ -1,26 +1,6 @@
-//! The reflection: inochi2d's JSON read into the value types catchlight
-//! stores. Everything here is about the *source* convention, and nothing here
-//! knows what structure the values end up in.
-//!
-//! `.inx` is authored **Y-down with lower `zsort` in front** and catchlight is
-//! **Y-up with higher `z_order` in front**, so this module is the one place
-//! that conversion happens. See the crate doc for the exact set of fields it
-//! negates, and `to_clm.rs`'s
-//! `the_import_reflects_exactly_the_y_bearing_fields` for the guard.
-//!
-//! It is also where the reader's tolerance lives: a shorter-than-expected
-//! array fills its missing components one at a time, a field of the wrong
-//! JSON type falls back to its default, and the node walk carries its own
-//! stack because `.inx` is untrusted and unbounded in depth.
-//!
-//! Tolerance stops where the crate's repair rule does (see the crate doc):
-//! repair only what provably cannot change how inochi2d renders the rig.
-//! [`convert_mesh`] **refuses** a mesh whose indices or UVs do not fit its
-//! vertices — the source's own drawing of one is undefined, so there is no
-//! behaviour to preserve — while a deform cell that disagrees with its node's
-//! mesh is **repaired** by zipping it against the mesh, because the offsets
-//! past the last vertex drive nothing and the vertices past the last offset
-//! stay where they were.
+//! inochi2d JSON read into catchlight value types. `.inx` is Y-down with
+//! lower `zsort` in front; catchlight is Y-up with higher `z_order` in front,
+//! and this module is the only place that conversion happens.
 
 use std::collections::HashMap;
 
@@ -35,31 +15,22 @@ use catchlight_core::NodeId;
 use crate::error::ImportError;
 use crate::schema::{SchemaMesh, SchemaNode, SchemaParam, SchemaTransform};
 
-/// What a warning or an error calls one node: the Id the import minted for it
-/// and the name the source authored. `.inx` names nothing uniquely, so a
-/// message that carried only the name could point at four nodes at once.
+/// `.inx` names are not unique, so messages carry the minted Id too.
 #[derive(Clone, Copy)]
 pub(crate) struct NodeRef<'a> {
     pub(crate) id: &'a NodeId,
     pub(crate) name: &'a str,
 }
 
-/// DFS pre-order flatten: append this node (parsed shallow) with its parent
-/// index, map its uuid → index, then descend into children. Pre-order keeps
-/// `parent < self` and preserves sibling order.
-///
-/// The descent carries its own stack. `.inx` is untrusted input and its node
-/// tree is unbounded in depth, so recursing here would let a deep enough file
-/// overflow the thread's stack instead of loading or erroring — and this is
-/// the only path a `.inx` still has.
+/// DFS pre-order, so `parent < self` and sibling order is kept. Duplicate
+/// uuids map to their first occurrence. Uses an explicit stack because
+/// untrusted `.inx` depth is unbounded and recursion could overflow.
 pub(crate) fn flatten(
     root: &serde_json::Value,
     root_parent: Option<u32>,
     flat: &mut Vec<(SchemaNode, Option<u32>)>,
     node_index: &mut HashMap<u32, u32>,
 ) {
-    // Children are pushed in reverse so the top of the stack is always the
-    // next node in tree order.
     let mut stack: Vec<(&serde_json::Value, Option<u32>)> = vec![(root, root_parent)];
     while let Some((value, parent)) = stack.pop() {
         let idx = flat.len() as u32;
@@ -74,7 +45,6 @@ pub(crate) fn flatten(
     }
 }
 
-/// A node's own fields, without descending into `children`.
 fn parse_node_shallow(value: &serde_json::Value) -> SchemaNode {
     let serde_json::Value::Object(map) = value else {
         return SchemaNode::default();
@@ -88,9 +58,8 @@ fn parse_node_shallow(value: &serde_json::Value) -> SchemaNode {
     serde_json::from_value(serde_json::Value::Object(sanitized)).unwrap_or_default()
 }
 
-// Shorter-than-expected arrays fill the missing components individually.
-// Falling back to the whole default instead would snap a node with
-// `"scale": [2.0]` to unit scale, which is not what the file says.
+// Short arrays fill missing components individually, so `"scale": [2.0]`
+// keeps its 2.0 instead of snapping to the whole default.
 pub(crate) fn vec2_arr(v: &[f32], default: [f32; 2]) -> [f32; 2] {
     [
         v.first().copied().unwrap_or(default[0]),
@@ -119,30 +88,16 @@ pub(crate) fn convert_transform(t: Option<&SchemaTransform>) -> ClmTransform {
     transform
 }
 
-/// inochi2d authors in a Y-down frame; catchlight is Y-up. Reflect across the
-/// X axis: negate translation Y and the two Euler angles a Y-flip inverts
-/// (rotation about X and Z). Rotation about Y and scale are unchanged.
+/// A Y-flip negates translation Y and rotation about X and Z; rotation about
+/// Y and scale are unchanged.
 fn reflect_transform_y(t: &mut ClmTransform) {
     t.translation[1] = -t.translation[1];
     t.rotation[0] = -t.rotation[0];
     t.rotation[2] = -t.rotation[2];
 }
 
-/// The mesh, checked against itself. An index past the vertex array or a UV
-/// array that does not pair with the vertices is a mesh inochi2d cannot draw
-/// either: its rendering is undefined, so there is no behaviour a repair could
-/// preserve and the import refuses the file naming the node.
-///
-/// `textured` says whether the UVs are read. A part samples its albedo through
-/// them, so one that does not pair with its vertices is malformed; a mesh group
-/// is never drawn and inochi2d authors none for it, so its UVs are not checked
-/// — and a ragged array on one is dropped rather than carried, since a
-/// [`ClmMesh`] may only hold UVs that pair with its vertices and nothing
-/// samples a mesh group's.
-///
-/// A trailing lone coordinate is not a vertex — `verts` and `uvs` are flat
-/// `[x, y, …]` — so it is dropped rather than left to make the arrays disagree
-/// with the vertex count everything downstream derives from them.
+/// Out-of-range indices, or UVs that do not pair with the vertices when
+/// `textured`, are refused: inochi2d's rendering of them is undefined.
 pub(crate) fn convert_mesh(
     m: Option<&SchemaMesh>,
     node: NodeRef<'_>,
@@ -174,11 +129,8 @@ pub(crate) fn convert_mesh(
     } else {
         ClmIndices::U32(m.indices.clone())
     };
-    // A `ClmMesh` carries UVs that pair with its vertices or none at all, and
-    // the `.clm` reader refuses anything else. For a part that is already
-    // settled — the check above refused a ragged array. For a mesh group the
-    // UVs went unchecked because nothing samples them, which is the same
-    // reason dropping a ragged one provably cannot change how the rig draws.
+    // Only an untextured mesh group reaches here with ragged UVs; nothing
+    // samples them, and the `.clm` reader refuses unpaired UVs.
     let uvs = if m.uvs.len() / 2 == vertices {
         m.uvs[..vertices * 2].to_vec()
     } else {
@@ -201,7 +153,6 @@ pub(crate) fn convert_mesh(
     Ok(mesh)
 }
 
-/// Reflect mesh geometry into catchlight's Y-up frame (see [`reflect_transform_y`]).
 /// UVs are texture space and stay as authored.
 fn reflect_mesh_y(m: &mut ClmMesh) {
     for y in m.verts.iter_mut().skip(1).step_by(2) {
@@ -210,10 +161,8 @@ fn reflect_mesh_y(m: &mut ClmMesh) {
     m.origin[1] = -m.origin[1];
 }
 
-/// `.inx` carries both the baked dense matrix and the authored `isSet` mask;
-/// `.clm` keeps only the authored cells. The baked values double as the oracle:
-/// if our fill does not reproduce them from the authored set, the binding falls
-/// back to all-cells-authored, preserving pixel parity by construction.
+/// `.clm` keeps only the `isSet` cells. If our fill does not reproduce the
+/// baked dense matrix from them, every cell is kept to preserve pixel parity.
 pub(crate) fn convert_binding_values(
     kind: &str,
     v: &serde_json::Value,
@@ -241,8 +190,6 @@ pub(crate) fn convert_binding_values(
         );
         return Some(ClmBindingValues::Deform(cells));
     }
-    // Reflect source-space outputs at the import boundary: spatial Y into
-    // Catchlight's Y-up frame, and zSort into its higher-in-front convention.
     let reflected = matches!(
         kind,
         "zSort" | "transform.t.y" | "transform.r.x" | "transform.r.z"
@@ -278,18 +225,13 @@ pub(crate) fn convert_binding_values(
         "screenTint.r" => ClmBindingValues::ScreenTintR(cells),
         "screenTint.g" => ClmBindingValues::ScreenTintG(cells),
         "screenTint.b" => ClmBindingValues::ScreenTintB(cells),
-        // emissionStrength and any unknown target are folded by no renderer path,
-        // so they are dropped here.
+        // No renderer path reads emissionStrength or unknown targets.
         _ => return None,
     })
 }
 
-/// Zip a deform matrix against the mesh it drives. A cell holds one `[dx, dy]`
-/// per vertex, and `.clm` refuses one that says otherwise, so a ragged matrix
-/// has to be resolved here — and both sides of the zip are free: an offset past
-/// the last vertex drives nothing, and a vertex past the last offset was
-/// already staying where it was. Extra offsets are dropped, missing ones are
-/// zeros, and the rendered pose is the one the source drew.
+/// Zipping a ragged deform cell against the mesh draws what the source drew:
+/// offsets past the last vertex drive nothing, and missing ones are zero.
 fn fit_deform_cells(d: &mut Dense<Vec<f32>>, deform_len: usize, node: NodeRef<'_>) {
     let ragged = d.data.iter().filter(|c| c.len() != deform_len).count();
     if ragged == 0 {
@@ -316,8 +258,7 @@ pub(crate) fn reflect_z(value: f32) -> f32 {
     }
 }
 
-/// In-memory dense matrix, row-major `data[y * width + x]` — the import-side
-/// intermediate between inx JSON and the sparse wire form.
+/// Row-major: `data[y * width + x]`.
 struct Dense<T> {
     width: usize,
     height: usize,
@@ -389,9 +330,7 @@ fn sparsify<T: FillCell + Clone>(
 }
 
 fn close_f32(a: &f32, b: &f32) -> bool {
-    // Tight enough that a passing fill is visually indistinguishable from the
-    // baked values (sub-0.01px on a 100px-range binding); anything looser
-    // falls back to all-cells-authored, which preserves parity exactly.
+    // Sub-0.01px on a 100px-range binding; a miss keeps every cell.
     (a - b).abs() <= 1e-4 + 1e-4 * b.abs()
 }
 
@@ -408,8 +347,7 @@ fn close_vec(a: &Vec<f32>, b: &Vec<f32>) -> bool {
     })
 }
 
-/// inx matrices are `values[x][y]` (outer = x-axis points); the intermediate
-/// stores them row-major as `data[y * width + x]`, matching the runtime layout.
+/// inx matrices are `values[x][y]` (outer = x-axis points).
 fn matrix_dims(rows: &[serde_json::Value]) -> (usize, usize) {
     let width = rows.len();
     let height = rows
@@ -442,8 +380,6 @@ fn matrix_f32(v: &serde_json::Value) -> Dense<f32> {
     }
 }
 
-/// Deform cells are arrays of `[x, y]` points; each cell flattens to
-/// `[x0, y0, x1, y1, …]`.
 fn matrix_vec2_flat(v: &serde_json::Value) -> Dense<Vec<f32>> {
     let Some(rows) = v.as_array() else {
         return Dense::default();
@@ -478,9 +414,8 @@ fn matrix_vec2_flat(v: &serde_json::Value) -> Dense<Vec<f32>> {
     }
 }
 
-/// An unrecognised blend-mode name is an error, not a silent downgrade to
-/// Normal. `.clm` is the source of truth after import, so
-/// a wrong-but-valid blend mode baked in here is unrecoverable.
+/// An unknown name is an error rather than Normal: a wrong-but-valid mode in
+/// the written `.clm` would be unrecoverable.
 pub(crate) fn blend(s: Option<&str>) -> Result<BlendMode, ImportError> {
     match s {
         None => Ok(BlendMode::default()),
@@ -505,10 +440,8 @@ pub(crate) fn interp(s: Option<&str>) -> InterpolateMode {
     }
 }
 
-/// inochi2d's axis-point defaults, resolved once so the structure holds final
-/// key positions: an absent axis defaults to `[0, 1]` on x and to `[0, 1]` /
-/// `[0]` on y (vec2 / scalar), and a degenerate empty axis collapses to a
-/// single stop so the param can still drive.
+/// inochi2d's axis-point defaults. An empty axis collapses to a single stop
+/// so the param can still drive.
 pub(crate) fn axes_of(p: &SchemaParam) -> (Vec<f32>, Vec<f32>) {
     let is_vec2 = p.is_vec2.unwrap_or(false);
     let default_y = || if is_vec2 { vec![0.0, 1.0] } else { vec![0.0] };

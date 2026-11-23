@@ -420,9 +420,6 @@ pub fn json_schema(kind: &str) -> Result<serde_json::Value, Error> {
     Ok(schema)
 }
 
-/// Complete discovery examples share one synthetic model and the production
-/// normalizer/evaluator. This performs no filesystem or GPU work. The run
-/// example illustrates completed records; schema discovery creates no images.
 pub(super) fn schema_example(kind: &str) -> Result<serde_json::Value, Error> {
     use catchlight_core::formats::clm::{ClmIndices, ClmMesh};
     use catchlight_core::{
@@ -574,8 +571,6 @@ pub(super) fn schema_example(kind: &str) -> Result<serde_json::Value, Error> {
     .map_err(|e| fail(&e))
 }
 
-/// Commit a single completed artifact beside its destination. Existing PNGs
-/// may be explicitly replaced; directory runs preflight all planned filenames.
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), Error> {
     atomic(path, |file| {
         file.write_all(bytes).map_err(|e| Error::io(path, e))
@@ -600,8 +595,7 @@ fn atomic(
     Ok(())
 }
 pub fn atomic_json(path: &Path, value: &impl Serialize) -> Result<(), Error> {
-    // Stream large geometry and manifest records into the atomic destination;
-    // do not duplicate their full serialized size in a second memory buffer.
+    // Stream into the destination rather than buffering the whole record.
     atomic(path, |file| {
         let mut writer = std::io::BufWriter::new(file);
         serde_json::to_writer_pretty(&mut writer, value)

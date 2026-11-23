@@ -1,14 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! `extract`, `merge` and `requirements` against the committed fixtures.
-//!
-//! The centrepiece is the round trip: cut a subtree out of a model, delete it
-//! from a copy of that model, install the cut back, and get the model that was
-//! there before — checked with `diff`, which the `diff` suite has already
-//! shown to be exact.
-//!
-//! `requirements` is checked two ways on the same file every time: the
-//! file-level scan this crate does and `Model::requirements`, which walks the
-//! same fields with a Model's tables. They must always agree.
 
 mod common;
 
@@ -19,10 +10,8 @@ use catchlight_core::{InstallError, Model, Required, Requirement};
 
 use common::{decode, read, tmp};
 
-/// The base a `merge` puts an addon back into: the model with the given nodes
-/// gone. The textures only they drew go with them — `delete_node` takes them,
-/// because a texture no part draws is not a thing a model holds — and leaving
-/// one behind would collide with the addon's own copy of it.
+/// `delete_node` also drops textures only those nodes drew, which would
+/// otherwise collide with the addon's own copy.
 fn base_without(nodes: &[&str], dir: &std::path::Path, name: &str) -> std::path::PathBuf {
     let mut model = Model::from_clm_bytes(&read(&common::fixture("composite_masks"))).unwrap();
     for node in nodes {
@@ -66,9 +55,7 @@ fn an_extracted_subtree_is_an_addon_and_not_a_complete_model() {
     );
 }
 
-/// Delete a subtree from a model, install the extract of it back, and the
-/// model is the one it was — install appends, and these roots were last
-/// already.
+/// Install appends, and these roots were already last.
 #[test]
 fn installing_an_extract_back_restores_the_model() {
     let dir = tmp("addons-round-trip");
@@ -149,8 +136,6 @@ fn extracting_an_id_the_file_does_not_carry_is_refused() {
     );
 }
 
-/// The file-level scan and `Model::requirements` walk the same eight fields;
-/// if they ever disagree, one of them is wrong.
 #[test]
 fn the_file_level_scan_agrees_with_the_model() {
     let dir = tmp("addons-requirements-agree");
@@ -219,17 +204,11 @@ fn the_requirements_are_exactly_the_cut_edges() {
     );
 }
 
-/// A texture is never a requirement: an addon carries the textures its own
-/// parts draw, so `extract` copies one the base still draws instead of asking
-/// the base for it. The addon then provides that Id, and installing it back
-/// into the base that still has it is the collision it now is.
 #[test]
 fn a_shared_texture_is_copied_into_the_addon_and_never_required() {
     let dir = tmp("addons-shared-texture");
     let original = common::fixture("composite_masks");
 
-    // Give `node-10` the texture `node-6` draws, and drop the one that
-    // leaves behind, so the cut and the base share a texture.
     let mut clm = decode(&original);
     let keep = part_albedo(&clm, "node-6");
     let freed = part_albedo(&clm, "node-10");
@@ -266,9 +245,6 @@ fn a_shared_texture_is_copied_into_the_addon_and_never_required() {
         &[keep.clone()][..]
     );
 
-    // Cut the subtree out of the base and the shared texture stays — `node-6`
-    // still draws it — so the Id the addon provides is taken and the merge
-    // says so instead of installing a second copy.
     let mut base = Model::from_clm_bytes(&read(&shared)).unwrap();
     base.delete_node(&NodeId::new("node-9").unwrap()).unwrap();
     assert!(base.texture(&keep).is_some(), "node-6 still draws it");
@@ -308,8 +284,6 @@ fn set_part_albedo(clm: &mut catchlight_core::formats::clm::ClmFile, node: &str,
     }
 }
 
-/// A weld that reaches into a base part needs each slot it pairs there, not
-/// just the node — the one requirement kind that carries two Ids.
 #[test]
 fn a_weld_reaching_into_the_base_requires_its_slots() {
     let dir = tmp("addons-requirements-slot");
@@ -348,8 +322,6 @@ fn a_weld_reaching_into_the_base_requires_its_slots() {
     );
 }
 
-/// A weld whose pairs are all gone still reaches the base part, so the file
-/// scan names the part — and agrees with the model's own scan.
 #[test]
 fn a_weld_with_no_pairs_still_requires_the_part() {
     let dir = tmp("addons-requirements-empty-weld");
@@ -393,7 +365,6 @@ fn an_install_error_is_reported_verbatim() {
     let addon = dir.join("addon.clm");
     fragment::extract(&original, &["node-9".into()], &addon).unwrap();
 
-    // A base that lacks the mask source the addon reaches for.
     let base = base_without(&["node-9", "node-5"], &dir, "base");
 
     let out = dir.join("merged.clm");
@@ -410,8 +381,6 @@ fn an_install_error_is_reported_verbatim() {
     assert!(!out.exists(), "a refused merge wrote a file");
 }
 
-/// Two addons that provide one Id are alternatives, so installing one into a
-/// base that already has it is refused rather than renamed around.
 #[test]
 fn an_id_the_base_already_has_is_a_collision() {
     let dir = tmp("addons-collision");
@@ -431,8 +400,6 @@ fn an_id_the_base_already_has_is_a_collision() {
     );
 }
 
-/// The two wire shapes are disjoint and `merge` never guesses: its addon
-/// argument goes to the fragment reader, so a complete model says so.
 #[test]
 fn a_complete_model_handed_in_as_an_addon_says_so() {
     let dir = tmp("addons-not-a-fragment");
@@ -505,15 +472,11 @@ fn the_binary_extracts_merges_and_lists_requirements() {
     assert_eq!(code, 0, "the merged model should match the original: {out}");
 }
 
-/// A requirements scan is a scan of the wire, so it works on a file the
-/// complete-model reader would refuse.
 #[test]
 fn requirements_reads_a_file_no_model_reader_would_take() {
     let dir = tmp("addons-requirements-hostile");
     let mut clm = decode(&common::fixture("mip_checker"));
-    // Cut the root out and take the textures with it. Neither reader takes
-    // this — the complete one because the parents dangle, the fragment one
-    // because the albedos do — and the scan answers anyway.
+    // Neither reader accepts this file; the scan answers anyway.
     clm.doc.nodes.retain(|n| n.parent.is_some());
     clm.textures.clear();
 

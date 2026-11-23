@@ -1,7 +1,5 @@
-//! Video encoding streams straight-alpha RGBA frames into an external ffmpeg
-//! (`CATCHLIGHT_FFMPEG`, else `ffmpeg` on PATH); no codec is linked. ffmpeg
-//! writes a temporary file beside the destination, which becomes visible only
-//! after ffmpeg exits successfully, like every other artifact.
+//! Video encoding pipes straight-alpha RGBA frames to an external ffmpeg
+//! (`CATCHLIGHT_FFMPEG`, else `ffmpeg` on PATH); no codec is linked.
 use super::spec::{bad, Background, VideoFormat};
 use crate::Error;
 use std::io::{Read, Write};
@@ -12,7 +10,6 @@ fn program() -> std::ffi::OsString {
     std::env::var_os("CATCHLIGHT_FFMPEG").unwrap_or_else(|| "ffmpeg".into())
 }
 
-/// Fail before GPU work and frame writes when ffmpeg cannot run.
 pub fn preflight() -> Result<(), Error> {
     let status = Command::new(program())
         .arg("-version")
@@ -123,14 +120,12 @@ impl VideoSink {
         }
         let stdin = self.stdin.as_mut().ok_or_else(|| bad("ffmpeg closed"))?;
         if stdin.write_all(pixels).is_err() {
-            // The encoder exited early; its own message explains why.
             self.stdin = None;
             return Err(self.failure());
         }
         Ok(())
     }
 
-    /// Wait for the encoder and move its output into place.
     pub fn finish(mut self) -> Result<(), Error> {
         self.stdin = None;
         let status = self.child.wait().map_err(|e| bad(format!("ffmpeg: {e}")))?;
@@ -171,8 +166,7 @@ impl VideoSink {
 }
 impl Drop for VideoSink {
     fn drop(&mut self) {
-        // An abandoned encode must not outlive the run; the temp file is
-        // removed by its own drop.
+        // The temp file is removed by its own drop.
         self.stdin = None;
         let _ = self.child.kill();
         let _ = self.child.wait();

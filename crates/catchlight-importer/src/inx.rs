@@ -291,9 +291,7 @@ impl InxModel {
     }
 }
 
-// `.inp` and `.inx` share the same binary framing (TRNSRTS\0 magic, BE u32
-// length-prefixed JSON, TEX_SECT, optional EXT_SECT). The names are
-// historical; one parser handles both.
+// `.inp` and `.inx` share one binary framing.
 pub type InpModel = InxModel;
 pub type InpParseError = InxParseError;
 
@@ -344,12 +342,10 @@ mod tests {
     fn rejects_oversized_texture_count() {
         let mut data = Vec::new();
         data.extend_from_slice(MAGIC);
-        // Empty JSON payload ("{}")
         let payload = b"{}";
         data.extend_from_slice(&(payload.len() as u32).to_be_bytes());
         data.extend_from_slice(payload);
         data.extend_from_slice(TEX_SECT);
-        // Claim ~1M textures
         data.extend_from_slice(&1_000_000_u32.to_be_bytes());
         let err = InxModel::parse(Cursor::new(data)).unwrap_err();
         assert!(

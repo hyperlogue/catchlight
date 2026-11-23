@@ -12,17 +12,13 @@ anyhow = { workspace = true }
 catchlight-core = { path = "../catchlight-core" }
 # The strand fixture fits its spine with the editor's geometry routine.
 catchlight-editor-core = { workspace = true }
-# `xtask generate typescript` reads the wire types through `ts-rs`, so it is the
-# one place in the workspace that turns the `ts` feature on. Cargo unifies
-# features across a build, so `cargo test --workspace` compiles the protocol
-# crate with it — which is deliberate: the feature-gated derives get linted and
-# type-checked on every CI run rather than only when someone regenerates.
+# Feature unification turns `ts` on in `cargo test --workspace` too; that is
+# deliberate, so the feature-gated derives are checked on every CI run.
 catchlight-editor-protocol = { path = "../catchlight-editor-protocol", features = ["ts"] }
 ts-rs = { workspace = true }
 image = { workspace = true }
-# `xtask generate python` parses the protocol crate's own source instead: a
-# `ts-rs` declaration is text, and Python needs `u32` and `f32` to stay apart.
-# Build-time only, and nothing but xtask depends on it.
+# The Python generator parses Rust source because `ts-rs` output loses the
+# `u32`/`f32` distinction.
 syn = { version = "2.0", features = ["full", "extra-traits"] }
 
 [dev-dependencies]

@@ -583,8 +583,7 @@ fn cli_rejects_oversized_model_before_reading_or_gpu_validation() {
     let dir = common::tmp("render-oversized-model");
     let model_path = dir.join("oversized.clm");
     let limit = catchlight_core::load_budget::LoadLimits::default().encoded_bytes;
-    // A sparse file exercises preflight rejection without materializing a
-    // model-sized buffer in the test or decoding deliberately invalid bytes.
+    // Sparse: rejects at preflight without materializing a model-sized buffer.
     std::fs::File::create(&model_path)
         .unwrap()
         .set_len(limit + 1)

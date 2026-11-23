@@ -1,26 +1,14 @@
-//! Builds `@catchlight/wasm` — the generated half of the web editor's bottom
-//! layer.
+//! Builds the generated, uncommitted `@catchlight/wasm` package.
 //!
-//! The output package is **generated, never edited, and not committed**: it is
-//! `catchlight-editor-wasm` compiled to wasm32 and run through `wasm-bindgen`,
-//! plus the one `package.json` that makes the result resolvable from the bun
-//! workspace. Anything hand-written belongs in the Rust crate or in
-//! `@catchlight/core` above it.
-//!
-//! `wasm-bindgen` the CLI and `wasm-bindgen` the crate must be the same
-//! version — the glue the CLI emits only loads against the runtime the crate
-//! compiled in. The workspace pins the crate exactly and the dev shell pins the
-//! CLI; this checks them against each other first, because the failure
-//! otherwise surfaces in the browser as an unresolved import rather than here.
+//! The `wasm-bindgen` CLI must match the crate version exactly; a mismatch
+//! otherwise surfaces only in the browser as an unresolved import.
 
 use std::path::Path;
 use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 
-/// Where the generated package lands, relative to the workspace root.
 const OUT_DIR: &str = "packages/wasm";
-/// The base name of the emitted `.js` / `.wasm` / `.d.ts` set.
 const OUT_NAME: &str = "catchlight";
 const CRATE: &str = "catchlight-editor-wasm";
 const TARGET: &str = "wasm32-unknown-unknown";
@@ -84,9 +72,6 @@ pub fn run(args: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// The `wasm-bindgen` crate version cargo actually resolved, against the CLI on
-/// PATH. A mismatch is the single most common way this build produces a broken
-/// package, and it is silent until the browser tries to load it.
 fn check_versions(root: &Path) -> Result<()> {
     let lock = std::fs::read_to_string(root.join("Cargo.lock"))
         .context("reading Cargo.lock to check the wasm-bindgen version")?;
@@ -112,7 +97,6 @@ fn check_versions(root: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The `version` of the `[[package]]` block named `name`.
 fn locked_version(lock: &str, name: &str) -> Option<String> {
     let mut in_block = false;
     for line in lock.lines() {
@@ -131,8 +115,6 @@ fn locked_version(lock: &str, name: &str) -> Option<String> {
 }
 
 fn package_json() -> String {
-    // Generated: the workspace resolves `@catchlight/wasm` to this directory,
-    // and nothing else reads these fields.
     format!(
         r#"{{
   "name": "@catchlight/wasm",

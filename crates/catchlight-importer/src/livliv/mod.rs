@@ -4,13 +4,6 @@
 //! refused explicitly: its omitted rights information cannot be inferred.
 //! Package data is never executable and resource paths never resolve URLs.
 //! Source metadata and compatibility findings must travel with a conversion.
-//!
-//! Motion is evaluated here at import time, then sampled into ordinary .clm
-//! deform bindings. Joint yaw/pitch and pairwise correction grids preserve
-//! two-control interactions; measured mixed-pose error is retained in the
-//! report. No LivLiv code or new runtime node kind is required to play it.
-//! Springs, automatic actions and other history-dependent behavior are not
-//! encoded by these settled-pose tables and remain explicit conversion losses.
 
 mod bake;
 pub use bake::BakeSummary;
@@ -232,11 +225,10 @@ impl ValidatedPackage {
     pub fn manifest(&self) -> &Value {
         &self.manifest
     }
-    /// Character name as plain text.
     pub fn name(&self) -> &str {
         &self.model.name
     }
-    /// Number of source layers, before any part splitting.
+    /// Before any part splitting.
     pub fn layer_count(&self) -> usize {
         self.model.layers.len()
     }

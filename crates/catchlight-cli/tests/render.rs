@@ -1,20 +1,13 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! `render` end to end: the binary draws a committed fixture on a headless
-//! device and writes a PNG of the size it was asked for.
-//!
-//! This is the one suite here that needs a GPU. It runs on mesa's CPU Vulkan
-//! driver (lavapipe), which the dev shell puts on the loader's search path,
-//! and fails rather than skips when no adapter is there — the same choice the
-//! `catchlight-wgpu` suites make, so a missing driver is loud instead of a
-//! green run that tested nothing.
+//! `render` end to end. Needs a GPU (lavapipe in the dev shell) and fails rather
+//! than skips without one, so a missing driver is loud.
 
 mod common;
 
 use std::collections::HashSet;
 
-/// A fixture with two parts over one another, so a correct frame is never one
-/// flat colour and a blank one is caught.
+/// Two overlapping parts, so a blank frame is caught.
 const MODEL: &str = "quad_over_bg";
 
 #[test]
@@ -32,7 +25,6 @@ fn the_binary_writes_a_png_of_the_requested_size_and_prints_the_render_list() {
     ]);
     assert_eq!(code, 0, "stderr: {stderr}");
 
-    // The render list is the inspection half of this command.
     assert!(stdout.contains("Render list: 2 root drawables"), "{stdout}");
     assert!(
         stdout.contains("=== ROOT DRAWABLES (sorted by z-order) ==="),

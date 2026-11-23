@@ -1,26 +1,6 @@
-//! The two doors the CLI reaches an editor through, behind one `call`.
+//! The Unix socket and HTTP transports behind one `call`.
 //!
-//! The Unix socket (Unix only) carries a request line plus sibling keys naming
-//! the client's own files: `files` for attachments, `out` for a payload. The
-//! HTTP door (`POST /request`, bearer token) shares no filesystem guarantee,
-//! so here the same siblings are honoured client-side: each `files` path is
-//! read and sent as a `multipart/form-data` part, and a payload that comes
-//! back as the response body is written to `out`. A caller builds one request
-//! and one sibling map either way.
-//!
-//! Which door: `--server` (with `--token`, or the token the connection file
-//! records for that URL), then `--socket`, then the default socket if
-//! something answers on it, then the connection file a running editor wrote
-//! (see `catchlight_editor_protocol::default_connection_path`). The launcher
-//! asks for the connection file before the socket, since its own editor is
-//! the one recorded there.
-//!
-//! Invariants this module enforces:
-//!
-//! - **The token goes to loopback only.** It travels in clear text, so a URL
-//!   naming any other host is refused before anything is sent.
-//! - **A payload needs somewhere to go.** A command whose reply carries bytes
-//!   is refused without `out` before it is sent, on both doors.
+//! The HTTP bearer token travels in clear text, so only loopback is dialled.
 
 #[cfg(unix)]
 use std::io::{BufRead, BufReader};
@@ -39,18 +19,14 @@ use serde_json::{Map, Value};
 
 use super::MAX_COMMAND_BYTES;
 
-/// How long a reply may take. A render under a software adapter is the slow
-/// case.
+/// Sized for a render under a software adapter.
 const HTTP_TIMEOUT: Duration = Duration::from_secs(300);
 
-/// What the command line said about where the editor is.
 #[derive(Default)]
 pub(super) struct Target {
     pub server: Option<String>,
     pub token: Option<String>,
     pub socket: Option<PathBuf>,
-    /// Try the connection file before the default socket: what the launcher
-    /// wants, whose own editor is the one in that file.
     pub connection_first: bool,
 }
 
@@ -90,9 +66,7 @@ pub(super) fn connect(target: &Target) -> Result<Transport> {
     } else {
         None
     };
-    // The default socket is a guess, not a request: any failure on it (absent,
-    // refused, a path too long, a directory another user owns) falls through
-    // to the connection file and is reported only if that finds nothing.
+    // The default socket is a guess: any failure on it falls through silently.
     #[cfg(unix)]
     let socket_error = {
         let path = catchlight_editor_protocol::default_socket_path();
@@ -135,8 +109,6 @@ fn connect_socket(_: &Path) -> Result<Transport> {
     bail!("--socket is unix-only; pass --server <url> --token <token>")
 }
 
-/// The editor the connection file names: `None` without a file, an error when
-/// the file names an editor that no longer answers.
 fn from_connection_file() -> Option<Result<Transport>> {
     let (path, connection) = recorded()?;
     if connection.version != env!("CARGO_PKG_VERSION") {
@@ -151,8 +123,7 @@ fn from_connection_file() -> Option<Result<Transport>> {
         Ok(http) => http,
         Err(err) => return Some(Err(err)),
     };
-    // Dial once now so a file left by a killed editor reads as stale rather
-    // than as a failure of whatever command came first.
+    // Dial now so a file left by a killed editor reports as stale.
     let dialed = TcpStream::connect((http.host.as_str(), http.port)).with_context(|| {
         format!(
             "the editor recorded in {} ({}) is not answering; the file may be stale",
@@ -170,7 +141,6 @@ fn recorded() -> Option<(PathBuf, Connection)> {
 }
 
 impl Transport {
-    /// One request, answered by the reply that carries its id.
     pub fn call(&mut self, req: Request, siblings: Map<String, Value>) -> Result<Reply> {
         let tag = serde_json::to_value(&req.command)?
             .get("cmd")
@@ -251,9 +221,8 @@ impl Http {
                 .map_err(|_| anyhow!("{url}: bad port {port:?}"))?,
             None => 80,
         };
-        // `localhost` is dialled as the address the editor binds: by name it
-        // may resolve to `::1` first, where some other process could be
-        // listening to receive the token.
+        // By name, `localhost` may resolve to a `::1` listener that is not the
+        // editor and would receive the token.
         let host = match host {
             "127.0.0.1" | "localhost" => "127.0.0.1",
             "::1" => "::1",
@@ -314,7 +283,6 @@ impl Http {
         Ok(reply)
     }
 
-    /// One round trip on a fresh connection; the editor closes every response.
     fn exchange(&self, path: &str, content_type: &str, body: &[u8]) -> Result<Response> {
         let authority = if self.host.contains(':') {
             format!("[{}]:{}", self.host, self.port)
@@ -335,9 +303,8 @@ impl Http {
             .write_all(head.as_bytes())
             .and_then(|()| stream.write_all(body))
             .and_then(|()| stream.flush());
-        // The editor refuses on the head alone (a wrong token, an oversized
-        // body) and closes under the rest, so a failed send may still have an
-        // answer waiting that says why.
+        // The editor may refuse on the head alone and close mid-body, so a
+        // failed send can still have a readable refusal.
         let mut response = Vec::new();
         let read = stream.read_to_end(&mut response);
         if let Ok(parsed) = parse_response(&response) {
@@ -349,7 +316,7 @@ impl Http {
     }
 }
 
-/// A status, lowercased headers, and the body cut to its `Content-Length`.
+/// Header names are lowercased.
 struct Response {
     status: u16,
     headers: Vec<(String, String)>,
@@ -393,8 +360,6 @@ fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
         .map(|(_, v)| v.as_str())
 }
 
-/// The command and its bytes as one `multipart/form-data` body: a part named
-/// `request` holding the command, then one part per attachment.
 fn multipart(request: Vec<u8>, parts: Vec<(String, Vec<u8>)>) -> Result<(String, Vec<u8>)> {
     let mut seed = [0u8; 16];
     getrandom::fill(&mut seed).map_err(|e| anyhow!("no system randomness: {e}"))?;
@@ -436,7 +401,6 @@ mod tests {
             let http = Http::new(url, "t".into()).unwrap();
             assert_eq!(http.port, 9, "{url}");
         }
-        // By name, `localhost` may reach a `::1` listener the editor is not.
         assert_eq!(
             Http::new("http://localhost:9", "t".into()).unwrap().host,
             "127.0.0.1"

@@ -9,13 +9,10 @@ use std::path::Path;
 
 pub use catchlight_wgpu::RenderContext;
 
-/// One frame of the transient a config with `ticks_after_pose` captures.
-/// Fixed at 60 Hz and never read from a clock, so a tick count in a config
-/// reads as a time and the same count always renders the same instant.
+/// Seconds per tick: fixed 60 Hz, never a clock, so renders are deterministic.
 pub const FRAME_SECONDS: f32 = 1.0 / 60.0;
 
-/// Opaque white, so a dropped or wrongly-blended pixel reads as a difference
-/// rather than blending into the background.
+/// Opaque, so a dropped or wrongly-blended pixel shows up as a difference.
 pub const CLEAR_COLOR: wgpu::Color = wgpu::Color {
     r: 1.0,
     g: 1.0,
@@ -23,26 +20,17 @@ pub const CLEAR_COLOR: wgpu::Color = wgpu::Color {
     a: 1.0,
 };
 
-/// One model and everything derived from it that a render needs: the puppet
-/// animating it and the renderer's cache of it.
 pub struct CachedModel {
     pub model: Model,
     pub puppet: Puppet,
-    /// Restore the same starting pose and response state before every config.
     pub pristine: Puppet,
-    /// The model's params by [`catchlight_core::id::Name`], resolved once at
-    /// load: a config names a param the way its author does, and nothing in a
-    /// model is addressed by name past this point.
     pub param_ids: HashMap<String, ParamId>,
-    /// Built on first use against the slot's own renderer, so a model that no
-    /// config reaches never decodes a texture.
+    /// Built lazily so a model no config reaches never decodes a texture.
     pub cache: Option<RenderCache>,
     pub texture_halvings: u32,
 }
 
 impl CachedModel {
-    /// Load `path` and bake a puppet for it. The render cache waits for a
-    /// renderer.
     pub fn load(path: &Path, texture_halvings: u32) -> Result<Self> {
         let bytes = std::fs::read(path).with_context(|| format!("opening {}", path.display()))?;
         let format = ModelFormat::from_path(path)
@@ -65,13 +53,8 @@ impl CachedModel {
     }
 }
 
-/// The pose `params` describes, keyed by Id.
-///
-/// A config names a param the way a person does. The model's params are
-/// scalar, so a config entry that was one 2-D param upstream lands on the
-/// split pair `<name>.x` / `<name>.y`; one that is genuinely scalar takes `x`
-/// and ignores `y`. A name that resolves to neither is a broken config and
-/// says so rather than rendering the rest at rest.
+/// A config entry for a 2-D param maps to the scalar pair `<name>.x` /
+/// `<name>.y`; a scalar param takes `x` and ignores `y`. Unknown names error.
 fn pose_from(cached: &CachedModel, params: &[ParamSetting]) -> Result<Pose> {
     let mut pose = Pose::new();
     for p in params {
@@ -95,15 +78,7 @@ fn pose_from(cached: &CachedModel, params: &[ParamSetting]) -> Result<Pose> {
     Ok(pose)
 }
 
-/// Restore `cached` to its pristine state, apply `params`, reset the motion responses,
-/// refresh the render cache, and collect the frame's drawables — everything a
-/// render needs except the render pass itself. `world` is the puppet's root
-/// transform: identity for a lone puppet, a translation when several share
-/// one frame.
-///
-/// `ticks_after_pose` chooses which of the two orders that happens in; see
-/// [`crate::config::Config::ticks_after_pose`], whose doc is the one that
-/// explains why there are two.
+/// `world` is the puppet's root transform.
 pub fn prepare_puppet(
     ctx: &mut RenderContext,
     cached: &mut CachedModel,
@@ -123,13 +98,8 @@ pub fn prepare_puppet(
         )?);
     }
     cached.puppet.clone_from(&cached.pristine);
-    // Every param the config leaves out goes back to its default, so one
-    // config never inherits another's pose.
-    //
-    // A static config poses first and then settles, so what it renders is the
-    // rest shape the pose ends at. A transient config settles at the defaults
-    // instead and applies the pose to the already-resting puppet, so the
-    // frames after it are the motion that pose change starts.
+    // Static: pose then settle. Transient: settle at defaults, then pose, so
+    // the following ticks capture the motion the pose change starts.
     if ticks_after_pose == 0 {
         cached.puppet.apply_pose(&pose);
         cached.puppet.reset_motion_responses(&cached.model);
@@ -151,7 +121,6 @@ pub fn prepare_puppet(
     Ok(collect(cache, &cached.puppet))
 }
 
-/// The view-projection `camera` describes for a `width` x `height` viewport.
 pub fn camera_matrix(width: u32, height: u32, camera: &Camera) -> glam::Mat4 {
     let aspect = width as f32 / height as f32;
     let camera_height = height as f32 / camera.zoom.max(1e-3);

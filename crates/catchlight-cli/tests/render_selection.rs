@@ -1,10 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! `render --keep` end to end: what it hides, what it keeps clipping, and what the
-//! straight-alpha PNG holds.
-//!
-//! Needs a GPU, and like the render suite it fails rather than skips when no
-//! adapter is there.
+//! `render --keep` end to end. Needs a GPU; fails rather than skips without one.
 
 mod common;
 
@@ -14,14 +10,11 @@ use catchlight_core::{
 };
 use image::RgbaImage;
 
-/// The fixture's two quads: half-width 60, centres 160 apart. This rect holds
-/// both with room to spare, and at scale 0.5 it is 2 world units per pixel.
+/// Holds both quads (half-width 60, centres 160 apart); 2 world units per pixel at scale 0.5.
 const RECT: &str = "-160,-80,320,160";
 const SCALE: &str = "0.5";
-/// Where each quad's centre lands in that frame.
 const DRIVEN_PX: (u32, u32) = (40, 40);
 const SWEPT_PX: (u32, u32) = (120, 40);
-/// The fixture's two texture colours.
 const DRIVEN_RGB: [u8; 3] = [210, 90, 70];
 const SWEPT_RGB: [u8; 3] = [70, 150, 210];
 
@@ -61,10 +54,7 @@ fn only_the_kept_part_is_drawn_and_the_size_follows_the_scale() {
     assert_eq!(&swept[..3], &SWEPT_RGB, "and carries its own texture");
 }
 
-/// The unpremultiply check. `sweep` at its far key fades `driven` to a
-/// quarter, and a straight-alpha PNG keeps the colour and drops the alpha —
-/// premultiplied it would read as a quarter of the colour, and undoing that
-/// in byte space instead of linear would saturate it toward white.
+/// Unpremultiplying in byte space instead of linear would saturate toward white.
 #[test]
 fn a_faded_part_keeps_its_colour_and_loses_only_alpha() {
     let dir = common::tmp("isolate-faded");
@@ -104,7 +94,6 @@ fn an_id_that_names_no_part_is_refused() {
     let dir = common::tmp("isolate-unknown");
     for (args, wanted) in [
         (vec!["--keep", "node-404"], "node-404"),
-        // A group is not a Part, so keeping one is the same refusal.
         (vec!["--keep", "root"], "root"),
     ] {
         let (code, _, stderr) = run_with(&dir, &args);
@@ -126,10 +115,7 @@ fn run_with(dir: &std::path::Path, extra: &[&str]) -> (i32, String, String) {
     run(&args)
 }
 
-/// A mask source that is not kept is disabled, and a disabled source still
-/// stencils — which is the whole reason `--strip-masks` exists. The kept part
-/// is half covered by such a source, so its uncovered half is missing until
-/// the mask comes off.
+/// A disabled mask source still stencils, which is why `--strip-masks` exists.
 #[test]
 fn a_disabled_mask_source_still_clips_until_its_mask_is_stripped() {
     let dir = common::tmp("isolate-masks");
@@ -184,8 +170,6 @@ fn a_disabled_mask_source_still_clips_until_its_mask_is_stripped() {
         "the whole part draws once stripped"
     );
 
-    // An Id that masks nothing is not an error: a script lists a whole rig's
-    // sources without working out which ones bite.
     let (code, stdout, stderr) = run(&[
         "render",
         model.to_str().unwrap(),
@@ -202,8 +186,7 @@ fn a_disabled_mask_source_still_clips_until_its_mask_is_stripped() {
     assert!(stderr.contains("node-404"), "{stderr}");
 }
 
-/// Two quads: one 80 wide on the origin, and a 40-wide one over its left
-/// half that masks it. Returns `(kept, masker)`.
+/// Returns `(kept, masker)`.
 fn write_masked_model(path: &std::path::Path) -> (NodeId, NodeId) {
     let mut hex = SeededHex::new(11);
     let mut model = Model::new();
@@ -244,7 +227,6 @@ fn write_masked_model(path: &std::path::Path) -> (NodeId, NodeId) {
     (kept, masker)
 }
 
-/// A quad `half` wide and tall, centred at `x`.
 fn quad(half: f32, x: f32) -> ClmMesh {
     ClmMesh {
         verts: vec![
@@ -276,7 +258,6 @@ fn solid_texture(rgba: [u8; 4]) -> ModelTexture {
     }
 }
 
-// Fix motion responses, background and framing so selection tests compare the same view.
 fn run(args: &[&str]) -> (i32, String, String) {
     let mut args = args.to_vec();
     args.extend(["--background", "transparent", "--motion-responses", "off"]);

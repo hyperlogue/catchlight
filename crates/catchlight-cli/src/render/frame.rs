@@ -24,8 +24,6 @@ impl FrameRuntime {
             .animation
             .as_ref()
             .map_or(0.0, |a| a.clip.0.timestep);
-        // Native lanes supply frame-zero controls before initialization. Their
-        // evaluator, including Stepped/Cubic behavior, remains the core method.
         if let Some(animation) = &request.animation {
             for lane in &animation.clip.0.lanes {
                 puppet.set_param_value(&lane.param, lane.value_at(0.0));
@@ -68,9 +66,8 @@ pub fn color_retained(request: &ResolvedRequest, id: &NodeId) -> bool {
         && !request.hide_color.contains(id)
 }
 
-/// Mask edits affect only this command's private clone. Restoring through
-/// ordinary edits keeps its generation monotonic, avoiding cache-key aliasing
-/// between equally sized, differently stripped variants.
+/// Restoring through ordinary edits keeps the generation monotonic, avoiding
+/// cache-key aliasing between equally sized, differently stripped variants.
 pub fn configure_masks(
     model: &mut Model,
     original: &Model,

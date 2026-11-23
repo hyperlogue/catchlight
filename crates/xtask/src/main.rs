@@ -2,11 +2,12 @@
 
 //! Workspace build-automation tasks. Invoked as `cargo xtask <cmd>`.
 //!
-//! Commands:
-//!   cargo xtask gen-fixture <name>
-//!   cargo xtask build-wasm [--debug]
-//!   cargo xtask bundle-ui [--debug]
-//!   cargo xtask generate [typescript|python]
+//! ```text
+//! cargo xtask gen-fixture <name>
+//! cargo xtask build-wasm [--debug]
+//! cargo xtask bundle-ui [--debug]
+//! cargo xtask generate [typescript|python]
+//! ```
 
 mod fixtures;
 mod generate;
@@ -53,8 +54,6 @@ fn print_usage() {
     eprintln!("      writes both.");
 }
 
-/// The workspace root, from this crate's manifest directory. Every task writes
-/// relative to it, so `cargo xtask` behaves the same from any subdirectory.
 fn workspace_root() -> Result<PathBuf> {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     manifest

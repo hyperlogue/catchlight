@@ -1,10 +1,5 @@
 //! 2.5D character animation through mesh deformation.
 //!
-//! Catchlight simulates three-dimensional movement by deforming two-dimensional
-//! parts. Try the [browser demo](https://hyperlogue.github.io/catchlight/).
-//!
-//! # Load and evaluate
-//!
 //! ```no_run
 //! use catchlight::{load_model, ModelFormat, Pose, Puppet};
 //!
@@ -19,8 +14,6 @@
 //! # Ok(())
 //! # }
 //! ```
-//!
-//! The `wgpu` feature exposes the rendering backend as `catchlight::wgpu`.
 
 pub use catchlight_core::*;
 

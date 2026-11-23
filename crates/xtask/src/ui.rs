@@ -1,10 +1,7 @@
-//! Builds the editor page `catchlight-editor` serves and copies it into that
-//! crate, where its build script compiles it into the binary.
+//! Builds the editor page and copies it into `catchlight-editor` for embedding.
 //!
-//! The copy (`crates/catchlight-editor/ui/`) is generated and ignored by git,
-//! but the crate's `include` lists it, so `cargo package` and `cargo publish`
-//! carry it: `cargo install` cannot run wasm-bindgen or Vite, so a published
-//! crate has to arrive with the page already built.
+//! The copy is git-ignored but packaged: `cargo install` cannot run
+//! wasm-bindgen or Vite, so a published crate must ship the built page.
 
 use std::path::Path;
 use std::process::Command;

@@ -1,9 +1,6 @@
 use serde::{Deserialize, Deserializer};
 
-/// Try to deserialize a value as `T`; if the JSON shape/type doesn't
-/// match (e.g. an array where we expect a bool), yield `None` rather
-/// than propagating the error. Lets the schema tolerate garbage fields
-/// the same way the legacy JSON-walking loader did.
+/// A field of the wrong JSON type reads as absent rather than failing the file.
 fn de_lenient<'de, T, D>(d: D) -> Result<Option<T>, D::Error>
 where
     T: for<'a> Deserialize<'a>,
@@ -94,15 +91,10 @@ pub(super) struct SchemaNode {
     #[serde(default, deserialize_with = "de_lenient")]
     pub(super) translate_children: Option<bool>,
 
-    // The authored Composite flag the old runtime path hardcoded to true;
-    // the `.clm` importer reads it.
     #[serde(default, deserialize_with = "de_lenient")]
     pub(super) propagate_meshgroup: Option<bool>,
 }
 
-/// Does this source binding kind (`param_name`) drive colour? Colour lands on
-/// a part or a composite; a mesh group is never drawn, so both import paths
-/// drop such a binding when its target is one.
 pub(super) fn source_binding_is_color(kind: &str) -> bool {
     matches!(
         kind,
@@ -117,9 +109,6 @@ pub(super) fn source_binding_is_color(kind: &str) -> bool {
 }
 
 impl SchemaNode {
-    /// A source mesh group's colour maps to nothing — catchlight never draws a
-    /// mesh group, so it has no opacity, blend mode, tint or screen tint. Both
-    /// import paths call this so the model's author can see what was dropped.
     pub(super) fn log_dropped_mesh_group_color(&self) {
         let opacity = self.opacity.filter(|o| *o != 1.0);
         let blend_mode = self
@@ -197,9 +186,6 @@ pub(super) struct SchemaAnimation {
     pub(super) lanes: Vec<SchemaAnimationLane>,
 }
 
-/// One lane of a source clip. `uuid` names the *param* it drives and `target`
-/// picks that param's axis — 0 is x, anything else is y — because a source
-/// param may be 2-D where catchlight's are scalar.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub(super) struct SchemaAnimationLane {
     #[serde(default, deserialize_with = "de_lenient")]

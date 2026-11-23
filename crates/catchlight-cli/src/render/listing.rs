@@ -1,10 +1,8 @@
 use catchlight_wgpu::{DrawableInfo, RenderList};
 use std::fmt::Write as _;
 
-/// Every drawable in z order, roots first and then each composite's children.
 pub(super) fn listing(render_list: &RenderList) -> String {
     let mut out = String::new();
-    // Writing into a String cannot fail, so the results are discarded.
     let _ = writeln!(
         out,
         "Render list: {} root drawables, {} composites with children",
@@ -36,7 +34,6 @@ pub(super) fn listing(render_list: &RenderList) -> String {
             part_line(&mut out, idx, child);
         }
     }
-    // The trailing newline is the caller's to add.
     while out.ends_with('\n') {
         out.pop();
     }

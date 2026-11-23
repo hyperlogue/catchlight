@@ -1,21 +1,5 @@
-//! `replace-texture <file> <tex-id> <image>` — swap one texture's source bytes.
-//!
-//! `.clm` stores a texture exactly as the author supplied it and never
-//! re-encodes it, so replacing one is a byte swap: read the image file, put
-//! its bytes in the slot the Id names, write the model back. Nothing here
-//! decodes the image — not the old one, not the new one — which is also why
-//! the tool cannot tell you the new image is the same size as the old.
-//!
-//! The two things it does look at:
-//!
-//! - **The encoding**, because the slot records it. The bytes' own signature
-//!   decides when there is one (PNG's 8-byte magic, TGA 2.0's
-//!   `TRUEVISION-XFILE.` footer); otherwise the file extension does; and if
-//!   neither says, the swap is refused rather than guessed at.
-//! - **The alpha convention**, which the bytes cannot tell anyone. The slot's
-//!   existing convention is kept unless `--alpha` says otherwise — a straight
-//!   image dropped into a premultiplied slot renders wrong, and only the
-//!   person doing the swap knows which it is.
+//! `replace-texture <file> <tex-id> <image>` — swap one texture's source bytes
+//! without decoding either image.
 
 use std::path::Path;
 
@@ -26,7 +10,6 @@ use crate::{file, Error};
 const PNG_MAGIC: &[u8] = &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
 const TGA_FOOTER: &[u8] = b"TRUEVISION-XFILE.\0";
 
-/// What one `replace-texture` did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Replaced {
     pub id: String,
@@ -46,8 +29,6 @@ impl std::fmt::Display for Replaced {
     }
 }
 
-/// Put `image`'s bytes into the texture `tex_id` names, writing to `out` if
-/// given and over `path` otherwise.
 pub fn run(
     path: &Path,
     tex_id: &str,
@@ -85,12 +66,7 @@ pub fn run(
     Ok(replaced)
 }
 
-/// Which of the two encodings `.clm` stores these bytes are, from the bytes'
-/// own signature first and the file extension second.
-///
-/// TGA has no leading magic, only an optional 2.0 footer, so a TGA 1.0 file is
-/// recognised by its extension alone — which is the reason the extension is
-/// consulted at all.
+/// Signature first, extension second: TGA 1.0 has no magic, only its extension.
 pub fn encoding_of(path: &Path, bytes: &[u8]) -> Option<TextureEncoding> {
     if bytes.starts_with(PNG_MAGIC) {
         return Some(TextureEncoding::Png);

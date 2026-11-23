@@ -1,33 +1,7 @@
-//! `patch <file> <id> <field> <value>` — set one field on one node or param.
+//! `patch <file> <id> <field> <value>` — set one scalar field on one node or param.
 //!
-//! The edit happens on the decoded structure and nowhere else: the
-//! texture table is carried from the input to the output untouched, so the
-//! cost of patching a model is the cost of copying its bytes and never the
-//! cost of decoding its images.
-//!
-//! What this module is responsible for:
-//!
-//! - **One field, named by its path.** `z_order`, `translation.x`, `tint.g`,
-//!   `period_s`; on a param `min`, `max`, `default`, `name`. Which fields
-//!   a node has depends on its kind, and an unknown one is refused with the
-//!   list it does have rather than being silently ignored.
-//! - **The value is parsed to the field's own type.** A number, `true`/`false`,
-//!   free text, or one of a small enum's names; anything else is
-//!   [`Error::BadValue`](crate::Error::BadValue) naming the field and what it
-//!   takes.
-//! - **The only cross-reference it will touch is `albedo`**, and it refuses an
-//!   Id the file does not carry. Everything else `patch` writes is a scalar,
-//!   because changing what names what is what `extract` and `merge` are for.
-//! - **A patch that would break the file is refused, not saved.** The edited
-//!   structure is rebuilt into a [`Model`](catchlight_core::Model) — which
-//!   resolves every Id and runs every load-time invariant, and decodes no
-//!   images — before anything is written. A `min` above `max`, a name past the
-//!   256-byte cap, an albedo naming nothing: caught here, with the reader's
-//!   own error.
-//!
-//! A node Id and a param Id are separate namespaces, so one string can name
-//! both. `patch` resolves whichever exists, and asks with
-//! [`Error::AmbiguousId`](crate::Error::AmbiguousId) when both do.
+//! The only cross-reference it touches is `albedo`; changing what names what
+//! belongs to `extract` and `merge`.
 
 use std::path::Path;
 
@@ -38,7 +12,6 @@ use catchlight_core::id::{TexId, MAX_NAME_BYTES};
 use crate::diff::enum_name;
 use crate::{file, Error};
 
-/// Which namespace an Id was resolved in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     Node,
@@ -54,7 +27,6 @@ impl Kind {
     }
 }
 
-/// What one `patch` did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Change {
     pub kind: Kind,
@@ -65,8 +37,6 @@ pub struct Change {
 }
 
 impl Change {
-    /// Whether the value actually moved. A patch that sets a field to what it
-    /// already held preserves the canonical file bytes.
     pub fn changed(&self) -> bool {
         self.before != self.after
     }
@@ -86,8 +56,6 @@ impl std::fmt::Display for Change {
     }
 }
 
-/// Read `path`, set the field, check the result still loads, and write it —
-/// to `out` if given, over the input otherwise.
 pub fn run(
     path: &Path,
     id: &str,
@@ -106,7 +74,6 @@ pub fn run(
     Ok(change)
 }
 
-/// Set one field on an already-decoded file.
 pub fn patch(
     clm: &mut ClmFile,
     path: &Path,
@@ -116,9 +83,7 @@ pub fn patch(
     want: Option<Kind>,
 ) -> Result<Change, Error> {
     let kind = resolve(clm, path, id, want)?;
-    // Extensions are not a patchable field, so they are carried through
-    // untouched: a patch of an unrelated field leaves them byte-identical.
-    // So are the sections this build does not recognise.
+    // Extensions and unrecognised sections pass through byte-identical.
     let ClmFile {
         doc,
         textures,
@@ -174,7 +139,6 @@ pub fn patch(
     })
 }
 
-/// Which namespace `id` names, refusing to guess when it names both.
 fn resolve(clm: &ClmFile, path: &Path, id: &str, want: Option<Kind>) -> Result<Kind, Error> {
     let node = clm.doc.nodes.iter().any(|n| n.id.as_str() == id);
     let param = clm.doc.params.iter().any(|p| p.id.as_str() == id);
@@ -200,12 +164,8 @@ fn resolve(clm: &ClmFile, path: &Path, id: &str, want: Option<Kind>) -> Result<K
     }
 }
 
-/// Rebuild a Model from the patched structure, so a patch that breaks a
-/// load-time invariant is refused instead of written.
-///
-/// If the file did not load before the patch either, that is what gets
-/// reported — otherwise the message would blame the patch for damage it did
-/// not do.
+/// If the file did not load before the patch either, report that rather than
+/// blaming the patch.
 fn verify(clm: &ClmFile, path: &Path) -> Result<(), Error> {
     let source = match file::load(clm, path) {
         Ok(_) => return Ok(()),
@@ -230,9 +190,6 @@ fn verify(clm: &ClmFile, path: &Path) -> Result<(), Error> {
     })
 }
 
-// ---- fields ---------------------------------------------------------------
-
-/// One writable field of a node or param, and the type it takes.
 enum Slot<'a> {
     F32(&'a mut f32),
     Bool(&'a mut bool),
@@ -259,7 +216,6 @@ const BLEND_MODES: &[&str] = &[
     "Subtract",
 ];
 
-/// Fields every node has, whatever its kind.
 const COMMON_FIELDS: &[&str] = &[
     "enabled",
     "lock_to_root",
@@ -299,11 +255,8 @@ const COMPOSITE_FIELDS: &[&str] = &[
     "tint.r",
 ];
 const MESH_GROUP_FIELDS: &[&str] = &["translate_children"];
-/// Scalar param fields. Key positions belong to bindings.
 pub const PARAM_FIELDS: &[&str] = &["default", "max", "min", "name"];
 
-/// Every field this node accepts, sorted — what an unknown field is reported
-/// against.
 pub fn node_fields(kind: &ClmNodeKind) -> Vec<&'static str> {
     let mut all: Vec<&'static str> = COMMON_FIELDS.to_vec();
     all.extend_from_slice(kind_fields(kind));
@@ -408,8 +361,6 @@ fn param_slot<'a>(param: &'a mut ClmParam, field: &str) -> Option<Slot<'a>> {
     })
 }
 
-// ---- parsing --------------------------------------------------------------
-
 fn apply(
     slot: Slot<'_>,
     field: &str,
@@ -477,8 +428,6 @@ fn apply(
     })
 }
 
-/// Parse a unit enum by its serialized name, so this crate never keeps a
-/// second copy of a `.clm` variant list.
 fn parse_enum<T: serde::de::DeserializeOwned>(value: &str) -> Option<T> {
     serde_json::from_value(serde_json::Value::String(value.to_string())).ok()
 }

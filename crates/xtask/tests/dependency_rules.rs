@@ -1,21 +1,13 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-//! Workspace dependency rules that no single crate's manifest can state.
-//!
-//! A crate's `Cargo.toml` says what it depends on; it cannot say what it must
-//! never come to depend on, and a rule like that is broken transitively, by a
-//! dependency of a dependency, long before anyone edits the guilty manifest.
-//! So the check reads the resolved graph out of `cargo metadata` instead.
+//! Workspace dependency rules that no single crate's manifest can state; they
+//! are checked against the resolved graph so transitive violations fail too.
 
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::process::Command;
 
-/// The crate the rule is about: the command line over a `.clm` file.
 const CLI: &str = "catchlight-cli";
 
-/// What must never reach it. The editor protocol, the editor server, and the
-/// two clients of that server. See `crates/catchlight-cli/src/lib.rs` for
-/// why the line sits exactly here.
 const ABOVE_THE_LINE: [&str; 4] = [
     "catchlight-editor-protocol",
     "catchlight-editor-server",
@@ -66,7 +58,6 @@ fn the_cli_never_depends_on_the_editor_server_its_protocol_or_a_client() {
     }
 }
 
-/// `cargo metadata` for the whole workspace, deps included.
 fn metadata() -> serde_json::Value {
     // crates/xtask/ -> crates/ -> workspace root.
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -87,12 +78,9 @@ fn metadata() -> serde_json::Value {
     serde_json::from_slice(&output.stdout).expect("cargo metadata writes json")
 }
 
-/// Every package reachable from `root`, each mapped to the package that
-/// reached it first, so a failure can name a path rather than a bare crate.
-///
-/// Dev-dependency edges are followed out of `root` only: the CLI's own test
-/// deps are as much a dependency on the server as its normal ones, while a
-/// dev-dependency of something further down is never built into it.
+/// Every package reachable from `root`, mapped to the package that reached it
+/// first. Dev-dependency edges are followed out of `root` only: a deeper
+/// crate's dev-dependencies are never built into it.
 fn closure<'a>(
     nodes: &HashMap<&'a str, &'a serde_json::Value>,
     root: &'a str,
@@ -119,7 +107,6 @@ fn closure<'a>(
     reached
 }
 
-/// The path the closure took from `root` to `id`, by crate name.
 fn trail(
     reached: &HashMap<&str, Option<&str>>,
     names: &HashMap<&str, &str>,

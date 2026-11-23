@@ -1,15 +1,4 @@
 //! `catchlight-editor-cli` — a thin client for the editor server.
-//!
-//! Direct commands send one typed request. Convenience edits compose captured
-//! model reads and one guarded atomic write through `compose`, then print the
-//! reply. `request` exposes every protocol command with local attachments.
-//! The "current session" is remembered in a small local file so most commands
-//! need no `--session`. The editor is reached over its Unix socket or its
-//! HTTP door; `transport` says which and how.
-//!
-//! Nodes, params, textures and slots are named by their Id — the same
-//! string the `.clm` stores — so a command written against one session is
-//! replayable against another that opened the same file.
 
 use std::io::Read;
 
@@ -23,7 +12,6 @@ use clap::{Parser, Subcommand};
 
 const MAX_COMMAND_BYTES: usize = 1024 * 1024;
 
-/// The Id rules, repeated in `--help` because every command takes one.
 const ID_HELP: &str = "\
 Nodes, params, textures and slots are named by their Id: one or more of
 the characters [A-Za-z0-9_./-], starting with none of '.', '/' or '-'. An Id is
@@ -31,8 +19,6 @@ what the .clm file stores, so it means the same thing in every session that
 opened that file, and `node tree` / `param list` / `texture list` print the ones
 a model carries.";
 
-/// How to work against an editor a person may be watching, for an agent
-/// reading `--help` cold.
 const AGENT_HELP: &str = "\
 Working with a running editor (a person may be watching the same session):
   1. `session list` shows what is open, including models opened in the
@@ -63,9 +49,7 @@ struct Cli {
     /// Expected revision for guarded edits and composed read/write operations.
     #[arg(long, global = true)]
     if_rev: Option<u64>,
-    /// The editor's HTTP door, e.g. http://127.0.0.1:7323. Without it the
-    /// cli tries the default socket (Unix), then the connection file a
-    /// running editor writes.
+    /// The editor's HTTP door, e.g. http://127.0.0.1:7323.
     #[arg(long, global = true, env = "CATCHLIGHT_EDITOR_URL")]
     server: Option<String>,
     /// Bearer token for --server; read from the connection file when omitted.
@@ -165,8 +149,8 @@ enum Cmd {
         #[command(subcommand)]
         action: WeldCmd,
     },
-    /// Author exact deform offsets; affine input is
-    /// evaluated around the rest mesh origin, independent of the posed model.
+    /// Author exact deform offsets; affine input is evaluated around the rest
+    /// mesh origin, independent of the posed model.
     Deform {
         #[command(subcommand)]
         action: DeformCmd,
@@ -181,9 +165,6 @@ enum Cmd {
         action: PresenceCmd,
     },
     /// Render a preview to a PNG.
-    ///
-    /// The PNG is the reply's payload, written to `--out`: by the server over
-    /// the socket, by this client over HTTP.
     Preview {
         /// Where the PNG is written.
         #[arg(long)]
@@ -242,8 +223,7 @@ enum RenameCmd {
 enum NodeCmd {
     /// Print the node tree (Ids and names).
     Tree,
-    /// Print one node in full: everything `node set` can change, plus its
-    /// kind and parent.
+    /// Print one node in full, with the field names `node set` takes.
     Info { node: NodeId },
     /// Add a child node.
     Add {
@@ -254,8 +234,7 @@ enum NodeCmd {
         kind: String,
         #[arg(long)]
         name: Option<String>,
-        /// The Id to create it under. Without one the editor draws a free
-        /// one; an Id the model already carries is refused.
+        /// The Id to create it under; without one the editor draws a free one.
         #[arg(long)]
         id: Option<NodeId>,
     },
@@ -282,9 +261,7 @@ enum NodeCmd {
         enabled: Option<bool>,
         #[arg(long)]
         texture: Option<TexId>,
-        /// Draw no texture at all. The wire says this with one field, so this
-        /// and `--texture` cannot both be given; the last part drawing a
-        /// texture takes it with it.
+        /// Draw no texture; the last part drawing a texture takes it with it.
         #[arg(long = "clear-texture", conflicts_with = "texture")]
         clear_texture: bool,
         #[arg(long = "lock-to-root")]
@@ -333,10 +310,8 @@ enum NodeCmd {
 
 #[derive(Subcommand)]
 enum MeshCmd {
-    /// Replace a node's mesh from a JSON file `{"verts": [[x, y], …],
-    /// "uvs": [[u, v], …], "indices": [[a, b, c], …], "origin": [x, y]}`.
-    /// Deform bindings on the node are re-fitted in the same undo step, and
-    /// every slot on the part is emptied — the reply lists them.
+    /// Replace a node's mesh from JSON `{"verts", "uvs", "indices", "origin"}`,
+    /// re-fitting its deform bindings and emptying its slots.
     Set {
         node: NodeId,
         #[arg(long)]
@@ -348,9 +323,7 @@ enum MeshCmd {
         #[arg(long)]
         from: NodeId,
     },
-    /// Derive a part's mesh from its own texture's alpha and apply it (same
-    /// re-fit, same emptying). Contour by default; every knob left off is the
-    /// editor's own.
+    /// Derive a part's mesh from its texture's alpha (same re-fit and emptying).
     Auto {
         node: NodeId,
         /// Lay a regular grid over the solid texels instead of tracing them.
@@ -379,9 +352,7 @@ enum MeshCmd {
 
 #[derive(Subcommand)]
 enum SlotCmd {
-    /// Add a slot to a part. It lands unfilled and pairs nothing until a weld
-    /// names it. Without `--slot` the editor draws one (`slot-<8 hex>`) and
-    /// the reply says which.
+    /// Add an unfilled slot to a part. Without `--slot` the editor draws one.
     Add {
         #[arg(long)]
         node: NodeId,
@@ -397,16 +368,14 @@ enum SlotCmd {
         #[arg(long)]
         vertex: u32,
     },
-    /// Unfill a slot; the weld pairs naming it skip it until it is filled
-    /// again.
+    /// Unfill a slot; weld pairs naming it skip it until it is refilled.
     Clear {
         #[arg(long)]
         node: NodeId,
         #[arg(long)]
         slot: SlotId,
     },
-    /// Remove a slot, and with it the weld pairs that named it. No other
-    /// part's slots move.
+    /// Remove a slot and the weld pairs that name it.
     Delete {
         #[arg(long)]
         node: NodeId,
@@ -433,10 +402,9 @@ enum SlotCmd {
 
 #[derive(Subcommand)]
 enum WeldCmd {
-    /// Weld two parts, replacing any weld already joining them. Each `--pair`
-    /// is `<slot on --a>:<slot on --b>:<weight>`, repeatable; the weight is
-    /// the share `--a`'s vertex is pinned by, within 0..=1. No `--pair` at all
-    /// records the two parts as welded and joins nothing yet.
+    /// Weld two parts, replacing any existing weld. Each repeatable `--pair` is
+    /// `<slot on --a>:<slot on --b>:<weight>`, the weight being `--a`'s share
+    /// in 0..=1.
     Set {
         #[arg(long)]
         a: NodeId,
@@ -445,9 +413,8 @@ enum WeldCmd {
         #[arg(long = "pair")]
         pairs: Vec<String>,
     },
-    /// Move one pair's share of one weld's meeting point, leaving the rest
-    /// alone. `--slot` is a slot on `--a`, and `--weight` is the share `--a`
-    /// is pinned by, within 0..=1, whichever way round the weld is stored.
+    /// Set one weld pair's weight: `--slot` is on `--a`, and `--weight` is
+    /// `--a`'s share in 0..=1, whichever way round the weld is stored.
     Weight {
         #[arg(long)]
         a: NodeId,
@@ -458,8 +425,7 @@ enum WeldCmd {
         #[arg(long)]
         weight: f32,
     },
-    /// Unmake the weld joining two parts, named in either order. Both parts
-    /// and their slots stay; only the pairing goes.
+    /// Unweld two parts, named in either order; their slots stay.
     Delete {
         #[arg(long)]
         a: NodeId,
@@ -472,8 +438,8 @@ enum WeldCmd {
 
 #[derive(Subcommand)]
 enum TextureCmd {
-    /// Give a PNG/TGA file to a part: the texture is added and the part draws
-    /// it in one edit. A texture the part was the last to draw goes with it.
+    /// Add a PNG/TGA texture and make a part draw it, in one edit. A texture
+    /// the part was the last to draw goes with it.
     Add {
         node: NodeId,
         path: String,
@@ -502,8 +468,7 @@ enum ParamCmd {
     },
     /// List inputs, ranges, defaults and binding counts.
     List,
-    /// Change param metadata (key positions are normalized, so a range change
-    /// does not move them).
+    /// Change param metadata; normalized key positions survive a range change.
     Set {
         param: ParamId,
         #[arg(long)]
@@ -519,13 +484,11 @@ enum ParamCmd {
     Delete { param: ParamId },
 }
 
-/// The param, or pair of params, every binding command is keyed by.
 #[derive(clap::Args)]
 struct BindingParamsArg {
     #[arg(long)]
     param: ParamId,
-    /// A second param: the binding's grid then spans both, and `--cell x,y`
-    /// indexes both.
+    /// A second param; `--cell x,y` then indexes both grid axes.
     #[arg(long = "param-y")]
     param_y: Option<ParamId>,
 }
@@ -734,8 +697,8 @@ enum PresenceCmd {
 
 #[derive(Subcommand)]
 enum DeformCmd {
-    /// Write a raw deform contribution computed from rest vertices around
-    /// the mesh origin. An absent binding gets default endpoint axes.
+    /// Write a raw deform contribution around the rest mesh origin. An absent
+    /// binding gets default endpoint axes.
     Set {
         #[command(flatten)]
         params: BindingParamsArg,
@@ -765,7 +728,6 @@ enum DeformCmd {
     },
 }
 
-/// The subcommand names `run` accepts, for a caller that documents them.
 pub fn command_names() -> Vec<String> {
     use clap::CommandFactory;
     Cli::command()
@@ -777,15 +739,11 @@ pub fn command_names() -> Vec<String> {
 /// Which running editor a command reaches when no flag names one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Discovery {
-    /// The default Unix socket, then the connection file.
     SocketFirst,
-    /// The connection file, then the default Unix socket.
     ConnectionFirst,
 }
 
-/// Parse `args` (program name first) and run one command against the editor,
-/// naming the program `name` in help and errors. A refused command prints its
-/// error and exits with status 1, as the binary always has.
+/// `args` starts with the program name; `name` replaces it in help and errors.
 pub fn run<I, T>(name: &'static str, discovery: Discovery, args: I) -> Result<()>
 where
     I: IntoIterator<Item = T>,
@@ -798,7 +756,6 @@ where
         .get_matches_from(args);
     let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
 
-    // `session use` is local-only — no server round trip.
     if let Cmd::Session {
         action: SessionCmd::Use { id },
     } = &cli.cmd
@@ -1168,8 +1125,6 @@ fn build_command(cli: &Cli) -> Result<Command> {
             TextureCmd::Add { node, path, id } => Command::TextureAdd {
                 session: resolve_session(cli)?,
                 node: node.clone(),
-                // The socket carries the path in `files` and the editor reads
-                // it; the encoding is this client's to decide.
                 encoding: encoding_of(path),
                 texture: id.clone(),
             },
@@ -1291,9 +1246,7 @@ fn build_node_command(cli: &Cli, action: &NodeCmd) -> Result<Command> {
     })
 }
 
-/// A flag whose value is one of the protocol's own closed sets, parsed as
-/// the wire parses it — so a flag takes exactly the word the JSON carries and
-/// serde's error names the alternatives.
+/// Parses as the wire does, so serde's error names the alternatives.
 fn wire_enum<T: serde::de::DeserializeOwned>(s: &str) -> std::result::Result<T, String> {
     serde_json::from_value(serde_json::Value::String(s.to_owned())).map_err(|e| e.to_string())
 }
@@ -1363,14 +1316,11 @@ fn parse_size(s: &str) -> Result<[u32; 2]> {
     Ok([w.trim().parse()?, h.trim().parse()?])
 }
 
-/// A path as the server will read it: this process's directory is not the
-/// server's, so a relative one is resolved here.
+/// The server's working directory is not this process's.
 fn absolute(path: &str) -> Result<String> {
     Ok(std::path::absolute(path)?.display().to_string())
 }
 
-/// One extension's value in a line. Bytes are described, never printed: what
-/// a byte extension holds is opaque, and the payload is where it travels.
 fn describe_extension(value: &ExtensionValueInfo) -> String {
     match value {
         ExtensionValueInfo::Json { value } => {
@@ -1380,7 +1330,7 @@ fn describe_extension(value: &ExtensionValueInfo) -> String {
     }
 }
 
-/// `<x>,<y>` — where the camera looks, in world units.
+/// `<x>,<y>` in world units.
 fn parse_center(s: &str) -> Result<[f32; 2]> {
     let (x, y) = s
         .split_once(',')
@@ -1388,7 +1338,6 @@ fn parse_center(s: &str) -> Result<[f32; 2]> {
     Ok([x.trim().parse()?, y.trim().parse()?])
 }
 
-/// `<param id>=<value>`. Params are scalar, so there is one number.
 fn parse_param(s: &str) -> Result<ParamPose> {
     let (id, value) = s
         .split_once('=')
@@ -1402,7 +1351,6 @@ fn parse_param(s: &str) -> Result<ParamPose> {
     })
 }
 
-/// `<slot on a>:<slot on b>:<weight>`.
 fn parse_pair(s: &str) -> Result<SlotPair> {
     let bad = || anyhow!("a pair must look like <a slot>:<b slot>:<weight>, got {s:?}");
     let [a, b, weight] = s.split(':').collect::<Vec<_>>()[..] else {
@@ -1418,7 +1366,6 @@ fn parse_pair(s: &str) -> Result<SlotPair> {
     })
 }
 
-/// A JSON array of per-vertex offsets, one `[dx, dy]` each.
 fn read_offsets(path: &str) -> Result<Vec<[f32; 2]>> {
     Ok(serde_json::from_str(&std::fs::read_to_string(path)?)?)
 }
@@ -1434,13 +1381,8 @@ fn resolve_session(cli: &Cli) -> Result<SessionId> {
     })
 }
 
-/// The sibling keys this command's line carries beside the request.
-///
-/// `files` names the bytes a command needs and `out` is where a payload goes.
-/// Both are the *client's* own files, resolved against this process's
-/// directory: over the socket the server reads and writes them (it shares
-/// this filesystem, not this working directory); over HTTP the transport does
-/// it here.
+/// `files` and `out` paths are resolved here because the server shares this
+/// filesystem but not this working directory.
 fn siblings(cli: &Cli) -> Result<serde_json::Map<String, serde_json::Value>> {
     let mut out = serde_json::Map::new();
     match &cli.cmd {
@@ -1489,8 +1431,6 @@ fn siblings(cli: &Cli) -> Result<serde_json::Map<String, serde_json::Value>> {
     Ok(out)
 }
 
-/// How to read an image, from its suffix. `texture_add` carries the encoding
-/// as a field, so it is the client that decides.
 fn encoding_of(path: &str) -> TextureEncoding {
     if path.to_ascii_lowercase().ends_with(".tga") {
         TextureEncoding::Tga
@@ -1513,8 +1453,6 @@ fn print_reply(cli: &Cli, reply: &Reply) {
     }
 }
 
-/// The wire spelling of a code, so a person reading the terminal and a script
-/// reading `--json` see the same word.
 fn code_name(code: ErrorCode) -> String {
     serde_json::to_string(&code)
         .map(|s| s.trim_matches('"').to_string())
@@ -1598,8 +1536,6 @@ fn print_body(body: &ResponseBody) {
                         .enumerate()
                         .map(|(x, value)| match value {
                             Some(v) => format!("{v}"),
-                            // Authored with no scalar of its own: a deform
-                            // cell, which holds a vertex list.
                             None if authored(b, x, y) => "set".into(),
                             None => "-".into(),
                         })
@@ -1702,8 +1638,7 @@ fn print_body(body: &ResponseBody) {
     }
 }
 
-/// Whether the author set that cell at all — the only thing that says so for
-/// a deform binding, whose cells hold a vertex list rather than a number.
+/// The only authored signal for deform cells, which hold no scalar.
 fn authored(binding: &BindingInfo, x: usize, y: usize) -> bool {
     binding
         .authored
@@ -1713,20 +1648,13 @@ fn authored(binding: &BindingInfo, x: usize, y: usize) -> bool {
         .unwrap_or(false)
 }
 
-/// What an edit deleted on its way through. A texture with no part drawing it
-/// is not a thing a model holds, so the edit that took the last user took the
-/// texture — and an addon that named it by Id has no way back.
 fn print_dropped(dropped: &[TexId]) {
     for t in dropped {
         println!("dropped texture {t}");
     }
 }
 
-/// One node, a field per line, each under the name `node set` takes — so a
-/// value read here is a value that can be written straight back.
-///
-/// A field this node's kind does not carry is not printed: the reply leaves it
-/// out rather than reporting a default nothing would accept.
+/// Field names match `node set` flags so values can be written straight back.
 fn print_node_info(node: &NodeInfo) {
     println!(
         "{} [{}] {} parent={}",
@@ -1837,9 +1765,6 @@ mod tests {
         Cli::command().debug_assert();
     }
 
-    /// The charset bans a leading `-` precisely so no Id ever has to be
-    /// smuggled past clap's option parsing — `--help` says so, and the Id
-    /// type refuses one before the socket.
     #[test]
     fn a_leading_dash_is_not_an_id() {
         assert!(ID_HELP.contains("[A-Za-z0-9_./-]"));
@@ -1862,8 +1787,6 @@ mod tests {
         assert!(err.to_string().contains("invalid byte"), "{err}");
     }
 
-    /// A binding names one param, or two — and the second is optional, so the
-    /// common one-param form is unchanged.
     #[test]
     fn a_binding_can_name_two_params() {
         let one = Cli::try_parse_from([

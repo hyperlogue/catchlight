@@ -1,7 +1,5 @@
-//! Rendering owns one context/cache and one private model. Request runtimes
-//! start independently; acquired deform sets prevent stale-generation aliasing
-//! across Puppets. Files become visible atomically; manifest completion follows
-//! durability of every required artifact, including traces and sidecars.
+//! Acquired deform sets prevent stale-generation aliasing across Puppets. The
+//! manifest is written only after every required artifact is durable.
 use super::{
     artifacts::*,
     frame::{self, FrameRuntime},
@@ -25,7 +23,6 @@ use std::sync::{
 pub enum Destination {
     Terminal,
     Png(PathBuf),
-    /// One animated request with `video`, written to this path alone.
     Video(PathBuf),
     Directory(PathBuf),
 }
@@ -59,9 +56,7 @@ pub fn load(path: &Path, hash_input: bool) -> Result<LoadedModel, Error> {
     let format = ModelFormat::from_path(path).ok_or_else(|| Error::NotAClm {
         path: path.to_path_buf(),
     })?;
-    // Bound the encoded input before allocating it, not just while decoding.
-    // Metadata rejects regular oversized files immediately; the bounded read
-    // also covers files that grow after the check or do not report a size.
+    // The bounded read also covers files that grow after the metadata check.
     let limit = catchlight_core::load_budget::LoadLimits::default().encoded_bytes;
     let file = std::fs::File::open(path).map_err(|e| Error::io(path, e))?;
     let reported_size = file.metadata().map_err(|e| Error::io(path, e))?.len();

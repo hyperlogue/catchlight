@@ -1,9 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! What `poses` promises a rig evaluator: the tables it keys against, the
-//! value a key maps to, what a diff leaves out, and the grid a pair covers.
-//!
-//! CPU only, so unlike the render suite this needs no GPU.
+//! `poses` output contract. CPU only.
 
 mod common;
 
@@ -19,7 +16,6 @@ fn dump(name: &str) -> Poses {
     poses::build(&model).unwrap()
 }
 
-/// Every Part of `name`, in tree order, as `(id, name)`.
 fn parts_of(name: &str) -> Vec<(String, String)> {
     let model = Model::from_clm_bytes(&common::read(&common::fixture(name))).expect("load");
     let puppet = Puppet::new(&model);
@@ -107,8 +103,6 @@ fn the_key_at_a_params_default_changes_nothing() {
     }
 }
 
-/// The far end of a sweep has to actually move something, or every other
-/// assertion here would hold just as well for a dump that recorded nothing.
 #[test]
 fn a_non_default_key_moves_a_part() {
     let dumped = dump("welded_seam");
@@ -119,14 +113,11 @@ fn a_non_default_key_moves_a_part() {
         !far.cap.verts.is_empty(),
         "pulling the seam moved no vertices"
     );
-    // A diff names parts by index into `parts`, so every key is one.
     for index in far.cap.verts.keys() {
         assert!((*index as usize) < dumped.parts.len());
     }
 }
 
-/// A sweep records what moved and, just as importantly, leaves out what did
-/// not: the diff is what makes a hundred-part dump small.
 #[test]
 fn a_sweep_names_the_parts_it_moved_and_no_others() {
     let dumped = dump("two_param_grid");
@@ -144,8 +135,7 @@ fn a_sweep_names_the_parts_it_moved_and_no_others() {
     assert!(far.cap.opacity.is_empty(), "no opacity binding on grid_x");
     assert!(far.cap.z_order.is_empty(), "no z binding on grid_x");
 
-    // The sweep param drives one binding of every other kind, so its far key
-    // is the one pose that fills all four maps.
+    // `sweep` drives one binding of every kind, so its far key fills all four maps.
     let sweep = param(&dumped, "sweep").poses.last().expect("a far key");
     assert_eq!(keys(&sweep.cap.verts), vec![swept], "the swept part moved");
     assert_eq!(
@@ -178,7 +168,6 @@ fn a_pair_covers_the_product_of_both_key_lists_b_outer_a_inner() {
         a.key_positions.len() * b.key_positions.len()
     );
 
-    // `b` outer, `a` inner: b holds while a runs the row.
     let expected: Vec<[f32; 2]> = b
         .key_positions
         .iter()
@@ -191,15 +180,12 @@ fn a_pair_covers_the_product_of_both_key_lists_b_outer_a_inner() {
     let actual: Vec<[f32; 2]> = pair.poses.iter().map(|pose| pose.value).collect();
     assert_eq!(actual, expected);
 
-    // The grid point where both params sit at their defaults is the rest pose.
     let both_default = pair
         .poses
         .iter()
         .find(|pose| pose.value == [a.default, b.default])
         .expect("the grid holds the all-defaults cell");
     assert!(is_empty(&both_default.cap));
-    // And the rest of the grid is not: a pair exists because a sweep of
-    // either param alone reaches only one row of it.
     assert!(
         pair.poses.iter().filter(|p| !is_empty(&p.cap)).count() > a.key_positions.len(),
         "the joint grid moves more than one row"
@@ -225,7 +211,6 @@ fn two_runs_write_the_same_bytes() {
     assert_eq!(written[0], written[1], "two runs differ");
     assert!(!written[0].is_empty());
 
-    // And what the binary wrote decodes to what the library builds.
     let decoded: Poses = ciborium::from_reader(&written[0][..]).expect("decode the cbor");
     assert_eq!(decoded, dump("two_param_grid"));
 }

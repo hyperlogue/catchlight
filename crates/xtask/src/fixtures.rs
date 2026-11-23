@@ -1,24 +1,8 @@
-//! Generators for the committed test fixtures under `tests/models/`.
+//! Generators for the hand-authored test fixtures under `tests/models/`.
 //!
-//! These models are authored by hand rather than imported, so they exist only
-//! as code here plus the encoded `.clm` checked into the repo. A generator
-//! authors the `.clm` *structure* and `generate` reads it into a [`Model`] on
-//! the way to the file, so a fixture is refused here for exactly what a `.clm`
-//! off disk is refused for. Nodes are numbered by [`push`] and params and
-//! textures by their position, so a fixture's Ids are the ones an import
-//! mints. Regenerating is only needed when a fixture's shape changes; the
-//! visual baselines under `tests/baselines/` are rendered from the committed
-//! bytes.
-//!
-//! Regenerate one with `cargo xtask gen-fixture <name>`.
-//! `committed_fixtures_still_match_their_generators` pins each committed
-//! file's *structure* (never byte equality) to its generator here, so drift
-//! names itself. `cargo xtask` also has `import <model.inx|.inp>
-//! [-o <model.clm>]`.
-//!
-//! The synthetic `.inx` fixtures are built instead by
-//! `scripts/build_minimal_inx.py`, a `uv` inline-script (`uv` and `python3`
-//! are in the dev shell).
+//! Regenerate one with `cargo xtask gen-fixture <name>`; only needed when a
+//! fixture's structure changes. Nodes, params and textures are numbered by
+//! position so fixture Ids match what an import mints.
 
 use anyhow::{anyhow, Context, Result};
 use std::io::Cursor;
@@ -36,10 +20,8 @@ use catchlight_core::{
 };
 use catchlight_editor_core::fit_strand;
 
-/// Builds a fixture's structure and its texture table.
 type Build = fn() -> (ClmStructure, Vec<ClmTexture>);
 
-/// Every fixture this command can (re)build, by output stem.
 const FIXTURES: &[(&str, Build)] = &[
     ("composite_blit_uniforms", composite_blit_uniforms),
     ("mip_checker", mip_checker),
@@ -52,8 +34,6 @@ pub fn names() -> impl Iterator<Item = &'static str> {
     FIXTURES.iter().map(|(name, _)| *name)
 }
 
-/// Build `<name>` and overwrite `tests/models/<name>.clm`. Returns the path
-/// written, relative to the workspace root.
 pub fn generate(name: &str) -> Result<PathBuf> {
     let build = FIXTURES
         .iter()
@@ -79,7 +59,6 @@ pub fn generate(name: &str) -> Result<PathBuf> {
 }
 
 fn workspace_root() -> PathBuf {
-    // crates/xtask/ -> crates/ -> workspace root.
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
         .nth(2)
@@ -87,9 +66,7 @@ fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
-/// The Id a node at position `i` carries: `root` for the first, `node-<i>`
-/// after it — the same rule the inochi2d import mints by, so a fixture and an
-/// imported model name things the same way.
+/// Matches the inochi2d import's Id rule.
 fn nid(i: usize) -> NodeId {
     let id = if i == 0 {
         "root".to_string()
@@ -107,11 +84,8 @@ fn tid(i: usize) -> TexId {
     TexId::new(format!("tex-{i}")).expect("a generated texture id")
 }
 
-/// Append `node` under the node at position `parent`, give it the Id its own
-/// position mints, and hand that position back for its children to name.
-///
-/// Appending in parent-before-child order is what makes the structure
-/// topological, which is what the `.clm` reader requires.
+/// Parent-before-child appending keeps the structure topological, which the
+/// `.clm` reader requires.
 fn push(nodes: &mut Vec<ClmNode>, parent: Option<usize>, mut node: ClmNode) -> usize {
     let i = nodes.len();
     node.id = nid(i);
@@ -120,15 +94,13 @@ fn push(nodes: &mut Vec<ClmNode>, parent: Option<usize>, mut node: ClmNode) -> u
     i
 }
 
-/// Number a fixture's textures by position, the way an import does.
 fn textures(pngs: Vec<Vec<u8>>) -> Vec<ClmTexture> {
     pngs.into_iter()
         .enumerate()
         .map(|(i, data)| ClmTexture {
             id: tid(i),
             encoding: TextureEncoding::Png,
-            // Authored straight, so the texture prep premultiplies it the way
-            // a real texture arrives.
+            // Premultiplied by texture prep, as a real texture arrives.
             alpha: TextureAlpha::Straight,
             data,
         })
@@ -137,46 +109,30 @@ fn textures(pngs: Vec<Vec<u8>>) -> Vec<ClmTexture> {
 
 // --- two_param_grid --------------------------------------------------------
 
-/// The two params the joint binding spans, by their position in `PARAMS`.
 const GRID_X: usize = 0;
 const GRID_Y: usize = 1;
-/// The param every one-param binding hangs off.
 const SWEEP: usize = 2;
 
-/// Fixture controls and the position axes copied into their bindings.
-/// `x` is three keys wide and `y` two, so a grid pose's order is readable
-/// from its length alone; every default sits at key position 0, which puts
-/// the all-defaults pose on the grid's `(0, 0)` cell.
+/// Every default sits at key position 0, so the all-defaults pose is cell `(0, 0)`.
 const PARAMS: [(&str, f32, f32, f32, &[f32]); 3] = [
     ("grid_x", 0.0, 1.0, 0.0, &[0.0, 0.5, 1.0]),
-    // A range that is not 0..1, so a key position and the value it maps to
-    // cannot be confused for one another.
+    // Not 0..1, so key positions and values cannot be confused.
     ("grid_y", -2.0, 2.0, -2.0, &[0.0, 1.0]),
     ("sweep", 0.0, 10.0, 0.0, &[0.0, 1.0]),
 ];
 
-/// How far the joint binding pushes the driven quad per grid step, in model
-/// units: `x` along one axis, `y` along the other, so a cell's deform names
-/// the cell it came from.
+/// Per grid step, in model units.
 const GRID_STEP: [f32; 2] = [10.0, 20.0];
-/// What the sweep param does at its far key: shift the swept part, push it
-/// forward in z, and fade the driven one.
 const SWEEP_SHIFT_X: f32 = 25.0;
 const SWEEP_Z: f32 = 3.0;
 const SWEEP_OPACITY: f32 = 0.25;
 
-/// Half-width of both quads, and how far apart they sit.
+/// Model units.
 const GRID_QUAD_HALF: f32 = 60.0;
 const GRID_QUAD_GAP: f32 = 160.0;
 
-/// A rig whose four binding shapes cover every field a pose dump reports.
-///
-/// One **two-param** deform binding over `grid_x` x `grid_y` moves the
-/// `driven` quad, which is the only fixture here with a joint grid: a
-/// per-param sweep of either param samples one row or column of it, and the
-/// rest of the grid is reachable only as a pair. Three **one-param** bindings
-/// use `sweep` to translate `swept`, raise its z order and fade `driven`.
-/// Sampling both grid axes exercises poses a one-param sweep cannot reach.
+/// Covers every field a pose dump reports, including a two-param joint grid
+/// that one-param sweeps cannot fully reach.
 fn two_param_grid() -> (ClmStructure, Vec<ClmTexture>) {
     let mut nodes = Vec::new();
     let root = push(&mut nodes, None, group_node("root"));
@@ -217,8 +173,7 @@ fn two_param_grid() -> (ClmStructure, Vec<ClmTexture>) {
         })
         .collect();
 
-    // Every cell of the joint grid is authored: the fill only derives cells
-    // between authored ones, and a dump reads the grid at its key positions.
+    // Author every cell: the fill only derives cells between authored ones.
     let (w, h) = (PARAMS[GRID_X].4.len(), PARAMS[GRID_Y].4.len());
     let joint = ClmBinding {
         params: vec![pid(GRID_X), pid(GRID_Y)],
@@ -264,11 +219,8 @@ fn two_param_grid() -> (ClmStructure, Vec<ClmTexture>) {
     )
 }
 
-/// Vertices in [`quad_part`]'s mesh, which is what a deform cell is sized by.
 const GRID_QUAD_VERTS: usize = 4;
 
-/// A one-param binding on `sweep`: `rest` at its near key and `far` at its
-/// far one, wrapped in whatever scalar target `wrap` names.
 fn sweep_binding(
     node: NodeId,
     wrap: fn(ClmCells<f32>) -> ClmBindingValues,
@@ -299,36 +251,19 @@ fn sweep_binding(
 
 // --- mip_checker -----------------------------------------------------------
 
-/// Side of the checkerboard texture, in texels. A power of two, so every mip
-/// level halves exactly and the box filter never hits the odd-dimension
-/// edge-clamp in `mip_downsample.wgsl`.
+/// Texels. A power of two so every mip halves exactly and avoids the
+/// odd-dimension edge clamp in `mip_downsample.wgsl`.
 const CHECKER_TEXELS: u32 = 512;
-/// The two quads: node name, half-width, and world x, in model units.
-/// Rendered at the model's `default_zoom` of 0.25 they cover 128 and 64
-/// pixels, so the same [`CHECKER_TEXELS`]-wide texture lands at 4 and 8 texels
-/// per pixel; the x offsets keep them from overlapping.
+/// Node name, half-width, world x (model units). At zoom 0.25 these cover
+/// 128 and 64 pixels: 4 and 8 texels per pixel.
 const CHECKER_QUADS: [(&str, f32, f32); 2] = [
     ("minified_4x", 256.0, -320.0),
     ("minified_8x", 128.0, 320.0),
 ];
 
-/// The mip regression model: one 1-texel checkerboard — the highest spatial
-/// frequency an RGBA8 texture can carry — drawn on two quads minified 4x and
-/// 8x. Nothing else in the suite samples a mip level at all.
-///
-/// Every 2x2 block of a 1-texel checker averages to exactly half, so a
-/// correctly box-filtered chain makes both quads flat mid-gray: the 4x quad
-/// off level 2, the 8x quad off level 3, so a chain that stops short shows up
-/// as a difference between the two. A chain that isn't generated at all
-/// leaves the sampler minifying level 0 into moire, and one downsampled by
-/// point-sampling instead of box-filtering collapses to flat white or flat
-/// black.
-///
-/// The averaging also has to land in linear space, which is what the
-/// `Rgba8UnormSrgb` decode on load and encode on store buy: black and white
-/// averaged in linear encode to sRGB ~187, averaged as gamma-encoded bytes
-/// they would come out ~128 — far enough apart that the baseline pins which
-/// one happened.
+/// A correct box-filtered chain renders both quads flat mid-gray (level 2 and
+/// level 3). Averaging must happen in linear space: linear gives sRGB ~187,
+/// gamma-space averaging ~128.
 fn mip_checker() -> (ClmStructure, Vec<ClmTexture>) {
     let mut nodes = Vec::new();
     let root = push(&mut nodes, None, group_node("root"));
@@ -354,9 +289,6 @@ fn mip_checker() -> (ClmStructure, Vec<ClmTexture>) {
     (doc, textures(vec![checker_texture(CHECKER_TEXELS)]))
 }
 
-/// A `size`x`size` opaque checkerboard with 1-texel cells: the highest
-/// spatial frequency an RGBA8 texture can carry, and the only pattern whose
-/// correctly filtered mip levels are a single known value.
 fn checker_texture(size: u32) -> Vec<u8> {
     let img = image::RgbaImage::from_fn(size, size, |x, y| {
         if (x + y) % 2 == 0 {
@@ -368,9 +300,7 @@ fn checker_texture(size: u32) -> Vec<u8> {
     flat_image(img)
 }
 
-/// One quad spanning `[-half, half]` on both axes, its texture mapped over
-/// the whole face. UVs put v = 0 at the top row so the texture sits upright
-/// in the Y-up world, same convention as [`grid_part`].
+/// v = 0 at the top row so the texture is upright in the Y-up world.
 fn quad_part(albedo: usize, half: f32) -> ClmPart {
     ClmPart {
         mesh: ClmMesh {
@@ -404,13 +334,9 @@ fn quad_part(albedo: usize, half: f32) -> ClmPart {
 
 // --- composite_blit_uniforms -----------------------------------------------
 
-/// Half-width of one cell's back quad, in model units, and how far its
-/// translucent front quad is offset from it.
+/// Model units.
 const CELL_HALF: f32 = 45.0;
 const CELL_FRONT_OFFSET: f32 = 25.0;
-/// One cell: where it sits, and the composite property it takes off the
-/// identity. Everything it doesn't vary stays at the identity the rest of the
-/// suite already uses.
 struct BlitCell {
     name: &'static str,
     x: f32,
@@ -442,22 +368,13 @@ const BLIT_CELLS: [BlitCell; 3] = [
         screen_tint: [0.0, 0.35, 0.7],
     },
 ];
-/// The nested cell's outer and inner composite opacities.
 const NESTED_CELL_X: f32 = 180.0;
 const NESTED_OUTER_OPACITY: f32 = 0.6;
 const NESTED_INNER_OPACITY: f32 = 0.7;
 
-/// The composite-blit regression model: four unmasked Normal composites over a
-/// gradient backdrop, each blitted by the plain `blit.wgsl` path with one of
-/// its uniforms off the identity — opacity, tint, screen tint, and an inner
-/// composite blitted into an outer one's slot rather than into the main view.
-///
-/// The rest of the suite reaches that shader only at opacity 1, white tint and
-/// zero screen tint, so its uniform math is unpinned: squaring the opacity
-/// multiply, or dropping it entirely, leaves every other baseline green. Each
-/// cell holds an opaque quad under a half-alpha one, so the blit is exercised
-/// over three source alphas at once (opaque, blended, translucent-only) —
-/// which is what the screen-tint term, scaled by the sampled alpha, needs.
+/// Each cell takes one `blit.wgsl` uniform off the identity, which no other
+/// fixture does. An opaque quad under a half-alpha one exercises three source
+/// alphas, which the alpha-scaled screen-tint term needs.
 fn composite_blit_uniforms() -> (ClmStructure, Vec<ClmTexture>) {
     let mut nodes = Vec::new();
     let root = push(&mut nodes, None, group_node("root"));
@@ -484,8 +401,6 @@ fn composite_blit_uniforms() -> (ClmStructure, Vec<ClmTexture>) {
             cell_quad("front", 2, CELL_FRONT_OFFSET),
         );
     }
-    // The nested cell: an inner composite that has to blit into the outer
-    // composite's slot, then travel out through the outer's own blit.
     let outer = push(
         &mut nodes,
         Some(root),
@@ -529,7 +444,6 @@ fn composite_blit_uniforms() -> (ClmStructure, Vec<ClmTexture>) {
     )
 }
 
-/// An unmasked Normal composite parented to the root at world `x`.
 fn composite_node(
     name: &str,
     x: f32,
@@ -556,8 +470,6 @@ fn composite_node(
     }
 }
 
-/// One quad inside a cell, offset diagonally by `offset` so the cell ends up
-/// with an opaque region, an overlap, and a translucent-only region.
 fn cell_quad(name: &str, albedo: usize, offset: f32) -> ClmNode {
     ClmNode {
         name: name.into(),
@@ -569,9 +481,7 @@ fn cell_quad(name: &str, albedo: usize, offset: f32) -> ClmNode {
     }
 }
 
-/// A 64x64 opaque two-axis gradient. A composite blitted over it differs
-/// everywhere it covers when its opacity or tint is wrong, not just at the
-/// edges the way a flat backdrop would.
+/// A gradient, so a wrong opacity or tint differs everywhere, not just at edges.
 fn gradient_texture() -> Vec<u8> {
     const SIZE: u32 = 64;
     let scale = |v: u32| (v * 255 / (SIZE - 1)) as u8;
@@ -584,21 +494,14 @@ fn gradient_texture() -> Vec<u8> {
 
 const COLS: usize = 3;
 const ROWS: usize = 3;
-/// Half the width of each grid, in model units.
+/// Model units.
 const HALF_W: f32 = 150.0;
-/// Height of each grid, measured from the shared seam.
 const PART_H: f32 = 120.0;
-/// Offset `pull` = 1 applies to every vertex of the upper part.
 const PULL: [f32; 2] = [60.0, 40.0];
-/// A's share of the meeting point, left to right along the seam.
 const SEAM_WEIGHTS: [f32; COLS] = [1.0, 0.5, 0.0];
 
-/// The weld regression model: two 3x3-grid Parts stacked vertically with a
-/// coincident seam at y = 0 and a `pull` param that deform-shifts the whole
-/// upper part by [`PULL`]. The seam is welded per vertex with weights
-/// 1.0 / 0.5 / 0.0 left to right, so a single render at pull = 1 shows all
-/// three regimes at once: the lower part stretching up to follow the upper,
-/// both meeting midway, and the upper's corner staying pinned to the lower.
+/// Weights 1.0 / 0.5 / 0.0 left to right show all three weld regimes in one
+/// render at pull = 1.
 fn welded_seam() -> (ClmStructure, Vec<ClmTexture>) {
     let mut nodes = Vec::new();
     let root = push(&mut nodes, None, group_node("root"));
@@ -633,9 +536,7 @@ fn welded_seam() -> (ClmStructure, Vec<ClmTexture>) {
         node: nid(upper),
         interpolate_mode: InterpolateMode::Linear,
         values: ClmBindingValues::Deform(ClmCells {
-            // Both ends of the axis are authored: the rest pose has to be
-            // an explicit zero cell, or interpolation has nothing to
-            // interpolate from.
+            // The rest pose must be an explicit zero cell to interpolate from.
             cells: vec![
                 ClmCell {
                     x: 0,
@@ -655,8 +556,6 @@ fn welded_seam() -> (ClmStructure, Vec<ClmTexture>) {
         nodes,
         params: vec![pull],
         bindings: vec![deform],
-        // Both grids order their seam row first, so slot `s<i>` names the
-        // coincident vertex on each side.
         welds: vec![ClmWeld {
             a: nid(upper),
             b: nid(lower),
@@ -679,24 +578,18 @@ fn welded_seam() -> (ClmStructure, Vec<ClmTexture>) {
     )
 }
 
-/// The slot Ids both parts carry, one per column of the shared seam row —
-/// the same Id on each side, which is how the one weld pairs them.
 fn slot_id(i: usize) -> SlotId {
     SlotId::new(format!("s{i}")).expect("a generated slot id")
 }
 
-/// Which way a grid marches away from the seam at y = 0.
 #[derive(Clone, Copy)]
 enum Growth {
     Up,
     Down,
 }
 
-/// A 3x3-vertex grid spanning x in `[-HALF_W, HALF_W]` and `PART_H` tall, with
-/// its seam row at y = 0 and the remaining rows marching away in `growth` — so
-/// both parts' seam vertices land at indices 0..COLS, which is what the weld
-/// pairs reference. UVs put v = 0 at the part's topmost row, so both textures
-/// sit upright in world space.
+/// Seam row first, so seam vertices are indices 0..COLS on both parts; the
+/// welds reference that. v = 0 at the topmost row.
 fn grid_part(albedo: usize, growth: Growth) -> ClmPart {
     let y_top = match growth {
         Growth::Up => PART_H,
@@ -708,8 +601,7 @@ fn grid_part(albedo: usize, growth: Growth) -> ClmPart {
     let mut verts = Vec::with_capacity(2 * ROWS * COLS);
     let mut uvs = Vec::with_capacity(2 * ROWS * COLS);
     for r in 0..ROWS {
-        // Written as a signed distance from the seam rather than a scaled
-        // offset so row 0 lands on +0.0 for both parts, not -0.0.
+        // Signed distance so row 0 is +0.0 on both parts, not -0.0.
         let from_seam = r as f32 * row_step;
         let y = match growth {
             Growth::Up => from_seam,
@@ -745,8 +637,6 @@ fn grid_part(albedo: usize, growth: Growth) -> ClmPart {
         screen_tint: [0.0, 0.0, 0.0],
         masks: Vec::new(),
         mask_threshold: 0.5,
-        // The welded row: slot `s<i>` is filled by the seam vertex `i`, which
-        // both grids order first.
         slots: (0..COLS)
             .map(|i| ClmSlot {
                 id: slot_id(i),
@@ -758,35 +648,25 @@ fn grid_part(albedo: usize, growth: Growth) -> ClmPart {
 
 // --- strand_response ----------------------------------------------------------
 
-/// The strip the strand is drawn on, in model pixels: half its width, its top
-/// and bottom edge in node-local vertex space, and how many rows of vertices
-/// span them. Two columns is the narrowest strip a bend can bow, and nine rows
-/// is enough that each link's crease ramps across its own third of the art
-/// instead of hinging on one edge.
+/// Model pixels. Two columns is the narrowest strip a bend can bow; nine rows
+/// let each link's crease ramp across its own third of the art.
 const STRAND_HALF_W: f32 = 12.0;
 const STRAND_TOP: f32 = 80.0;
 const STRAND_BOTTOM: f32 = -80.0;
 const STRAND_ROWS: usize = 9;
 
 const STRAND_LINKS: u32 = 3;
-/// How far `turn` slides the head at either end of its range, in model
-/// pixels — three quarters of the strand's own length, so the step it hands
-/// the head moves a visible distance in the frame.
+/// Model pixels.
 const TURN_SHIFT_X: f32 = 120.0;
-/// `turn`'s position in `strand_response`'s param list, after one bend param per
-/// link.
 const TURN: usize = STRAND_LINKS as usize;
 
 fn strand_response() -> (ClmStructure, Vec<ClmTexture>) {
     let mesh = strand_mesh();
-    // The strip is a literal, so this is a fit of known-good rest geometry.
     let fit = fit_strand(&mesh, STRAND_LINKS, None).expect("the strip is a fittable strand");
 
     let mut nodes = Vec::new();
     let root = push(&mut nodes, None, group_node("root"));
     let head = push(&mut nodes, Some(root), group_node("Head"));
-    // The spine sits at the strand's root and the art hangs under it, which is
-    // the shape `spine_fit` authors.
     let spine = push(
         &mut nodes,
         Some(head),
@@ -801,8 +681,6 @@ fn strand_response() -> (ClmStructure, Vec<ClmTexture>) {
                 ..identity_transform()
             },
             kind: ClmNodeKind::Spine(ClmSpine {
-                // The joints run down the fit's axis, one per link, in the
-                // spine's own space.
                 joints: (0..fit.lengths.len())
                     .map(|i| {
                         let s: f32 = fit.lengths[..=i].iter().sum();
@@ -814,8 +692,6 @@ fn strand_response() -> (ClmStructure, Vec<ClmTexture>) {
             ..blank_node()
         },
     );
-    // The art is the spine's child, at the spine's own origin offset back to
-    // where the strip was drawn.
     push(
         &mut nodes,
         Some(spine),
@@ -833,7 +709,6 @@ fn strand_response() -> (ClmStructure, Vec<ClmTexture>) {
         },
     );
 
-    // Each downstream link follows its parent's unclipped motion.
     let mut parent = head;
     for (i, period_s) in [0.32, 0.42, 0.54].into_iter().enumerate() {
         let source = if i == 0 {
@@ -869,8 +744,6 @@ fn strand_response() -> (ClmStructure, Vec<ClmTexture>) {
         default: 0.0,
     });
 
-    // One binding only: the `turn` that slides the head. A spine needs no
-    // deform cells of its own.
     let bindings = vec![ClmBinding {
         params: vec![pid(TURN)],
         key_positions: vec![vec![0.0, 0.5, 1.0]],
@@ -906,10 +779,8 @@ fn strand_response() -> (ClmStructure, Vec<ClmTexture>) {
     (doc, textures(vec![strand_texture()]))
 }
 
-/// One link's bend param: half turns outright, with a key at each end and
-/// nothing keyed in between, which is what `spine_fit` authors. A spine reads
-/// a param's value and not its position along a range, so the range is the
-/// bend's own units.
+/// A spine reads a param's value, not its range position, so the range is
+/// the bend in half turns.
 fn bend_param(link: usize) -> ClmParam {
     ClmParam {
         id: pid(link),
@@ -920,11 +791,7 @@ fn bend_param(link: usize) -> ClmParam {
     }
 }
 
-/// The strip a strand hangs on: two columns [`STRAND_HALF_W`] either side of
-/// x = 0, [`STRAND_ROWS`] rows from [`STRAND_TOP`] down to [`STRAND_BOTTOM`],
-/// top row first so the fit's root is the strip's first pair of vertices. UVs
-/// put v = 0 on the top row, so the texture sits upright in the Y-up world the
-/// way [`grid_part`]'s does.
+/// Top row first so the fit's root is the first vertex pair; v = 0 on top.
 fn strand_mesh() -> ClmMesh {
     let mut verts = Vec::with_capacity(4 * STRAND_ROWS);
     let mut uvs = Vec::with_capacity(4 * STRAND_ROWS);
@@ -949,8 +816,6 @@ fn strand_mesh() -> ClmMesh {
     }
 }
 
-/// The strip's art, wrapping [`strand_mesh`] in the same plain unmasked Part
-/// the rest of the fixtures use.
 fn strand_part(mesh: &ClmMesh) -> ClmPart {
     ClmPart {
         mesh: mesh.clone(),
@@ -965,21 +830,14 @@ fn strand_part(mesh: &ClmMesh) -> ClmPart {
     }
 }
 
-/// The strand texture: [`STRAND_TEX_W`] x [`STRAND_TEX_H`], banded across its
-/// length and shaded down it, with one dark column along the left edge.
-///
-/// A bend has to be legible as a bend, and a solid colour would only give a
-/// silhouette — which a translation could equally produce. The bands bow with
-/// the deform, the shading says which end is the root, and the edge column
-/// says which face is which after a half turn, so a keyform applied with the
-/// wrong sign or to the wrong link changes the picture rather than sliding it.
+/// Bands, shading and an edge column make the bend's sign and link legible,
+/// which a solid colour (indistinguishable from a translation) would not.
 fn strand_texture() -> Vec<u8> {
     let img = image::RgbaImage::from_fn(STRAND_TEX_W, STRAND_TEX_H, |x, y| {
         if x < STRAND_TEX_EDGE {
             return image::Rgba([35, 25, 55, 255]);
         }
         let along = y as f32 / (STRAND_TEX_H - 1) as f32;
-        // Darkens toward the tip, so the two ends never read alike.
         let fade = 1.0 - 0.5 * along;
         let band = if (y / STRAND_TEX_BAND).is_multiple_of(2) {
             1.0
@@ -992,31 +850,25 @@ fn strand_texture() -> Vec<u8> {
     flat_image(img)
 }
 
-/// The strand texture's size and its two features, in texels: the height of
-/// one band and the width of the dark left edge.
+/// Texels.
 const STRAND_TEX_W: u32 = 32;
 const STRAND_TEX_H: u32 = 256;
 const STRAND_TEX_BAND: u32 = 32;
 const STRAND_TEX_EDGE: u32 = 3;
 
-/// A 64x64 opaque single-colour PNG. Small and deterministic; the fixtures
-/// only need each Part to be visually distinguishable.
 fn solid_texture(rgb: [u8; 3]) -> Vec<u8> {
     flat_texture([rgb[0], rgb[1], rgb[2], 255])
 }
 
-/// A 64x64 single-colour PNG, alpha included.
 fn flat_texture(rgba: [u8; 4]) -> Vec<u8> {
     flat_image(image::RgbaImage::from_pixel(64, 64, image::Rgba(rgba)))
 }
 
-/// Encode an authored image as a fixture texture's PNG bytes.
 fn flat_image(img: image::RgbaImage) -> Vec<u8> {
     encode_png(&img)
 }
 
-/// Encode to PNG the same way for every fixture: max compression, no
-/// pre-filter, so regenerating an unchanged fixture is a byte-for-byte no-op.
+/// Fixed settings so regenerating an unchanged fixture is a byte-for-byte no-op.
 fn encode_png(img: &image::RgbaImage) -> Vec<u8> {
     use image::ImageEncoder;
 
@@ -1044,8 +896,6 @@ fn identity_transform() -> ClmTransform {
     }
 }
 
-/// A default node wrapping `part`; [`push`] fills in the Id and the parent,
-/// and callers fill in the name.
 fn part_node(part: ClmPart) -> ClmNode {
     ClmNode {
         kind: ClmNodeKind::Part(part),
@@ -1060,8 +910,6 @@ fn group_node(name: &str) -> ClmNode {
     }
 }
 
-/// The fields every fixture node shares. The Id and the parent are
-/// placeholders [`push`] overwrites.
 fn blank_node() -> ClmNode {
     ClmNode {
         id: nid(0),
@@ -1079,8 +927,6 @@ fn blank_node() -> ClmNode {
 mod tests {
     use super::*;
 
-    /// Decode `tests/models/<name>.clm` back to the structure its generator
-    /// authors.
     fn committed(name: &str) -> ClmFile {
         let path = workspace_root()
             .join("tests/models")
@@ -1093,17 +939,8 @@ mod tests {
             .unwrap()
     }
 
-    /// Every committed `.clm` is what its visual baselines were rendered
-    /// from, so each has to keep matching the generator it came from — a
-    /// fixture whose generator drifts silently renders a different model than
-    /// the one the baseline pins. Structure only, never byte-equality against
-    /// a fresh encode, which any harmless encoder or PNG change would break:
-    /// the committed file is read into a Model and written back out as a
-    /// structure, and *that* is compared with the structure the generator
-    /// authors. The texture table is excluded for the same reason — its
-    /// bytes are a PNG encoder's output. See
-    /// `committed_mip_checker_texture_is_a_one_texel_checkerboard` for the
-    /// one fixture whose texture content is the point.
+    /// Structure only, never byte equality: a harmless encoder or PNG change
+    /// would break that. Texture tables are excluded for the same reason.
     #[test]
     fn committed_fixtures_still_match_their_generators() {
         for (name, build) in FIXTURES {
@@ -1117,10 +954,6 @@ mod tests {
         }
     }
 
-    /// The structure comparison above covers the model but not the texture
-    /// table, and the whole point of this fixture is the texture: minifying a
-    /// 1-texel checkerboard is what makes a broken mip chain visible. Decode
-    /// it and check the frequency survived.
     #[test]
     fn committed_mip_checker_texture_is_a_one_texel_checkerboard() {
         let file = committed("mip_checker");
@@ -1141,15 +974,10 @@ mod tests {
         }
     }
 
-    /// Spells out the properties the weld regression renders actually depend
-    /// on, so losing one names itself instead of surfacing as a whole-structure
-    /// mismatch in the test above.
     #[test]
     fn committed_welded_seam_keeps_its_weld_structure() {
         let committed = committed("welded_seam").doc;
 
-        // The properties the weld regression renders actually depend on,
-        // spelled out so losing one names itself.
         let parts = committed
             .nodes
             .iter()

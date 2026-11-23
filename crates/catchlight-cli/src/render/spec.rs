@@ -1,12 +1,5 @@
-//! GPU-free render planning. One named request schema serves JSON and CLI
-//! shortcuts. Inheritance replaces whole settings; JSON null resets a setting
-//! to its context-dependent default. Each named request remains an independent
-//! execution, including requests used as bases.
-//!
-//! Validation precedes GPU creation and artifact writes. All input keys are
-//! unique, every model reference is checked, and output names/work are bounded.
-//! Animations remain core `ClmAnimation` values and use core validation; this
-//! module does not introduce a second animation evaluator.
+//! GPU-free render planning. Validation precedes GPU creation and artifact
+//! writes; resource limits apply to the whole expanded run before allocation.
 
 mod animation;
 mod json;
@@ -24,7 +17,6 @@ use crate::Error;
 pub use animation::NativeAnimation;
 pub use json::{decode_json, read_json};
 
-/// Schema adapter for the charset checked by core's NodeId/ParamId.
 struct ModelIdSchema;
 impl JsonSchema for ModelIdSchema {
     fn schema_name() -> std::borrow::Cow<'static, str> {
@@ -493,8 +485,6 @@ impl Framing {
         Ok(framing)
     }
 
-    /// One image size viewed at any center and scale: a camera key's frame.
-    /// `rect` reports the effective rect, since no request rect produced it.
     pub fn view(size: [u32; 2], center: [f64; 2], s: f64) -> Result<Self, Error> {
         if !center.iter().all(|v| v.is_finite()) || !s.is_finite() || s <= 0.0 {
             return Err(bad("camera center must be finite and scale positive"));
@@ -604,8 +594,6 @@ impl ResolvedFrames {
     }
 }
 impl ResolvedRequest {
-    /// The view of one export frame: the static framing, or the camera keys
-    /// interpolated at that frame over the same image size.
     pub fn framing_at(&self, frame: u32) -> Result<Framing, Error> {
         let (Some(first), Some(last)) = (self.camera.first(), self.camera.last()) else {
             return Ok(self.framing.clone());
@@ -636,7 +624,6 @@ impl ResolvedRequest {
             f64::from(self.framing.scale) * zoom,
         )
     }
-    /// Seconds per captured frame of an animated request.
     pub fn frame_interval(&self) -> Option<f64> {
         self.animation
             .as_ref()
@@ -690,8 +677,7 @@ impl Document {
         }
     }
 
-    /// Resolve one discovery request without charging the work of unrelated
-    /// requests. Its inheritance still resolves against the complete document.
+    /// Charges only this request's work; inheritance still resolves against the whole document.
     pub fn resolve_one(&self, model: &Model, name: &str) -> Result<ResolvedRequest, Error> {
         check_limit(
             "requests",
@@ -897,8 +883,7 @@ impl Document {
         Ok(out)
     }
 
-    // Iterative traversal bounds stack use even when all 4096 requests form a
-    // chain. Cache each expanded base, so a shared ancestor resolves once.
+    // Iterative so a 4096-request chain cannot overflow the stack.
     fn resolve_inheritance(&self) -> Result<BTreeMap<String, Request>, Error> {
         let mut resolved = BTreeMap::<String, Request>::new();
         let mut expanded_bytes = 0;
@@ -1233,7 +1218,6 @@ pub fn parse_rect(text: &str) -> Result<[f32; 4], Error> {
         .map_err(|_| bad("--rect takes x0,y0,w,h"))?;
     v.try_into().map_err(|_| bad("--rect takes x0,y0,w,h"))
 }
-// Count serialization without allocating another expanded JSON buffer.
 fn encoded_len(value: &impl Serialize) -> Result<u64, Error> {
     struct Counter(u64);
     impl std::io::Write for Counter {
@@ -1276,8 +1260,6 @@ pub(super) fn check_limit(
     }
 }
 
-/// Schema is generated from the same Rust types used for parsing and output.
-/// Semantic checks requiring model state run in Document::resolve.
 pub fn schema(resolved: bool) -> Result<serde_json::Value, Error> {
     let schema = if resolved {
         schemars::schema_for!(ResolvedSpec)

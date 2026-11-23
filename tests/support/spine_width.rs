@@ -43,9 +43,7 @@ pub fn envelope(t: f32) -> f32 {
     smooth(((t - 0.125) / 0.375).clamp(0.0, 1.0))
 }
 
-// A bounded bilinear field gives an analytic oracle between authored keys.
-// A production author samples a supported cosine prior instead. The runtime
-// knows only the baked offsets in either case.
+// Bilinear, so it is an analytic oracle between authored keys.
 pub fn width_delta(yaw: f32, bend: f32) -> f32 {
     0.008 * yaw + 0.010 * bend / LIMIT + 0.002 * yaw * bend / LIMIT
 }
@@ -174,7 +172,6 @@ impl Fixture {
                 model
                     .update_node(&part, |n| n.transform.rotation[2] = angle)
                     .unwrap();
-                // The pose alone changes width even when every response is at rest.
                 let base = BindingKey::new(yaw.clone(), part.clone(), BindingTarget::Deform);
                 model
                     .add_binding_with_positions(&base, vec![vec![0.0, 0.5, 1.0]])

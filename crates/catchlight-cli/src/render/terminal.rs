@@ -1,6 +1,4 @@
 //! Kitty support is confirmed by its graphics query, never inferred from TERM.
-//! Redirected stdout receives neither queries nor graphics escapes. The wire
-//! format follows https://sw.kovidgoyal.net/kitty/graphics-protocol/.
 use base64::Engine;
 use std::io::{IsTerminal, Write};
 

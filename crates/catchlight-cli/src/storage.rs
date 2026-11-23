@@ -1,17 +1,7 @@
 //! Storage accounting without decoding images or evaluating a puppet.
 //!
-//! Container section lengths and texture payload lengths are read from the
-//! input. Element sizes count the bytes the current CBOR serializer writes,
-//! including each element's own headers. They partition the **canonical**
-//! file; array/map headers and field names live in explicit overhead buckets.
-//! `canonical_matches_input` is a byte comparison, not a size comparison. Only
-//! when it is true are the canonical element counts exact on-disk attribution.
-//! Unknown fields and noncanonical CBOR remain inspectable
-//! without silently presenting re-encoded sizes as original storage sizes.
-//!
-//! Texture references are not charged repeatedly to nodes. The texture table
-//! lists their users separately. Node rows include that node's mesh and bindings,
-//! never its descendants. All detailed lists are sorted largest first.
+//! Element sizes count canonical re-encoded bytes; they are exact on-disk
+//! attribution only when `canonical_matches_input` (a byte comparison) holds.
 
 use std::collections::BTreeMap;
 use std::io::{self, Write};

@@ -1,76 +1,11 @@
 //! `catchlight-cli` — the command line over a `.clm` model file.
 //!
-//! The file operations are patch a field, swap a texture, extract or merge an
-//! addon, list its requirements, diff two files, and read or write the vendor
-//! `extension`s a file carries. Every one of them works on
-//! the file's **structure section**: decode the container, edit the CBOR
-//! structure, write it back. Texture bytes are moved around as opaque blobs and
-//! are never decoded, so patching one field of a model carrying a hundred
-//! megabytes of PNG costs a read and a write and nothing else. That is the
-//! whole point of Ids being author-facing strings stored in the file: a
-//! subtree can be cut out, a property set, or two files compared without a
-//! renderer, a puppet, or an image decoder anywhere in the process.
-//!
-//! The inspection subcommands are the other half. [`storage`] accounts for
-//! encoded bytes without decoding images or evaluating the model.
-//! [`render`] builds the puppet, draws it on a
-//! headless device through [`catchlight_wgpu::RenderContext`] and prints the
-//! render list it drew. The same command renders selected Parts, pose batches
-//! and animation clips with motion responses. [`poses`]
-//! walks every key pose on the CPU and writes what each one moves as CBOR,
-//! which is what a rig evaluator scores against. These inspection paths decode textures,
-//! which is why the no-decode rule below is a property of the file operations
-//! rather than of the crate.
-//!
-//! # The one dependency rule
-//!
-//! **This crate never depends on `catchlight-editor-protocol`,
-//! `catchlight-editor-server`, or any client of that server —
-//! `catchlight-editor-cli`, `catchlight-editor-wasm`.**
-//! Below that line sit the structure, the reader that trusts nothing, `check`,
-//! the puppet and the renderer: tier-1 on Windows and wasm-safe. Above it is
-//! session machinery — revisions, undo, observers, per-session Id minting,
-//! transports, tokens — none of which changes what a valid model is. The rule
-//! buys a CLI that ships wherever the runtime ships, forces reuse downward, so
-//! anything this crate and the server both need lands in `catchlight-core` or
-//! `catchlight-wgpu` rather than being shared sideways, and keeps the tool
-//! answering about the file rather than about a session's copy of it. A test
-//! in `xtask` walks `cargo metadata`'s resolve graph and fails if any of the
-//! four ever appears in this crate's closure.
-//!
-//! # Invariants
-//!
-//! - **No file operation decodes an image.** [`crate::file::read`] hands back
-//!   [`ClmTexture`](catchlight_core::formats::clm::ClmTexture) values holding
-//!   the file's verbatim source bytes; `patch`, `extract`, `merge`,
-//!   `requirements` and `diff` only ever move or compare those bytes, and
-//!   `replace-texture` writes new ones in without looking inside them. The
-//!   proof is a test whose texture payload is not a decodable image at all
-//!   (`patching_a_file_whose_textures_are_not_images`): anything that decoded
-//!   would fail there.
-//! - **Nothing changed means the same bytes.** Decoding and re-encoding a
-//!   structure is byte-identical (`ciborium` writes fields in declaration
-//!   order, the container lays sections out in order), so setting a field to
-//!   the value it already has rewrites the file unchanged. Callers rest on
-//!   that: it is how `diff` on a round-tripped file is empty, and it is what
-//!   makes "did this tool touch anything?" answerable with `cmp`.
-//! - **A write is atomic and never leaves an unopenable file.** Output goes
-//!   to a temporary file beside the destination and is renamed over it, and
-//!   `patch` rebuilds a [`Model`](catchlight_core::Model) from the edited
-//!   structure *before* writing — so a patch that would break a load-time
-//!   invariant is refused with that reader's own error rather than saved.
-//!   Rebuilding a Model decodes no textures; it is the cheap half of a load.
-//! - **A file is read as one shape or the other, never guessed.** A complete
-//!   model has exactly one node with no parent; an addon fragment has none.
-//!   [`file::load`] decides from the structure itself and then uses the
-//!   matching reader, which is the file-level form of the rule
-//!   `crates/catchlight-core/src/model/file.rs` states. `merge` is the one
-//!   command that does not choose: its addon argument is always read with the
-//!   fragment reader, so handing it a complete model says so.
-//! - **An Id is taken verbatim.** The charset (`[A-Za-z0-9_./-]`, no leading
-//!   `.`, `/` or `-`) is narrow enough that an Id is always a bare argument:
-//!   no command needs `--` to reach one, and `--help` says what the charset
-//!   is.
+//! - This crate never depends on `catchlight-editor-protocol`,
+//!   `catchlight-editor-server`, or their clients; an `xtask` test enforces it.
+//! - File operations never decode an image; texture bytes move verbatim.
+//! - Re-encoding an unchanged structure is byte-identical.
+//! - Writes are atomic, and `patch` rebuilds the Model before writing so a
+//!   patch that breaks a load-time invariant is refused, not saved.
 
 pub mod diff;
 pub mod extension;
@@ -88,14 +23,10 @@ use catchlight_core::formats::clm::ClmError;
 use catchlight_core::id::IdError;
 use catchlight_core::{InstallError, ModelError};
 
-/// The exit status a failed command leaves. `diff` uses 1 for "the two files
-/// differ", so every error is 2 and no command ever exits 1 for anything else.
+/// `diff` uses 1 for "the two files differ", so every error is 2.
 pub const EXIT_ERROR: i32 = 2;
-/// `diff`'s exit status when the two files are not identical.
 pub const EXIT_DIFFERS: i32 = 1;
 
-/// Why a file-level operation could not be carried out. Every variant names
-/// the file, the Id or the field that stopped it.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("storage: {0}")]
@@ -139,16 +70,12 @@ pub enum Error {
         #[source]
         source: ModelError,
     },
-    /// The file is a complete model on the wire (one node with no parent)
-    /// but the complete-model reader refused it.
     #[error("{} is a complete model that does not load: {source}", .path.display())]
     NotAModel {
         path: PathBuf,
         #[source]
         source: ModelError,
     },
-    /// The file is a fragment on the wire (no node without a parent) but
-    /// the fragment reader refused it.
     #[error("{} is an addon fragment that does not load: {source}", .path.display())]
     NotAFragment {
         path: PathBuf,
@@ -186,15 +113,12 @@ pub enum Error {
         expected: String,
         value: String,
     },
-    /// The edited structure no longer loads. The patch is not written.
     #[error("that patch would make {} unloadable: {source}", .path.display())]
     PatchBreaksFile {
         path: PathBuf,
         #[source]
         source: ModelError,
     },
-    /// The file did not load before the patch either, so nothing can be said
-    /// about the patch itself.
     #[error("{} did not load before the patch either: {source}", .path.display())]
     AlreadyBroken {
         path: PathBuf,
@@ -214,14 +138,11 @@ pub enum Error {
     ExtractingARoot { node: String },
     #[error("{0}")]
     Install(#[from] InstallError),
-    /// The path does not end in `.clm`, so there is no format to read it as.
     #[error(
         "{} is not a .clm; convert it first with `catchlight-importer --help`",
         .path.display()
     )]
     NotAClm { path: PathBuf },
-    /// The GPU could not be reached, or a frame could not be built, drawn or
-    /// read back. The one failure here that is not about the file.
     #[error("{stage}: {message}")]
     Gpu {
         stage: &'static str,
@@ -255,9 +176,7 @@ pub enum Error {
         size: usize,
         max: usize,
     },
-    /// An edit `render` makes to its in-memory copy of the model was
-    /// refused. Every one of them names a node this crate has already
-    /// checked, so reaching this is a bug here rather than bad input.
+    /// Every in-memory edit names an already-checked node, so this is a bug.
     #[error("editing the model in memory failed: {0}")]
     Model(#[from] ModelError),
 }
@@ -270,9 +189,7 @@ impl Error {
         }
     }
 
-    /// A GPU or render failure at `stage`. The wgpu layer's errors are
-    /// `Box<dyn Error>`, which is neither `Send` nor a `source` thiserror can
-    /// carry, so the text is taken here.
+    /// wgpu errors are `Box<dyn Error>`, neither `Send` nor a thiserror `source`.
     fn gpu(stage: &'static str, source: impl std::fmt::Display) -> Self {
         Self::Gpu {
             stage,

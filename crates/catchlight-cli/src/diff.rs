@@ -1,30 +1,8 @@
 //! `diff a.clm b.clm` — what changed between two model files, by Id.
 //!
-//! Stable identity is what makes this possible at all: a node, param or
-//! texture is the same thing in both files exactly when its Id is the same
-//! string, so the comparison is a set difference over Ids rather than a guess
-//! about which subtree moved where. Bindings are keyed by their params, node
-//! and target, welds by the unordered pair of parts they join and animations
-//! by name — the same keys
-//! the model itself uses.
-//!
-//! Two rules keep the output honest:
-//!
-//! - **The verdict is exact; the rendering is a summary.** Whether the files
-//!   differ is decided by comparing the decoded [`ClmFile`]s, not by whether
-//!   this module found something to print. A change it does not know how to
-//!   describe still reports as a difference, with a line saying so
-//!   ([`UNRENDERED`]). Nothing but equality of the two files produces an empty
-//!   result, which is what makes the exit status usable in CI.
-//! - **Bulk arrays are digested, not dumped.** A mesh, a binding's cells, a
-//!   weld's weights and a texture's bytes are rendered as a count and a
-//!   64-bit FNV-1a digest. The digest exists to *show* a change; whether there
-//!   was one is always decided by comparing the values themselves.
-//!
-//! Order is part of a model — sibling order is draw order at equal z, and
-//! texture order is the order a render cache walks — so a file whose lists
-//! hold the same things in a different order differs, and says so on an
-//! `order` line.
+//! The verdict is exact: the result is empty only when the decoded files are
+//! equal, and a change nothing here renders still reports [`UNRENDERED`]. List
+//! order is part of a model (draw order, cache walk order), so reordering differs.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -38,13 +16,10 @@ use serde::Serialize;
 
 use crate::{extension, file, Error};
 
-/// The line `diff` emits when the two files differ in something no renderer
-/// here describes. Its presence is a bug report, not a normal outcome.
+/// Its presence is a bug report, not a normal outcome.
 pub const UNRENDERED: &str = "~ (the two files differ in a way this summary does not render)";
 
-/// Compare two files that have already been decoded.
-///
-/// The result is empty exactly when `a == b`.
+/// Empty exactly when `a == b`.
 pub fn diff(a: &ClmFile, b: &ClmFile) -> Vec<String> {
     let mut out = Vec::new();
 
@@ -99,20 +74,14 @@ pub fn diff(a: &ClmFile, b: &ClmFile) -> Vec<String> {
     out
 }
 
-/// Read both files and compare them. No image is decoded on either side.
 pub fn run(a: &Path, b: &Path) -> Result<Vec<String>, Error> {
     let left = file::read(a)?;
     let right = file::read(b)?;
     Ok(diff(&left, &right))
 }
 
-// ---- the generic shape of a comparison -----------------------------------
-
-/// One list indexed by the key its elements are identified by, in file order.
-///
-/// A duplicate key keeps the first element; `order` still lists every
-/// occurrence, so a hostile file (which no reader would load) is compared
-/// rather than panicked on.
+/// A duplicate key keeps the first element, so a hostile file is compared rather
+/// than panicked on.
 struct Keyed<'a, T> {
     by_key: BTreeMap<String, &'a T>,
     order: Vec<String>,
@@ -129,8 +98,6 @@ fn keyed<T>(items: &[T], key: impl Fn(&T) -> String) -> Keyed<'_, T> {
     Keyed { by_key, order }
 }
 
-/// Added / removed / changed over one keyed list, then whether what both hold
-/// is in the same order.
 fn compare<T: PartialEq>(
     kind: &str,
     a: Keyed<'_, T>,
@@ -174,10 +141,6 @@ fn compare<T: PartialEq>(
     }
 }
 
-/// A value's fields, flattened to `path -> rendered value`. Comparing two of
-/// these turns "what changed on this node" into a map difference, so a node
-/// that changed kind reports the kind plus the fields that came and went
-/// rather than needing a case of its own.
 type Fields = BTreeMap<String, String>;
 
 fn field_diff(a: &Fields, b: &Fields) -> Vec<(String, String, String)> {
@@ -198,12 +161,6 @@ fn field_diff(a: &Fields, b: &Fields) -> Vec<(String, String, String)> {
     out
 }
 
-// ---- rendering one value's fields ----------------------------------------
-
-/// One line per extension key, not one per field: a value is a single thing
-/// a vendor owns, and half of it is bytes nothing here can render anyway.
-/// A JSON value is shown whole; a byte value as the size and hash its marker
-/// carries, which is exactly what changed when the bytes changed.
 fn extensions(a: &ClmStructure, b: &ClmStructure, out: &mut Vec<String>) {
     for (key, before) in &a.extensions {
         match b.extensions.get(key) {
@@ -406,8 +363,7 @@ fn binding_fields(b: &ClmBinding) -> Fields {
     f
 }
 
-/// A weld has no Id: the unordered pair of parts it joins is its identity, so
-/// the key sorts the two ends and swapping them is not a change.
+/// Unordered: swapping the two ends is not a change.
 fn weld_key(w: &ClmWeld) -> String {
     let (a, b) = if w.a <= w.b {
         (&w.a, &w.b)
@@ -448,10 +404,6 @@ fn animation_fields(a: &ClmAnimation) -> Fields {
     f
 }
 
-// ---- rendering helpers ---------------------------------------------------
-
-/// The name of a unit enum variant, taken from its own serialization so this
-/// module never keeps a second copy of a `.clm` variant list.
 pub(crate) fn enum_name<T: Serialize>(v: &T) -> String {
     match serde_json::to_value(v) {
         Ok(serde_json::Value::String(s)) => s,
@@ -460,8 +412,7 @@ pub(crate) fn enum_name<T: Serialize>(v: &T) -> String {
     }
 }
 
-/// A short, stable digest of anything serializable — for showing that a bulk
-/// array changed. Never used to *decide* whether it changed.
+/// For display only; never used to decide whether a value changed.
 fn digest<T: Serialize>(v: &T) -> String {
     match serde_json::to_vec(v) {
         Ok(bytes) => format!("h {:016x}", fnv1a(&bytes)),

@@ -1,10 +1,4 @@
-//! `diff` against the committed fixtures, and the byte-stability every other
-//! operation rests on.
-//!
-//! Two properties are pinned here because everything else assumes them:
-//! encoding a `.clm` twice gives the same bytes back, and
-//! `diff` is empty exactly when two files are equal. Once those hold, `diff`
-//! is a trustworthy way to ask what a `patch` or a `merge` actually did.
+//! `diff` against the committed fixtures, and encode byte-stability.
 
 mod common;
 
@@ -58,11 +52,8 @@ fn a_fixture_does_not_differ_from_itself() {
     }
 }
 
-/// One named way to make a file differ from the one it was copied from.
 type Mutation = (&'static str, fn(&mut ClmFile));
 
-/// The verdict has to be exactly "the two decoded files are unequal", however
-/// they were made unequal — a summary line is a courtesy, not the answer.
 #[test]
 fn the_result_is_empty_exactly_when_the_files_are_equal() {
     let base = decode(&common::fixture("composite_masks"));
@@ -135,8 +126,6 @@ fn an_added_and_a_removed_node_are_named_by_id() {
     );
 }
 
-/// A part changing kind is not a special case: the kind is one field, and the
-/// fields that came and went are the rest of the answer.
 #[test]
 fn a_node_that_changes_kind_reports_the_fields_that_came_and_went() {
     let base = decode(&common::fixture("mip_checker"));
@@ -169,8 +158,6 @@ fn a_texture_is_compared_byte_for_byte() {
     assert!(lines[0].contains("-> 2422 bytes"), "{lines:?}");
 }
 
-/// A texture whose length is unchanged but whose bytes are not still reports —
-/// which is the point of comparing values rather than lengths.
 #[test]
 fn a_texture_of_the_same_length_with_different_bytes_still_differs() {
     let base = decode(&common::fixture("mip_checker"));
@@ -213,8 +200,6 @@ fn a_weld_is_keyed_by_the_two_parts_it_joins() {
         "{lines:?}"
     );
 
-    // The key is the *unordered* pair, so storing the weld the other way
-    // round is not a change to it.
     let mut swapped = base.clone();
     let weld = &mut swapped.doc.welds[0];
     std::mem::swap(&mut weld.a, &mut weld.b);
@@ -268,8 +253,7 @@ fn a_pure_reorder_is_reported_as_one() {
     );
 }
 
-/// `diff` reads two files and nothing else — the committed fixtures are LFS
-/// objects and no test in this crate may touch them.
+/// The committed fixtures are LFS objects; no test may modify them.
 #[test]
 fn the_committed_fixtures_are_never_written_to() {
     let dir = tmp("diff-fixtures-untouched");
@@ -324,8 +308,6 @@ fn the_help_documents_the_id_charset_and_the_exit_statuses() {
     );
 }
 
-/// A blend mode is a `.clm` enum, not something this crate keeps its own list
-/// of; the diff renders it by the name it serializes as.
 #[test]
 fn an_enum_field_renders_as_its_wire_name() {
     let base = decode(&common::fixture("mip_checker"));

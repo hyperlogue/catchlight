@@ -1,14 +1,10 @@
 //! Caller-side shortcuts over exact reads and atomic writes.
 //!
-//! Every read used by a shortcut must carry the same captured revision. The
-//! final `edit_apply` uses that revision, so concurrent work is refused rather
-//! than overwritten. Holes remain holes unless a command explicitly authors
-//! identity or requests a derived copy. No shortcut writes recorded pose values.
+//! Every read must carry the captured revision the final `edit_apply` guards
+//! with, so concurrent work is refused rather than overwritten.
 
 use super::*;
 
-/// Execute commands that need captured reads, or return control to the direct
-/// one-command path. This context never retries a refused edit.
 pub(super) enum Output {
     Reply(Reply),
     Unfilled { revision: u64, slots: Vec<SlotAddr> },
@@ -630,9 +626,8 @@ fn flip_binding(
         bail!("mirrored grid is not representable with strictly ordered normalized f32 positions");
     }
     let last = positions.len() as u32 - 1;
-    // Decreases first in ascending order, increases in descending order, so
-    // each individual move remains between its current neighbours. Preserve
-    // the binding object itself: order and interpolation are authored state.
+    // Decreases ascending, then increases descending, so each move stays
+    // between its current neighbours.
     let decreases = (0..positions.len()).filter(|&i| mirrored[i] < positions[i]);
     let increases = (0..positions.len())
         .rev()

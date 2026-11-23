@@ -1,11 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! `patch` on copies of the committed fixtures.
-//!
-//! Every case asserts three things: the file still loads, `diff` reports
-//! exactly the one field that was asked for, and the texture bytes came
-//! through untouched. The last two tests are the "no image is decoded" proof —
-//! one on a file whose textures are not images at all, one on a file large
-//! enough that a per-pixel pass would show.
 
 mod common;
 
@@ -46,9 +40,6 @@ fn one_field_changes_and_the_file_still_loads() {
     );
 }
 
-/// Every field the tool advertises for a kind can be set, on a file carrying
-/// one node of every kind — so the list in `--help`'s errors and the fields
-/// that actually resolve cannot drift apart.
 #[test]
 fn every_advertised_field_can_be_set() {
     let dir = tmp("patch-every-field");
@@ -87,8 +78,6 @@ fn every_advertised_field_can_be_set() {
     }
 }
 
-/// A field that already holds the value it is being set to still rewrites the
-/// same bytes that were read from disk.
 #[test]
 fn setting_a_field_to_what_it_already_holds_rewrites_the_same_bytes() {
     let dir = tmp("patch-byte-stable");
@@ -176,8 +165,6 @@ fn an_id_that_names_nothing_is_refused() {
     assert_eq!(id, "node-99");
 }
 
-/// A node Id and a param Id are separate namespaces, so one string can be
-/// both. The tool refuses to pick for you.
 #[test]
 fn an_id_that_names_both_a_node_and_a_param_asks_which() {
     let dir = tmp("patch-ambiguous");
@@ -225,9 +212,6 @@ fn an_id_that_names_both_a_node_and_a_param_asks_which() {
     );
 }
 
-/// `albedo` is the only cross-reference `patch` will write, and it has to name
-/// a texture the file carries — otherwise the patch would produce a file the
-/// reader refuses.
 #[test]
 fn albedo_is_the_one_cross_reference_and_it_must_resolve() {
     let dir = tmp("patch-albedo");
@@ -244,10 +228,7 @@ fn albedo_is_the_one_cross_reference_and_it_must_resolve() {
     );
     assert_eq!(read(&file), read(&common::fixture("welded_seam")));
 
-    // Every texture a model carries is drawn by a part. `patch` moves one
-    // field and collects nothing, so pointing the only part drawing `tex-0`
-    // away from it would write a file no reader takes — and `patch` refuses
-    // with the reader's own error rather than saving it.
+    // Repointing the only part drawing `tex-0` would orphan it; the reader refuses.
     let orphaned = dir.join("orphaned.clm");
     let error = patch::run(&file, "node-1", "albedo", "tex-1", None, Some(&orphaned)).unwrap_err();
     assert!(
@@ -257,8 +238,6 @@ fn albedo_is_the_one_cross_reference_and_it_must_resolve() {
     assert!(error.to_string().contains("tex-0"), "{error}");
     assert!(!orphaned.exists(), "a refused patch writes nothing");
 
-    // Where the texture has a second part drawing it, the swap and the unmap
-    // both go through.
     let (clm, [from, to], shared, other) = shared_albedo();
     let file = write_clm(&dir, "shared", &clm);
     let base = decode(&file);
@@ -295,11 +274,7 @@ fn albedo_is_the_one_cross_reference_and_it_must_resolve() {
     Model::from_clm_bytes(&read(&unmapped)).unwrap();
 }
 
-/// `composite_masks` with its second part drawing the first's texture and the
-/// texture that left behind dropped: one texture with two parts drawing it, so
-/// an albedo can move off one of them and still leave every texture a user.
-/// Hands back the two parts sharing it, the texture they share, and another
-/// the file still carries to swap to.
+/// One texture drawn by two parts, so an albedo can move off one of them.
 fn shared_albedo() -> (ClmFile, [NodeId; 2], TexId, TexId) {
     fn drawn(clm: &ClmFile) -> Vec<(NodeId, TexId)> {
         clm.doc
@@ -315,8 +290,6 @@ fn shared_albedo() -> (ClmFile, [NodeId; 2], TexId, TexId) {
     let mut clm = decode(&common::fixture("composite_masks"));
     let all = drawn(&clm);
     let (first, shared) = all.first().cloned().expect("a part drawing a texture");
-    // A part drawing a texture nothing else draws: repointing it frees that
-    // texture, and dropping it leaves every texture left with a user.
     let (second, freed) = all
         .iter()
         .find(|(id, t)| {
@@ -341,8 +314,7 @@ fn shared_albedo() -> (ClmFile, [NodeId; 2], TexId, TexId) {
     (clm, [first, second], shared, other)
 }
 
-/// A `Name` is capped, and a Model truncates a longer one on load — so writing
-/// one would give a file that is not what it reads back as.
+/// A Model truncates an over-long `Name` on load, so writing one would not round-trip.
 #[test]
 fn a_name_past_the_cap_is_refused() {
     let dir = tmp("patch-long-name");
@@ -369,8 +341,6 @@ fn a_name_past_the_cap_is_refused() {
     );
 }
 
-/// A file that did not load before the patch says so rather than blaming the
-/// patch — and is still not written to.
 #[test]
 fn a_file_that_did_not_load_before_says_so_and_is_left_alone() {
     let dir = tmp("patch-already-broken");
@@ -392,11 +362,7 @@ fn a_file_that_did_not_load_before_says_so_and_is_left_alone() {
     assert_eq!(read(&file), before, "a refused patch wrote to the file");
 }
 
-// ---- the no-decode proof ---------------------------------------------------
-
-/// The definitive proof: the texture payload is not a decodable image at all,
-/// so anything that tried to decode it would fail here. It does not, and the
-/// bytes come out the far side identical.
+/// The texture payload is not a decodable image, so any decode would fail.
 #[test]
 fn patching_a_file_whose_textures_are_not_images() {
     let dir = tmp("patch-not-an-image");
@@ -419,9 +385,7 @@ fn patching_a_file_whose_textures_are_not_images() {
     );
 }
 
-/// A section this build has no name for is one a newer writer added. A patch
-/// rewrites the whole file, so it has to write that section back as it found
-/// it or the tool destroys what it cannot read.
+/// A patch rewrites the whole file, so unknown sections must survive it.
 #[test]
 fn patching_a_file_keeps_a_section_this_build_does_not_recognise() {
     use catchlight_core::formats::{clm, container};
@@ -469,9 +433,7 @@ fn patching_a_file_keeps_a_section_this_build_does_not_recognise() {
     );
 }
 
-/// The size bound: a file whose textures are a hundred megabytes patches in
-/// the time it takes to copy it, because nothing looks inside them. A
-/// per-pixel pass over this much data would not fit in the bound.
+/// A per-pixel pass over this much data would not fit in the time bound.
 #[test]
 fn patching_a_hundred_megabyte_texture_file_stays_linear_in_bytes() {
     const MEGABYTE: usize = 1024 * 1024;
@@ -503,14 +465,9 @@ fn patching_a_hundred_megabyte_texture_file_stays_linear_in_bytes() {
         "patching {TEXTURE_BYTES} bytes of texture took {elapsed:?}, over the {BOUND:?} bound"
     );
 
-    // Do not leave a hundred megabytes behind for the rest of the suite.
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
-// ---- the command line ------------------------------------------------------
-
-/// An Id may not begin with `-`, so no command has to be reached through
-/// `--`: an argument that opens with a dash is an option and nothing else.
 #[test]
 fn an_id_cannot_begin_with_a_dash() {
     assert!(NodeId::new("-odd").is_err());
@@ -540,9 +497,6 @@ fn the_binary_says_when_a_patch_changed_nothing() {
     assert!(err.contains("has no field \"nope\""), "{err}");
 }
 
-// ---- helpers ---------------------------------------------------------------
-
-/// A value that is guaranteed to differ from the kitchen sink's current one.
 fn value_for(field: &str) -> &'static str {
     match field {
         "enabled" => "false",
@@ -554,13 +508,11 @@ fn value_for(field: &str) -> &'static str {
     }
 }
 
-/// `mip_checker` with one node of every kind and a param, so the field table
-/// can be walked end to end on a file that loads.
 fn kitchen_sink() -> ClmFile {
     let mut clm = decode(&Path::new(&common::models_dir()).join("mip_checker.clm"));
     let root = NodeId::new("root").unwrap();
 
-    // node-2 is the second quad; make it the mesh group, reusing its mesh.
+    // node-2 is the second quad; reuse its mesh for the mesh group.
     let ClmNodeKind::Part(part) = clm.doc.nodes[2].kind.clone() else {
         panic!("node-2 should be a part");
     };
@@ -569,9 +521,7 @@ fn kitchen_sink() -> ClmFile {
         translate_children: false,
     });
 
-    // A second part drawing `tex-0`, so unmapping either one still leaves the
-    // texture with a part drawing it — a texture no part draws is a file no
-    // reader takes.
+    // A second part drawing `tex-0`, so unmapping either still leaves it drawn.
     clm.doc.nodes.push(ClmNode {
         id: NodeId::new("node-5").unwrap(),
         parent: Some(root.clone()),

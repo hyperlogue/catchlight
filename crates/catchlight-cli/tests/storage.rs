@@ -11,8 +11,7 @@ use catchlight_core::formats::{clm, container};
 #[test]
 fn canonical_categories_partition_every_byte_without_decoding_textures() {
     let mut model = common::decode(&common::fixture("welded_seam"));
-    // A complete-looking PNG header with no pixels or CRCs. A decoder would
-    // reject it; storage accounting still reports its bytes and dimensions.
+    // No pixels or CRCs: a decoder would reject it.
     let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
     png.extend(100u32.to_be_bytes());
     png.extend(50u32.to_be_bytes());

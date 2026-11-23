@@ -14,29 +14,21 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-/// All wgpu state, model caches, and per-config render lives behind the
-/// `inner` mutex. wgpu Device/Queue are Send+Sync, but the per-frame
-/// instance/uniform buffers in `WgpuRenderer` cannot be shared across
-/// concurrent renders without aliasing (see AGENTS.md). Serializing every
-/// trial through this lock sidesteps that entirely.
+/// Renders are serialized through `inner`: `WgpuRenderer`'s per-frame
+/// instance/uniform buffers alias under concurrent renders.
 pub struct SharedHarness {
     inner: Mutex<HarnessInner>,
 }
 
-/// Color format of every render target here, matching the `Pipelines` the
-/// harness builds.
 const TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
 struct HarnessInner {
     pipelines: Arc<Pipelines>,
     device: wgpu::Device,
     queue: wgpu::Queue,
-    /// Render context per puppet (each carries its own renderer so
-    /// two render caches never overwrite each other's mesh and texture slots,
-    /// and so two puppets of one model in a single frame do not overwrite
-    /// each other's instance buffer). Keyed by model stem for the
-    /// single-puppet path, and by stem + frame position for multi-puppet
-    /// frames. Populated lazily on first use.
+    /// One renderer per puppet so render caches and instance buffers never
+    /// overwrite each other. Keyed by model stem, plus frame position for
+    /// multi-puppet frames.
     contexts: HashMap<String, ContextSlot>,
     models: HashMap<String, ModelSpec>,
     thresholds: Thresholds,
@@ -126,17 +118,8 @@ impl HarnessInner {
         Ok((pixels, slot.spec.width, slot.spec.height))
     }
 
-    /// Draw every puppet of a multi-puppet config onto one color target, the
-    /// way an app with several puppets on screen does: a frame per model
-    /// renderer, in order, over one caller-owned `StencilTarget` /
-    /// `CompositePool` / `FramebufferSnapshotPool`. Only the first clears;
-    /// the rest load what the ones before them drew.
-    ///
-    /// The frame resources are built here rather than borrowed from a
-    /// puppet's own `RenderContext` precisely because they are shared: the
-    /// pools are recycled from puppet to puppet, so a stale mask or a
-    /// composite slot handed out twice would bleed across puppets, and the
-    /// baseline is what catches that.
+    /// The frame resources are shared deliberately so the baseline catches
+    /// state bleeding between puppets through recycled pools.
     fn render_pixels_multi(&mut self, config: &Config) -> Result<(Vec<u8>, u32, u32)> {
         let first = config
             .frame_puppets
@@ -175,14 +158,9 @@ impl HarnessInner {
             let world = glam::Mat4::from_translation(glam::Vec3::new(puppet.x, puppet.y, 0.0));
             let key = format!("{}#{i}", puppet.model_stem);
             let slot = self.ensure_slot(&key, &puppet.model_stem)?;
-            // Defaults and no transient: a multi-puppet frame is about how
-            // several puppets share one target, and every puppet in it
-            // renders at rest.
             let render_list = prepare_puppet(&mut slot.ctx, &mut slot.cached, &[], 0, world)?;
             slot.ctx.renderer.update_camera(camera);
-            // A renderer owns its own frame and its own submit, so a puppet
-            // per model renderer is a submit per model. Queue order is what
-            // stacks them onto the one target, in the order written here.
+            // Submission order determines stacking on the shared target.
             slot.ctx
                 .renderer
                 .frame()
@@ -225,9 +203,6 @@ pub enum RunOutcome {
     },
 }
 
-/// Render `config`, diff against the baseline on disk, persist failure
-/// artifacts under `tmp/visual-test-failures/<config.name>/` when the metrics
-/// exceed the configured thresholds.
 pub fn run_one(harness: &SharedHarness, config: &Config) -> Result<RunOutcome> {
     let mut inner = harness.lock()?;
     let thresholds = inner.thresholds;
@@ -309,8 +284,6 @@ fn metrics_within(m: &Metrics, t: &Thresholds) -> bool {
         && m.pct_above_threshold <= t.pct_above_threshold
 }
 
-/// Render every config and overwrite its baseline. Used by the `update`
-/// subcommand of the binary; the regression test never calls this.
 pub fn update_all(harness: &SharedHarness, configs: &[Config]) -> Result<()> {
     let root = repo_root();
     let baselines = baselines_root(&root);
@@ -339,7 +312,6 @@ pub fn update_all(harness: &SharedHarness, configs: &[Config]) -> Result<()> {
     Ok(())
 }
 
-/// Convenience for the binary's `list` subcommand.
 pub fn list_configs(configs: &[Config]) {
     for c in configs {
         let cam = c.camera;

@@ -1,10 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-//! `replace-texture` on copies of the committed fixtures.
-//!
-//! The replacement images here are deliberately not decodable — a PNG
-//! signature with nothing behind it, a TGA footer with nothing in front of it.
-//! Every one of these tests would fail if anything on the path opened the
-//! image, which is exactly the property the command promises.
+//! `replace-texture` on copies of the committed fixtures. Replacement images
+//! are deliberately undecodable, so any decode on the path would fail.
 
 mod common;
 
@@ -51,8 +47,6 @@ fn the_bytes_are_swapped_and_nothing_else_moves() {
     Model::from_clm_bytes(&read(&file)).unwrap();
 }
 
-/// The bytes' own signature outranks the file name, and a TGA 1.0 file — which
-/// has no signature at all — falls back to the extension.
 #[test]
 fn the_encoding_comes_from_the_signature_then_the_extension() {
     let dir = tmp("texture-encoding");
@@ -147,8 +141,6 @@ fn writing_the_same_bytes_back_rewrites_the_same_file() {
     assert_eq!(read(&file), before);
 }
 
-/// The bytes cannot say what their alpha means, so the slot's convention
-/// stands until someone says otherwise.
 #[test]
 fn the_alpha_convention_is_kept_unless_asked() {
     let dir = tmp("texture-alpha");

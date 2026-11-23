@@ -1,36 +1,7 @@
 //! `extract`, `merge` and `requirements` — the addon operations, at the file.
 //!
-//! `extract` and `merge` are [`Model::extract`](catchlight_core::Model::extract) and
-//! [`Model::install`](catchlight_core::Model::install) with a
-//! reader on one side and a writer on the other. Going through a `Model` is
-//! deliberate: "without loading a Model" means without decoding textures and
-//! without building a puppet, not without the type that knows what an addon
-//! is. A `Model` built from a `.clm` holds the texture bytes exactly as the
-//! file did, so cutting a subtree out of a model with a hundred megabytes of
-//! images moves those bytes and looks at none of them.
-//!
-//! `requirements` is the exception, and the reason it is: it answers what an
-//! addon needs from a **plain scan of the wire**, because every
-//! cross-reference in a `.clm` is a plain CBOR string. That makes it usable on
-//! a file no reader would accept, and it makes it a second opinion — [`scan`]
-//! and [`Model::requirements`](catchlight_core::Model::requirements) walk the same
-//! fields and must always agree,
-//! which `requirements_agree_with_the_model` pins. A texture is never among
-//! them: an addon carries the textures its own parts draw, so `extract`
-//! copies one the base still draws into the addon instead of listing it as
-//! something a base has to supply.
-//!
-//! Two rules the commands here enforce that the Model API alone does not:
-//!
-//! - **A parentless node cannot be extracted.** `Model::extract` drops it —
-//!   a root names no parent, so nothing says where an addon cut from it would
-//!   attach — and would quietly hand back an addon without it. Refusing at
-//!   the cut, by name, says so while the author can still act on it.
-//! - **`merge`'s addon argument is read as a fragment, always.** The two wire
-//!   shapes are disjoint and neither reader guesses between them, so handing
-//!   `merge` a complete model has to report itself as one; reading it with the
-//!   shape-sniffing [`crate::file::load`] would instead succeed and fail one
-//!   step later with a worse message.
+//! [`scan`] and [`Model::requirements`](catchlight_core::Model::requirements)
+//! walk the same fields and must agree (`requirements_agree_with_the_model`).
 
 use std::path::Path;
 
@@ -40,7 +11,6 @@ use catchlight_core::{Required, Requirement};
 
 use crate::{file, Error};
 
-/// What one `extract` cut out.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Extracted {
     pub roots: Vec<String>,
@@ -62,7 +32,6 @@ impl std::fmt::Display for Extracted {
     }
 }
 
-/// What one `merge` installed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Merged {
     pub nodes: usize,
@@ -83,7 +52,6 @@ impl std::fmt::Display for Merged {
     }
 }
 
-/// Cut `ids` and their subtrees out of `path` as an addon, written to `out`.
 pub fn extract(path: &Path, ids: &[String], out: &Path) -> Result<Extracted, Error> {
     let clm = file::read(path)?;
     let roots = resolve_roots(&clm.doc, path, ids)?;
@@ -100,7 +68,6 @@ pub fn extract(path: &Path, ids: &[String], out: &Path) -> Result<Extracted, Err
     })
 }
 
-/// Every id names a node the file carries, and none of them is parentless.
 fn resolve_roots(doc: &ClmStructure, path: &Path, ids: &[String]) -> Result<Vec<NodeId>, Error> {
     let mut roots = Vec::with_capacity(ids.len());
     for id in ids {
@@ -123,7 +90,6 @@ fn resolve_roots(doc: &ClmStructure, path: &Path, ids: &[String]) -> Result<Vec<
     Ok(roots)
 }
 
-/// Install `addon` into `base`, writing the merged model to `out`.
 pub fn merge(base: &Path, addon: &Path, out: &Path) -> Result<Merged, Error> {
     let base_clm = file::read(base)?;
     let (mut model, _) = file::load(&base_clm, base)?;
@@ -143,21 +109,12 @@ pub fn merge(base: &Path, addon: &Path, out: &Path) -> Result<Merged, Error> {
     Ok(merged)
 }
 
-/// What the addon at `path` needs from a base model.
 pub fn requirements(path: &Path) -> Result<Vec<Requirement>, Error> {
     Ok(scan(&file::read(path)?))
 }
 
-/// Every Id the structure names but does not carry, found by walking the wire's
-/// own reference fields.
-///
-/// This is [`Model::requirements`](catchlight_core::Model::requirements) with the
-/// file's tables in place of a Model's. It walks parent and mask references,
-/// spine targets, response inputs and outputs, bindings, welds and animation lanes.
-/// `nodes[].kind.Part.albedo` is not among them: an addon carries the textures
-/// its own parts draw, so a texture is not something a base can supply.
-/// Sorted and deduplicated, so the same Id appears once per field that names
-/// it.
+/// Reads the wire directly so it works on files no reader accepts. Textures
+/// are never requirements: an addon carries the textures its own parts draw.
 pub fn scan(clm: &ClmFile) -> Vec<Requirement> {
     let doc = &clm.doc;
     let mut out: Vec<Requirement> = Vec::new();
@@ -176,9 +133,6 @@ pub fn scan(clm: &ClmFile) -> Vec<Requirement> {
             }
         }
         let masks = match &node.kind {
-            // A part's albedo is not scanned: an addon carries the textures
-            // its own parts draw, so it is never a requirement. The fragment
-            // reader refuses one that dangles.
             ClmNodeKind::Part(p) => p.masks.as_slice(),
             ClmNodeKind::Composite(c) => c.masks.as_slice(),
             ClmNodeKind::MotionResponse(r) => {
@@ -262,9 +216,7 @@ pub fn scan(clm: &ClmFile) -> Vec<Requirement> {
             if has_node(end) {
                 continue;
             }
-            // One requirement per base slot the weld pairs: the part and the
-            // slot on it are needed together. A weld with no pairs still
-            // names the part.
+            // One requirement per paired base slot; a weld with no pairs still names the part.
             for pair in &weld.pairs {
                 let slot = if on_a { &pair.a } else { &pair.b };
                 need(
@@ -296,14 +248,6 @@ pub fn scan(clm: &ClmFile) -> Vec<Requirement> {
     out
 }
 
-// ---- rendering ------------------------------------------------------------
-
-/// What a requirement is about, as the three columns both renderings share:
-/// its kind, the Id, and the slot when the kind is `slot`.
-///
-/// The kinds are `node` (any node), `drawable` (a part or a composite — what
-/// a mask source has to be), `part` (a part and nothing else — what a weld
-/// end has to be), `param` and `slot`.
 fn columns(id: &Required) -> (&'static str, String, Option<String>) {
     match id {
         Required::Node(id) => ("node", id.to_string(), None),
@@ -314,9 +258,7 @@ fn columns(id: &Required) -> (&'static str, String, Option<String>) {
     }
 }
 
-/// One requirement as five TAB-separated columns: `kind`, `id`, `slot`,
-/// `field`, `owner`. `slot` is empty for every kind but `slot`, so the column
-/// count never varies and `cut -f2` is always the Id.
+/// `slot` is empty for every kind but `slot`, so the column count never varies.
 pub fn render_line(requirement: &Requirement) -> String {
     let (kind, id, slot) = columns(&requirement.id);
     format!(
@@ -327,8 +269,6 @@ pub fn render_line(requirement: &Requirement) -> String {
     )
 }
 
-/// The same list as a JSON array, for a CI step that would rather not split
-/// on tabs.
 pub fn render_json(requirements: &[Requirement]) -> String {
     let entries: Vec<serde_json::Value> = requirements
         .iter()

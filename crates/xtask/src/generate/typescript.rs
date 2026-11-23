@@ -1,23 +1,8 @@
 //! Writes `packages/core/src/protocol.gen.ts` from the Rust wire types.
 //!
-//! Why the protocol is generated rather than hand-copied, and what both
-//! targets share, is in [the parent module](super). Three things this one owns
-//! that the `ts-rs` derive cannot:
-//!
-//! - **One file, no imports.** `ts-rs` exports a file per type with relative
-//!   imports between them. A protocol is one thing and gets one module, so
-//!   this asks each type for its declaration alone and concatenates them in
-//!   the order [`declarations`](super::declarations) lists.
-//!
-//! - **The kind split.** `ts-rs` sees one `Command` union; a client needs it
-//!   cut five ways by what applying a command does. [`kind_aliases`] renders
-//!   [`KINDS`] as `Extract<…>` aliases, so picking the wrong send method does
-//!   not typecheck.
-//!
-//! - **Formatting.** `ts-rs` emits one long line per type. [`pretty`] breaks it
-//!   on the structure, deterministically and with no JavaScript involved —
-//!   the check compares bytes, so a formatter whose version differed between a
-//!   developer's shell and CI would report drift that is not there.
+//! Emits one import-free module and formats it with [`pretty`] rather than a
+//! JavaScript formatter: the drift check compares bytes, so a formatter whose
+//! version differs between shells and CI would report false drift.
 
 use anyhow::{Context, Result};
 
@@ -26,7 +11,6 @@ use super::{
     BYTES_DOC, KINDS, QUERY_UNION_DOC,
 };
 
-/// Where the generated module lands, relative to the workspace root.
 const OUT: &str = "packages/core/src/protocol.gen.ts";
 
 pub fn write(decls: &[Decl]) -> Result<()> {
@@ -59,11 +43,8 @@ fn render(decls: &[Decl]) -> Result<String> {
     Ok(out)
 }
 
-/// The byte table, as a value rather than a type.
-///
-/// The kind split is types because a client picks a send method at compile
-/// time. This one has to be readable at run time: the tab looks up the command
-/// it is about to send to know what to attach, and a type cannot answer that.
+/// A value, not a type: the tab looks it up at run time to decide what to
+/// attach.
 fn command_bytes(tags: &[String]) -> Result<String> {
     check_byte_bearing(tags)?;
 
@@ -98,7 +79,6 @@ fn command_bytes(tags: &[String]) -> Result<String> {
     Ok(out)
 }
 
-/// Splits the `Command` union five ways, by what applying a command does.
 fn kind_aliases(tags: &[String]) -> Result<String> {
     check_classified(tags)?;
     check_aliased(tags)?;
@@ -125,7 +105,6 @@ fn kind_aliases(tags: &[String]) -> Result<String> {
     Ok(out)
 }
 
-/// Wraps plain doc lines in the `/** … */` block [`push_comment`] re-indents.
 fn block_comment(lines: &[&str]) -> String {
     let mut out = String::from("/**");
     for line in lines {
@@ -139,15 +118,8 @@ fn block_comment(lines: &[&str]) -> String {
     out
 }
 
-/// Breaks one `ts-rs` declaration across lines.
-///
-/// The grammar to lay out is small and known: object literals, unions,
-/// intersections, tuples, `Array<…>`, and the doc comments the derive
-/// interleaves between fields. Three rules cover it — a union arm gets its own
-/// line, a member of an object gets its own line, and a doc comment keeps the
-/// indentation of the member it introduces. Everything else stays where it is,
-/// which is what keeps `[number, number]` and `string | null` on one line,
-/// where they read best.
+/// Breaks a union arm or object member onto its own line; everything else
+/// stays put so `[number, number]` and `string | null` remain inline.
 fn pretty(decl: &str) -> String {
     let Some(eq) = top_level(decl, '=').first().copied() else {
         return decl.to_string();
@@ -159,8 +131,6 @@ fn pretty(decl: &str) -> String {
     if arms.len() == 1 {
         return format!("{head} {}", layout(rhs, 0));
     }
-    // Idiomatic TypeScript for a union that does not fit on one line: every
-    // arm on its own line behind a leading `|`, including the first.
     let mut out = String::from(head);
     for arm in arms {
         out.push_str("\n  | ");
@@ -169,7 +139,6 @@ fn pretty(decl: &str) -> String {
     out
 }
 
-/// Byte offsets of every `sep` that sits outside brackets, quotes and comments.
 fn top_level(s: &str, sep: char) -> Vec<usize> {
     let mut found = Vec::new();
     let mut depth = 0usize;
@@ -212,13 +181,11 @@ fn split_top_level(s: &str, sep: char) -> Vec<String> {
     parts
 }
 
-/// Lays out one type expression, indenting everything it opens from `base`.
 fn layout(expr: &str, base: usize) -> String {
     let mut out = String::new();
     let mut stack: Vec<char> = Vec::new();
     let mut chars = expr.trim().chars().peekable();
-    // Whether the last thing written was a line break, so runs of whitespace
-    // leave neither blank lines nor trailing spaces.
+    // Avoids blank lines and trailing spaces from whitespace runs.
     let mut at_line_start = false;
 
     while let Some(c) = chars.next() {
@@ -286,8 +253,6 @@ fn layout(expr: &str, base: usize) -> String {
     out
 }
 
-/// Writes a `/** … */` block at `depth`, with its continuation lines aligned
-/// on the star the way a hand-written comment is.
 fn push_comment(out: &mut String, comment: &str, depth: usize) {
     for (i, line) in comment.lines().enumerate() {
         if i > 0 {
@@ -295,10 +260,8 @@ fn push_comment(out: &mut String, comment: &str, depth: usize) {
             out.push(' ');
         }
         let line = line.trim();
-        // A `#[doc = "…"]` attribute — which is how the Id types get theirs —
-        // arrives without the space a `///` comment would have left.
+        // `#[doc = "…"]` attributes arrive without the leading space `///` leaves.
         match line.strip_prefix('*') {
-            // Not `*/`, which closes the block and takes no text.
             Some(rest) if i > 0 && !rest.is_empty() && !rest.starts_with([' ', '/']) => {
                 out.push_str("* ");
                 out.push_str(rest);
@@ -372,10 +335,6 @@ mod tests {
         );
     }
 
-    /// The drift check. A stale `protocol.gen.ts` is a wire-level bug, and
-    /// `cargo test` is where one is expected to surface — a contributor who
-    /// edits the Rust types and runs the suite is told then, not after pushing.
-    /// CI runs this same test rather than a second mechanism.
     #[test]
     fn the_committed_module_matches_the_rust_types() {
         let module = render(&declarations(&config())).expect("the module renders");
@@ -389,9 +348,6 @@ mod tests {
         );
     }
 
-    /// A client routes by kind, so every kind has to reach TypeScript as its
-    /// own alias. A `CommandKind` that `KINDS` forgot would leave its commands
-    /// in no union at all, and nothing else would notice.
     #[test]
     fn every_kind_reaches_typescript_as_its_own_alias() {
         let module = render(&declarations(&config())).expect("the module renders");
@@ -405,8 +361,6 @@ mod tests {
         assert!(module.contains("export type QueryCommand = "));
     }
 
-    /// The tab reads this one at run time to know what to attach, so it has to
-    /// be a value in the module rather than a type over it.
     #[test]
     fn the_byte_table_reaches_typescript_as_a_value() {
         let module = render(&declarations(&config())).expect("the module renders");

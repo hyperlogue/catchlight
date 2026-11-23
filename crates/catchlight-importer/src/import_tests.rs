@@ -1,15 +1,6 @@
-//! What the `.inx` reader does with a hostile or sloppy node tree.
-//!
-//! Every case here is a shape a real export has produced or could: a mask
-//! naming a node that is not there, two nodes sharing a uuid, a field of the
-//! wrong JSON type, a node type catchlight does not model. Sloppiness is not an
-//! error — the node loads with the offending part dropped or defaulted — and
-//! these pin which half each case takes.
-//!
-//! The rest of the file is the repair-or-refuse rule from the crate doc, one
-//! test per behaviour. A repair is pinned twice: what the structure holds,
-//! and that it still loads — a "repair" that leaves a `.clm` no reader
-//! accepts has repaired nothing.
+//! How the `.inx` reader treats hostile or sloppy input: drop, default,
+//! repair, or refuse. A repair is also re-read, since one that leaves an
+//! unloadable `.clm` has repaired nothing.
 
 use crate::inx::InxModel;
 use crate::to_clm::from_inx_model;
@@ -23,7 +14,6 @@ use catchlight_core::{Model, NodeId, TexId};
 use serde_json::json;
 use std::sync::Arc;
 
-/// Read one node tree, given as the `.inx` payload's `nodes` value.
 fn doc(nodes: serde_json::Value) -> ClmStructure {
     try_doc(nodes).expect("import")
 }
@@ -31,8 +21,6 @@ fn doc(nodes: serde_json::Value) -> ClmStructure {
 fn try_doc(nodes: serde_json::Value) -> Result<ClmStructure, ImportError> {
     let model = InxModel {
         payload: json!({ "nodes": nodes }),
-        // One slot, so a `"textures": [0]` fixture resolves; the bytes are
-        // carried verbatim and never decoded here.
         textures: vec![EncodedTexture {
             format: TextureFormat::Png,
             data: Arc::from(&b"texture bytes"[..]),
@@ -43,13 +31,9 @@ fn try_doc(nodes: serde_json::Value) -> Result<ClmStructure, ImportError> {
     from_inx_model(&model).map(|f| f.doc)
 }
 
-/// Import a whole payload — nodes, params and a rig carrying `textures`
-/// texture slots.
 fn import(payload: serde_json::Value, textures: usize) -> Result<ClmFile, ImportError> {
     let model = InxModel {
         payload,
-        // The import carries texture bytes verbatim and decodes none of them,
-        // so what a slot encodes is not what these tests are about.
         textures: (0..textures)
             .map(|_| EncodedTexture {
                 format: TextureFormat::Png,
@@ -62,9 +46,6 @@ fn import(payload: serde_json::Value, textures: usize) -> Result<ClmFile, Import
     from_inx_model(&model)
 }
 
-/// The imported structure, read back the way a `.clm` off disk is read:
-/// through the loader, out to bytes, and in through the byte reader. A repair
-/// that leaves a structure this refuses is not a repair.
 fn reread(file: &ClmFile) -> Model {
     let bytes = Model::from_clm_file(file)
         .expect("the repaired structure loads")
@@ -80,7 +61,6 @@ fn node_named<'a>(doc: &'a ClmStructure, name: &str) -> &'a ClmNode {
         .unwrap_or_else(|| panic!("no node named {name}"))
 }
 
-/// The Id the flattening's node `i` is minted with.
 fn node(i: usize) -> NodeId {
     NodeId::new(if i == 0 {
         "root".to_string()
@@ -123,7 +103,6 @@ fn a_whole_container_reads_into_one_node() {
 
 #[test]
 fn mask_threshold_parses_when_present_and_defaults_to_half() {
-    // The source has to be a node the tree carries, or the mask is dropped.
     let tree = |threshold: serde_json::Value, kind: &str| {
         json!({
             "uuid": 1, "name": "root", "type": "Node",
@@ -156,8 +135,6 @@ fn mask_threshold_parses_when_present_and_defaults_to_half() {
     };
     assert_eq!(comp.mask_threshold, 0.8);
     assert_eq!(comp.masks.len(), 1);
-    // A mask names its source by Id, and `source` sits at index 1 of the
-    // flattening.
     assert_eq!(comp.masks[0].source, node(1));
     assert_eq!(
         comp.masks[0].mode,
@@ -188,11 +165,6 @@ fn a_mask_whose_source_is_not_there_is_dropped() {
     assert_eq!(part.masks[0].source, node(1));
 }
 
-/// A mask is the source's own drawing rasterized into a stencil, so
-/// `Model::mask_add` and the `.clm` reader take only a part or a composite.
-/// An `.inx` may point one at anything, and a mask on a node that draws
-/// nothing clipped nothing in the source runtime either — so it is dropped
-/// like one whose source does not resolve, and the structure still loads.
 #[test]
 fn a_mask_whose_source_is_never_drawn_is_dropped() {
     let file = import(
@@ -229,9 +201,6 @@ fn a_mask_whose_source_is_never_drawn_is_dropped() {
     };
     assert_eq!(part.masks.len(), 1, "only the composite is drawn");
     assert_eq!(part.masks[0].source, node(4), "which is `face`");
-    // The spine is catchlight's own kind: the source format has no node that
-    // maps to one, so the importer never mints one — a spine in an imported
-    // model could only have come from a bug here.
     assert!(
         !file
             .doc
@@ -243,10 +212,6 @@ fn a_mask_whose_source_is_never_drawn_is_dropped() {
     reread(&file);
 }
 
-/// A mesh group is never drawn, so its UVs go unchecked — but a `ClmMesh` may
-/// not carry UVs that do not pair with its vertices, and the reader refuses
-/// one that does. Nothing samples them, so they are dropped rather than
-/// carried into a file that will not open.
 #[test]
 fn a_mesh_groups_unpaired_uvs_are_dropped_rather_than_carried() {
     let file = import(
@@ -310,9 +275,7 @@ fn a_duplicate_uuid_does_not_shadow_the_first_node() {
 fn a_deeply_nested_tree_does_not_overflow() {
     const DEPTH: usize = 5_000;
 
-    // Built by hand rather than with `json!`: the macro's temporaries nest as
-    // deeply as the value does, and their drop glue overflows a test thread's
-    // stack before the reader is even called.
+    // Not `json!`: its nested temporaries' drop glue overflows the stack.
     fn wrap(child: serde_json::Value) -> serde_json::Value {
         let mut obj = serde_json::Map::new();
         obj.insert("type".into(), serde_json::Value::String("Node".into()));
@@ -336,9 +299,7 @@ fn a_deeply_nested_tree_does_not_overflow() {
     for (i, n) in d.nodes.iter().enumerate().skip(1) {
         assert_eq!(n.parent, Some(node(i - 1)), "node {i}'s parent");
     }
-    // `serde_json::Value`'s Drop is recursive, so dropping a 5_000-deep value
-    // overflows the stack. Leaking it here is deliberate: the test is about
-    // the reader, not about teardown.
+    // `serde_json::Value`'s Drop is recursive and would overflow the stack.
     std::mem::forget(model);
 }
 
@@ -388,9 +349,6 @@ fn children_that_are_not_an_array_are_ignored() {
     assert_eq!(d.nodes.len(), 1);
 }
 
-/// An out-of-range slot is not the sentinel and not a slot: there is no
-/// rendering to preserve, so the import refuses it by name rather than mint
-/// a texture Id the `.clm` does not carry.
 #[test]
 fn a_part_naming_a_texture_slot_the_rig_does_not_carry_is_refused() {
     let err = try_doc(json!({
@@ -409,8 +367,6 @@ fn a_part_naming_a_texture_slot_the_rig_does_not_carry_is_refused() {
     ));
 }
 
-/// `uint.max` is the source runtime's "no texture in this slot" sentinel,
-/// not a slot: the part draws nothing, and the import says so.
 #[test]
 fn the_no_texture_sentinel_draws_nothing() {
     let d = doc(json!({
@@ -434,12 +390,10 @@ fn a_mesh_with_an_odd_coordinate_count_keeps_the_pairs_it_has() {
     let ClmNodeKind::Part(part) = &d.nodes[0].kind else {
         panic!("expected Part");
     };
-    // The trailing lone coordinate is not a vertex; the pairs before it are.
     assert_eq!(part.mesh.verts.len() / 2, 2);
     assert_eq!(part.mesh.indices, ClmIndices::U16(vec![0, 1]));
 }
 
-/// A part with two vertices, named `name`, drawing texture slot 0.
 fn two_vertex_part(uuid: u32, name: &str) -> serde_json::Value {
     json!({
         "uuid": uuid, "name": name, "type": "Part", "textures": [0],
@@ -451,7 +405,6 @@ fn two_vertex_part(uuid: u32, name: &str) -> serde_json::Value {
     })
 }
 
-/// One param with one binding, over two x keypoints and one y.
 fn one_binding(binding: serde_json::Value) -> serde_json::Value {
     json!([{
         "uuid": 100, "name": "p", "is_vec2": false,
@@ -463,8 +416,7 @@ fn one_binding(binding: serde_json::Value) -> serde_json::Value {
 
 #[test]
 fn a_param_that_cannot_be_posed_against_is_widened_by_one() {
-    // `pinned` cannot move in the source either, and 1e40 is past what an f32
-    // holds, so it reaches the reader as an infinity.
+    // 1e40 overflows f32 to infinity.
     let file = import(
         json!({
             "nodes": {"uuid": 1, "name": "root", "type": "Node"},
@@ -563,8 +515,6 @@ fn a_uv_array_that_does_not_pair_with_the_vertices_is_refused() {
         "the error names the node: {msg}"
     );
 
-    // A mesh group is never drawn and inochi2d authors it no uvs, so the same
-    // mesh is fine on one.
     let d = doc(json!({
         "uuid": 1, "name": "root", "type": "Node",
         "children": [{
@@ -580,9 +530,6 @@ fn a_uv_array_that_does_not_pair_with_the_vertices_is_refused() {
 
 #[test]
 fn a_deform_cell_that_disagrees_with_the_mesh_is_zipped_against_it() {
-    // Two vertices, so a cell holds four offsets. The first cell authors three
-    // points and the second one; the source drew neither the third point (no
-    // vertex takes it) nor a second point in the second cell (it stayed put).
     let file = import(
         json!({
             "nodes": {
@@ -604,22 +551,14 @@ fn a_deform_cell_that_disagrees_with_the_mesh_is_zipped_against_it() {
         .expect("the deform binding");
     assert_eq!(
         cells.iter().map(|c| c.value.clone()).collect::<Vec<_>>(),
-        vec![
-            // The third point is dropped; y still flips into catchlight's frame.
-            vec![1.0, -2.0, 3.0, -4.0],
-            // The missing point is zero: that vertex is undeformed.
-            vec![7.0, -8.0, 0.0, 0.0],
-        ],
+        vec![vec![1.0, -2.0, 3.0, -4.0], vec![7.0, -8.0, 0.0, 0.0],],
     );
 
-    // Without the fit, `.clm` refuses the structure outright.
     reread(&file);
 }
 
 #[test]
 fn a_deform_binding_on_a_node_with_no_mesh_is_dropped() {
-    // A group has no vertices, and neither does a part whose mesh is empty:
-    // there is nothing for either binding to move.
     let file = import(
         json!({
             "nodes": {
@@ -663,8 +602,6 @@ fn a_deform_binding_on_a_node_with_no_mesh_is_dropped() {
     );
 
     let model = reread(&file);
-    // `.clm` refuses a deform on a meshless node, so the drop is what makes
-    // this structure loadable at all.
     assert_eq!(
         model
             .node(&NodeId::new("node-1").unwrap())
@@ -738,9 +675,7 @@ fn a_texture_no_part_draws_is_dropped_and_the_survivors_keep_their_ids() {
     reread(&file);
 }
 
-/// The two params every animation test rigs against: a scalar (`param-0`) and
-/// a 2-D one (`param-1.x` / `param-1.y`), so a lane's `target` has both an
-/// axis to find and an axis to miss.
+/// A scalar `param-0` and a 2-D `param-1.x` / `param-1.y`.
 fn animated_params() -> serde_json::Value {
     json!([
         {"uuid": 10, "name": "scalar", "is_vec2": false,
@@ -773,8 +708,7 @@ fn a_clip_carries_its_timing_and_a_lane_per_axis() {
         "Blink": {
             "timestep": 0.02, "length": 30, "leadIn": 5, "leadOut": 25,
             "lanes": [
-                // Authored out of frame order: a lane is read in frame order,
-                // so the import is what sorts it.
+                // Out of frame order on purpose.
                 {"uuid": 10, "target": 0, "interpolation": "Cubic",
                  "keyframes": [{"frame": 12, "value": 1.0}, {"frame": 0, "value": 0.0}]},
                 {"uuid": 11, "target": 0, "interpolation": "Stepped",
@@ -817,9 +751,6 @@ fn a_clip_carries_its_timing_and_a_lane_per_axis() {
         "keyframes keep integer frames, in frame order"
     );
 
-    // The clip has to survive the reader, the writer and the reader again:
-    // a lane naming a param the structure does not carry is a load error, so
-    // this is what proves the Ids the lanes resolved to are the minted ones.
     let model = reread(&file);
     assert_eq!(model.animations(), file.doc.animations);
 }
@@ -885,9 +816,6 @@ fn an_interpolation_with_no_equivalent_falls_back_and_keeps_the_lane() {
         "Wave": {
             "length": 10,
             "lanes": [{
-                // The reference's Bezier lane is an eased lerp behind a
-                // per-keyframe tension it never finished; Linear is what it
-                // draws.
                 "uuid": 10, "target": 0, "interpolation": "Bezier",
                 "keyframes": [{"frame": 0, "value": 0.0}, {"frame": 9, "value": 1.0}]
             }]

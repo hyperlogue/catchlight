@@ -1,50 +1,9 @@
-//! The structure: the reflected values assembled into the `.clm` a
+//! Assembles reflected `.inx` values into the `.clm` a
 //! [`Model`](catchlight_core::Model) is read from.
 //!
-//! The inx node *tree* is flattened DFS pre-order, so the structure is
-//! topologically ordered (a parent is written before its children) with the
-//! root first and sibling order preserved. inochi's globally-unique `uuid`s
-//! resolve binding and mask references against that flattening. References that do
-//! not resolve are dropped; duplicate uuids collapse to the first occurrence,
-//! so a reference always names the node that claimed the uuid first.
-//!
-//! **Ids are derived from position, and this is the only place they are
-//! minted.** The root is `root`; node *i* of the flattening is `node-<i>`;
-//! param *i* is `param-<i>`, or `param-<i>.x` / `param-<i>.y` when the source
-//! param is 2-D; texture *i* is `tex-<i>`. Nothing random and nothing
-//! time-dependent: two imports of one `.inx` agree, down to the byte, about
-//! what an addon would be naming. Once minted they are stored in the `.clm`
-//! and never derived again — renaming one is the author's business.
-//!
-//! **A source 2-D param becomes two scalar params**, `<name>.x` and
-//! `<name>.y`, adjacent in param order, and every binding under it becomes a
-//! two-param binding over the pair.
-//!
-//! **A deform binding has to have vertices to move**, so `convert_binding`
-//! drops one whose node carries no mesh: it moves nothing in the source
-//! either, and the reader refuses a deform on a node it cannot size the cells
-//! from.
-//!
-//! **A param has to be posable and a part has to name a texture the file
-//! carries**, so this is where two of the crate's repairs land (the rule is in
-//! the crate doc). `usable_range` widens a range the source could not move
-//! along and refuses one authored backwards; `convert_part` gives a part with
-//! no `textures` array the `tex-0` the source runtime draws, or no texture when
-//! the rig carries none. The texture table is then cut down to what some part
-//! actually draws — Ids are minted from the source's texture order, so the
-//! survivors keep theirs and dropping `tex-2` never renumbers `tex-3`.
-//!
-//! **An animation lane names a param and an axis**, so `convert_animations`
-//! is the second place the 2-D split above is undone: the lane's `uuid`
-//! resolves to a slot and its `target` picks which of the slot's params it
-//! drives. A lane whose param the rig does not carry, or whose axis its param
-//! does not have, is dropped like any other dangling reference; an
-//! interpolation `.clm` has no mode for is not a dangling reference and costs
-//! the lane nothing but a warning.
-//!
-//! Only what catchlight models is kept; the rest (meta, groups, automation,
-//! cameras, emissive/bump slots, emissionStrength) is dropped. Textures are
-//! carried verbatim — a render cache is what decodes and crops them.
+//! Ids are minted only here, from flattening position (`root`, `node-<i>`,
+//! `param-<i>` or `param-<i>.x`/`.y`, `tex-<i>`), so two imports of one `.inx`
+//! agree byte for byte.
 
 use std::collections::{HashMap, HashSet};
 
@@ -69,11 +28,6 @@ use crate::schema::{
 };
 
 /// Import a parsed `.inx` into a [`Model`].
-///
-/// The structure [`from_inx_model`] builds is read back through
-/// [`Model::from_clm_file`], so an import that succeeds has already been
-/// through the same reader a `.clm` off disk goes through: whatever this
-/// returns can be written and opened again.
 pub fn import_inx_model(model: &InxModel) -> Result<Model, ImportError> {
     Ok(Model::from_clm_file(&from_inx_model(model)?)?)
 }
@@ -90,8 +44,6 @@ pub fn from_inx_model(model: &InxModel) -> Result<ClmFile, ImportError> {
         .as_object()
         .ok_or_else(|| ImportError::MalformedPayload("inx payload root is not an object".into()))?;
 
-    // Flatten the node tree, recording each node's parent position and a
-    // uuid → position map for resolving cross-references.
     let mut flat: Vec<(SchemaNode, Option<u32>)> = Vec::new();
     let mut uuid_node: HashMap<u32, u32> = HashMap::new();
     match obj.get("nodes") {
@@ -100,8 +52,6 @@ pub fn from_inx_model(model: &InxModel) -> Result<ClmFile, ImportError> {
     }
     let node_ids = node_ids(flat.len())?;
 
-    // Params keep their array order; build a uuid → position map (first-wins
-    // on a duplicate, like the node map).
     let schema_params: Vec<SchemaParam> = obj
         .get("param")
         .and_then(|v| v.as_array())
@@ -183,9 +133,7 @@ pub fn from_inx_model(model: &InxModel) -> Result<ClmFile, ImportError> {
         );
     }
 
-    // A texture no part's albedo names draws nothing, so dropping it cannot
-    // change the render. Ids are minted from the source's texture order and
-    // the survivors keep theirs: dropping `tex-2` never renumbers `tex-3`.
+    // Ids follow source texture order, so dropping one never renumbers the rest.
     let drawn: HashSet<&TexId> = nodes
         .iter()
         .filter_map(|n| match &n.kind {
@@ -216,10 +164,8 @@ pub fn from_inx_model(model: &InxModel) -> Result<ClmFile, ImportError> {
             nodes,
             params,
             bindings,
-            // An `.inx` names no vertex, so it has no slots and no welds.
             welds: Vec::new(),
             animations: convert_animations(obj.get("animations"), &refs),
-            // An `.inx` has no vendor annotations to carry over.
             extensions: Default::default(),
         },
         textures,
@@ -228,15 +174,12 @@ pub fn from_inx_model(model: &InxModel) -> Result<ClmFile, ImportError> {
     })
 }
 
-/// What one source param became: one scalar param, or the `<name>.x` /
-/// `<name>.y` pair a 2-D one splits into.
 enum Slot {
     One(ParamId),
     Pair(ParamId, ParamId),
 }
 
 impl Slot {
-    /// The params a binding under this slot names, in `x`, `y` order.
     fn params(&self) -> Vec<ParamId> {
         match self {
             Slot::One(id) => vec![id.clone()],
@@ -244,9 +187,7 @@ impl Slot {
         }
     }
 
-    /// The param an animation lane's `target` names: 0 is the x axis and
-    /// anything else the y. A scalar source param has no y, so a lane aimed at
-    /// one axis it does not have resolves to nothing.
+    /// inochi2d reads a lane `target` of 0 as x and anything else as y.
     fn axis(&self, target: u8) -> Option<&ParamId> {
         match (self, target) {
             (Slot::One(id), 0) => Some(id),
@@ -256,7 +197,6 @@ impl Slot {
         }
     }
 
-    /// The Id a message names this slot by — the x of a pair.
     fn head(&self) -> &ParamId {
         match self {
             Slot::One(id) | Slot::Pair(id, _) => id,
@@ -264,17 +204,13 @@ impl Slot {
     }
 }
 
-/// Everything a node's cross-references resolve against.
 struct Refs<'a> {
     node_ids: &'a [NodeId],
     uuid_node: &'a HashMap<u32, u32>,
     uuid_param: &'a HashMap<u32, u32>,
     slots: &'a [Slot],
-    /// Whether the node at each flat index becomes one catchlight draws — the
-    /// only thing a mask may name. Parallel to `node_ids`.
+    /// Parallel to `node_ids`.
     drawn_nodes: &'a [bool],
-    /// How many textures the rig carries — what a part naming none is
-    /// resolved against.
     textures: usize,
 }
 
@@ -287,7 +223,6 @@ impl Refs<'_> {
         self.slots.get(*self.uuid_param.get(&uuid)? as usize)
     }
 
-    /// Whether the node this uuid names becomes a part or a composite.
     fn draws(&self, uuid: u32) -> bool {
         self.uuid_node
             .get(&uuid)
@@ -297,7 +232,6 @@ impl Refs<'_> {
     }
 }
 
-/// `root`, then `node-1`, `node-2`, … — one Id per node of the flattening.
 fn node_ids(count: usize) -> Result<Vec<NodeId>, ImportError> {
     (0..count)
         .map(|i| {
@@ -310,8 +244,6 @@ fn node_ids(count: usize) -> Result<Vec<NodeId>, ImportError> {
         .collect()
 }
 
-/// `param-<i>` per scalar source param, `param-<i>.x` / `param-<i>.y` per 2-D
-/// one.
 fn param_slots(params: &[SchemaParam]) -> Result<Vec<Slot>, ImportError> {
     params
         .iter()
@@ -333,20 +265,9 @@ fn tex_id(i: u32) -> Result<TexId, ImportError> {
     Ok(TexId::new(format!("tex-{i}"))?)
 }
 
-/// A param range a pose can be read against: finite and strictly increasing.
-///
-/// A collapsed range (`min == max`) is **widened** to `min..min + 1`. The
-/// source param cannot move either — every value maps to the one point — so
-/// the rest pose the rig draws is unchanged, and the widened range gives the
-/// runtime something to normalize against. A bound that is not a number has no
-/// pose to preserve at all: it collapses onto the other bound, or onto zero
-/// when neither is finite, and widens from there. (`.inx` cannot spell an
-/// infinity, but a bound too large for `f32` rounds to one.)
-///
-/// A finite range authored the wrong way round is not repaired: what the
-/// source runtime does with `min > max` is unclear, so any widening would be a
-/// guess about where the rig sits, and a guess here moves the model. The
-/// import refuses it and names the param.
+/// Widening a collapsed or non-finite range cannot move the rig, since the
+/// source param cannot move either. What inochi2d does with `min > max` is
+/// unclear, so that is refused rather than guessed.
 fn usable_range(id: &ParamId, name: &str, min: f32, max: f32) -> Result<(f32, f32), ImportError> {
     if min.is_finite() && max.is_finite() {
         if min < max {
@@ -376,8 +297,6 @@ fn usable_range(id: &ParamId, name: &str, min: f32, max: f32) -> Result<(f32, f3
     Ok((base, base + 1.0))
 }
 
-/// The mesh a node deforms, if it has one. A part and a mesh group carry one;
-/// nothing else does, so a deform binding on anything else drives no vertex.
 fn mesh_of(kind: &ClmNodeKind) -> Option<&ClmMesh> {
     match kind {
         ClmNodeKind::Part(p) => Some(&p.mesh),
@@ -429,7 +348,6 @@ fn convert_node_kind(
         "Part" => ClmNodeKind::Part(convert_part(s, node, refs)?),
         "Composite" => ClmNodeKind::Composite(convert_composite(s, node, refs)?),
         "MeshGroup" => ClmNodeKind::MeshGroup(convert_mesh_group(s, node)?),
-        // Node, Camera, and any unmodeled type all become a container Group.
         _ => ClmNodeKind::Group,
     })
 }
@@ -438,14 +356,9 @@ fn convert_masks(masks: &[SchemaMask], node: NodeRef<'_>, refs: &Refs<'_>) -> Ve
     masks
         .iter()
         .filter_map(|m| {
-            // Drop masks whose source node doesn't resolve: `.inx` is untrusted
-            // and a dangling mask has nothing to clip against.
             let source = m.source?;
-            // A source catchlight never draws goes for the same reason: a mask
-            // is the source's own drawing rasterized into a stencil, and a mesh
-            // group and a plain node each draw nothing, here and in
-            // the source runtime alike. `Model::mask_add` and the `.clm` reader
-            // both take only a part or a composite.
+            // A mesh group or plain node draws nothing in either runtime, and
+            // the `.clm` reader takes only a part or composite as mask source.
             if !refs.draws(source) {
                 tracing::warn!(
                     "node {} ({:?}): dropping the mask on source {source}, which is not drawn",
@@ -467,12 +380,8 @@ fn convert_part(
     node: NodeRef<'_>,
     refs: &Refs<'_>,
 ) -> Result<ClmPart, ImportError> {
-    // A part with no `textures` array draws slot 0 in the source runtime, so
-    // that is what it draws here — but only if the rig has a slot 0; naming a
-    // texture the file does not carry would be a `.clm` no reader accepts.
-    // `uint.max` is the source runtime's "no texture in this slot" sentinel
-    // and draws nothing; any other slot the rig does not carry has no defined
-    // rendering to preserve, so the import refuses it by name.
+    // inochi2d draws slot 0 for a part with no `textures` array, and treats
+    // `uint.max` as an empty slot.
     let albedo = match s.textures.first() {
         None if refs.textures > 0 => {
             tracing::warn!(
@@ -520,7 +429,6 @@ fn convert_part(
         screen_tint: vec3_arr(&s.screen_tint, [0.0, 0.0, 0.0]),
         masks: convert_masks(s.masks.as_deref().unwrap_or(&[]), node, refs),
         mask_threshold: s.mask_threshold.unwrap_or(0.5),
-        // An `.inx` names no vertex, so it fills no slot.
         slots: Vec::new(),
     })
 }
@@ -537,9 +445,8 @@ fn convert_composite(
         screen_tint: vec3_arr(&s.screen_tint, [0.0, 0.0, 0.0]),
         masks: convert_masks(s.masks.as_deref().unwrap_or(&[]), node, refs),
         mask_threshold: s.mask_threshold.unwrap_or(0.5),
-        // An absent key means `false`, not the field initializer's `true`:
-        // the reference's `deserializeFromFghj` else-branch sets it false
-        // (inochi2d v0.8.7).
+        // Absent means `false`: inochi2d v0.8.7's `deserializeFromFghj`
+        // else-branch overrides the field initializer's `true`.
         propagate_meshgroup: s.propagate_meshgroup.unwrap_or(false),
     })
 }
@@ -547,8 +454,7 @@ fn convert_composite(
 fn convert_mesh_group(s: &SchemaNode, node: NodeRef<'_>) -> Result<ClmMeshGroup, ImportError> {
     s.log_dropped_mesh_group_color();
     Ok(ClmMeshGroup {
-        // A mesh group is never drawn, so it samples nothing through its UVs
-        // and inochi2d authors none for it.
+        // Never drawn, so inochi2d authors no UVs for it.
         mesh: convert_mesh(s.mesh.as_ref(), node, false)?,
         translate_children: s.translate_children.unwrap_or(false),
     })
@@ -562,15 +468,11 @@ fn convert_binding(
     axis_x: &[f32],
     axis_y: &[f32],
 ) -> Option<ClmBinding> {
-    // Drop bindings whose target node doesn't resolve: there is nothing for
-    // them to drive.
     let node = refs.node_of_uuid(b.node?)?;
     let target = nodes.iter().find(|n| &n.id == node);
     let values_json = b.values.as_ref()?;
     let kind = b.param_name.as_deref().unwrap_or("");
-    // A mesh group is never drawn and carries no colour, so a colour binding on
-    // one has nowhere to land — and writing it out would produce a `.clm` the
-    // loader rejects.
+    // The `.clm` loader rejects a colour binding on a mesh group.
     if source_binding_is_color(kind)
         && matches!(target.map(|n| &n.kind), Some(ClmNodeKind::MeshGroup(_)))
     {
@@ -581,8 +483,6 @@ fn convert_binding(
         );
         return None;
     }
-    // A deform cell is one `[dx, dy]` per vertex of *this* node's mesh, so the
-    // mesh has to be in scope to fit the cells to it.
     let named = NodeRef {
         id: node,
         name: target.map_or("", |n| n.name.as_str()),
@@ -590,10 +490,7 @@ fn convert_binding(
     let deform_len = target
         .and_then(|n| mesh_of(&n.kind))
         .map_or(0, |m| m.verts.len());
-    // A node with no vertices — a group, a composite, a part whose
-    // mesh is empty — has nothing for a deform to move, so the binding drives
-    // no pixel and dropping it draws the same frame. Keeping it would write a
-    // `.clm` the loader refuses (`add_binding`'s `NotMeshed`).
+    // Moves nothing, and the `.clm` loader refuses it (`NotMeshed`).
     if kind == "deform" && deform_len == 0 {
         tracing::warn!(
             "dropping the deform binding on node {} ({:?}): the node has no mesh vertices to move",
@@ -623,12 +520,8 @@ fn convert_binding(
     })
 }
 
-/// The rig's clips, as `.clm` animations.
-///
 /// inochi2d 0.8.6 writes `animations` as an object keyed by clip name; older
-/// and nijigenerate variants write an array carrying a `name` per entry. Both
-/// read; an unnamed array entry is called `anim-<i>`, and anything that is
-/// neither shape carries no clip.
+/// and nijigenerate variants write an array with a `name` per entry.
 fn convert_animations(json: Option<&serde_json::Value>, refs: &Refs<'_>) -> Vec<ClmAnimation> {
     let entries: Vec<(String, &serde_json::Value)> = match json {
         Some(serde_json::Value::Object(map)) => map.iter().map(|(k, v)| (k.clone(), v)).collect(),
@@ -662,8 +555,7 @@ fn convert_animation(name: String, anim: &SchemaAnimation, refs: &Refs<'_>) -> C
         .filter_map(|lane| convert_animation_lane(&name, lane, refs))
         .collect();
     ClmAnimation {
-        // inochi2d's own defaults, which `.clm` shares: 60 fps, no frames,
-        // and -1 for a lead-in / lead-out the author never set.
+        // inochi2d's defaults, which `.clm` shares.
         timestep: anim.timestep.unwrap_or(1.0 / 60.0),
         length: anim.length.unwrap_or(0),
         lead_in: anim.lead_in.unwrap_or(-1),
@@ -673,10 +565,6 @@ fn convert_animation(name: String, anim: &SchemaAnimation, refs: &Refs<'_>) -> C
     }
 }
 
-/// One lane, or nothing when the param it drives is not one this import can
-/// name. Both misses are the crate's dangling-reference rule: a lane whose
-/// `uuid` no param claims, and a lane on the y axis of a source param that
-/// only has an x — the second is what a 2-D lane over a scalar param is.
 fn convert_animation_lane(
     animation: &str,
     lane: &SchemaAnimationLane,
@@ -692,7 +580,6 @@ fn convert_animation_lane(
             return None;
         }
     };
-    // inochi2d encodes the axis as an integer and reads anything but 0 as y.
     let target = lane.target.unwrap_or(0);
     let Some(param) = slot.axis(target) else {
         tracing::warn!(
@@ -706,14 +593,11 @@ fn convert_animation_lane(
         .keyframes
         .iter()
         .map(|k| ClmKeyframe {
-            // inochi2d defaults both to 0.
             frame: k.frame.unwrap_or(0),
             value: k.value.unwrap_or(0.0),
         })
         .collect();
-    // A lane is read in frame order; the reference sorts on load rather
-    // than trusting the file, and a `.clm` a player can read has to be
-    // sorted before it is written.
+    // inochi2d sorts on load rather than trusting file order.
     keyframes.sort_by_key(|k| k.frame);
     Some(ClmLane {
         param: param.clone(),
@@ -722,16 +606,10 @@ fn convert_animation_lane(
     })
 }
 
-/// A lane's interpolation. The modes the two share map straight across; one
-/// catchlight does not model falls back to its nearest equivalent and says so,
-/// because a clip that plays the wrong curve is still the clip, and a dropped
-/// lane is not.
 fn lane_interp(mode: Option<&str>, animation: &str) -> InterpolateMode {
     match mode {
         None | Some("Nearest" | "Linear" | "Stepped" | "Cubic") => interp(mode),
-        // inochi2d's Bezier branch is itself a placeholder — an eased lerp
-        // gated on a per-keyframe tension it marks TODO — so Linear is what
-        // the source draws today, not an approximation of something else.
+        // inochi2d's Bezier is an unfinished placeholder that draws Linear.
         Some(other) => {
             tracing::warn!(
                 "animation {animation:?}: interpolation {other:?} has no catchlight \
@@ -750,14 +628,9 @@ mod tests {
     use catchlight_core::texture::EncodedTexture;
     use serde_json::json;
     use std::collections::HashSet;
-    /// A model authored in inochi2d's frame — Y-down, lower `zsort` in front —
-    /// touching every field the import must reflect, plus controls on fields
-    /// it must leave alone. Values are asymmetric and non-zero so a *missing*
-    /// negation and a *doubled* one both change the result.
-    ///
-    /// One texture slot, so the parts' `"textures": [0]` resolves; the bytes
-    /// are carried verbatim and never decoded, so the alpha crop rewrites no
-    /// UVs and the authored UVs stay comparable against the literals below.
+    /// Authored in inochi2d's frame (Y-down, lower `zsort` in front). Values
+    /// are asymmetric and non-zero so a missing and a doubled negation both
+    /// change the result.
     fn reflection_fixture() -> InxModel {
         InxModel {
             payload: json!({
@@ -774,16 +647,11 @@ mod tests {
                     "children": [
                         {
                             "uuid": 2,
-                            // Lower source zsort => nearer the viewer in the
-                            // source convention, so this must come out with
-                            // the *higher* base_z_order.
                             "zsort": 1.0,
                             "name": "front",
                             "type": "Part",
                             "transform": {
-                                // x and z must survive; y must flip.
                                 "trans": [7.0, 10.0, 3.0],
-                                // rot x and z flip; rot y must survive.
                                 "rot": [0.25, 0.5, 0.75],
                                 "scale": [2.0, 3.0]
                             },
@@ -824,8 +692,7 @@ mod tests {
                     "min": [0.0, 0.0],
                     "max": [1.0, 1.0],
                     "defaults": [0.0, 0.0],
-                    // 2 x-axis points, 1 y-axis point: `values` is [x][y], so
-                    // each binding is a 2-long outer array of 1-long columns.
+                    // `values` is [x][y]: 2 x points by 1 y point.
                     "axis_points": [[0.0, 1.0], [0.0]],
                     "bindings": [
                         // --- reflected targets ---
@@ -854,12 +721,6 @@ mod tests {
         }
     }
 
-    /// The reflection guard. `.inx` is authored Y-down with lower `zsort` in
-    /// front and catchlight is Y-up with higher `z_order` in front, so this
-    /// reader negates a specific set of fields — and only that set. Every
-    /// reflected field below is asserted against its authored value with a
-    /// non-reflected control beside it, so a missing negation and a doubled
-    /// one both fail here.
     #[test]
     fn the_import_reflects_exactly_the_y_bearing_fields() {
         let doc = from_inx_model(&reflection_fixture()).unwrap().doc;
@@ -868,7 +729,6 @@ mod tests {
         assert_eq!(front.name, "front");
         assert_eq!(back.name, "back");
 
-        // zsort: source lower-is-front becomes catchlight higher-is-front.
         assert_eq!(front.z_order, -1.0, "front z order");
         assert_eq!(back.z_order, -5.0, "back z order");
         assert!(
@@ -876,15 +736,12 @@ mod tests {
             "the node authored nearer the viewer must sort in front"
         );
 
-        // Transform: translation y flips (x, z do not); rotation x and z flip
-        // (rotation y and scale do not).
         assert_eq!(front.transform.translation, [7.0, -10.0, 3.0]);
         assert_eq!(front.transform.rotation, [-0.25, 0.5, -0.75]);
         assert_eq!(front.transform.scale, [2.0, 3.0]);
         assert_eq!(back.transform.translation, [-2.0, 12.0, 0.0]);
         assert_eq!(back.transform.rotation, [1.5, 2.0, 0.5]);
 
-        // Mesh: vertex and origin y flip, uvs are texture space and do not.
         let mesh = |n: &ClmNode| match &n.kind {
             ClmNodeKind::Part(p) => p.mesh.clone(),
             other => panic!("expected a Part, got {other:?}"),
@@ -899,7 +756,6 @@ mod tests {
         assert_eq!(front_mesh.origin, [1.5, -2.5]);
         assert_eq!(mesh(back).origin, [0.0, 6.0]);
 
-        // Bindings, in authored order, all under the file's one param.
         assert_eq!(doc.params.len(), 1, "param count");
         let bindings = &doc.bindings;
         assert_eq!(bindings.len(), 9, "binding count");
@@ -934,22 +790,17 @@ mod tests {
                 .collect()
         };
 
-        // Reflected scalar targets.
         assert_eq!(scalar(1, ScalarTarget::Ty), vec![-10.0, 20.0]);
         assert_eq!(scalar(2, ScalarTarget::Rx), vec![-0.25, 0.5]);
         assert_eq!(scalar(3, ScalarTarget::Rz), vec![-1.5, 2.5]);
         assert_eq!(scalar(4, ScalarTarget::ZOrder), vec![3.0, -4.0]);
 
-        // Controls: over-negation shows up here.
         assert_eq!(scalar(5, ScalarTarget::Tx), vec![11.0, -22.0]);
         assert_eq!(scalar(6, ScalarTarget::Ry), vec![0.75, -1.25]);
         assert_eq!(scalar(7, ScalarTarget::Sy), vec![2.0, 0.5]);
         assert_eq!(scalar(8, ScalarTarget::Opacity), vec![0.25, 0.75]);
     }
 
-    /// The full reference model. No such model ships in the tree yet, so
-    /// every test that needs one is `#[ignore]`d; drop a model at this path and
-    /// remove the attributes to re-enable them.
     fn load_reference() -> InxModel {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -1006,9 +857,6 @@ mod tests {
             assert!(written.insert(&n.id), "node {} is written twice", n.id);
         }
 
-        // Every cross-reference names a node, param or texture the file
-        // carries -- which is also exactly what `Model::from_clm_file`
-        // refuses, so a failure here names the field rather than the load.
         let params: HashSet<&ParamId> = doc.params.iter().map(|p| &p.id).collect();
         let textures: HashSet<&TexId> = file.textures.iter().map(|t| &t.id).collect();
         for node in nodes {
@@ -1035,8 +883,6 @@ mod tests {
     #[ignore = "needs the reference model at example_models/reference/"]
     fn captures_authored_propagate_meshgroup() {
         let doc = from_inx_model(&load_reference()).unwrap().doc;
-        // The root "Puppet Body" composite authors propagate_meshgroup=false —
-        // the flag the old runtime path hardcoded to true.
         assert!(
             doc.nodes.iter().any(|n| matches!(
                 &n.kind,
@@ -1047,8 +893,6 @@ mod tests {
         assert!(!doc.bindings.is_empty());
     }
 
-    /// A minimal model whose one Composite carries the
-    /// `propagate_meshgroup` key exactly when `propagate` is `Some`.
     fn composite_fixture(propagate: Option<bool>) -> InxModel {
         let mut composite = json!({
             "uuid": 2,
@@ -1075,10 +919,6 @@ mod tests {
         }
     }
 
-    /// The absent key is `false`. inochi2d v0.8.7 initializes the field to
-    /// `true`, but its `deserializeFromFghj` else-branch sets it `false`
-    /// instead, so a legacy model
-    /// authored before the key existed halts mesh-group descent there.
     #[test]
     fn propagate_meshgroup_defaults_to_false_when_the_key_is_absent() {
         let propagate = |model: InxModel| {

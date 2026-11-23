@@ -1,23 +1,7 @@
 //! `extension`: the vendor annotations a `.clm` carries, at the file level.
 //!
-//! An extension is a key a vendor owns and a value catchlight never reads.
-//! The key is the Id charset with a required dot, vendor first
-//! (`acme.camera`), and `catchlight.` is the format's own: a file may carry
-//! one, because the format may write one some day, but nothing here will
-//! author one.
-//!
-//! A value is one of two things. **JSON** — string-keyed maps, arrays,
-//! strings, numbers, bools, null — lives inline in the structure.
-//! **Bytes** live in the file's own `Extensions` section, and the structure
-//! carries only a `{size, hash}` marker. That split is not about size: an
-//! editor pushes its structure to a browser tab after every edit, and a
-//! thumbnail inline in the structure would ride along with every unrelated
-//! change. Behind a marker it travels once, and a client that already has
-//! that hash fetches nothing.
-//!
-//! Like every other file operation here this works on the decoded
-//! [`ClmFile`], never on a [`Model`](catchlight_core::Model), and decodes no
-//! image.
+//! Byte values live in the `Extensions` section behind a `{size, hash}` marker
+//! so an editor does not resend them with every unrelated structure push.
 
 use std::path::Path;
 
@@ -29,7 +13,6 @@ use catchlight_core::id::{ExtensionKey, EXTENSION_RESERVED_PREFIX};
 
 use crate::{file, Error};
 
-/// One row of `extension list`.
 pub struct Listed {
     pub key: ExtensionKey,
     pub kind: &'static str,
@@ -46,7 +29,6 @@ impl std::fmt::Display for Listed {
     }
 }
 
-/// What a `set` or a `delete` did.
 pub struct Changed {
     pub key: ExtensionKey,
     pub what: &'static str,
@@ -58,13 +40,11 @@ impl std::fmt::Display for Changed {
     }
 }
 
-/// What `get` found: text to print, or bytes to write.
 pub enum Got {
     Json(String),
     Bytes(Vec<u8>),
 }
 
-/// Every extension in the file, in key order.
 pub fn list(path: &Path) -> Result<Vec<Listed>, Error> {
     let file = file::read(path)?;
     Ok(file
@@ -86,8 +66,6 @@ pub fn list(path: &Path) -> Result<Vec<Listed>, Error> {
         .collect())
 }
 
-/// One extension's value. A byte value needs somewhere to go, so `out` is
-/// required for it: bytes are not something to print.
 pub fn get(path: &Path, key: &str, out: Option<&Path>) -> Result<Got, Error> {
     let key = parse_key(key)?;
     let file = file::read(path)?;
@@ -119,7 +97,6 @@ pub fn get(path: &Path, key: &str, out: Option<&Path>) -> Result<Got, Error> {
     }
 }
 
-/// Put a JSON value under `key`, replacing whatever was there.
 pub fn set_json(path: &Path, key: &str, text: &str) -> Result<Changed, Error> {
     let key = parse_key(key)?;
     let value: serde_json::Value = serde_json::from_str(text).map_err(|e| Error::BadValue {
@@ -137,7 +114,6 @@ pub fn set_json(path: &Path, key: &str, text: &str) -> Result<Changed, Error> {
     Ok(Changed { key, what })
 }
 
-/// Put the contents of `source` under `key` as a byte value.
 pub fn set_bytes(path: &Path, key: &str, source: &Path) -> Result<Changed, Error> {
     let key = parse_key(key)?;
     let data = std::fs::read(source).map_err(|e| Error::io(source, e))?;
@@ -162,14 +138,12 @@ pub fn set_bytes(path: &Path, key: &str, source: &Path) -> Result<Changed, Error
         key: key.clone(),
         data,
     });
-    // The section is written in key order, so two files holding the same
-    // extensions hold the same bytes whatever order they were authored in.
+    // Key order makes the bytes independent of authoring order.
     file.extensions.sort_by(|a, b| a.key.cmp(&b.key));
     write(path, &file)?;
     Ok(Changed { key, what })
 }
 
-/// Drop an extension. Deleting a key the file does not carry is an error.
 pub fn delete(path: &Path, key: &str) -> Result<Changed, Error> {
     let key = parse_key(key)?;
     let mut file = file::read(path)?;
@@ -188,8 +162,6 @@ pub fn delete(path: &Path, key: &str) -> Result<Changed, Error> {
     })
 }
 
-/// How a `diff` renders one extension value: JSON shown whole, bytes as the
-/// two things the marker carries.
 pub fn render(value: &ClmExtension) -> String {
     match value {
         ClmExtension::Json(json) => render_json(json),
@@ -200,7 +172,6 @@ pub fn render(value: &ClmExtension) -> String {
 }
 
 fn render_json(value: &serde_json::Value) -> String {
-    // Compact, so a diff line stays a line.
     serde_json::to_string(value).unwrap_or_else(|_| "<unrenderable>".to_string())
 }
 
@@ -224,9 +195,8 @@ fn replaced(file: &ClmFile, key: &ExtensionKey) -> &'static str {
     }
 }
 
-/// Parse a key and refuse a reserved one. A reader accepts `catchlight.`
-/// because the format may write such a key one day; authoring one here is
-/// what is refused, exactly as `Model::set_extension` refuses it.
+/// Readers accept `catchlight.` keys because the format may write one; only
+/// authoring one is refused, as `Model::set_extension` does.
 fn parse_key(text: &str) -> Result<ExtensionKey, Error> {
     let key = ExtensionKey::new(text).map_err(|source| Error::BadId {
         value: text.to_string(),

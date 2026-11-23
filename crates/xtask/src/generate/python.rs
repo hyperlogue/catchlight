@@ -1,51 +1,14 @@
 //! Writes `python/catchlight/protocol_gen.py` from the Rust wire types.
 //!
-//! Why the protocol is generated rather than hand-copied, and what both targets
-//! share, is in [the parent module](super). What is particular to this one:
+//! The structure comes from parsing the Rust source with `syn`, not from
+//! `ts-rs` text, because Python must keep `u32` (`int`) and `f32` (`float`)
+//! apart. Foreign Id types are taken from their `ts-rs` declaration and must
+//! be plain string aliases.
 //!
-//! - **The structured view comes from the Rust source, parsed with `syn`.**
-//!   `ts-rs` hands out text, and that text is a lossy projection: `u32` and
-//!   `f32` are both `number` in it, and Python must keep `int` and `float`
-//!   apart. Reading the crate's own `lib.rs` is the shortest route to the
-//!   distinction and to the serde attributes that decide a field's default.
-//!   The parser reads the protocol and its shared core motion response types.
+//! `Option<Option<T>>` becomes `T | Clear | None`: `to_wire()` drops `None`,
+//! so the `CLEAR` singleton is the only way to write an explicit null.
 //!
-//! - **The five Id types are not in that file.** They come from
-//!   `catchlight-core`, and this module takes them from the `ts-rs`
-//!   declaration instead — a `= string` there is a `str` here. A foreign type
-//!   that is *not* a plain string alias fails the build rather than guessing.
-//!
-//! - **Ints and floats stay apart.** `u32` is `int` and `f32` is `float`, and a
-//!   `[f32; 2]` is a `tuple[float, float]` rather than a list, because the
-//!   arity is a fact a caller can use. The generated `_wire` flattens tuples
-//!   back to JSON lists on the way out.
-//!
-//! - **A three-state field says which of the three it means.** A Rust
-//!   `Option<Option<T>>` reaches Python as `T | Clear | None`: `None` is the
-//!   absent field every other optional already spells that way, and the
-//!   [`CLEAR`] singleton is the explicit JSON `null`. Without it `to_wire()`
-//!   would have no way to write a null at all, since it drops `None` fields.
-//!
-//! - **What flattens on the wire is flat in Python.** `#[serde(flatten)]` on a
-//!   struct field splices that struct's fields into the class carrying it, so
-//!   `NodeSet` takes the patch's fields directly and `to_wire()` is one level
-//!   deep — the same shape TypeScript sees. The one exception is a newtype
-//!   variant holding another tagged enum (`Reply::Event`), which keeps its
-//!   field and is decoded from the parent object; the generated class names it
-//!   in `FLATTEN`.
-//!
-//! - **A variant is named by its own name where that is free.** `Command`'s
-//!   variants are bare (`NodeAdd`), every other union prefixes its variants
-//!   with its own name (`ReplyOk`, `ResponseBodySession`), and a `Command`
-//!   variant whose bare name is already a type on the wire takes the prefix too
-//!   — which is why `Command::NodeInfo` is `CommandNodeInfo` while `NodeInfo`
-//!   stays the reply struct. [`name_variants`] fails rather than emit two
-//!   classes under one name.
-//!
-//! The module it writes is stdlib-only and targets Python 3.11: dataclasses,
-//! `StrEnum`, and a decoder that walks `typing` annotations. It carries no
-//! client and no transport — a caller builds a command, calls `to_wire()`, and
-//! puts the result next to a correlation `id`.
+//! The output is stdlib-only and targets Python 3.11.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -58,24 +21,11 @@ use super::{
     KINDS, QUERY_UNION_DOC,
 };
 
-/// Where the generated module lands, relative to the workspace root.
-///
-/// Not `protocol.gen.py`, for all that it is the Python half of
-/// `protocol.gen.ts`: a Python module name has to be an identifier, and nothing
-/// can import a file with a `.` in its stem.
+/// Not `protocol.gen.py`: a Python module name must be an identifier.
 const OUT: &str = "python/catchlight/protocol_gen.py";
 
-/// The protocol source. Its shared response types are parsed from core alongside it.
-///
-/// It is parsed, not scanned: `syn` gives the field types with `u32` and `f32`
-/// still distinct, and the serde attributes that say which fields may be
-/// absent. What it assumes about that file is small and checked — every type
-/// [`declarations`](super::declarations) lists is a struct or an enum found
-/// here (or a plain string alias `ts-rs` can vouch for). Enums may carry
-/// internally tagged data, externally tagged newtypes, or untagged named
-/// structs. A `#[serde(default =
-/// "f")]` names a function in the same file whose body is one literal.
-/// Anything else is a build error naming the type.
+/// Parsed alongside the shared core response types. Unsupported shapes are a
+/// build error naming the type.
 const SOURCE: &str = "crates/catchlight-editor-protocol/src/lib.rs";
 
 pub fn write(decls: &[Decl]) -> Result<()> {
@@ -89,17 +39,10 @@ pub fn write(decls: &[Decl]) -> Result<()> {
     Ok(())
 }
 
-// ---------------------------------------------------------------- the model
-
-/// What one wire type becomes in Python.
 enum Shape {
-    /// `NodeId = str`
     Alias(String),
-    /// A `StrEnum` of unit variants.
     Choice(Vec<Choice>),
-    /// A frozen dataclass.
     Class(Vec<Field>),
-    /// A tagged union: one dataclass per variant, then an alias over them.
     Union {
         tag: Option<String>,
         variants: Vec<Variant>,
@@ -123,15 +66,13 @@ struct Variant {
     wire: String,
     docs: Vec<String>,
     fields: Vec<Field>,
-    /// Fields decoded from the object carrying the tag rather than from a key
-    /// of their own — a newtype variant holding another tagged enum.
+    /// Decoded from the object carrying the tag rather than a key of their own.
     flatten: Vec<String>,
 }
 
 struct Field {
-    /// The Python identifier. `from` is a keyword, so it lands as `from_`.
+    /// `from` is a keyword, so it lands as `from_`.
     py: String,
-    /// The key JSON carries, when it differs from [`Field::py`].
     wire: String,
     ty: String,
     default: Option<Default_>,
@@ -144,9 +85,6 @@ enum Default_ {
     Factory(String),
 }
 
-// --------------------------------------------------------------- the parser
-
-/// Protocol and shared core declarations, keyed by ident.
 struct Source {
     file: File,
     items: BTreeMap<String, Item>,
@@ -173,7 +111,6 @@ impl Source {
         Ok(Self { file, items })
     }
 
-    /// The literal a `#[serde(default = "f")]` stands for.
     fn literal_default(&self, name: &str) -> Result<String> {
         for item in &self.file.items {
             let Item::Fn(f) = item else { continue };
@@ -237,7 +174,6 @@ fn serde_attrs(attrs: &[Attribute]) -> Result<Serde> {
     Ok(found)
 }
 
-/// The lines of a `///` comment, with serde's leading space taken off.
 fn doc_lines(attrs: &[Attribute]) -> Vec<String> {
     let mut lines: Vec<String> = attrs
         .iter()
@@ -274,9 +210,6 @@ fn py_literal(expr: &Expr) -> Result<String> {
     }
 }
 
-// ------------------------------------------------------------ type mapping
-
-/// The Python annotation for one Rust type.
 fn py_type(ty: &Type, known: &BTreeSet<String>) -> Result<String> {
     match ty {
         Type::Path(path) => {
@@ -299,9 +232,7 @@ fn py_type(ty: &Type, known: &BTreeSet<String>) -> Result<String> {
                         bail!("an Option with no type argument in the protocol")
                     };
                     let inner = py_type(inner, known)?;
-                    // `Option<Option<T>>` is the merge-patch idiom: absent,
-                    // null, or a value. `None` already spells absent here, so
-                    // null needs a word of its own.
+                    // Merge-patch idiom: `None` already spells absent, so null needs a word.
                     Ok(match inner.strip_suffix(" | None") {
                         Some(base) => format!("{base} | Clear | None"),
                         None => format!("{inner} | None"),
@@ -319,9 +250,7 @@ fn py_type(ty: &Type, known: &BTreeSet<String>) -> Result<String> {
                     };
                     py_type(inner, known)
                 }
-                // An extension's JSON value. Catchlight reads none of it, so
-                // there is no shape to declare — `Any` is the honest type and
-                // the decoder passes it through untouched.
+                // Extension JSON is opaque to Catchlight.
                 "Value" => Ok("Any".into()),
                 other if known.contains(other) => Ok(other.to_string()),
                 other => bail!(
@@ -361,8 +290,6 @@ fn generic_args(arguments: &syn::PathArguments) -> Vec<Type> {
         .collect()
 }
 
-// ------------------------------------------------------------- the builder
-
 fn build(decls: &[Decl], source: &Source) -> Result<Vec<Wire>> {
     let known: BTreeSet<String> = decls.iter().map(|d| d.ident.clone()).collect();
     let variant_names = name_variants(decls, source, &known)?;
@@ -370,8 +297,6 @@ fn build(decls: &[Decl], source: &Source) -> Result<Vec<Wire>> {
     let mut wires = Vec::new();
     for decl in decls {
         let Some(item) = source.items.get(&decl.ident) else {
-            // Not in this crate: the Ids, which `catchlight-core` defines. A
-            // plain string alias is all Python needs from one.
             let target = string_alias(decl)?;
             wires.push(Wire {
                 name: decl.ident.clone(),
@@ -465,8 +390,8 @@ fn build(decls: &[Decl], source: &Source) -> Result<Vec<Wire>> {
     Ok(wires)
 }
 
-/// The class name every union variant gets, and the proof that no two share
-/// one. See the module doc for the rule.
+/// Bare `Command` variant names unless taken on the wire; other unions prefix
+/// with their own name. Fails rather than emit two classes under one name.
 fn name_variants(
     decls: &[Decl],
     source: &Source,
@@ -501,8 +426,6 @@ fn name_variants(
     Ok(named)
 }
 
-/// The `str` behind a type this crate does not define. `ts-rs` already knows
-/// the Ids are strings; anything else has to be looked at by a person.
 fn string_alias(decl: &Decl) -> Result<String> {
     let body = decl.body.trim().trim_end_matches(';');
     match body.rsplit_once('=').map(|(_, rhs)| rhs.trim()) {
@@ -524,7 +447,6 @@ fn item_docs(item: &Item) -> Vec<String> {
     }
 }
 
-/// `ts-rs` hands its docs back already wrapped in `/** … */`.
 fn ts_docs(decl: &Decl) -> Vec<String> {
     let Some(docs) = &decl.docs else {
         return Vec::new();
@@ -578,9 +500,6 @@ fn variant_fields(
             let [only] = unnamed.unnamed.iter().collect::<Vec<_>>()[..] else {
                 bail!("`{enum_name}::{}` holds more than one value", variant.ident)
             };
-            // An internally tagged newtype variant serializes the inner value's
-            // own fields beside the tag, so the field is read from the object
-            // carrying it rather than from a key.
             let ty = py_type(&only.ty, known)?;
             let inner = source.items.get(&ty);
             if !matches!(inner, Some(Item::Enum(_))) {
@@ -622,8 +541,7 @@ fn push_field(
         .to_string();
 
     if attrs.flatten {
-        // Flattened on the wire is flat in Python: splice the struct's fields
-        // in, so `to_wire()` stays one level deep.
+        // `#[serde(flatten)]` splices fields so `to_wire()` stays one level deep.
         let ty = py_type(&field.ty, known)?;
         let Some(item @ Item::Struct(_)) = source.items.get(&ty) else {
             bail!("`{ident}` flattens `{ty}`, which is not a struct in {SOURCE}")
@@ -655,9 +573,7 @@ fn push_field(
                 "float" => Default_::Value("0.0".into()),
                 "str" => Default_::Value("\"\"".into()),
                 other if other.starts_with("list[") => Default_::Factory("list".into()),
-                // A named type whose Rust `Default` this generator cannot read.
-                // Absent means "what the editor would have used", which is
-                // exactly what leaving it off the wire says.
+                // Rust `Default` unreadable here; absent means the editor's default.
                 _ => {
                     ty = format!("{ty} | None");
                     Default_::Value("None".into())
@@ -679,7 +595,6 @@ fn push_field(
     Ok(())
 }
 
-/// serde's own `snake_case` rule: a `_` before every capital but the first.
 fn snake_case(name: &str) -> String {
     let mut out = String::new();
     for (i, ch) in name.char_indices() {
@@ -695,8 +610,6 @@ fn snake_case(name: &str) -> String {
     out
 }
 
-/// Python's keywords, which a wire key is free to collide with. `Rename::Node`
-/// carries a `from`, so this is not hypothetical.
 const KEYWORDS: &[&str] = &[
     "False", "None", "True", "and", "as", "assert", "async", "await", "break", "class", "continue",
     "def", "del", "elif", "else", "except", "finally", "for", "from", "global", "if", "import",
@@ -711,8 +624,6 @@ fn escape_keyword(name: &str) -> String {
         name.to_string()
     }
 }
-
-// ------------------------------------------------------------- the renderer
 
 fn render(decls: &[Decl]) -> Result<String> {
     let source = Source::read()?;
@@ -749,7 +660,6 @@ fn render(decls: &[Decl]) -> Result<String> {
     Ok(out)
 }
 
-/// The `cmd` tags the built `Command` union carries, in declaration order.
 fn command_wire_tags(wires: &[Wire]) -> Result<Vec<String>> {
     let command = wires
         .iter()
@@ -1046,8 +956,6 @@ fn render_kind_aliases(variants: &[Variant], tags: &[String]) -> Result<String> 
     Ok(out)
 }
 
-// -------------------------------------------------------------- formatting
-
 fn comment_line(line: &str, indent: usize) -> String {
     let pad = " ".repeat(indent);
     if line.is_empty() {
@@ -1064,7 +972,6 @@ fn comment_block<S: AsRef<str>>(lines: &[S], indent: usize) -> String {
         .collect()
 }
 
-/// A `"""…"""` block at `indent`, or nothing when there is no doc to write.
 fn docstring(lines: &[String], indent: usize) -> String {
     if lines.is_empty() {
         return String::new();
@@ -1089,7 +996,6 @@ fn docstring(lines: &[String], indent: usize) -> String {
     out
 }
 
-/// A union alias is a bare assignment, so its doc has to be a comment.
 fn docstring_or_comment(lines: &[String]) -> String {
     comment_block(lines, 0)
 }
@@ -1131,9 +1037,7 @@ from typing import Any, ClassVar, Union, get_args, get_origin, get_type_hints
 
 "#;
 
-/// The two records the byte table is built out of. Written here rather than
-/// generated from the Rust types: they carry no wire shape of their own, and a
-/// client reads them the way it reads `CommandKind`.
+/// Hand-written: these records have no wire shape of their own.
 const ATTACHMENTS: &str = r#"
 
 class AttachmentKind(StrEnum):
@@ -1327,8 +1231,6 @@ mod tests {
         assert_eq!(escape_keyword("to"), "to");
     }
 
-    /// A `Command` variant that shares a name with a type on the wire takes its
-    /// enum as a prefix, so `NodeInfo` stays the reply struct.
     #[test]
     fn a_colliding_command_variant_is_named_by_its_enum() {
         let source = Source::read().expect("the protocol source parses");
@@ -1355,9 +1257,6 @@ mod tests {
         );
     }
 
-    /// The drift check, the same one TypeScript gets: a stale
-    /// `protocol_gen.py` is a wire-level bug, and `cargo test` is where one is
-    /// expected to surface.
     #[test]
     fn the_committed_module_matches_the_rust_types() {
         let module = render(&declarations(&config())).expect("the module renders");
@@ -1371,8 +1270,6 @@ mod tests {
         );
     }
 
-    /// A client routes by kind, so every kind has to reach Python as its own
-    /// alias, exactly as it reaches TypeScript.
     #[test]
     fn every_kind_reaches_python_as_its_own_alias() {
         let module = render(&declarations(&config())).expect("the module renders");
@@ -1387,9 +1284,6 @@ mod tests {
         assert!(module.contains("COMMAND_KINDS: dict[str, CommandKind]"));
     }
 
-    /// Ints and floats are one type in TypeScript and two in Python, which is
-    /// the whole reason this emitter reads the Rust source rather than the
-    /// generated TypeScript.
     #[test]
     fn a_count_is_an_int_and_a_measurement_is_a_float() {
         let module = render(&declarations(&config())).expect("the module renders");
@@ -1402,25 +1296,12 @@ mod tests {
     }
 }
 
-/// The wire shapes `python/tests/test_protocol.py` hand-writes, held against
-/// what `serde` actually produces.
+/// Holds the hand-written shapes in `python/tests/test_protocol.py` against
+/// real `serde` output, so a self-consistent generator bug still fails.
 ///
-/// The generated module is checked for staleness above, and Python checks that
-/// `to_wire()` matches a dict a person wrote out. Neither says that dict is
-/// what the editor reads — only this does. Both sides are anchored to the same
-/// written-down answer rather than to each other, so a generator bug that
-/// happened to be self-consistent still fails here.
-///
-/// The one licensed difference is null: `serde` writes `"name": null` for an
-/// absent `Option` that has no `skip_serializing_if`, and `to_wire()` leaves
-/// the key off. Almost every optional field on this wire has a serde default,
-/// so the editor reads the two the same way; [`without_nulls`] takes the
-/// difference out. A null *inside* a list stays, because there it is a value
-/// rather than an absent field — [`BindingInfo::keys`](catchlight_editor_protocol::BindingInfo::keys)
-/// is where the wire still carries one, on the reply side these cases do not
-/// reach. A merge-patch field is the other place a null is a value, so
-/// [`a_merge_patch_field_writes_absent_null_and_a_value`] reads the raw JSON
-/// rather than going through [`assert_wire`].
+/// [`without_nulls`] removes the one licensed difference: serde writes
+/// `"name": null` where `to_wire()` omits the key. Merge-patch nulls are values,
+/// so [`a_merge_patch_field_writes_absent_null_and_a_value`] reads raw JSON.
 #[cfg(test)]
 mod wire_shapes {
     use catchlight_editor_protocol::{
@@ -1436,8 +1317,7 @@ mod wire_shapes {
         s.parse().expect("a valid id")
     }
 
-    /// Drops object members whose value is null, at every depth. List elements
-    /// are left alone: there, null is a value.
+    /// List elements are left alone: there, null is a value.
     fn without_nulls(value: Value) -> Value {
         match value {
             Value::Object(map) => Value::Object(
@@ -1546,9 +1426,6 @@ mod wire_shapes {
         );
     }
 
-    /// The three states of a merge-patch field, which is the one place a null
-    /// on this wire is a value rather than an absent key. `without_nulls`
-    /// would eat it, so this reads the raw JSON.
     #[test]
     fn a_merge_patch_field_writes_absent_null_and_a_value() {
         let set = |texture| Command::NodeSet {
@@ -1607,9 +1484,6 @@ mod wire_shapes {
         );
     }
 
-    /// A mesh travels as points, not as a run of numbers: a vertex is a pair
-    /// and a triangle is a triple, so a list that lost half a coordinate does
-    /// not parse.
     #[test]
     fn a_mesh_travels_as_lists_of_points() {
         assert_wire(

@@ -98,8 +98,7 @@ fn line(pixels: &mut [u8], size: [u32; 2], a: [f64; 2], b: [f64; 2], color: [f32
     let d = [b[0] - a[0], b[1] - a[1]];
     let norm = d[0] * d[0] + d[1] * d[1];
     for y in ymin..ymax {
-        // Restrict each scanline to the stroke's expanded segment interval.
-        // A diagonal costs length × width, not its entire bounding rectangle.
+        // Restrict scanlines to the stroke interval so a diagonal costs length × width.
         let (row_min, row_max) = if d[1].abs() > f64::EPSILON {
             let first = ((f64::from(y) + 0.5 - radius - 0.5 - a[1]) / d[1]).clamp(0.0, 1.0);
             let last = ((f64::from(y) + 0.5 + radius + 0.5 - a[1]) / d[1]).clamp(0.0, 1.0);

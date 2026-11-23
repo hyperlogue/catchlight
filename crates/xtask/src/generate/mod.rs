@@ -1,57 +1,17 @@
-//! Writes the editor protocol out in the languages that speak it.
+//! Writes the editor protocol out as TypeScript and Python.
 //!
-//! The protocol is defined once, in `catchlight-editor-protocol`. Every other
-//! language reads a translation of it, and hand-maintaining those translations
-//! is the failure this architecture invites: thirty-odd types across a boundary
-//! no compiler checks, where the drift is silent until a command reaches the
-//! server with a field spelled the way last month's Rust spelled it. So each
-//! translation is generated, committed — a TypeScript or Python build needs no
-//! Rust toolchain — and byte-compared by a test in its own emitter module, so a
-//! stale file fails `cargo test` locally and in CI.
+//! Generated files are committed and byte-compared by tests in each emitter,
+//! so a stale file fails `cargo test`. `cargo xtask generate` with no target
+//! writes both.
 //!
-//! Two targets today: [`typescript`] writes `packages/core/src/protocol.gen.ts`
-//! and [`python`] writes `python/catchlight/protocol_gen.py`. `cargo xtask
-//! generate` with no target writes both.
+//! `u64` renders as a plain number rather than `bigint`: the wire is JSON, and
+//! session ids and revisions will not reach 2^53.
 //!
-//! Three things live here rather than in either emitter, because a fact that
-//! reached one language and not the other would be worse than one that reached
-//! neither:
+//! `Request` is not generated: `#[serde(flatten)]` would restate the whole
+//! `Command` union; the transport builds the envelope.
 //!
-//! - **One list of types.** [`declarations`] is the single hand-written roster
-//!   of what the wire carries. Both emitters walk it, in its order, so a type
-//!   cannot be in one module and missing from the other.
-//!
-//! - **Nothing may fall out of that list.** [`check_closed`] asks every listed
-//!   type what it depends on and fails naming any dependency that is not itself
-//!   listed. Hand-written lists rot; this one cannot rot quietly.
-//!
-//! - **No command reaches a language unclassified.** [`check_classified`] holds
-//!   the tags a language found against
-//!   [`COMMAND_KINDS`](catchlight_editor_protocol::COMMAND_KINDS), both ways, and
-//!   [`KINDS`] is the one place a [`CommandKind`](proto::CommandKind) is given a
-//!   name and an explanation. Both emitters render every entry of it, so a kind
-//!   added in Rust and forgotten here fails the build rather than leaving its
-//!   commands in no union at all.
-//!
-//! One deliberate departure from what the `ts-rs` derive would do on its own,
-//! shared by both targets: `u64` renders as a plain number rather than
-//! `ts-rs`'s default `bigint`. The wire is JSON and `JSON.parse` yields a
-//! `number`; session ids and revisions are counters that will not reach 2^53.
-//!
-//! [`Request`](catchlight_editor_protocol::Request) is generated for no
-//! language. `#[serde(flatten)]` inlines, so its declaration would restate the
-//! whole `Command` union a second time. The envelope is the command's own
-//! fields next to a correlation `id`, and building it is the transport's job.
-//!
-//! Building the protocol crate with `ts` on prints two `ts-rs` warnings, for
-//! two serde attributes it does not parse. `SessionId`'s
-//! `#[serde(transparent)]` it does not need to — a newtype already serializes
-//! as its inner value, which is what the generated `type SessionId = number`
-//! says. `NodePatch::texture`'s `deserialize_with` it does not need either:
-//! the field carries its own `#[ts(as = …)]`, because a double option is
-//! `T | null` on the wire and not `T | null | null`. Both attributes stay
-//! because they are what the Rust types mean; the warnings are informational
-//! and fail nothing.
+//! The two `ts-rs` warnings about `#[serde(transparent)]` and
+//! `deserialize_with` while building with `ts` are expected and harmless.
 
 pub mod python;
 pub mod typescript;
@@ -83,12 +43,10 @@ pub fn run(args: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// The `ts-rs` configuration both targets read the Rust types through.
 fn config() -> Config {
     Config::new().with_large_int("number")
 }
 
-/// One type's contribution to a generated module.
 pub struct Decl {
     pub ident: String,
     pub docs: Option<String>,
@@ -96,7 +54,6 @@ pub struct Decl {
     deps: Vec<Dependency>,
 }
 
-/// Collects each listed type's declaration, in the order given.
 macro_rules! decls {
     ($cfg:expr, $($t:ty),* $(,)?) => {
         vec![$(Decl {
@@ -108,8 +65,6 @@ macro_rules! decls {
     };
 }
 
-/// Every type the wire carries, in the order the generated modules declare
-/// them: the Ids, then commands, then replies, then the records they name.
 pub fn declarations(cfg: &Config) -> Vec<Decl> {
     decls![
         cfg,
@@ -180,8 +135,6 @@ pub fn declarations(cfg: &Config) -> Vec<Decl> {
     ]
 }
 
-/// Fails if a listed type depends on a type that is not itself listed — the
-/// one way this generator could quietly emit an incomplete module.
 pub fn check_closed(decls: &[Decl]) -> Result<()> {
     let listed: BTreeSet<&str> = decls.iter().map(|d| d.ident.as_str()).collect();
     let missing: BTreeSet<&str> = decls
@@ -206,11 +159,8 @@ pub fn check_closed(decls: &[Decl]) -> Result<()> {
     Ok(())
 }
 
-/// The `cmd` tags the generated `Command` union carries, in declaration order.
-///
-/// Read back out of the rendered union rather than listed again here: this is
-/// what makes [`check_classified`] hold `COMMAND_KINDS` against the real enum
-/// instead of against a second copy of it.
+/// Read back from the rendered union so [`check_classified`] checks against
+/// the real enum, not a second copy.
 pub fn command_tags(decls: &[Decl]) -> Result<Vec<String>> {
     let command = decls
         .iter()
@@ -233,19 +183,6 @@ pub fn command_tags(decls: &[Decl]) -> Result<Vec<String>> {
 }
 
 /// Holds the tags one emitter found against `COMMAND_KINDS`, both directions.
-///
-/// This is the whole reason `COMMAND_KINDS` exists. Neither TypeScript nor
-/// Python can see that `presence_set` leaves the model alone and
-/// `node_set` does not, or that `node_tree_get` is answerable from a local replica
-/// and `session_get` is not, so a client that took one `Command` would have to
-/// remember which of its calls are quiet and which can be served without a
-/// round trip — exactly the thing nobody remembers.
-///
-/// Every tag a language sees must appear in `COMMAND_KINDS`, and every entry in
-/// `COMMAND_KINDS` must be a tag it sees. Either half failing is a build error
-/// naming the offenders: a new Rust command reaches a client classified, or it
-/// does not reach it at all. Both emitters call this, so a command cannot be
-/// classified for one language and unclassified for the other.
 pub fn check_classified(tags: &[String]) -> Result<()> {
     let known: BTreeSet<&str> = proto::COMMAND_KINDS.iter().map(|(tag, _)| *tag).collect();
     let found: BTreeSet<&str> = tags.iter().map(String::as_str).collect();
@@ -270,14 +207,8 @@ pub fn check_classified(tags: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// Holds [`COMMAND_BYTES`](catchlight_editor_protocol::COMMAND_BYTES) against
-/// the tags one emitter found.
-///
-/// Only one direction is checkable: a command that carries no bytes is absent
-/// from the table on purpose, so a tag the table does not mention says
-/// nothing. A tag the table mentions and the enum does not is a stale entry,
-/// and it would reach every client as an attachment name for a command that
-/// does not exist.
+/// Only one direction is checkable: commands without bytes are absent from
+/// [`COMMAND_BYTES`](catchlight_editor_protocol::COMMAND_BYTES) on purpose.
 pub fn check_byte_bearing(tags: &[String]) -> Result<()> {
     let found: BTreeSet<&str> = tags.iter().map(String::as_str).collect();
     let stale: Vec<&str> = proto::COMMAND_BYTES
@@ -295,9 +226,6 @@ pub fn check_byte_bearing(tags: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// One row of [`COMMAND_BYTES`](catchlight_editor_protocol::COMMAND_BYTES),
-/// with the attachment kinds already spelled the way every language spells
-/// them.
 pub struct ByteRow {
     pub tag: &'static str,
     /// `(kind, name)` per attachment, `kind` being `"fixed"` or `"family"`.
@@ -305,7 +233,6 @@ pub struct ByteRow {
     pub payload: bool,
 }
 
-/// The byte table in its own order — the shape both emitters render.
 pub fn byte_rows() -> Vec<ByteRow> {
     proto::COMMAND_BYTES
         .iter()
@@ -325,7 +252,6 @@ pub fn byte_rows() -> Vec<ByteRow> {
         .collect()
 }
 
-/// What both emitters say above the byte table. The one place the text lives.
 pub const BYTES_DOC: &[&str] = &[
     "What bytes each command carries, keyed by its `cmd` tag.",
     "",
@@ -336,7 +262,6 @@ pub const BYTES_DOC: &[&str] = &[
     "`payload` says the reply carries bytes back.",
 ];
 
-/// The tags of one kind, in the order the `Command` union declares them.
 pub fn tags_of(kind: proto::CommandKind, tags: &[String]) -> Vec<&str> {
     tags.iter()
         .map(String::as_str)
@@ -348,20 +273,12 @@ pub fn tags_of(kind: proto::CommandKind, tags: &[String]) -> Vec<&str> {
         .collect()
 }
 
-/// One split of the `Command` union, and what it means to a client.
 pub struct Kind {
     pub kind: proto::CommandKind,
-    /// The alias every language names this split by.
     pub name: &'static str,
-    /// The explanation, as plain lines. Each emitter wraps them in whatever
-    /// its own comment syntax is; this is the only place the text is written.
     pub doc: &'static [&'static str],
 }
 
-/// The five splits. Hand-listed, so a kind added to
-/// [`CommandKind`](proto::CommandKind) and not to this table would classify
-/// commands in Rust that reach no client alias at all — the same silent gap
-/// [`check_classified`] closes, one level up. Both emitters fail on it.
 pub const KINDS: &[Kind] = &[
     Kind {
         kind: proto::CommandKind::Edit,
@@ -406,11 +323,7 @@ pub const KINDS: &[Kind] = &[
     },
 ];
 
-/// The one alias that is a union of two kinds rather than a kind of its own.
-///
-/// A read is a read: which side can answer it is a routing decision, not
-/// something a caller picks a method by. So `query` takes both, and the two
-/// halves stay separate for the router that has to tell them apart.
+/// `query` spans both read kinds: which side answers is a routing decision.
 pub const QUERY_UNION_DOC: &[&str] = &[
     "A command that reads, whoever answers it.",
     "",
@@ -418,7 +331,6 @@ pub const QUERY_UNION_DOC: &[&str] = &[
     "changed. A client routes on the halves; a caller sends either.",
 ];
 
-/// Fails naming any command that [`KINDS`] left in no alias.
 pub fn check_aliased(tags: &[String]) -> Result<()> {
     let mut emitted: BTreeSet<&str> = BTreeSet::new();
     for Kind { kind, .. } in KINDS {
@@ -468,9 +380,7 @@ mod tests {
             proto::COMMAND_KINDS.len(),
             "COMMAND_KINDS and the Command enum disagree on how many commands there are",
         );
-        // `check_classified` is what enforces the set equality; this asserts
-        // the list has no duplicate that would let a missing tag hide behind
-        // one.
+        // Duplicates could let a missing tag hide behind one.
         let unique: BTreeSet<&str> = proto::COMMAND_KINDS.iter().map(|(tag, _)| *tag).collect();
         assert_eq!(
             unique.len(),

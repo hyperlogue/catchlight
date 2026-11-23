@@ -1,9 +1,4 @@
-//! `catchlight-cli` — the command line over [`catchlight_cli`].
-//!
-//! Argument parsing, printing and exit statuses only; every operation lives in
-//! the library beside this file, which is what the integration tests drive.
-//! See the crate's module doc for the line this crate holds: nothing here
-//! reaches the editor server, its protocol, or a client of either.
+//! `catchlight-cli` — argument parsing, printing and exit statuses over [`catchlight_cli`].
 
 use std::path::PathBuf;
 
@@ -14,8 +9,7 @@ use catchlight_cli::{
 use catchlight_core::formats::clm::TextureAlpha;
 use clap::{Parser, Subcommand, ValueEnum};
 
-/// `--alpha`: what the replacement bytes mean by their alpha channel. The
-/// bytes cannot say, so only the person doing the swap can.
+/// The bytes cannot say what their alpha means, so the user must.
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum AlphaArg {
     Premultiplied,
@@ -215,8 +209,6 @@ fn run_extension(cmd: ExtensionCmd) -> Result<i32, Error> {
         }
         ExtensionCmd::Get { file, key, out } => {
             match extension::get(&file, &key, out.as_deref())? {
-                // A byte value is written, never printed; so is a JSON value once
-                // `--out` names somewhere to put it.
                 extension::Got::Json(text) if !text.is_empty() => println!("{text}"),
                 extension::Got::Json(_) | extension::Got::Bytes(_) => {}
             }
@@ -230,8 +222,7 @@ fn run_extension(cmd: ExtensionCmd) -> Result<i32, Error> {
             let changed = match (json, bytes) {
                 (Some(text), None) => extension::set_json(&file, &key, &text)?,
                 (None, Some(source)) => extension::set_bytes(&file, &key, &source)?,
-                // clap's `required_unless_present` and `conflicts_with` leave
-                // only these two, so this arm is unreachable in practice.
+                // Unreachable: clap requires exactly one of the two.
                 _ => {
                     return Err(Error::BadValue {
                         field: "--json/--bytes".into(),
