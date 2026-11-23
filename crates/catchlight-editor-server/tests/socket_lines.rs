@@ -3,10 +3,8 @@
 
 //! The Unix socket's own glue: `files` in, `out` out.
 //!
-//! A socket client and the editor share a filesystem, so bytes never cross the
-//! line — the client names its own files and the server reads them, and a
-//! payload is written where the line said to put it. These drive a real
-//! listener over a real socket, because the framing is what is being checked.
+//! These drive a real listener over a real socket, because the framing is
+//! what is being checked.
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -24,7 +22,6 @@ use serde_json::{json, Value};
 
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-/// A listener, its socket path, and a directory the test may write into.
 struct Fixture {
     stream: UnixStream,
     dir: PathBuf,
@@ -76,8 +73,6 @@ fn start() -> Fixture {
 }
 
 impl Fixture {
-    /// One line up, one reply back. `extra` is merged into the request object,
-    /// which is how `files` and `out` ride beside a command.
     fn line(&mut self, command: Command, extra: Value) -> Reply {
         let id = self.next_id;
         self.next_id += 1;
@@ -232,7 +227,6 @@ fn a_preview_writes_its_png_where_out_says() {
         }
         other => panic!("expected Preview, got {other:?}"),
     }
-    // The parent directory did not exist; the glue made it.
     let written = std::fs::read(&out).expect("the payload landed at `out`");
     let decoded = image::load_from_memory(&written).expect("it is a png");
     assert_eq!((decoded.width(), decoded.height()), (40, 24));

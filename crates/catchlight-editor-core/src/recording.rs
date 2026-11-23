@@ -1,11 +1,7 @@
-//! A gesture records only its delta onto one binding cell. Other bindings'
-//! contributions belong to the preview, never to the key being authored.
-//! Capture before scratch is applied and keep the normalized input position for
-//! the gesture. Each destination binding owns its grid, so a recording resolves
-//! or inserts keys independently. Posed inputs reuse the nearest key within
-//! 1e-5 normalized units, with exact matches taking precedence. An empty binding
-//! receives an explicit identity rest cell before the changed cell; raw writes
-//! retain exact caller data.
+//! A gesture records only its delta onto one binding cell; other bindings'
+//! contributions belong to the preview. Capture before scratch is applied. An
+//! empty binding receives an explicit identity rest cell before the changed
+//! cell; raw writes retain exact caller data.
 
 use catchlight_core::{
     deform_cells, scalar_cells, BindingKey, BindingParams, BindingTarget, Model, ModelNodeKind,
@@ -58,7 +54,6 @@ impl RecordProperties {
     }
 }
 
-/// A recording plan, translated by a frontend into one atomic edit request.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecordingWrite {
     pub target: String,
@@ -254,8 +249,8 @@ impl Recording {
         Ok(result)
     }
 
-    /// Plan exact writes on each property's own grid. The identity rest cell
-    /// is an explicit recording policy, never a side effect of a model setter.
+    /// The identity rest cell is an explicit recording policy, never a side
+    /// effect of a model setter.
     pub fn writes(
         &self,
         patch: &RecordProperties,

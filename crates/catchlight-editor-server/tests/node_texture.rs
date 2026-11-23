@@ -4,8 +4,7 @@
 //!
 //! `texture` on a patch is a JSON merge patch and so has three states: absent
 //! leaves the part drawing what it drew, `null` makes it draw none, and an Id
-//! points it at that one. These pin all three — what each does to the model
-//! and to the texture the part was the last one holding.
+//! points it at that one.
 
 use std::collections::HashMap;
 use std::io;
@@ -17,7 +16,6 @@ use catchlight_editor_protocol::{
 };
 use catchlight_editor_server::{Attachments, Editor, Storage};
 
-/// A store that is only a map, so a texture needs no filesystem.
 #[derive(Debug, Default)]
 struct MemStorage(Mutex<HashMap<String, Vec<u8>>>);
 
@@ -40,7 +38,6 @@ impl Storage for MemStorage {
     }
 }
 
-/// A 1×1 opaque PNG, so `texture_add` has something that decodes.
 const PIXEL_PNG: &[u8] = &[
     0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
     0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
@@ -56,8 +53,6 @@ struct Fixture {
 }
 
 impl Fixture {
-    /// An editor with an empty store: every image here arrives attached to
-    /// the command that uses it.
     fn new() -> Self {
         let editor = Editor::with_storage(Arc::new(MemStorage::default()));
         let mut fixture = Self {
@@ -90,7 +85,6 @@ impl Fixture {
         }
     }
 
-    /// One command with an image attached — the one way a texture gets in.
     fn body_with(&mut self, command: Command, name: &str, bytes: &[u8]) -> ResponseBody {
         self.next += 1;
         let mut attachments = Attachments::none();
@@ -111,7 +105,6 @@ impl Fixture {
         }
     }
 
-    /// A part under the root, with a texture of its own.
     fn part(&mut self) -> (NodeId, TexId) {
         let session = self.session;
         let node = match self.body(Command::NodeAdd {
@@ -169,9 +162,6 @@ impl Fixture {
     }
 }
 
-/// The whole point: a part can be told to draw nothing, and saying so takes
-/// the texture it was the last one holding — the same rule every other
-/// unmapping obeys, reported the same way.
 #[test]
 fn clearing_a_parts_texture_drops_the_texture_nothing_else_draws() {
     let mut f = Fixture::new();
@@ -194,8 +184,6 @@ fn clearing_a_parts_texture_drops_the_texture_nothing_else_draws() {
     assert!(f.textures().is_empty(), "and the model carries no texture");
 }
 
-/// Undo puts it back, because clearing is an ordinary edit and not a
-/// second path around the history.
 #[test]
 fn clearing_a_texture_is_one_undoable_edit() {
     let mut f = Fixture::new();
@@ -217,9 +205,6 @@ fn clearing_a_texture_is_one_undoable_edit() {
     assert_eq!(f.drawn(&part), Some(texture));
 }
 
-/// The three states are three JSON shapes, told apart by serde before the
-/// command runs. One field says the whole change, so there is no pair of
-/// fields to carry together and no rule about which of them wins.
 #[test]
 fn absent_null_and_an_id_are_three_different_edits() {
     let mut f = Fixture::new();
@@ -268,8 +253,6 @@ fn clearing_on_a_node_that_is_not_a_part_is_ignored() {
     assert!(dropped.is_empty());
 }
 
-/// Pointing at a texture the model does not carry is refused, and the null
-/// state is a different edit rather than a way around that check.
 #[test]
 fn pointing_at_an_unknown_texture_is_still_an_error() {
     let mut f = Fixture::new();

@@ -1,15 +1,6 @@
-//! Mesh editing over a constrained-Delaunay model: a [`WorkingMesh`] is
-//! vertices + a non-crossing set of constraint edges, and the triangulation is
-//! always *derived* (spade CDT). The mesh is valid by construction — the
-//! Connect tool pins/unpins constraints, ops that would make constraints cross
-//! are rejected up front, and Apply can never fail. Concave shapes and holes
-//! come out of alpha culling: triangles covering only fully-transparent texels
-//! are dropped, so the convex-hull fill never bridges disjoint shapes.
-//!
-//! Runtime and `.clm` never see any of this — they keep plain indexed triangle
-//! lists; [`WorkingMesh::to_mesh`] flattens on Apply, and
-//! [`Model::set_mesh_with_refit`] re-fits existing deform bindings onto the
-//! new topology (triangle-affine interpolation over the old rest mesh).
+//! Mesh editing over a constrained-Delaunay model. The triangulation is always
+//! derived from vertices plus non-crossing constraint edges, so a state the
+//! tool accepted can always be applied.
 
 use catchlight_core::formats::clm::{ClmIndices, ClmMesh};
 use spade::{ConstrainedDelaunayTriangulation, Point2, Triangulation as _};
@@ -17,34 +8,23 @@ use spade::{ConstrainedDelaunayTriangulation, Point2, Triangulation as _};
 use catchlight_core::id::{NodeId, SlotId};
 use catchlight_core::{Model, ModelError};
 
-/// Minimum distance between distinct vertices; closer placements are rejected
-/// (coincident points would merge in the triangulation and corrupt indexing).
+/// Coincident points would merge in the triangulation and corrupt indexing.
 const MIN_VERTEX_DISTANCE: f32 = 1e-3;
 
-/// Why a [`WorkingMesh`] op was refused. These are the mesh tool's own
-/// rejections, not a [`ModelError`]: a working mesh is not in a model yet, and
-/// the tool's whole promise is that a state it accepted can always be applied.
+/// Not a [`ModelError`]: a working mesh is not in a model yet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum MeshError {
-    /// The index names no vertex of this mesh.
     #[error("no vertex at that index")]
     NoSuchVertex,
-    /// The position is not finite, or sits on top of another vertex —
-    /// coincident points merge in the triangulation and corrupt indexing.
     #[error("a vertex cannot land on another vertex")]
     Coincident,
-    /// A constraint edge would cross one already pinned. Touching at a shared
-    /// endpoint is fine; crossing is what the triangulation cannot represent.
+    /// Touching at a shared endpoint is fine.
     #[error("constraint edges may not cross")]
     ConstraintCross,
-    /// The texture has no pixel above the alpha threshold, so there is no
-    /// shape to mesh.
     #[error("the texture is empty above the alpha threshold")]
     NothingToMesh,
-    /// The existing mesh has no single axis-aligned mapping onto its artwork.
     #[error("This mesh has a custom texture mapping. Mesh placement requires an undeformed artwork mesh.")]
     CustomTextureMapping,
-    /// The triangulator refused the point set.
     #[error("triangulation failed")]
     Triangulation,
 }
@@ -53,21 +33,19 @@ pub enum MeshError {
 pub struct WorkingMesh {
     /// Flat `[x, y, …]` rest positions in node-local space.
     pub verts: Vec<f32>,
-    /// Pinned edges (vertex index pairs, unordered). Always non-crossing.
+    /// Vertex index pairs, unordered. Always non-crossing.
     pub constraints: Vec<(u32, u32)>,
     pub origin: [f32; 2],
 }
 
 impl WorkingMesh {
-    /// Start from an existing mesh, seeding **every current triangle edge as a
-    /// constraint** so the CDT preserves the current topology exactly until
-    /// the user unpins.
+    /// Every current triangle edge is seeded as a constraint, so the CDT
+    /// preserves the topology until the user unpins.
     pub fn from_mesh(mesh: &ClmMesh) -> Self {
         let vcount = (mesh.verts.len() / 2) as u32;
         let mut constraints: Vec<(u32, u32)> = Vec::new();
         let mut seen = std::collections::HashSet::new();
-        // Out-of-range indices (a malformed file) are dropped rather than
-        // seeded — triangulate() can only pin edges between real vertices.
+        // Out-of-range indices (a malformed file) are dropped rather than seeded.
         let mut push_edge = |a: u32, b: u32| {
             let key = (a.min(b), a.max(b));
             if a != b && a < vcount && b < vcount && seen.insert(key) {
@@ -101,7 +79,6 @@ impl WorkingMesh {
         [self.verts[i as usize * 2], self.verts[i as usize * 2 + 1]]
     }
 
-    /// Add a vertex; rejected when it lands on an existing vertex.
     pub fn add_vertex(&mut self, pos: [f32; 2]) -> Result<u32, MeshError> {
         if !pos[0].is_finite() || !pos[1].is_finite() {
             return Err(MeshError::Coincident);
@@ -116,8 +93,6 @@ impl WorkingMesh {
         Ok(self.vertex_count() as u32 - 1)
     }
 
-    /// Move a vertex; rejected when the move would make constraint edges cross
-    /// or stack the vertex onto another.
     pub fn move_vertex(&mut self, i: u32, pos: [f32; 2]) -> Result<(), MeshError> {
         if i as usize >= self.vertex_count() {
             return Err(MeshError::NoSuchVertex);
@@ -130,8 +105,6 @@ impl WorkingMesh {
                 return Err(MeshError::Coincident);
             }
         }
-        // Every constraint incident to `i` (at its new position) must stay
-        // clear of every constraint that doesn't share an endpoint with it.
         for &(a, b) in self.constraints.iter().filter(|&&(a, b)| a == i || b == i) {
             let other = if a == i { b } else { a };
             let seg = (pos, self.pos(other));
@@ -149,8 +122,8 @@ impl WorkingMesh {
         Ok(())
     }
 
-    /// Move a selection atomically. Validate the final positions together so
-    /// translating adjacent vertices cannot collide with an intermediate state.
+    /// Final positions are validated together, so adjacent vertices cannot
+    /// collide with an intermediate state.
     pub fn move_vertices(&mut self, positions: &[(u32, [f32; 2])]) -> Result<(), MeshError> {
         let mut next = self.clone();
         for &(index, point) in positions {
@@ -166,8 +139,6 @@ impl WorkingMesh {
         Ok(())
     }
 
-    /// Delete vertices; constraints touching them are dropped and the rest of
-    /// the indices remapped.
     pub fn delete_vertices(&mut self, remove: &[u32]) {
         let set: std::collections::HashSet<u32> = remove.iter().copied().collect();
         let count = self.vertex_count() as u32;
@@ -190,8 +161,6 @@ impl WorkingMesh {
         }
     }
 
-    /// Pin an edge as a constraint. Rejected when it would cross an existing
-    /// constraint (touching at a shared endpoint is fine).
     pub fn add_constraint(&mut self, a: u32, b: u32) -> Result<(), MeshError> {
         let n = self.vertex_count() as u32;
         if a >= n || b >= n {
@@ -226,8 +195,7 @@ impl WorkingMesh {
         self.constraints.contains(&key)
     }
 
-    /// Derived triangulation (the live "triangulate preview"). Stored state is
-    /// always triangulable — the ops above refuse to persist a crossing set.
+    /// Stored state is always triangulable.
     pub fn triangulate(&self) -> Result<Vec<[u32; 3]>, MeshError> {
         let mut cdt: ConstrainedDelaunayTriangulation<Point2<f64>> =
             ConstrainedDelaunayTriangulation::new();
@@ -239,8 +207,7 @@ impl WorkingMesh {
                 .map_err(|_| MeshError::Triangulation)?;
             handles.push(h);
         }
-        // Reverse map: spade vertex index -> our vertex index. Coincident
-        // points can't occur (add/move guard), so this is a bijection.
+        // A bijection: the add/move guard rules out coincident points.
         let mut rev = vec![u32::MAX; handles.len() + 1];
         for (i, h) in handles.iter().enumerate() {
             let idx = h.index();
@@ -272,9 +239,6 @@ impl WorkingMesh {
         Ok(tris)
     }
 
-    /// Flatten to the plain indexed triangle list runtime/`.clm` consume.
-    /// UVs are re-derived from texture space; triangles covering only
-    /// transparent texels are culled when an alpha mask is given.
     pub fn to_mesh(&self, uv_map: &UvMap, alpha: Option<&AlphaMask>) -> Result<ClmMesh, MeshError> {
         let tris = self.triangulate()?;
         let uvs: Vec<f32> = (0..self.vertex_count())
@@ -306,9 +270,7 @@ impl WorkingMesh {
 }
 
 /// Axis-aligned local-space → UV mapping (`u = sx·x + ox`, `v = sy·y + oy`).
-/// Catchlight meshes always map the texture axis-aligned, so a per-axis
-/// least-squares fit over the existing vertex↔UV pairs recovers the mapping;
-/// fresh meshes use the centered-texture convention.
+/// Catchlight meshes always map the texture axis-aligned.
 #[derive(Debug, Clone, Copy)]
 pub struct UvMap {
     pub sx: f32,
@@ -318,8 +280,7 @@ pub struct UvMap {
 }
 
 impl UvMap {
-    /// The quad/grid convention: texture of `w`×`h` texels centered on the
-    /// local origin, `v` increasing downward.
+    /// Texture centered on the local origin, `v` increasing downward.
     pub fn from_texture_size(w: f32, h: f32) -> Self {
         Self {
             sx: 1.0 / w.max(1.0),
@@ -329,8 +290,6 @@ impl UvMap {
         }
     }
 
-    /// Per-axis linear regression over existing pairs; `None` when an axis is
-    /// degenerate (all verts on a line).
     pub fn fit(verts: &[f32], uvs: &[f32]) -> Option<Self> {
         let n = (verts.len() / 2).min(uvs.len() / 2);
         if n < 2 {
@@ -355,8 +314,6 @@ impl UvMap {
             }
             let s = (n as f64 * spq - sp * sq) / denom;
             let o = (sq - s * sp) / n as f64;
-            // A zero scale (constant UVs on the axis) has no inverse — the
-            // caller falls back to the texture convention.
             if s.abs() < 1e-12 {
                 return None;
             }
@@ -371,13 +328,11 @@ impl UvMap {
         [self.sx * pos[0] + self.ox, self.sy * pos[1] + self.oy]
     }
 
-    /// UV → local space (for automesh, which works in texel space).
     pub fn local(&self, uv: [f32; 2]) -> [f32; 2] {
         [(uv[0] - self.ox) / self.sx, (uv[1] - self.oy) / self.sy]
     }
 }
 
-/// Decoded alpha channel of a part's albedo.
 pub struct AlphaMask {
     pub width: u32,
     pub height: u32,
@@ -390,8 +345,7 @@ impl AlphaMask {
         Some(Self::from_rgba(&img))
     }
 
-    /// A model already declares the encoding. TGA has no reliable magic
-    /// signature, so tracing must use that declaration instead of guessing.
+    /// TGA has no reliable magic signature, so the declared encoding is used.
     pub fn decode_as(
         bytes: &[u8],
         encoding: catchlight_core::formats::clm::TextureEncoding,
@@ -429,8 +383,7 @@ impl AlphaMask {
         self.at(x, y)
     }
 
-    /// Does the triangle cover any texel above the cull threshold? Sampled on
-    /// a small barycentric grid plus corners — cheap and errs on keeping.
+    /// Sampled on a small barycentric grid plus corners; errs on keeping.
     fn triangle_covers_opaque(&self, a: [f32; 2], b: [f32; 2], c: [f32; 2]) -> bool {
         const THRESHOLD: u8 = 4;
         const STEPS: u32 = 6;
@@ -458,9 +411,7 @@ fn dist2(a: [f32; 2], b: [f32; 2]) -> f32 {
     dx * dx + dy * dy
 }
 
-/// Proper segment crossing (interiors intersect). Shared endpoints are the
-/// caller's business; touching at a point that is an endpoint of either
-/// segment does not count as crossing.
+/// Interiors intersect; touching at an endpoint of either does not count.
 fn segments_cross(p1: [f32; 2], p2: [f32; 2], p3: [f32; 2], p4: [f32; 2]) -> bool {
     let d1 = orient(p3, p4, p1);
     let d2 = orient(p3, p4, p2);
@@ -487,34 +438,21 @@ fn orient(a: [f32; 2], b: [f32; 2], c: [f32; 2]) -> f32 {
     (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
 }
 
-// ---- automesh ----
-
-/// Contour automesh knobs (texel units).
+/// Texel units.
 #[derive(Debug, Clone)]
 pub struct ContourKnobs {
-    /// Alpha above this counts as solid.
     pub threshold: u8,
-    /// Douglas-Peucker simplification tolerance.
     pub simplify: f32,
-    /// Outward dilation of the solid mask before tracing.
     pub margin: u32,
-    /// Interior fill-point spacing; 0 = boundary only.
+    /// 0 = boundary only.
     pub spacing: u32,
-    /// Scale factors about each component's centroid, one ring of free
-    /// vertices each. Empty places no rings. A factor is clamped into
-    /// `0..=1`: 0 is the centroid itself, 1 the outline, and above 1 has no
-    /// work left to do here — [`ContourKnobs::margin`] already dilates the
-    /// mask before tracing, so a vertex outside the pinned loop would only
-    /// make triangles alpha culling drops.
+    /// Ring scale factors about each component's centroid, clamped into `0..=1`
+    /// (1 is the outline, which `margin` already dilated).
     pub rings: Vec<f32>,
-    /// Texels: a free vertex closer than this to one already placed is
-    /// dropped. 0 drops only coincident ones, which the triangulation refuses
-    /// anyway.
+    /// 0 drops only coincident vertices.
     pub min_distance: f32,
-    /// Texel x of a vertical mirror line. Free vertices are generated from
-    /// `x <= mirror_x` and reflected across it, so their set is symmetric
-    /// whatever the art is. The pinned outline is not mirrored: it is traced
-    /// from the alpha, and the alpha is the authority on where the art ends.
+    /// Applies to free vertices only. The pinned outline is not mirrored: the
+    /// alpha is the authority on where the art ends.
     pub mirror_x: Option<f32>,
 }
 
@@ -532,30 +470,17 @@ impl Default for ContourKnobs {
     }
 }
 
-/// Grid automesh knobs.
 #[derive(Debug, Clone)]
 pub struct GridKnobs {
-    /// Alpha above this counts as solid, and is what the bounding box is
-    /// measured from.
     pub threshold: u8,
-    /// Cells across, when [`GridKnobs::axes_x`] is empty.
     pub cols: u32,
-    /// Cells down, when [`GridKnobs::axes_y`] is empty.
     pub rows: u32,
-    /// Grid lines as fractions of the solid bounding box — 0 its left edge, 1
-    /// its right — so the grid need not be uniform. Values outside `0..=1`
-    /// are allowed and put a line outside the box. Empty means `cols` evenly
-    /// spaced instead; present, it replaces `cols` *and*
-    /// [`GridKnobs::margin`] on this axis. Symmetric fractions are what a
-    /// mirrored grid is: there is no separate mirror knob because
-    /// `[-0.1, 0, 0.5, 1, 1.1]` already says it.
+    /// Fractions of the solid bounding box (0 left edge, 1 right; outside
+    /// `0..=1` allowed). Non-empty replaces `cols` *and* `margin` on this axis.
     pub axes_x: Vec<f32>,
-    /// The same, down, replacing `rows`.
     pub axes_y: Vec<f32>,
-    /// Fraction of the box added outside it on both sides, when the lines
-    /// come from `cols`/`rows`. `None` is one texel — enough that the
-    /// outermost solid texels sit inside the outer cells rather than on their
-    /// edge, and what a grid has always used.
+    /// Applies when lines come from `cols`/`rows`. `None` is one texel, so edge
+    /// texels sit inside the outer cells rather than on their edge.
     pub margin: Option<f32>,
 }
 
@@ -572,10 +497,6 @@ impl Default for GridKnobs {
     }
 }
 
-/// Places the vertices no constraint pins — rings and interior fill — and
-/// holds what [`ContourKnobs::min_distance`] and [`ContourKnobs::mirror_x`]
-/// need to judge one: every texel-space position already in the mesh, the
-/// pinned outline's included.
 struct FreeVerts<'a> {
     uv_map: &'a UvMap,
     dims: [f32; 2],
@@ -585,15 +506,11 @@ struct FreeVerts<'a> {
 }
 
 impl FreeVerts<'_> {
-    /// A vertex the mesh already carries, so the next free one can be judged
-    /// against it.
     fn record(&mut self, texel: [f32; 2]) {
         self.placed.push(texel);
     }
 
-    /// One free vertex, plus its reflection when a mirror line is set. A
-    /// candidate on the far side of the line is dropped: that half of the
-    /// mesh is the near half's reflection, not its own.
+    /// A candidate on the far side of the mirror line is dropped.
     fn place(&mut self, mesh: &mut WorkingMesh, texel: [f32; 2]) {
         match self.mirror_x {
             Some(m) if texel[0] > m => (),
@@ -616,10 +533,8 @@ impl FreeVerts<'_> {
     }
 }
 
-/// Trace the texture's alpha contours into a boundary-constrained working
-/// mesh: one pinned loop per connected component, plus the free interior
-/// vertices `rings` and `spacing` ask for. Vertices land in node-local space
-/// through `uv_map`.
+/// One pinned loop per connected alpha component, plus free interior
+/// vertices. Vertices land in node-local space through `uv_map`.
 pub fn contour_automesh(
     alpha: &AlphaMask,
     knobs: &ContourKnobs,
@@ -656,8 +571,7 @@ pub fn contour_automesh(
         placed: Vec::new(),
     };
 
-    // The pinned outlines first: rings hang off them, and `min_distance`
-    // measures a free vertex against them.
+    // Outlines first: rings and `min_distance` depend on them.
     let mut outlines: Vec<Vec<[f32; 2]>> = Vec::new();
     for contour in loops {
         if contour.len() < 3 {
@@ -681,17 +595,14 @@ pub fn contour_automesh(
         for k in 0..ids.len() {
             let a = ids[k];
             let b = ids[(k + 1) % ids.len()];
-            // A crossing here means two simplified loops overlap; skip the
-            // offending pin rather than fail the whole trace.
+            // Overlapping simplified loops: skip the pin rather than fail the trace.
             let _ = mesh.add_constraint(a, b);
         }
         outlines.push(simplified);
     }
 
-    // Rings: the outline scaled about its own centroid, resampled by
-    // arclength. A ring's vertex count falls with its scale (a ring at 0.5
-    // gets half the outline's), which keeps the density across rings roughly
-    // even and ties it to `simplify` rather than to a knob of its own.
+    // A ring's vertex count scales with its factor, keeping density roughly
+    // even across rings.
     for outline in &outlines {
         let c = centroid(outline);
         for &factor in &knobs.rings {
@@ -731,14 +642,12 @@ fn centroid(points: &[[f32; 2]]) -> [f32; 2] {
     [sum[0] / n, sum[1] / n]
 }
 
-/// `n` points spaced evenly along `outline` scaled by `factor` about `c`.
-/// A degenerate ring (factor 0, or a loop of no length) is the centre itself.
+/// A degenerate ring (factor 0, or a zero-length loop) is the centre itself.
 fn ring_points(outline: &[[f32; 2]], c: [f32; 2], factor: f32, n: usize) -> Vec<[f32; 2]> {
     let scaled: Vec<[f32; 2]> = outline
         .iter()
         .map(|p| [c[0] + (p[0] - c[0]) * factor, c[1] + (p[1] - c[1]) * factor])
         .collect();
-    // Cumulative arclength around the closed loop.
     let mut acc = Vec::with_capacity(scaled.len() + 1);
     let mut total = 0.0f32;
     acc.push(0.0);
@@ -769,8 +678,6 @@ fn ring_points(outline: &[[f32; 2]], c: [f32; 2], factor: f32, n: usize) -> Vec<
     out
 }
 
-/// A grid over the solid texels' bounding box — uniform, or on the lines
-/// `axes_x`/`axes_y` name.
 pub fn grid_automesh(
     alpha: &AlphaMask,
     knobs: &GridKnobs,
@@ -791,9 +698,8 @@ pub fn grid_automesh(
     if min[0] > max[0] {
         return Err(MeshError::NothingToMesh);
     }
-    // The box in continuous texel coordinates: the near edge of the first
-    // solid texel to the far edge of the last, so fraction 1 is the far edge
-    // of the art rather than the middle of its last texel.
+    // Continuous texel coordinates, so fraction 1 is the far edge of the art
+    // rather than the middle of its last texel.
     let lo = [min[0] as f32, min[1] as f32];
     let size = [(max[0] + 1 - min[0]) as f32, (max[1] + 1 - min[1]) as f32];
 
@@ -808,7 +714,6 @@ pub fn grid_automesh(
             named.sort_by(f32::total_cmp);
             return named;
         }
-        // One texel outside the box on each side, or the fraction asked for.
         let pad = knobs
             .margin
             .filter(|m| m.is_finite())
@@ -817,9 +722,8 @@ pub fn grid_automesh(
         let n = n.max(1);
         (0..=n).map(|i| a + (b - a) * i as f32 / n as f32).collect()
     };
-    // Named lines can repeat or land a hair apart; two vertices on top of one
-    // another corrupt the triangulation, so the grid is deduplicated in the
-    // space the vertices land in rather than in fractions.
+    // Named lines can coincide; dedupe in vertex space, since stacked vertices
+    // corrupt the triangulation.
     let dedup = |mut v: Vec<f32>| -> Vec<f32> {
         v.dedup_by(|a, b| (*a - *b).abs() < MIN_VERTEX_DISTANCE);
         v
@@ -850,9 +754,7 @@ pub fn grid_automesh(
     Ok(mesh)
 }
 
-/// Separable box dilation: a horizontal then a vertical sliding-window pass,
-/// O(w·h) regardless of radius (a square structuring element, which is what
-/// a safety margin wants).
+/// Separable box dilation, O(w·h) regardless of radius.
 fn dilate(solid: &[bool], w: i64, h: i64, r: i64) -> Vec<bool> {
     let mut horiz = vec![false; solid.len()];
     for y in 0..h {
@@ -912,7 +814,7 @@ fn interior(solid: &[bool], w: i64, h: i64, x: i64, y: i64, r: i64) -> bool {
     true
 }
 
-/// Boundary loops of each connected component (Moore-neighbor tracing).
+/// Moore-neighbor tracing.
 fn trace_components(solid: &[bool], w: i64, h: i64) -> Vec<Vec<[f32; 2]>> {
     let at = |x: i64, y: i64| -> bool {
         x >= 0 && y >= 0 && x < w && y < h && solid[(y * w + x) as usize]
@@ -924,7 +826,6 @@ fn trace_components(solid: &[bool], w: i64, h: i64) -> Vec<Vec<[f32; 2]>> {
             if !at(x, y) || labeled[(y * w + x) as usize] || at(x - 1, y) {
                 continue;
             }
-            // Trace this component's outer boundary, then flood-fill the label.
             loops.push(moore_trace(&at, x, y));
             flood_label(solid, &mut labeled, w, h, x, y);
         }
@@ -964,9 +865,8 @@ fn moore_trace(at: &dyn Fn(i64, i64) -> bool, sx: i64, sy: i64) -> Vec<[f32; 2]>
         let Some((nx, ny, dir)) = found else {
             break; // isolated pixel
         };
-        // Jacob's criterion: stop when leaving the start pixel in the same
-        // direction as the first step — merely revisiting the start (a
-        // pinched, figure-eight boundary) must keep tracing.
+        // Jacob's criterion: merely revisiting the start (a pinched, figure-eight
+        // boundary) must keep tracing.
         if cx == sx && cy == sy {
             match first_exit {
                 None => first_exit = Some(dir),
@@ -976,7 +876,6 @@ fn moore_trace(at: &dyn Fn(i64, i64) -> bool, sx: i64, sy: i64) -> Vec<[f32; 2]>
         }
         cx = nx;
         cy = ny;
-        // Next scan starts from the neighbor after the one we came from.
         backtrack = (dir + 5) % 8;
         if contour.len() > limit {
             break;
@@ -1056,12 +955,8 @@ fn point_segment_dist(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
     dist2(p, q).sqrt()
 }
 
-// ---- deform re-fit ----
-
-/// Re-fit one deform cell's offsets from the old mesh onto new rest vertices:
-/// each new vertex takes the barycentric blend of the old offsets in the old
-/// rest triangle containing it (clamped to the nearest triangle outside).
-/// Re-fitting onto identical topology is the identity.
+/// Each new vertex takes the barycentric blend of the old offsets in the old
+/// rest triangle containing it, clamped to the nearest triangle outside.
 pub fn refit_deform_offsets(old: &ClmMesh, new_verts: &[f32], old_offsets: &[f32]) -> Vec<f32> {
     let old_tris: Vec<[u32; 3]> = match &old.indices {
         ClmIndices::U16(v) => v
@@ -1090,9 +985,8 @@ pub fn refit_deform_offsets(old: &ClmMesh, new_verts: &[f32], old_offsets: &[f32
         ]
     };
 
-    // Bit-exact position → old vertex index; identical vertices keep their
-    // offsets verbatim, covering isolated vertices and duplicates that the
-    // triangle walk would blend or drop.
+    // Bit-identical vertices keep their offsets verbatim, covering isolated
+    // vertices and duplicates the triangle walk would blend or drop.
     let mut exact: std::collections::HashMap<(u32, u32), u32> = std::collections::HashMap::new();
     for i in (0..(old.verts.len() / 2) as u32).rev() {
         let q = old_pos(i);
@@ -1158,18 +1052,10 @@ fn clamp_bary(b: [f32; 3]) -> [f32; 3] {
     }
 }
 
-/// Mesh authoring over a [`Model`]. An extension trait because the Model is
-/// defined in `catchlight-core` while the mesh tools live here.
 pub trait ModelMeshExt {
-    /// Replace a meshed node's mesh and re-fit every deform binding that drives
-    /// the node onto the new topology — one undoable step. The offsets are
-    /// carried over by triangle-affine interpolation across the old rest mesh;
-    /// [`Model::set_node_mesh_with`] validates the mesh and moves the cells and
-    /// the mesh together.
-    ///
-    /// Slots are not re-fitted, because which vertex a slot names is not
-    /// something interpolation can answer: the returned slots are the ones the
-    /// edit emptied, for the caller to put in front of the author.
+    /// One undoable step. Slots are not re-fitted, since interpolation cannot
+    /// say which vertex a slot names: the returned slots are the ones the edit
+    /// emptied.
     fn set_mesh_with_refit(
         &mut self,
         node: &NodeId,
@@ -1208,7 +1094,6 @@ mod tests {
         assert_eq!(wm.constraints.len(), 5); // 4 border + 1 diagonal
         let tris = wm.triangulate().unwrap();
         assert_eq!(tris.len(), 2);
-        // The seeded diagonal (0,2) survives: both triangles use edge 0-2.
         for t in &tris {
             assert!(t.contains(&0) && t.contains(&2));
         }
@@ -1222,7 +1107,6 @@ mod tests {
             wm.add_constraint(1, 3),
             Err(MeshError::ConstraintCross)
         ));
-        // Unpinning the first diagonal makes room.
         wm.remove_constraint(0, 2);
         wm.add_constraint(1, 3).unwrap();
         let tris = wm.triangulate().unwrap();
@@ -1234,8 +1118,6 @@ mod tests {
     #[test]
     fn vertex_moves_that_cross_pins_are_rejected() {
         let mut wm = WorkingMesh::from_mesh(&quad());
-        // Hang a pinned edge off corner 0 toward the lower-left, clear of the
-        // quad.
         let v = wm.add_vertex([-1.5, -1.5]).unwrap();
         wm.add_constraint(0, v).unwrap();
         // Moving it to the far right would drag constraint (0,v) across the
@@ -1244,9 +1126,7 @@ mod tests {
             wm.move_vertex(v, [2.0, 0.0]),
             Err(MeshError::ConstraintCross)
         ));
-        // A harmless move is fine.
         wm.move_vertex(v, [-2.0, -1.2]).unwrap();
-        // Stacking onto an existing vertex is refused.
         assert!(wm.move_vertex(v, [1.0, -1.0]).is_err());
         // Pinning an edge that would cross is refused too (0 -> corner 2's
         // diagonal already pinned; try v -> corner 2 which crosses edge 0-3).
@@ -1274,7 +1154,6 @@ mod tests {
             alpha: (0..16).map(|i| if i % 4 < 2 { 255 } else { 0 }).collect(),
         };
         let mut wm = WorkingMesh::default();
-        // Two side-by-side quads spanning the texture, y in [-2, 2], x in [-2, 2].
         for &p in &[
             [-2.0, -2.0],
             [0.0, -2.0],
@@ -1291,9 +1170,7 @@ mod tests {
             ClmIndices::U16(v) => v.len() / 3,
             ClmIndices::U32(v) => v.len() / 3,
         };
-        // The right half's triangles are culled.
         assert!((2..8).contains(&tri_count), "got {tri_count} triangles");
-        // UVs follow the texture convention: x=-2 -> u=0..(-2/4+0.5)=0.
         let uv0 = [mesh.uvs[0], mesh.uvs[1]];
         assert!((uv0[0] - 0.0).abs() < 1e-5);
         assert!((uv0[1] - 1.0).abs() < 1e-5);
@@ -1310,8 +1187,6 @@ mod tests {
         }
     }
 
-    /// A solid square of texels, on a transparent field: an outline and a
-    /// centroid a test can predict.
     fn square_mask() -> AlphaMask {
         let size = 64u32;
         let mut alpha = vec![0u8; (size * size) as usize];
@@ -1327,8 +1202,6 @@ mod tests {
         }
     }
 
-    /// A rectangle whose centre is *not* the texture's, so mirroring about
-    /// the texture's middle has something to do.
     fn offset_mask() -> AlphaMask {
         let size = 64u32;
         let mut alpha = vec![0u8; (size * size) as usize];
@@ -1344,8 +1217,7 @@ mod tests {
         }
     }
 
-    /// The vertices no constraint pins — rings and interior fill. They are
-    /// added after the outlines, so they are the tail of the list.
+    /// Added after the outlines, so they are the tail of the list.
     fn free_verts(mesh: &WorkingMesh) -> Vec<[f32; 2]> {
         let pinned = mesh
             .constraints
@@ -1359,8 +1231,6 @@ mod tests {
     }
 
     fn tracing_knobs() -> ContourKnobs {
-        // No dilation, so the outline is the square itself and the radii a
-        // ring lands at are the ones arithmetic predicts.
         ContourKnobs {
             simplify: 2.0,
             margin: 0,
@@ -1387,8 +1257,6 @@ mod tests {
             let mesh = contour_automesh(&alpha, &knobs, &uv_map, [0.0, 0.0]).unwrap();
             let ring = free_verts(&mesh);
             assert!(!ring.is_empty(), "ring {factor} placed vertices");
-            // Every ring vertex sits on the square scaled by `factor` about
-            // its centre, so its Chebyshev radius is exactly that.
             for p in &ring {
                 let radius = p[0].abs().max(p[1].abs());
                 assert!(
@@ -1399,7 +1267,6 @@ mod tests {
             }
         }
 
-        // Factor 0 is the centroid itself: one vertex, at the middle.
         let knobs = ContourKnobs {
             rings: vec![0.0],
             ..tracing_knobs()
@@ -1412,8 +1279,6 @@ mod tests {
             "{centre:?}"
         );
 
-        // Above 1 is clamped to the outline, which is where `margin` already
-        // put the mesh's edge: it never lands outside the pinned loop.
         let knobs = ContourKnobs {
             rings: vec![4.0],
             ..tracing_knobs()
@@ -1451,17 +1316,14 @@ mod tests {
             "10 texels apart thins a 6-texel fill",
         );
         assert!(!free_verts(&thinned).is_empty(), "and does not empty it");
-        // Nothing kept is closer than the distance asked for.
         let kept = free_verts(&thinned);
         for (i, a) in kept.iter().enumerate() {
             for b in &kept[i + 1..] {
                 assert!(dist2(*a, *b).sqrt() >= 10.0 - 1e-3, "{a:?} and {b:?} crowd");
             }
         }
-        // The pinned loop is untouched: same constraints as without it.
         assert_eq!(thinned.constraints, dense.constraints);
 
-        // Zero is what the trace has always done — only coincident vertices go.
         let same = contour_automesh(
             &alpha,
             &ContourKnobs {
@@ -1496,8 +1358,6 @@ mod tests {
                 "{p:?} has no reflection in {free:?}",
             );
         }
-        // The art is off-centre, so the mirror really moved something: some
-        // free vertex sits on the empty side of the line.
         assert!(
             free.iter().any(|p| p[0] > 1.0),
             "the reflection reached past the mirror line",
@@ -1538,8 +1398,6 @@ mod tests {
             );
         }
 
-        // Fractions outside 0..=1 put lines outside the box, and repeated
-        // ones collapse rather than stacking two vertices in one place.
         let outside = grid_automesh(
             &alpha,
             &GridKnobs {
@@ -1579,8 +1437,7 @@ mod tests {
             )
             .unwrap()
         };
-        // Absent: the box is texels 15..49, local ±17 — what a grid has
-        // always laid down.
+        // Absent: the box is texels 15..49, local ±17.
         let default = one_cell(None);
         assert!(
             (default.pos(0)[0] + 17.0).abs() < 0.01,
@@ -1639,7 +1496,6 @@ mod tests {
         m.set_deform_from_transform(&key, [1, 0], [10.0, 0.0], 0.0, [1.0, 1.0])
             .unwrap();
 
-        // New topology: the same quad plus a center vertex.
         let mut new_mesh = quad();
         new_mesh.verts.extend_from_slice(&[0.0, 0.0]);
         new_mesh.uvs.extend_from_slice(&[0.5, 0.5]);
@@ -1655,7 +1511,6 @@ mod tests {
         );
         assert_eq!([cells[0].x, cells[0].y], [1, 0]);
         assert_eq!(cells[0].value.len(), 10);
-        // Old corners keep the uniform offset; the new center interpolates it.
         assert!((cells[0].value[8] - 10.0).abs() < 1e-4);
     }
 }

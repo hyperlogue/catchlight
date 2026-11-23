@@ -1,13 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 //! An add may name the Id it makes.
-//!
-//! A script that authors a rig has Ids in mind before it has a model, and
-//! without this it had to add under a drawn Id and then rename — two edits,
-//! two undo entries, and a `rename_id` in the history of every generated file,
-//! which is the one command the protocol calls a deliberate break.
-//!
-//! Absent, the editor still draws one, so the two paths answer the same shape.
 
 use std::collections::HashMap;
 use std::io;
@@ -19,7 +12,6 @@ use catchlight_editor_protocol::{
 };
 use catchlight_editor_server::{Attachments, Editor, Storage};
 
-/// A store that is only a map, so a texture needs no filesystem.
 #[derive(Debug, Default)]
 struct MemStorage(Mutex<HashMap<String, Vec<u8>>>);
 
@@ -42,7 +34,6 @@ impl Storage for MemStorage {
     }
 }
 
-/// A 1×1 opaque PNG, so `texture_add` has something that decodes.
 const PIXEL_PNG: &[u8] = &[
     0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
     0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
@@ -52,7 +43,6 @@ const PIXEL_PNG: &[u8] = &[
 ];
 
 fn editor() -> (Editor, SessionId) {
-    // The store holds nothing: an image arrives with the command that uses it.
     let ed = Editor::with_storage(Arc::new(MemStorage::default()));
     let session = match body(
         &ed,
@@ -69,8 +59,6 @@ fn editor() -> (Editor, SessionId) {
 }
 
 fn reply(ed: &Editor, id: u64, command: Command) -> Reply {
-    // Every command here that carries bytes carries the one image, so
-    // attaching it unconditionally is what the caller would have written.
     let mut attachments = Attachments::none();
     if matches!(command, Command::TextureAdd { .. }) {
         attachments.insert("texture", PIXEL_PNG.to_vec());
@@ -92,8 +80,6 @@ fn node_of(b: ResponseBody) -> NodeId {
     }
 }
 
-/// The whole point: a rig script writes the Ids it means, once, and every
-/// reply names what was made whether the caller chose it or not.
 #[test]
 fn an_add_creates_under_the_id_it_was_given() {
     let (ed, session) = editor();
@@ -163,8 +149,6 @@ fn an_add_creates_under_the_id_it_was_given() {
         response,
     );
 
-    // Every one of them answers to the Id the script chose, with no rename in
-    // between — which is the difference this is for.
     assert!(matches!(
         body(
             &ed,
@@ -182,9 +166,6 @@ fn an_add_creates_under_the_id_it_was_given() {
     ));
 }
 
-/// An Id already in the model is a refusal with a code of its own, so a
-/// script can tell "that name is taken" from every other reason an edit is
-/// turned down.
 #[test]
 fn an_id_the_model_already_carries_is_refused_under_its_own_code() {
     let (ed, session) = editor();
@@ -225,8 +206,6 @@ fn an_id_the_model_already_carries_is_refused_under_its_own_code() {
         }
     }
 
-    // The refusals left the model alone: still one part, one param, one
-    // texture, and the root.
     assert!(matches!(
         body(&ed, 8, Command::Status { session }),
         ResponseBody::Status { status }
@@ -248,8 +227,6 @@ fn an_id_outside_the_charset_is_a_bad_request_not_a_duplicate() {
     assert!(err.to_string().contains("invalid byte"), "{err}");
 }
 
-/// Absent, the editor still draws one, and it is a `part-<8 hex>` under its
-/// parent as it always was — the two paths differ only in who picks.
 #[test]
 fn an_add_with_no_id_still_draws_one() {
     let (ed, session) = editor();

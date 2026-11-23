@@ -81,7 +81,6 @@ fn a_hundred_drag_events_and_one_commit_leave_one_undo_entry() {
     );
     assert!(!status(3).dirty, "a drag must not dirty the model");
 
-    // The commit — the same offsets, authored into a deform keypoint.
     let offsets: Vec<[f32; 2]> = (0..vertices)
         .map(|v| [0.99 + v as f32 * 0.001, 0.99 - v as f32 * 0.001])
         .collect();
@@ -112,7 +111,6 @@ fn a_hundred_drag_events_and_one_commit_leave_one_undo_entry() {
     assert!(status(5).rev > rev_before);
     assert!(status(6).dirty);
 
-    // ...and undoing it once gets the whole gesture back.
     assert!(matches!(
         ed.handle(Request {
             id: 7,
@@ -145,7 +143,6 @@ fn scratch_is_not_a_server_command() {
     .is_err());
 }
 
-/// Session construction validates the supplied model before publishing it.
 fn open_bytes(editor: &Editor, title: &str, bytes: Vec<u8>) -> SessionId {
     let mut attachments = Attachments::none();
     attachments.insert("model", bytes);

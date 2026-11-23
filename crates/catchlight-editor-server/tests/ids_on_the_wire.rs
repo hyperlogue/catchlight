@@ -1,9 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! The protocol names things by the Id the `.clm` stores, so a command is
-//! meaningful outside the session that produced it — and `RenameId` is the
-//! one thing that changes what a name means. These pin both halves: a rename
-//! rewrites the model's own references, and the *new* Id is what every
+//! The protocol names things by the Id the `.clm` stores, and `RenameId` is
+//! the one command that changes what a name means; the new Id is what every
 //! following command must use.
 
 use catchlight_editor_protocol::{
@@ -52,8 +50,6 @@ fn root(ed: &Editor, id: u64, session: catchlight_editor_protocol::SessionId) ->
     }
 }
 
-/// A quad, so a part has vertices for its slots to point at.
-/// A client composes tree and slot reads to discover empty slots.
 fn unfilled(ed: &Editor, session: catchlight_editor_protocol::SessionId) -> Vec<SlotAddr> {
     let ResponseBody::Tree { root } = body(ed, 1000, Command::NodeTree { session }) else {
         panic!("tree")
@@ -143,7 +139,6 @@ fn a_renamed_node_answers_to_its_new_id_and_not_its_old_one() {
         Reply::Ok { .. }
     ));
 
-    // The following command addresses it by the new Id.
     assert!(matches!(
         reply(
             &ed,
@@ -159,7 +154,6 @@ fn a_renamed_node_answers_to_its_new_id_and_not_its_old_one() {
         ),
         Reply::Ok { .. }
     ));
-    // ...and the old one is gone, which is the breaking half.
     assert!(matches!(
         reply(
             &ed,
@@ -179,7 +173,6 @@ fn a_renamed_node_answers_to_its_new_id_and_not_its_old_one() {
         }
     ));
 
-    // The tree says the same thing, and the label rode along unchanged.
     match body(&ed, 7, Command::NodeTree { session }) {
         ResponseBody::Tree { root } => {
             let child = &root.children[0];
@@ -311,10 +304,6 @@ fn a_renamed_param_keeps_the_binding_that_named_it() {
     );
 }
 
-/// The slot surface end to end: give a part slots, fill them from its own
-/// vertices, weld two parts pair by pair, then re-author a mesh and watch the
-/// slots it emptied come back in the reply and in composed slot reads — which is
-/// what a commit gate reads.
 #[test]
 fn a_slot_survives_a_mesh_edit_and_says_what_it_lost() {
     let ed = Editor::new();
@@ -389,7 +378,6 @@ fn a_slot_survives_a_mesh_edit_and_says_what_it_lost() {
     }
     assert!(unfilled(&ed, session).is_empty());
 
-    // Weld them, a pair at a time.
     let pairs = |weight: f32| {
         [&left, &right]
             .into_iter()
@@ -452,7 +440,6 @@ fn a_slot_survives_a_mesh_edit_and_says_what_it_lost() {
         ResponseBody::Welds { welds } if welds.len() == 1 && welds[0].pairs.len() == 2
     ));
 
-    // Refilling clears the gate.
     for (i, slot) in [&left, &right].into_iter().enumerate() {
         step(Command::SlotFill {
             session,
@@ -463,7 +450,6 @@ fn a_slot_survives_a_mesh_edit_and_says_what_it_lost() {
     }
     assert!(unfilled(&ed, session).is_empty());
 
-    // Deleting a slot takes the pairs that named it; the weld itself stays.
     for slot in [&left, &right] {
         step(Command::SlotDelete {
             session,
@@ -484,12 +470,8 @@ fn slot_of(b: ResponseBody) -> SlotAddr {
     }
 }
 
-/// A slot gets its Id the way a node and a param do: name one, or let the
-/// editor draw a free one and read it back off the reply.
-///
-/// The reason it has to be the editor drawing is that "free" is scoped to the
-/// part, so a client counting its own slots gets it wrong the moment one is
-/// deleted.
+/// The editor draws the Id because "free" is scoped to the part, so a client
+/// counting its own slots gets it wrong once one is deleted.
 #[test]
 fn a_slot_can_be_added_without_naming_one() {
     let ed = Editor::new();
@@ -518,7 +500,6 @@ fn a_slot_can_be_added_without_naming_one() {
     }));
     step(quad(session, part.clone()));
 
-    // Named: the reply still says what it is, so one code path reads it.
     let named = SlotId::new("collar").unwrap();
     let addr = slot_of(step(Command::SlotAdd {
         session,
@@ -533,7 +514,6 @@ fn a_slot_can_be_added_without_naming_one() {
         }
     );
 
-    // Unnamed: drawn, free, and reported.
     let drawn = slot_of(step(Command::SlotAdd {
         session,
         node: part.clone(),
@@ -543,7 +523,6 @@ fn a_slot_can_be_added_without_naming_one() {
     assert_ne!(drawn.slot, named);
     assert!(drawn.slot.as_str().starts_with("slot-"), "{}", drawn.slot);
 
-    // Both landed where the reply said they did.
     match step(Command::Slots {
         session,
         node: part.clone(),
@@ -557,7 +536,6 @@ fn a_slot_can_be_added_without_naming_one() {
         other => panic!("{other:?}"),
     }
 
-    // And a draw for a node that could never carry a slot is still refused.
     next += 1;
     assert!(matches!(
         reply(
@@ -651,8 +629,6 @@ fn renaming_a_slot_carries_its_weld_pairs_and_refuses_a_name_in_use() {
         other => panic!("{other:?}"),
     }
 
-    // The two refusals a client reacts to, under the codes the slot surface
-    // already uses.
     step(Command::SlotAdd {
         session,
         node: top.clone(),
@@ -823,13 +799,6 @@ fn replacing_a_weld_preserves_other_pairs_and_explicit_orientation() {
 }
 
 /// A weld comes undone two ways, and only one of them keeps the parts.
-///
-/// Deleting a part cascades — it takes the weld because a weld with one end is
-/// not a weld — so before `weld_delete` the only way to unpair two parts was
-/// to destroy one of them, along with every slot on it. This pins that the new
-/// command leaves both ends exactly where they were, that either order names
-/// the same weld, and that a pair nothing joins is its own error code rather
-/// than a silent no-op.
 #[test]
 fn a_weld_is_unmade_without_taking_the_parts_with_it() {
     let ed = Editor::new();
@@ -901,8 +870,6 @@ fn a_weld_is_unmade_without_taking_the_parts_with_it() {
         ResponseBody::Welds { welds } if welds.is_empty()
     ));
 
-    // Both parts are still here, with their slots still filled — which is the
-    // whole difference from deleting a slot.
     for node in [&top, &bottom] {
         match step(Command::Slots {
             session,
@@ -923,7 +890,6 @@ fn a_weld_is_unmade_without_taking_the_parts_with_it() {
     }
     assert!(unfilled(&ed, session).is_empty());
 
-    // Undo brings the weld back, so this is one ordinary edit.
     step(Command::Undo {
         session,
         if_rev: ed.revision(session).unwrap(),
@@ -933,8 +899,6 @@ fn a_weld_is_unmade_without_taking_the_parts_with_it() {
         ResponseBody::Welds { welds } if welds.len() == 1
     ));
 
-    // And a pair nothing joins says so, rather than reporting a delete that
-    // deleted nothing.
     step(Command::WeldDelete {
         session,
         a: top.clone(),
@@ -1022,7 +986,6 @@ fn the_slot_errors_a_client_reacts_to_have_their_own_codes() {
         ),
         ErrorCode::UnknownSlot
     );
-    // A weld the file could not carry is refused where it is made.
     let other = node_of(body(
         &ed,
         8,

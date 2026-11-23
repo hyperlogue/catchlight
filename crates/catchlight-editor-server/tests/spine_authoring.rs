@@ -1,24 +1,12 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 //! Authoring a spine through the protocol.
-//!
-//! Two commands and one reply field. A spine is a polyline of joints and one
-//! bend param per link, and `node_info` reads both back under the names
-//! `spine_set` takes them under — so the whole read travels straight back as a
-//! legal set. The refusals are the file reader's, restated at the door: a
-//! spine with no joints, a joint that is not a number, a joint repeating the
-//! point above it, and a target list of the wrong length.
-//!
-//! Every test drives [`Editor::handle`] in process. Nothing here needs a
-//! transport, a texture or a GPU.
 
 use catchlight_editor_protocol::{
     Command, ErrorCode, NodeId, NodeInfo, NodeKind, ParamId, Reply, Request, ResponseBody,
     SessionId, SpineInfo,
 };
 use catchlight_editor_server::Editor;
-
-// ------------------------------------------------------------------ harness
 
 fn reply(ed: &Editor, id: u64, command: Command) -> Reply {
     ed.handle(Request { id, command })
@@ -88,8 +76,6 @@ fn param(ed: &Editor, session: SessionId, id: u64, name: &str) -> ParamId {
     }
 }
 
-/// A spine of two links under the root, with `targets` aimed at whatever the
-/// caller passes.
 fn add(
     ed: &Editor,
     session: SessionId,
@@ -111,8 +97,6 @@ fn add(
     )
 }
 
-/// What hangs directly under the root, which is how a refused add is shown to
-/// have made no node.
 fn children(ed: &Editor, session: SessionId) -> Vec<String> {
     match body(ed, 9_200, Command::NodeTree { session }) {
         ResponseBody::Tree { root } => root.children.into_iter().map(|c| c.name).collect(),
@@ -120,10 +104,6 @@ fn children(ed: &Editor, session: SessionId) -> Vec<String> {
     }
 }
 
-// -------------------------------------------------------------- spine_add
-
-/// Everything `spine_add` takes comes back out of `node_info` under the name
-/// `spine_set` would set it by, and the whole read is a legal set.
 #[test]
 fn a_spine_reads_back_as_what_was_added() {
     let ed = Editor::new();
@@ -158,7 +138,6 @@ fn a_spine_reads_back_as_what_was_added() {
         }
     );
 
-    // And it does travel back: the whole read, unchanged, is a legal set.
     body(
         &ed,
         4,
@@ -172,8 +151,6 @@ fn a_spine_reads_back_as_what_was_added() {
     assert_eq!(info(&ed, session, &made).spine, Some(spine));
 }
 
-/// An absent `targets` binds none, and the reply still names one slot per
-/// link: that length is the model's, not the command's.
 #[test]
 fn an_absent_target_list_leaves_every_link_rigid() {
     let ed = Editor::new();
@@ -189,20 +166,16 @@ fn an_absent_target_list_leaves_every_link_rigid() {
     assert_eq!(spine.targets, vec![None, None]);
 }
 
-/// The three shapes a spine may not have, each refused as a `BadTarget` and
-/// each leaving the tree as it was. These are the file reader's own rules,
-/// checked here so a command never authors a model the file would refuse.
+/// The file reader's own rules, checked here so a command never authors a
+/// model the file would refuse.
 #[test]
 fn a_spine_the_file_would_refuse_is_refused_here() {
     let ed = Editor::new();
     let session = session(&ed);
 
     for joints in [
-        // No joints at all.
         Vec::new(),
-        // A coordinate that is not a number.
         vec![[0.0, f32::NAN]],
-        // A joint repeating the one above it.
         vec![[0.0, -40.0], [0.0, -40.0]],
         // The first joint on the node's own origin, which is the point above
         // it: a first link with no length.
@@ -217,8 +190,6 @@ fn a_spine_the_file_would_refuse_is_refused_here() {
     assert!(children(&ed, session).is_empty(), "a refusal added a node");
 }
 
-/// A target list of the wrong length is refused, on the add and on the set,
-/// and the spine keeps the targets it had.
 #[test]
 fn targets_that_do_not_match_the_links_are_refused() {
     let ed = Editor::new();
@@ -303,8 +274,6 @@ fn a_set_reshapes_before_it_re_aims() {
     assert_eq!(spine.targets, vec![Some(bend.clone()), None, Some(bend)]);
 }
 
-/// A spine command aimed at a node that is not a spine is a `BadTarget`, not
-/// a silent no-op.
 #[test]
 fn a_spine_command_refuses_another_kind() {
     let ed = Editor::new();
@@ -335,8 +304,6 @@ const STRIP: [[f32; 2]; 8] = [
     [10.0, -40.0],
 ];
 
-/// A part carrying [`STRIP`] under the root, at the transform the caller
-/// names.
 fn strip_part(
     ed: &Editor,
     session: SessionId,
@@ -461,8 +428,6 @@ fn a_fit_leaves_the_parts_world_placement_alone() {
         other => panic!("{other:?}"),
     };
 
-    // The tree changed: the spine took the part's place, and the part hangs
-    // under it.
     assert_eq!(info(&ed, session, &made).parent, parent_before);
     assert_eq!(info(&ed, session, &part).parent, Some(made));
 
@@ -512,7 +477,6 @@ fn a_fit_authors_a_spine_its_params_and_no_bindings() {
         params.iter().cloned().map(Some).collect::<Vec<_>>()
     );
 
-    // No binding was authored on the part: a spine composes its joints.
     match body(
         &ed,
         31,
@@ -526,8 +490,6 @@ fn a_fit_authors_a_spine_its_params_and_no_bindings() {
     }
 }
 
-/// A re-fit reuses the spine the part already hangs from rather than nesting a
-/// second one. Surviving links keep their bend params.
 #[test]
 fn a_refit_reuses_the_spine_and_its_params() {
     let ed = Editor::new();

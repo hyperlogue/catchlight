@@ -1,6 +1,5 @@
 //! The serialized request budget also applies to in-process and wasm callers.
-//! Counting stops at the first excess; no equally large temporary JSON buffer
-//! is allocated just to measure it. Attachments have separate load budgets.
+//! Counting stops at the first excess without allocating a JSON buffer.
 
 use crate::EditorError;
 use serde::Serialize;

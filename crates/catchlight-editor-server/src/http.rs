@@ -1,116 +1,16 @@
 //! The editor over HTTP: a WebSocket for a tab, one POST for a script, and
 //! bytes for both.
 //!
-//! A tab holds a replica of a session's model and talks to this listener.
-//! `/ws` carries exactly what the Unix socket carries — one JSON [`Request`]
-//! per text frame, answered with its [`Reply`] — plus the events the socket
-//! has no way to push: every [`Event`] the editor emits while a connection is
-//! open arrives on it as `Reply::Event`. Everything that is *bytes* rather
-//! than a message goes over HTTP instead, because a replica wants the
-//! structure, the whole file and the textures as payloads, not as base64
-//! inside a frame.
-//!
-//! `POST /request` is the third door onto the same [`Editor::handle`]: one
-//! JSON [`Request`] as the body, its [`Reply`] as the answer. It is there for
-//! a client that only ever blocks on the command it just sent — a script, an
-//! agent — and would otherwise have to implement WebSocket masking and a
-//! reader thread in order to hear nothing it did not ask for. `/ws` stays, and
-//! stays the only way to be *told* something: a route that answers a request
-//! can push no event.
-//!
-//! Invariants this module enforces:
-//!
-//! - **Loopback is not a permission.** Any page on any origin may open
-//!   `ws://localhost:<port>` or send a simple cross-origin request here; the
-//!   same-origin policy gates neither. So the server mints a random token per
-//!   launch and every door needs it: `Authorization: Bearer <token>` on HTTP,
-//!   `?token=` on the handshake. `GET /token` hands it out unauthenticated but
-//!   answers with CORS headers **only** for an allowlisted origin and never
-//!   `*`, so a foreign page can send that request and still not read it.
-//!
-//! - **The `Host` header must name loopback.** A name that resolves to
-//!   127.0.0.1 today and to an attacker's address tomorrow is how DNS
-//!   rebinding turns a local server into a remote one; a request whose `Host`
-//!   is anything but `localhost`, `127.0.0.1` or `[::1]` is refused with 421
-//!   before it is routed.
-//!
-//! - **A texture is shared, not copied.** Payloads are the whole reason this
-//!   listener exists, so a response body is either bytes built for the answer
-//!   or the very [`Arc<[u8]>`](Arc) the model holds, cloned by refcount under
-//!   the session lock and written straight to the socket.
-//!
-//! - **A byte extension is fetched by hash, like a texture by Id.** The
-//!   structure feed carries a `{size, hash}` marker and never the bytes, so a
-//!   replica that sees a hash it does not hold fetches that one key from
-//!   `GET /sessions/{id}/extensions/{key}` and nothing else moves. A JSON
-//!   extension has no route: it is already in the structure.
-//!
-//! - **The token is checked before a body is read.** A multipart
-//!   `POST /request` may carry [`HttpOptions::max_upload_bytes`] — a quarter
-//!   of a gigabyte by default — and buffering that for a request that turns
-//!   out to have no token is memory any page on any origin could spend. So a
-//!   connection
-//!   reads the request line and the headers, settles `Host`, origin and
-//!   bearer token against those alone, and only then reads the body. A
-//!   request refused there is answered with its body still in the socket,
-//!   which is one more reason no response here keeps its connection alive.
-//!
-//! - **A WebSocket's `Origin` must be allowlisted, and its absence is fine.**
-//!   Browsers always send one, so a foreign page is caught; non-browser
-//!   clients (the CLI, a test) send none and are let through on the token
-//!   alone.
-//!
-//! - **Only the writer thread touches the socket.** A connection reads on one
-//!   thread and writes on another, over two [`WebSocket`]s on the same TCP
-//!   stream — which would interleave half-frames the moment the reader
-//!   answered a ping itself. So the reader's socket writes go to a channel
-//!   ([`Bounce`]) and the writer replays those bytes between its own frames.
-//!
-//! - **Bytes cross on `POST /request` and nowhere else.** There is no upload
-//!   route and no key a client can put bytes under: a command that carries
-//!   bytes goes to that one route as `multipart/form-data` — a part named
-//!   `request` holding the command JSON, one part per attachment named for
-//!   the attachment — so a blob nothing ever names cannot exist here. When
-//!   the reply carries bytes back they *are* the response
-//!   body, under the payload's own content type, and the JSON reply rides in
-//!   `X-Catchlight-Reply` — escaped to ASCII (`\uXXXX`) so a header value can
-//!   hold it and still parse as the same JSON. `/ws` refuses such a command
-//!   with [`ErrorCode::BulkOverHttp`] instead of carrying it: that channel is
-//!   text frames for low-latency commands and events, and one large frame
-//!   blocks every frame queued behind it.
-//!
+//! - **Loopback is not a permission.** Any page on any origin can reach this
+//!   port, so a random per-launch token gates every door, and `GET /token`
+//!   answers CORS only for an allowlisted origin, never `*`. `Host` must name
+//!   loopback (421 otherwise) to defeat DNS rebinding.
 //! - **On `POST /request`, a status is a transport failure and a refusal is a
-//!   200.** The two are what a caller confuses otherwise. The status describes
-//!   this listener only: 401 for a missing or wrong token, 413 for a body over
-//!   the route's ceiling ([`MAX_REQUEST_BYTES`] for a JSON body,
-//!   [`HttpOptions::max_upload_bytes`] for a multipart one), 400 for a body
-//!   that is not one [`Request`], or multipart this parser will not take. Every
-//!   refusal the editor itself decided — an unknown Id, a session that is not
-//!   open — is a 200 carrying `Reply::Err`, exactly as the socket answers it.
-//!
+//!   200** carrying `Reply::Err`, exactly as the socket answers it.
 //! - **An event can precede the reply that caused it.** Observers fire inside
-//!   [`Editor::handle`], so a client's own `node_add` may see
-//!   `model_changed` before its `ok`. A client keyed on `rev` does not
-//!   care; one that assumes reply-then-event does.
-//!
-//! - **The UI is public; everything else is not.** A launcher may hand
-//!   [`HttpOptions::ui`] the built editor page, served by `GET` without a
-//!   token — it is the same bundle anyone can download, and a page from this
-//!   origin is the one origin `GET /token` answers by default. A UI file is
-//!   only ever a fallback for a path no route claims, so a bundle cannot
-//!   shadow an API route, and every UI response forbids framing so another
-//!   page cannot dress up a local editor and click through it. A launcher
-//!   serving its own page sets [`HttpOptions::serve_token`] off and hands the
-//!   page the token in the URL fragment instead, since `GET /token` is
-//!   readable by any local process that skips CORS.
-//!
-//! - **An idle socket is proved live, not assumed.** A tab that is only
-//!   watching sends nothing for minutes, and a proxy between it and here reaps
-//!   a connection that carries no bytes. So the reader parks with a timeout of
-//!   [`HttpOptions::ping_interval`] rather than forever: each expiry asks the
-//!   writer for a ping, and silence lasting two intervals ends the connection
-//!   from this side, where the observer can be unsubscribed, instead of
-//!   leaving a thread parked on a socket nobody is on the other end of.
+//!   [`Editor::handle`]; clients should key on `rev`.
+//! - **Only the writer thread touches the socket.** Two [`WebSocket`]s share
+//!   one TCP stream; the reader's writes go through [`Bounce`].
 
 use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Read, Write};
@@ -130,57 +30,34 @@ use tungstenite::protocol::{Message, Role, WebSocket, WebSocketConfig};
 
 use crate::{carries_bytes, Attachments, Editor, EditorError, Payload};
 
-/// One frame, one request — the same cap the Unix socket puts on one line, and
-/// the same one a `POST /request` body gets.
+/// Same cap as one Unix-socket line.
 const MAX_REQUEST_BYTES: usize = 1024 * 1024;
-/// A request line plus its headers. Bounded before anything is parsed.
 const MAX_HEADER_BYTES: usize = 16 * 1024;
-/// Concurrent connections, WebSockets included. Same budget as the socket.
 const MAX_CONNECTIONS: usize = 64;
-/// Bounds the HTTP phase. A WebSocket re-arms this as its keepalive interval
-/// instead, because an idle tab is a live tab but a silent one is not.
+/// A WebSocket re-arms this as its keepalive interval instead, because an
+/// idle tab is a live tab but a silent one is not.
 const HTTP_IO_TIMEOUT: Duration = Duration::from_secs(30);
-/// Default ceiling on a multipart `POST /request` body: a `.clm` with its
-/// textures, or a manifest and every image it names.
 const DEFAULT_MAX_UPLOAD_BYTES: usize = 256 * 1024 * 1024;
-/// How long a WebSocket may say nothing before it is pinged; two of these with
-/// no answer and the peer is treated as gone.
+/// Two of these with no answer and the peer is treated as gone.
 const DEFAULT_PING_INTERVAL: Duration = Duration::from_secs(30);
-/// How much of a body that has already earned a 413 is read and thrown away.
-/// Closing a socket with bytes still unread in it is a reset, and a sender
-/// reports that reset instead of the status it was sent, so draining first is
-/// what makes the answer arrive at all; over loopback the discarded bytes cost
-/// little more than a memcpy. Past this the trade flips — dragging hundreds of
-/// megabytes across just to be polite costs more than the reset does — and the
-/// connection closes under the sender instead.
+/// Body bytes drained after a 413 before closing. Closing with unread bytes
+/// is a reset, which the sender reports instead of the status; past this,
+/// draining costs more than the reset.
 const MAX_DRAIN_BYTES: usize = 8 * 1024 * 1024;
 
-/// How [`serve_http`] authenticates and who it answers.
 #[derive(Debug, Clone)]
 pub struct HttpOptions {
-    /// Origins a browser may read a response from, beyond the server's own.
     pub allowed_origins: Vec<String>,
-    /// The bearer token. `None` mints a fresh random one for this launch.
     pub token: Option<String>,
-    /// Ceiling on a multipart `POST /request` body — the one route that
-    /// carries a model rather than a command.
     pub max_upload_bytes: usize,
-    /// How often an idle WebSocket is pinged, and half the silence it puts up
-    /// with before the connection is dropped. The default suits a browser tab;
-    /// shorten it only to exercise the keepalive.
+    /// Also half the silence tolerated before the connection is dropped.
     pub ping_interval: Duration,
-    /// The editor page and its assets, served at `/` and below. `None`
-    /// serves no page; a tab is then hosted elsewhere and allowlisted.
     pub ui: Option<UiFiles>,
-    /// Whether `GET /token` hands the token out. CORS keeps it from foreign
-    /// *pages*, not from other local processes or users, so a server whose
-    /// own page is given the token another way (the launcher puts it in the
-    /// URL fragment) turns the route off.
+    /// CORS keeps the token from foreign pages, not from other local
+    /// processes, so a launcher that passes the token another way turns this off.
     pub serve_token: bool,
 }
 
-/// A built page: each file's path relative to the site root (`index.html`,
-/// `assets/app.js`) and its bytes, compiled into the binary that serves it.
 pub type UiFiles = &'static [(&'static str, &'static [u8])];
 
 impl Default for HttpOptions {
@@ -196,8 +73,6 @@ impl Default for HttpOptions {
     }
 }
 
-/// A bound listener whose address and token are already known, so a caller can
-/// print them (or a test can connect) before [`HttpServer::serve`] blocks.
 pub struct HttpServer {
     pub addr: SocketAddr,
     pub token: String,
@@ -216,9 +91,8 @@ struct ServerState {
     serve_token: bool,
 }
 
-/// Bind `addr` without serving it. The allowlist is the server's own two
-/// loopback origins plus [`HttpOptions::allowed_origins`], which is why it can
-/// only be built once the ephemeral port is known.
+/// The allowlist includes the server's own loopback origins, so it can only be
+/// built once the ephemeral port is known.
 pub fn bind_http(
     editor: Arc<Editor>,
     addr: SocketAddr,
@@ -252,14 +126,11 @@ pub fn bind_http(
     })
 }
 
-/// Bind and serve, blocking the calling thread — the HTTP twin of
-/// [`serve_unix`](crate::serve_unix).
 pub fn serve_http(editor: Arc<Editor>, addr: SocketAddr, options: HttpOptions) -> io::Result<()> {
     bind_http(editor, addr, options)?.serve()
 }
 
 impl HttpServer {
-    /// Accept forever, one thread per connection.
     pub fn serve(self) -> io::Result<()> {
         for stream in self.listener.incoming() {
             let mut stream = stream?;
@@ -280,8 +151,8 @@ impl HttpServer {
     }
 }
 
-/// 32 bytes of OS randomness as hex. A guessable token is no token: every page
-/// the user's browser loads can reach this port.
+/// A guessable token is no token: every page the browser loads can reach
+/// this port.
 fn mint_token() -> io::Result<String> {
     let mut bytes = [0u8; 32];
     getrandom::fill(&mut bytes)
@@ -317,8 +188,6 @@ impl Drop for ConnectionPermit {
     }
 }
 
-// ---------------------------------------------------------------- connection
-
 fn serve_connection(state: &ServerState, stream: TcpStream) {
     let _ = stream.set_nodelay(true);
     if stream.set_read_timeout(Some(HTTP_IO_TIMEOUT)).is_err()
@@ -341,8 +210,7 @@ fn serve_connection(state: &ServerState, stream: TcpStream) {
         }
     };
 
-    // Before routing: a Host that is not loopback is someone else's name for
-    // this port.
+    // DNS rebinding: a non-loopback Host is someone else's name for this port.
     if !host_is_loopback(request.header("host")) {
         let _ = write_response(
             &mut writer,
@@ -390,9 +258,8 @@ fn serve_connection(state: &ServerState, stream: TcpStream) {
         return;
     }
 
-    // The gate closes on the head alone. A refusal here leaves the body
-    // unread and the connection is dropped under it, which is what keeps an
-    // unauthenticated caller from spending the upload ceiling.
+    // Gate on the head alone: an unauthenticated caller never gets to spend
+    // the upload ceiling.
     if !opens_without_a_token(state, &request)
         && ui_file(state, &request).is_none()
         && !bearer_matches(&request, &state.token)
@@ -420,14 +287,12 @@ fn serve_connection(state: &ServerState, stream: TcpStream) {
     let _ = write_response(&mut writer, &response);
 }
 
-/// The one door the token does not gate: the CORS headers, not the token, are
-/// what keep a foreign page from reading `GET /token`.
+/// Ungated: the CORS headers, not the token, keep a foreign page from reading
+/// `GET /token`.
 fn opens_without_a_token(state: &ServerState, request: &HttpRequest) -> bool {
     state.serve_token && request.method == "GET" && request.path == "/token"
 }
 
-/// Dispatch a request the gate in [`serve_connection`] has already let
-/// through. Only [`opens_without_a_token`] arrives here unauthenticated.
 fn route(state: &ServerState, request: &HttpRequest, allowed: Option<&str>) -> Response {
     if opens_without_a_token(state, request) {
         return cors(
@@ -459,8 +324,6 @@ fn route(state: &ServerState, request: &HttpRequest, allowed: Option<&str>) -> R
     cors(response, allowed)
 }
 
-/// The UI file a `GET` names, if a launcher gave the server a UI and no route
-/// claims the path. `/` is `index.html`.
 fn ui_file(state: &ServerState, request: &HttpRequest) -> Option<(&'static str, &'static [u8])> {
     let ui = state.ui?;
     if request.method != "GET" || claimed_by_a_route(&request.path) {
@@ -473,7 +336,6 @@ fn ui_file(state: &ServerState, request: &HttpRequest) -> Option<(&'static str, 
     ui.iter().find(|(path, _)| *path == wanted).copied()
 }
 
-/// Whether `path` belongs to the API whatever a UI bundle holds.
 fn claimed_by_a_route(path: &str) -> bool {
     let first = path.trim_start_matches('/').split('/').next().unwrap_or("");
     matches!(first, "token" | "ws" | "request" | "sessions")
@@ -509,16 +371,8 @@ fn ui_response(path: &str, bytes: &'static [u8]) -> Response {
         .body(Body::Static(bytes))
 }
 
-/// One request in the body, its reply in the answer. The same [`Editor`] entry
-/// `/ws` and the Unix socket reach, so a caller gets the same answer here — a
-/// refusal included, which is a 200 carrying `Reply::Err` rather than a status.
-/// Only a body that is not a [`Request`] at all is a 400: at that point there
-/// is no `id` to answer against and nothing the editor was asked to do.
-///
-/// Two body shapes by `Content-Type`. `application/json` (or anything else) is
-/// the command alone. `multipart/form-data` is the command in a part named
-/// `request` and one part per attachment, named for the attachment — which is
-/// the only way bytes reach the editor over HTTP.
+/// Only a body that is not a [`Request`] at all is a 400: there is no `id` to
+/// answer against. Editor refusals are a 200 carrying `Reply::Err`.
 fn command(state: &ServerState, request: &HttpRequest) -> Response {
     let (parsed, attachments) = match multipart_boundary(request) {
         None => (
@@ -555,9 +409,8 @@ fn command(state: &ServerState, request: &HttpRequest) -> Response {
         Err(e) => return Response::text(500, "Internal Server Error", &e.to_string()),
     };
     match payload {
-        // The bytes are the body, so the reply rides in a header. It is
-        // escaped to ASCII first: a header value is bytes, not UTF-8, and a
-        // model's name may be anything.
+        // The bytes are the body, so the reply rides in a header, escaped to
+        // ASCII because a header value is bytes and a model's name may be anything.
         Some(Payload {
             content_type,
             bytes,
@@ -573,12 +426,8 @@ fn command(state: &ServerState, request: &HttpRequest) -> Response {
     }
 }
 
-/// One JSON value with every non-ASCII character written as a `\uXXXX`
-/// escape, so it fits in a header value and still parses as the same JSON.
-///
-/// Safe as a byte-wise pass because JSON puts non-ASCII only inside string
-/// literals, and `serde_json` has already escaped the control characters a
-/// header could not carry.
+/// Byte-wise is safe: JSON puts non-ASCII only inside string literals, and
+/// `serde_json` already escaped the control characters.
 fn ascii_json(json: &[u8]) -> String {
     let text = String::from_utf8_lossy(json);
     if text.is_ascii() {
@@ -598,8 +447,6 @@ fn ascii_json(json: &[u8]) -> String {
     out
 }
 
-/// The `boundary` parameter of a `multipart/form-data` content type, if the
-/// request is one.
 fn multipart_boundary(request: &HttpRequest) -> Option<String> {
     let content_type = request.header("content-type")?;
     let (kind, params) = content_type.split_once(';')?;
@@ -620,16 +467,9 @@ fn multipart_boundary(request: &HttpRequest) -> Option<String> {
     None
 }
 
-/// `multipart/form-data`, strictly: `--boundary`, then one part per
-/// `Content-Disposition: form-data; name="…"` with its headers, a blank line
-/// and its bytes, and a closing `--boundary--`.
-///
-/// Hand-written because this server is: it speaks HTTP over a [`TcpStream`]
-/// with no framework under it, and one form encoding is less to own than a
-/// dependency. What that costs is strictness — CRLF everywhere, a name on
-/// every part, the closing boundary required — and anything else is a 400
-/// rather than a guess. A part's `filename` is ignored: the part's *name* is
-/// the attachment's name, and the file it came from is the client's business.
+/// Strict on purpose (CRLF everywhere, a name on every part, a closing
+/// boundary): anything else is a 400 rather than a guess. `filename` is
+/// ignored; the part's name is the attachment's name.
 fn parse_multipart(body: &[u8], boundary: &str) -> Result<Vec<(String, Vec<u8>)>, &'static str> {
     let opening = format!("--{boundary}");
     let delimiter = format!("\r\n--{boundary}");
@@ -663,7 +503,6 @@ fn parse_multipart(body: &[u8], boundary: &str) -> Result<Vec<(String, Vec<u8>)>
     }
 }
 
-/// The `name` of one part, from its `Content-Disposition` header.
 fn part_name(headers: &[u8]) -> Result<String, &'static str> {
     let headers = std::str::from_utf8(headers).map_err(|_| "a part header is not UTF-8")?;
     for line in headers.split("\r\n") {
@@ -701,8 +540,7 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         .position(|window| window == needle)
 }
 
-/// The structure-only container plus the revision it describes, read under one
-/// session lock so a client can never pair bytes with a revision they are not.
+/// Read under one session lock so bytes are never paired with another revision.
 fn structure(state: &ServerState, id: &str) -> Response {
     let Some(session) = parse_session(id) else {
         return Response::text(400, "Bad Request", "session id is not a number");
@@ -721,9 +559,6 @@ fn structure(state: &ServerState, id: &str) -> Response {
     }
 }
 
-/// The whole model as a `.clm`, encoded on demand — what a tab downloads
-/// or writes back to storage. The bytes are built for this answer, so the body
-/// owns them.
 fn clm(state: &ServerState, id: &str) -> Response {
     let Some(session) = parse_session(id) else {
         return Response::text(400, "Bad Request", "session id is not a number");
@@ -764,14 +599,8 @@ fn texture(state: &ServerState, id: &str, tex: &str) -> Response {
     }
 }
 
-/// One byte extension's payload, for a replica catching up on a marker whose
-/// hash it does not hold.
-///
-/// The counterpart of the texture route and shaped like it: a structure feed
-/// carries `{size, hash}` and never the bytes, so this is where the bytes are
-/// fetched once and only when the hash moved. A JSON extension is not here —
-/// it travels inline in the structure — so asking for one is a 404, the same
-/// answer a key the model does not carry gets.
+/// A JSON extension travels inline in the structure, so asking for one here
+/// is a 404.
 fn extension(state: &ServerState, id: &str, key: &str) -> Response {
     let Some(session) = parse_session(id) else {
         return Response::text(400, "Bad Request", "session id is not a number");
@@ -797,25 +626,15 @@ fn parse_session(id: &str) -> Option<SessionId> {
     id.parse::<u64>().ok().map(SessionId)
 }
 
-// ----------------------------------------------------------------- websocket
-
-/// What the writer thread owes the socket, in order.
 enum Outbound {
-    /// A reply or a pushed event, framed by the writer's own [`WebSocket`].
     Text(String),
-    /// Bytes the reader's [`WebSocket`] produced — a pong, or the echo of a
-    /// close. Already framed; the writer replays them verbatim.
     Raw(Vec<u8>),
-    /// Keepalive. The reader asks for it on an idle timeout; only the writer
-    /// may put it on the wire.
+    /// Only the writer may put a ping on the wire.
     Ping,
-    /// Send a close frame and stop.
     Close,
 }
 
-/// The reader's stream: reads come off the socket, writes go to the writer
-/// thread. Two `WebSocket`s share one TCP stream, so exactly one of them may
-/// write to it.
+/// Two `WebSocket`s share one TCP stream, so only the writer may write to it.
 struct Bounce {
     read: TcpStream,
     out: Sender<Outbound>,
@@ -898,9 +717,8 @@ fn serve_websocket(
         return;
     }
 
-    // An idle tab is a live tab, so a read that expires is a cue to ping
-    // rather than a failure; the write side keeps its own timeout so a stuck
-    // peer cannot pin a thread.
+    // An expired read is a cue to ping rather than a failure; the write side
+    // keeps its own timeout so a stuck peer cannot pin a thread.
     let ping_interval = state.ping_interval;
     // Two intervals: one ping lost to a hiccup is not a dead tab.
     let idle_timeout = ping_interval * 2;
@@ -933,7 +751,6 @@ fn serve_websocket(
                 break;
             }
         }
-        // Whatever ended this, unblock the reader parked in `read()`.
         let _ = out_ws.get_mut().shutdown(Shutdown::Both);
     });
 
@@ -954,8 +771,7 @@ fn serve_websocket(
         Role::Server,
         Some(config),
     );
-    // Any frame at all counts as proof of life — a pong is only the cheapest
-    // one, and a client that never idles is never pinged.
+    // Any frame at all counts as proof of life.
     let mut last_heard = Instant::now();
     loop {
         let message = match in_ws.read() {
@@ -1013,9 +829,8 @@ fn serve_websocket(
     eprintln!("catchlight-editor-server: websocket closed");
 }
 
-/// A read that expired rather than failed. A socket read timeout surfaces as
-/// `WouldBlock` on unix and `TimedOut` on windows, and tungstenite keeps the
-/// half-read frame either way, so the next read picks it up where it stopped.
+/// A socket read timeout surfaces as `WouldBlock` on unix and `TimedOut` on
+/// windows; tungstenite keeps the half-read frame either way.
 fn timed_out(err: &io::Error) -> bool {
     matches!(
         err.kind(),
@@ -1023,13 +838,8 @@ fn timed_out(err: &io::Error) -> bool {
     )
 }
 
-/// One frame in, one reply out. A frame that does not parse is still answered
-/// against the id the client is blocked on, exactly as the socket does it.
-///
-/// A command that carries bytes is refused here rather than dispatched: this
-/// channel is text frames for low-latency commands and events, and a
-/// megabyte-scale frame on it blocks everything queued behind it. The same
-/// client already speaks `POST /request`, where bulk belongs.
+/// A command carrying bytes is refused: a megabyte-scale frame blocks
+/// everything queued behind it on this channel.
 fn answer(editor: &Editor, frame: &str) -> String {
     let reply = match serde_json::from_str::<Request>(frame) {
         Ok(request) if carries_bytes(&request.command).is_some() => Reply::Err {
@@ -1056,8 +866,6 @@ fn answer(editor: &Editor, frame: &str) -> String {
             .to_string()
     })
 }
-
-// ---------------------------------------------------------------------- http
 
 struct HttpRequest {
     method: String,
@@ -1099,9 +907,6 @@ impl BadRequest {
     }
 }
 
-/// The request line and the headers, plus the body length they declare. The
-/// body itself is left in the socket for [`read_body`], so nothing is buffered
-/// on behalf of a request that has not been authenticated yet.
 fn read_head(reader: &mut BufReader<TcpStream>) -> Result<(HttpRequest, usize), BadRequest> {
     let mut budget = MAX_HEADER_BYTES;
     let Some(start) = read_line(reader, &mut budget)? else {
@@ -1168,17 +973,12 @@ fn read_head(reader: &mut BufReader<TcpStream>) -> Result<(HttpRequest, usize), 
     ))
 }
 
-/// The body the head declared, read once the request has earned it. The
-/// generous ceiling belongs to the one endpoint that takes a payload; every
-/// other body is one command, so it gets the cap the socket puts on a line.
 fn read_body(
     reader: &mut BufReader<TcpStream>,
     request: &HttpRequest,
     length: usize,
     max_body: usize,
 ) -> Result<Vec<u8>, BadRequest> {
-    // A multipart command carries a model or an image, so it gets the upload
-    // ceiling; a JSON one is a command and nothing else.
     let bulk = request.method == "POST"
         && request.path == "/request"
         && multipart_boundary(request).is_some();
@@ -1192,11 +992,7 @@ fn read_body(
     Ok(body)
 }
 
-/// Read and throw away a body that has already lost, so the status that
-/// follows is not overtaken by a reset. Nothing is kept: the bytes go to
-/// [`io::sink`] a block at a time, and a body over [`MAX_DRAIN_BYTES`] is not
-/// read at all. Best effort — a sender that lied about its length, or stalled,
-/// only costs the answer it was going to get anyway.
+/// Drained so the status is not overtaken by a reset. Best effort.
 fn drain_body(reader: &mut BufReader<TcpStream>, length: usize) {
     if length > MAX_DRAIN_BYTES {
         return;
@@ -1245,9 +1041,8 @@ struct Response {
     body: Body,
 }
 
-/// What a response carries. A status line or a serialized value is built
-/// for the answer and owned by it; a texture is the model's own payload, held
-/// by refcount so the biggest bodies this server writes are never copied.
+/// A texture is the model's own payload, held by refcount so the biggest
+/// bodies are never copied.
 enum Body {
     Owned(Vec<u8>),
     Shared(Arc<[u8]>),
@@ -1304,8 +1099,7 @@ impl Response {
 }
 
 fn write_response(writer: &mut impl Write, response: &Response) -> io::Result<()> {
-    // Every response closes its connection: no keep-alive means no second
-    // framing rule to get wrong.
+    // No keep-alive: one framing rule, and a refused body may be left unread.
     let mut head = format!(
         "HTTP/1.1 {} {}\r\nContent-Length: {}\r\nConnection: close\r\n",
         response.status,
@@ -1366,8 +1160,7 @@ fn bearer_matches(request: &HttpRequest, token: &str) -> bool {
         .is_some_and(|(_, given)| secret_matches(given.trim(), token))
 }
 
-/// Constant time in the length it compares: a page on another origin can time
-/// this endpoint even though it cannot read the answer.
+/// Constant time: a page on another origin can time this endpoint.
 fn secret_matches(given: &str, token: &str) -> bool {
     let (given, token) = (given.as_bytes(), token.as_bytes());
     given.len() == token.len()
@@ -1386,9 +1179,6 @@ fn decode(raw: &str) -> String {
 mod tests {
     use super::*;
 
-    /// A header value is bytes on the wire and a model's title is not, so the
-    /// reply is escaped before it becomes one — and it has to still be the
-    /// same JSON afterwards.
     #[test]
     fn a_reply_in_a_header_is_ascii_and_still_the_same_json() {
         let json = b"{\"title\":\"\xe3\x81\x82 \xf0\x9f\x8e\xa8\"}";
@@ -1397,7 +1187,6 @@ mod tests {
         let parsed: serde_json::Value =
             serde_json::from_str(&escaped).expect("the escaped form is the same JSON");
         assert_eq!(parsed["title"], "\u{3042} \u{1f3a8}");
-        // An ASCII reply is handed back untouched.
         assert_eq!(ascii_json(b"{\"id\":1}"), "{\"id\":1}");
     }
 
@@ -1426,8 +1215,6 @@ mod tests {
         assert!(multipart_boundary(&with("multipart/form-data; boundary=")).is_none());
     }
 
-    /// The parser is strict on purpose: every shape it will not take is a 400
-    /// rather than a guess about what the sender meant.
     #[test]
     fn multipart_takes_only_what_it_says_it_takes() {
         let body = b"--b\r\nContent-Disposition: form-data; name=\"request\"\r\n\r\n{}\r\n\

@@ -1,38 +1,23 @@
 //! Bounded branching history of authored models, independent of sessions.
 //!
-//! Entries keep their creation revision. Navigation publishes a fresh revision
-//! alias for an existing entry; neither old branches nor their creation revisions
-//! disappear until retention prunes them. The caller owns the session lock,
-//! revision guards, installation of returned models and observer notification.
-//! Perform those steps in the same critical section as history publication.
+//! The caller owns the session lock, revision guards, installation of returned
+//! models and observer notification, and must perform them in the same
+//! critical section as history publication.
 //!
-//! Retention first removes the oldest noncurrent leaf, then advances the root
-//! when only the current entry's ancestor chain remains. Removing a preferred
-//! child selects its newest surviving sibling. Extra activation aliases expire
-//! oldest first, except for the current live revision. Creation revisions do not
-//! consume the extra-alias budget. Reads, failures and no-op navigation never
-//! prune. The current snapshot is always retained, even if it alone exceeds the
-//! byte budget; a zero entry or alias limit still allows the current entry and
-//! its live alias. [`ModelHistory::bytes`] exposes that oversized snapshot.
-//!
-//! Immutable texture and binary-extension allocations are charged once across
-//! all retained branches, using allocation identity, not content hashes. Other
-//! model data is conservatively charged per snapshot even where core shares it.
-//! The byte budget is an estimate of snapshot storage; the entry/alias budgets
-//! bound the tree and lookup metadata separately.
+//! The current snapshot is always retained, even if it alone exceeds the byte
+//! budget. Immutable texture and binary-extension allocations are charged once
+//! by allocation identity, not content hash; other data is charged per
+//! snapshot even where core shares it.
 
 use std::{collections::BTreeMap, mem::size_of, sync::Arc};
 
 use catchlight_core::{ExtensionValue, Model};
 
-/// Default maximum retained entries, including the current entry.
 pub const HISTORY_ENTRIES: usize = 64;
-/// Default retained snapshot budget, with immutable payloads counted once.
 pub const HISTORY_BYTES: usize = 256 * 1024 * 1024;
-/// Default maximum extra activation revisions, in addition to entry identities.
+/// Extra activation revisions, in addition to entry identities.
 pub const HISTORY_ALIASES: usize = 512;
 
-/// Storage limits applied after each changed publication.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HistoryLimits {
     pub entries: usize,
@@ -51,7 +36,7 @@ impl Default for HistoryLimits {
     }
 }
 
-/// Select a retained authored state. `Goto` accepts either kind of revision.
+/// `Goto` accepts a creation revision or a navigation alias.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HistoryNavigation {
     Undo,
@@ -59,7 +44,7 @@ pub enum HistoryNavigation {
     Goto(u64),
 }
 
-/// History validation failures; none of these alter retained state.
+/// None of these alter retained state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum HistoryError {
     #[error("nothing to undo")]
@@ -72,23 +57,21 @@ pub enum HistoryError {
     InvalidPublicationRevision { supplied: u64, current: u64 },
 }
 
-/// One retained entry, without its model payload.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HistoryEntry {
     pub revision: u64,
     pub parent: Option<u64>,
     pub redo: Option<u64>,
-    /// Retained publication revisions, in increasing order, including creation.
+    /// Increasing order, including creation.
     pub revisions: Vec<u64>,
 }
 
-/// A coherent read of the tree and cursor. The session supplies the outer rev.
+/// The session supplies the outer rev.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HistoryMetadata {
     pub root: u64,
     pub current: u64,
     pub pruned: bool,
-    /// Increasing creation-revision order.
     pub entries: Vec<HistoryEntry>,
 }
 
@@ -97,7 +80,7 @@ struct Entry {
     parent: Option<u64>,
     redo: Option<u64>,
     own_bytes: usize,
-    /// One allocation identity and size per distinct immutable payload.
+    /// Allocation identity -> size, per distinct immutable payload.
     payloads: BTreeMap<usize, usize>,
 }
 
@@ -113,9 +96,7 @@ impl Entry {
                 hold_payload(&mut payloads, &texture.data);
             }
         }
-        // Core's estimate does not currently include extension entries. JSON
-        // is cloned rather than shared; binary payloads join the same ledger
-        // as textures (including when both refer to the same allocation).
+        // Core's estimate does not include extension entries.
         for (key, value) in model.extensions() {
             own_bytes = own_bytes
                 .saturating_add(size_of_val(key))
@@ -163,8 +144,8 @@ fn json_heap_bytes(value: &serde_json::Value) -> usize {
     }
 }
 
-/// Pure history over [`Model`] snapshots. Construct a fresh root for every
-/// newly created, opened or forked session; do not copy history across sessions.
+/// Construct a fresh root for every newly created, opened or forked session;
+/// do not copy history across sessions.
 pub struct ModelHistory {
     entries: BTreeMap<u64, Entry>,
     /// Navigation publication revision -> creation revision.
@@ -174,13 +155,12 @@ pub struct ModelHistory {
     live_revision: u64,
     pruned: bool,
     limits: HistoryLimits,
-    /// Allocation identity -> (payload bytes, number of holding entries).
     payloads: BTreeMap<usize, (usize, usize)>,
     own_bytes: usize,
 }
 
 impl ModelHistory {
-    /// Start with the loaded model as revision zero and no Undo steps.
+    /// The loaded model is revision zero.
     pub fn new(model: Model, limits: HistoryLimits) -> Self {
         let entry = Entry::new(model, None);
         let payloads = entry
@@ -201,12 +181,11 @@ impl ModelHistory {
         }
     }
 
-    /// Current publication counter, distinct from the current entry identity.
+    /// Distinct from the current entry identity.
     pub fn live_revision(&self) -> u64 {
         self.live_revision
     }
 
-    /// Snapshot storage estimate, including all branches and shared assets once.
     pub fn bytes(&self) -> usize {
         self.payloads
             .values()
@@ -215,15 +194,14 @@ impl ModelHistory {
             })
     }
 
-    /// Resolve a retained creation revision or navigation alias without mutation.
     pub fn model_at(&self, revision: u64) -> Result<&Model, HistoryError> {
         let identity = self.resolve(revision)?;
         Ok(&self.entries[&identity].model)
     }
 
-    /// Retain one changed edit or complete batch. The caller determines whether
-    /// authored content changed; do not call this for failed or no-op edits.
-    /// Revisions may skip numbers but must always exceed the last publication.
+    /// The caller determines whether authored content changed; do not call this
+    /// for failed or no-op edits. Revisions may skip numbers but must exceed the
+    /// last publication.
     pub fn record(&mut self, model: Model, revision: u64) -> Result<(), HistoryError> {
         self.check_revision(revision)?;
         let entry = Entry::new(model, Some(self.current));
@@ -241,12 +219,10 @@ impl ModelHistory {
         Ok(())
     }
 
-    /// Restore a retained entry and record its new publication alias. The
-    /// returned shallow clone is for installation under the same session lock.
-    /// All fallible validation happens before any history mutation. `None`
-    /// means Goto already selected this entry: no publication or pruning occurs.
-    /// Even on a no-op, the supplied candidate revision must be greater than
-    /// the live revision; a successful no-op does not adopt that candidate.
+    /// The returned shallow clone is for installation under the same session
+    /// lock. `None` means Goto already selected this entry: no publication or
+    /// pruning occurs, but the candidate revision must still exceed the live
+    /// revision and is not adopted.
     pub fn navigate(
         &mut self,
         action: HistoryNavigation,
@@ -285,7 +261,7 @@ impl ModelHistory {
         Ok(Some(model))
     }
 
-    /// Number of retained ancestors and entries along the preferred redo path.
+    /// (undo depth, redo depth along the preferred redo path).
     pub fn depths(&self) -> (usize, usize) {
         let mut undo = 0;
         let mut at = self.current;
@@ -362,8 +338,7 @@ impl ModelHistory {
             if let Some(leaf) = leaf {
                 self.remove(leaf);
             } else {
-                // Every noncurrent branch has gone. The remaining tree is a
-                // chain ending at current, so the root has exactly one child.
+                // Only current's ancestor chain remains, so the root has one child.
                 let child = self
                     .entries
                     .iter()

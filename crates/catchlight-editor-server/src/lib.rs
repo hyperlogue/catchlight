@@ -1,105 +1,4 @@
 //! The catchlight editor server.
-//!
-//! [`Editor`] holds many [`Session`]s (one puppet each), sharing one warm
-//! headless renderer. [`Editor::handle`] is the synchronous dispatch every
-//! frontend funnels into: Wasm calls it in-process, [`serve_unix`]
-//! exposes it to the CLI / an agent over a Unix socket. Both speak the same
-//! [`catchlight_editor_protocol`] messages.
-//!
-//! Each session serializes its own commands. Live observers / events arrive
-//! with the snapshot phase.
-//!
-//! Invariants this module enforces:
-//!
-//! - **The protocol's Ids are the model's Ids.** There is no handle table:
-//!   a request names a node, param or texture by the string the file stores,
-//!   and the server looks it up in the [`Model`]. So a reference outlives the
-//!   session that produced it, and [`Command::RenameId`] is the one thing
-//!   that invalidates one.
-//!
-//! - **Scratch stays local; a commit publishes once.** Browser and native
-//!   frontends preview on their own Puppet. Exact cell writes and batches
-//!   author model data through [`Editor::edit_session_captured`], the single
-//!   revision/history publication path. Raw writes never seed a rest key;
-//!   recording supplies that policy explicitly in one atomic edit batch.
-//!
-//! - **An observer never runs under a lock.** [`Editor::subscribe`] registers
-//!   a callback for every [`Event`], and a callback's whole reason to exist is
-//!   to read the session it was just told about. So every emission point
-//!   collects what to say, drops the sessions map and the session guard, and
-//!   only then calls out. Re-entering [`Editor`] from an observer is expected.
-//!
-//! - **History branches keep their creation revisions.** [`ModelHistory`]
-//!   retains authored snapshots and navigation aliases within bounded storage,
-//!   counting shared texture and binary-extension allocations once. A changed
-//!   edit or navigation publishes a fresh live revision; final-content no-ops
-//!   and failures leave the model, history and revision unchanged.
-//!
-//! - **A reply keeps the revision it captured.** [`Captured`] is stamped under
-//!   the same session lock that reads or publishes its contents. Rendering,
-//!   output IO and reentrant observers cannot replace that revision afterward.
-//!
-//! - **Close waits without holding the registry.** A session handle is cloned
-//!   out of the registry before waiting on its mutex. Closing marks that handle
-//!   closed under the same mutex before unregistering it, so queued operations
-//!   cannot publish against a handle that has left the editor.
-//!
-//! - **Each session draws its own Ids.** See [`session_hex`]: the seed comes
-//!   from the [`SessionId`], so two sessions open at once and edited the same
-//!   way do not name their new nodes identically — while replaying a script
-//!   against a fresh editor still rebuilds the same model, Ids included.
-//!
-//! - **One render cache per previewed session.** See [`preview`]: a cache's
-//!   slots name GPU state inside the one warm renderer, so switching the
-//!   previewed session re-prepares it.
-//!
-//! - **A `path` is a storage key, not a filesystem path.** See [`storage`]:
-//!   every command that names bytes resolves its key through a [`Storage`],
-//!   so the same command set serves the filesystem, the browser and a blob
-//!   store, and a command that read a key *into* a session releases it — so a
-//!   session opened from a transient upload holds no `file` to save back to.
-//!   [`Command::Preview`] is the one command that is still native — it
-//!   needs the headless renderer, not just bytes.
-//!
-//! - **Bytes never enter except inside the command that uses them.** There is
-//!   no upload-then-reference: a staged file nothing ever names cannot exist
-//!   because nothing is ever staged. [`Editor::handle_with`] is the one call
-//!   the whole editor sits behind — a [`Request`], the [`Attachments`] that
-//!   came with it, a [`Reply`] and the [`Payload`] that goes back — and every
-//!   transport is glue for those two halves and nothing else.
-//!   [`COMMAND_BYTES`] says which names each command takes, so an attachment
-//!   a command did not declare, or a fixed one that did not arrive, is
-//!   refused before the command runs.
-//!
-//! - **An extension is carried, never interpreted.** A vendor's value goes in
-//!   under a dotted key and comes back out untouched: a JSON one travels
-//!   inline everywhere, including in the structure feed, while bytes travel
-//!   as a `{size, hash}` marker and are fetched once, by hash, from
-//!   [`http`]'s extension route. Setting one is an edit like any
-//!   other — a revision, an undo entry, an event — because that is what makes
-//!   it survive a save.
-//!
-//! - **A fit moves nothing the part draws.** See [`spine_fit`]: the spine
-//!   goes between the part and its parent, and the strand's root is carried
-//!   onto the spine by two translations of the same size in opposite
-//!   directions — one onto the spine, one off the part — so every rest vertex
-//!   draws exactly where it drew, however the part is rotated or scaled. A
-//!   fit authors no binding: the spine turns the art by composing its joints.
-//!
-//! - **A model-only read has one implementation.** See [`query`]: the reads
-//!   [`CommandKind::ReplicaQuery`] names are pure functions of the [`Model`],
-//!   so a browser tab holding a replica answers them itself. `dispatch` routes
-//!   those arms into the very same code rather than keeping a second copy.
-//!
-//! - **A browser gets the same protocol, plus bytes.** See [`http`]: `/ws`
-//!   carries one JSON [`Request`] per text frame and answers each with its
-//!   [`Reply`], exactly as [`serve_unix`] does, and additionally pushes every
-//!   [`Event`] to the connections that are open; `POST /request` takes one
-//!   [`Request`] and answers its [`Reply`] for a client that holds no socket;
-//!   the structure and texture payloads a replica needs go over HTTP rather
-//!   than through a frame. Loopback is not a permission — any page on any
-//!   origin can reach that port — so a random per-launch token gates every
-//!   door, and `GET /token` is readable only from an allowlisted origin.
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod connection;
@@ -187,11 +86,8 @@ pub enum EditorError {
     NoTexture(TexId),
     #[error("{0}")]
     BadTarget(String),
-    /// The command does not belong on the path that was asked to run it —
-    /// a replica handed a command only the editor can apply.
     #[error("{0}")]
     BadRequest(String),
-    /// The two parts named are not welded to each other.
     #[error("no weld pairs those two parts")]
     UnknownWeld,
     #[error("nothing to undo")]
@@ -204,14 +100,10 @@ pub enum EditorError {
     RevisionExhausted,
     #[error("session has no file; pass a path to save")]
     NoSavePath,
-    /// The command needs a part and was given something else.
     #[error("node {0} is not a part")]
     NotAPart(NodeId),
-    /// The part draws no texture, so there is no alpha to trace.
     #[error("part {0} draws no texture")]
     NoAlbedo(NodeId),
-    /// Building the mesh itself failed — an empty alpha mask, a triangulation
-    /// the solver refused.
     #[error("mesh: {0}")]
     Mesh(#[from] MeshError),
     #[error("edit: {0}")]
@@ -226,11 +118,8 @@ pub enum EditorError {
     Preview(String),
     #[error("command is native-only (path IO / headless preview)")]
     NativeOnly,
-    /// Installing a fragment under a parent was refused — a colliding Id, a
-    /// requirement the base does not have.
     #[error("install: {0}")]
     Install(#[from] InstallError),
-    /// The model carries no extension under that key.
     #[error("no extension {0:?}")]
     NoExtension(String),
 }
@@ -263,8 +152,6 @@ impl EditorError {
         }
     }
 
-    /// The wire code a client branches on. The message stays for a person;
-    /// this is what a commit gate or a mesh editor reacts to.
     pub fn code(&self) -> ErrorCode {
         if self.limit_info().is_some() {
             return ErrorCode::LimitExceeded;
@@ -299,10 +186,7 @@ impl EditorError {
             Self::Preview(_) => ErrorCode::Preview,
             Self::NativeOnly => ErrorCode::NativeOnly,
             Self::NoExtension(_) => ErrorCode::NoExtension,
-            // Install's refusals are the model's refusals under other names,
-            // so they answer with the codes the equivalent edit answers with
-            // — a client that branches on `duplicate_id` for an add branches
-            // on it for an import that collides.
+            // Install's refusals answer with the codes the equivalent edit gets.
             Self::Install(e) => match e {
                 InstallError::Collision { .. } => ErrorCode::DuplicateId,
                 InstallError::Missing { id, .. } => match id {
@@ -316,11 +200,8 @@ impl EditorError {
                 InstallError::WeldSlotPairedTwice { .. } => ErrorCode::WeldSlotPairedTwice,
                 InstallError::WeldEndNotAPart { .. } => ErrorCode::BadWeldEnd,
                 InstallError::DuplicateWeld { .. } => ErrorCode::DuplicateWeld,
-                // The model's own refusal, carried whole: it answers with the
-                // code the same refusal gets from an edit.
                 InstallError::Model(e) => model_error_code(e),
-                // `InstallError` is non-exhaustive; a refusal with no code of
-                // its own is an ordinary one.
+                // `InstallError` is non-exhaustive.
                 _ => ErrorCode::Edit,
             },
             Self::Edit(e) => model_error_code(e),
@@ -328,9 +209,6 @@ impl EditorError {
     }
 }
 
-/// The wire code for one of the model's own refusals, whichever command it
-/// came back from. The model refuses an edit for many reasons; the ones a
-/// client acts on differently get their own code, the rest are `Edit`.
 fn model_error_code(e: &ModelError) -> ErrorCode {
     match e {
         ModelError::UnknownNode => ErrorCode::NoNode,
@@ -356,53 +234,33 @@ fn model_error_code(e: &ModelError) -> ErrorCode {
     }
 }
 
-/// What every session's Id seed is derived from. Fixed, so a given
-/// [`SessionId`] always draws the same sequence.
+/// Fixed, so a given [`SessionId`] always draws the same sequence.
 const ID_SEED: u32 = 0x1d5e_ed01;
 
-/// The Id source for one session, seeded from its [`SessionId`].
-///
-/// **Deterministic and per-session, both on purpose.** Deterministic because a
-/// test that pins a generated Id has to keep passing, and because a model
-/// built by replaying a recorded script should come out byte-identical.
-/// Per-session because uniqueness is checked *within* a model: two sessions
-/// sharing one seed mint the same Ids for the same edits, so a part copied
-/// between them collides on arrival and an addon extracted from one names
-/// something in the other by accident.
-///
-/// The seed is drawn *by* a `SeededHex` rather than mixed here, so consecutive
-/// session ids land far apart in the sequence instead of one Weyl step apart —
-/// which is what adding the id to the seed would have done, making session 2's
-/// first Id session 1's second.
+/// Deterministic so a replayed script rebuilds a byte-identical model;
+/// per-session so two open sessions do not mint the same Ids for the same
+/// edits. The seed is drawn through a `SeededHex` so consecutive session ids
+/// land far apart in the sequence rather than one Weyl step apart.
 fn session_hex(id: SessionId) -> SeededHex {
     SeededHex::new(SeededHex::new(ID_SEED ^ id.0 as u32).next_bits())
 }
 
 struct Session {
     model: Model,
-    /// Where generated Ids come from. See [`session_hex`]: seeded from the
-    /// session's own Id, so two sessions never mint the same one for the same
-    /// edits. Uniqueness within a model is still the model's job.
     hex: SeededHex,
     title: String,
-    /// The storage key this session was opened from / last saved to, if any.
-    /// Opaque — see [`storage`].
+    /// Opaque storage key this session was opened from or last saved to.
     file: Option<String>,
     rev: u64,
     saved_rev: u64,
     history: ModelHistory,
     /// Set while holding this handle before removing it from the registry.
     closed: bool,
-    /// Lazily baked from `model` for preview. Rebaked by its own generation
-    /// gate on the next use after an edit, so nothing has to invalidate it.
     puppet: Option<Puppet>,
-    /// Navigation discards scratch and response state, but carries the preview pose
-    /// into the next lazy runtime. Also held while a renderer owns the Puppet
-    /// outside the session lock, so navigation cannot lose that captured pose.
+    /// Carries the preview pose across navigation, and while a renderer owns
+    /// the Puppet outside the session lock.
     pending_preview_pose: Option<Pose>,
-    /// rev-gated model view for in-process observers (the GUI).
     snapshot: Option<Arc<DocSnapshot>>,
-    /// Latest shared view state — its own path, never touches the model/rev.
     presence: Option<Presence>,
 }
 
@@ -445,11 +303,7 @@ impl Session {
         Ok(())
     }
 
-    /// Creation splits the borrow between the model and its Id source.
-    ///
-    /// `id` is the Id the request asked for; `None` draws a free one. The
-    /// model refuses a chosen Id it already carries, which is the whole check
-    /// — the charset was validated where the request was decoded.
+    /// `id: None` draws a free Id; the charset was validated at decode.
     fn add_node(
         &mut self,
         parent: &NodeId,
@@ -481,9 +335,6 @@ impl Session {
         }
     }
 
-    /// Add `texture` and point `part` at it, in one edit. Hands back the new
-    /// Id and whatever the upload displaced: a texture the part had been the
-    /// last to draw goes with the same edit.
     fn add_texture(
         &mut self,
         part: &NodeId,
@@ -520,8 +371,6 @@ impl Session {
         self.rev != self.saved_rev
     }
 
-    /// The session's puppet and the model it animates, baked on first use and
-    /// rebaked by [`Puppet::sync`] when the model has moved since.
     fn puppet(&mut self) -> (&Model, &mut Puppet) {
         // Destructured so the model and the puppet are two borrows of two
         // fields rather than one of the session.
@@ -533,9 +382,8 @@ impl Session {
         } = self;
         let puppet = puppet.get_or_insert_with(|| {
             let mut built = Puppet::new(model);
-            // Disabling motion responses keeps the authoring preview deterministic (the
-            // dt=0 tick can't integrate anyway) and lets response-driven
-            // params be posed by hand.
+            // Disabling motion responses keeps the authoring preview
+            // deterministic and lets response-driven params be posed by hand.
             built.set_motion_responses_enabled(false);
             if let Some(pose) = pending_preview_pose.take() {
                 built.apply_pose(&pose);
@@ -592,40 +440,24 @@ impl<T> Captured<T> {
     }
 }
 
-/// A callback the editor hands every [`Event`] to.
-///
-/// It is called with no editor lock held, from whichever thread ran the
-/// command, so it may call straight back into [`Editor`] — a transport
-/// observer does exactly that, reading the session it was told changed.
+/// Called with no editor lock held, so it may re-enter [`Editor`].
 pub type Observer = Box<dyn Fn(&Event) + Send + Sync>;
 
-/// One registered [`Observer`], shared so the list can be copied out from
-/// under the lock before any of them is called.
 type SharedObserver = Arc<dyn Fn(&Event) + Send + Sync>;
 
-/// The bytes that came in beside one command, by attachment name.
-///
-/// Built by whatever transport carried them and handed to
-/// [`Editor::handle_with`], which checks the names against [`COMMAND_BYTES`]
-/// before any command runs. A dispatch arm then takes what its command
-/// declared; nothing else can reach them, and nothing is left over anywhere
-/// for a later command to find.
+/// Checked against [`COMMAND_BYTES`] before any command runs.
 #[derive(Debug, Default)]
 pub struct Attachments(std::collections::BTreeMap<String, Vec<u8>>);
 
 impl Attachments {
-    /// Nothing attached — every command that declares no bytes, and every
-    /// transport that cannot carry any.
     pub fn none() -> Self {
         Self::default()
     }
 
-    /// One attachment under `name`. Replaces a name given twice.
     pub fn insert(&mut self, name: impl Into<String>, bytes: Vec<u8>) {
         self.0.insert(name.into(), bytes);
     }
 
-    /// Every name attached, sorted.
     pub fn names(&self) -> Vec<&str> {
         self.0.keys().map(String::as_str).collect()
     }
@@ -634,15 +466,10 @@ impl Attachments {
         self.0.is_empty()
     }
 
-    /// Take the bytes attached under exactly `name`.
     pub fn take(&mut self, name: &str) -> Option<Vec<u8>> {
         self.0.remove(name)
     }
 
-    /// Take every `<family>:<suffix>` attachment, as `(suffix, bytes)` pairs
-    /// in name order. Draining rather than borrowing: the suffixes are the
-    /// command's to match against its own fields, and what it does not
-    /// recognise it has already been handed.
     pub fn take_family(&mut self, family: &str) -> Vec<(String, Vec<u8>)> {
         let prefix = format!("{family}:");
         let names: Vec<String> = self
@@ -667,7 +494,6 @@ impl FromIterator<(String, Vec<u8>)> for Attachments {
     }
 }
 
-/// The bytes a reply carries back, beside the JSON.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Payload {
     pub content_type: &'static str,
@@ -677,20 +503,16 @@ pub struct Payload {
 pub struct Editor {
     sessions: Mutex<HashMap<SessionId, Arc<Mutex<Session>>>>,
     next_id: AtomicU64,
-    /// Everyone listening for [`Event`]s, by the handle [`Editor::subscribe`]
-    /// gave out.
     observers: Mutex<Vec<(u64, SharedObserver)>>,
     next_observer: AtomicU64,
-    /// Resolves the keys the protocol calls `path`. See [`storage`].
     storage: Arc<dyn Storage>,
     #[cfg(not(target_arch = "wasm32"))]
     preview: Mutex<Option<PreviewRenderer>>,
 }
 
 impl Editor {
-    /// An editor over the ambient default store: the filesystem natively,
-    /// rooted at the current directory, [`NoStorage`] on wasm — where the host
-    /// must supply one with [`Editor::with_storage`].
+    /// Filesystem rooted at the cwd natively; [`NoStorage`] on wasm, where the
+    /// host must use [`Editor::with_storage`].
     pub fn new() -> Self {
         #[cfg(not(target_arch = "wasm32"))]
         let storage = Arc::new(FileStorage::default());
@@ -699,7 +521,6 @@ impl Editor {
         Self::with_storage(storage)
     }
 
-    /// An editor whose `path` keys resolve through `storage`.
     pub fn with_storage(storage: Arc<dyn Storage>) -> Self {
         Self {
             sessions: Mutex::new(HashMap::new()),
@@ -712,22 +533,12 @@ impl Editor {
         }
     }
 
-    /// Apply one request that carries no bytes and wants none back.
-    ///
-    /// [`Self::handle_with`] with nothing attached, discarding a payload. For
-    /// tests, for the in-process GUI, and for a transport that refuses a
-    /// byte-bearing command before it ever gets here — a byte-bearing command
-    /// sent this way is refused, because its attachment is missing.
+    /// [`Self::handle_with`] with nothing attached; byte-bearing commands are
+    /// refused.
     pub fn handle(&self, req: Request) -> Reply {
         self.handle_with(req, Attachments::none()).0
     }
 
-    /// Apply one request and produce its reply, with the bytes that came in
-    /// beside it and the bytes that go back.
-    ///
-    /// The one call the editor sits behind. Every transport is glue for its
-    /// two halves: how `attachments` were framed on the way in, and how the
-    /// [`Payload`] is framed on the way out.
     pub fn handle_with(&self, req: Request, attachments: Attachments) -> (Reply, Option<Payload>) {
         let mut attachments = attachments;
         let mut payload = None;
@@ -759,40 +570,29 @@ impl Editor {
         (reply, payload)
     }
 
-    /// One session's revision, or `None` if it is not open — which is what a
-    /// `session_close` reply reports, its session having just gone.
+    /// `None` if the session is not open.
     fn rev(&self, id: SessionId) -> Option<u64> {
         self.with_session(id, |s| Ok(s.rev)).ok()
     }
 
-    /// The current live revision. To stamp model data coherently, use
-    /// [`Self::with_model_revision`] instead of reading the counter separately.
+    /// To stamp model data coherently, use [`Self::with_model_revision`].
     pub fn revision(&self, id: SessionId) -> Option<u64> {
         self.rev(id)
     }
 
-    /// Register `observer` for every [`Event`] this editor emits, and hand
-    /// back the handle [`Editor::unsubscribe`] takes.
-    ///
-    /// The callback runs on whichever thread ran the command, with no editor
-    /// lock held.
+    /// The callback runs on the command's thread with no editor lock held.
     pub fn subscribe(&self, observer: Observer) -> u64 {
         let handle = self.next_observer.fetch_add(1, Ordering::Relaxed);
         lock(&self.observers).push((handle, Arc::from(observer)));
         handle
     }
 
-    /// Drop the observer `handle` names. Unknown handles are ignored, so
-    /// unsubscribing twice is safe.
     pub fn unsubscribe(&self, handle: u64) {
         lock(&self.observers).retain(|(h, _)| *h != handle);
     }
 
-    /// Hand `event` to every observer.
-    ///
-    /// The list is copied out and the guard dropped before the first call: an
-    /// observer reads the editor, and one that subscribed or unsubscribed
-    /// from inside a callback would otherwise deadlock on this very lock.
+    /// The list is copied out before the first call so an observer may
+    /// (un)subscribe re-entrantly without deadlocking.
     fn notify(&self, event: Event) {
         let observers: Vec<SharedObserver> = {
             let guard = lock(&self.observers);
@@ -803,15 +603,10 @@ impl Editor {
         }
     }
 
-    /// Say that `session`'s model now reads as `rev`. Every revision move
-    /// routes through here, and so does a save — a title bar reads `dirty` the
-    /// same way it reads the tree.
     fn notify_model_changed(&self, session: SessionId, rev: u64) {
         self.notify(Event::ModelChanged { session, rev });
     }
 
-    /// Say that the set of open sessions changed. Carries nothing: an
-    /// observer that cares re-reads the list.
     fn notify_sessions(&self) {
         self.notify(Event::SessionsChanged);
     }
@@ -820,8 +615,6 @@ impl Editor {
         SessionId(self.next_id.fetch_add(1, Ordering::Relaxed))
     }
 
-    /// The one place a session joins the editor — and so the one place
-    /// `SessionsChanged` is emitted. The map guard is dropped first.
     fn insert_session(&self, id: SessionId, session: Session) {
         lock(&self.sessions).insert(id, Arc::new(Mutex::new(session)));
         self.notify_sessions();
@@ -834,15 +627,12 @@ impl Editor {
             .ok_or(EditorError::NoSession(id))
     }
 
-    /// Serialize a session to `.clm` bytes; the caller owns where the bytes
-    /// land (blob download, OPFS, a file) and confirms with [`Self::mark_saved`]
-    /// once they actually landed — a failed download must not clear the dirty
-    /// flag.
+    /// The caller confirms with [`Self::mark_saved`] once the bytes actually
+    /// land; a failed download must not clear the dirty flag.
     pub fn save_bytes(&self, id: SessionId) -> Result<Vec<u8>, EditorError> {
         self.with_session(id, |s| Ok(s.model.to_clm_bytes()?))
     }
 
-    /// Record that the caller durably persisted the bytes from `save_bytes`.
     pub fn mark_saved(&self, id: SessionId) -> Result<(), EditorError> {
         let rev = self.with_session(id, |s| {
             s.saved_rev = s.rev;
@@ -852,19 +642,14 @@ impl Editor {
         Ok(())
     }
 
-    /// Undo/redo stack depths — the history panel's scrub range.
     pub fn history(&self, id: SessionId) -> Result<(usize, usize), EditorError> {
         self.with_session(id, |s| Ok(s.history.depths()))
     }
 
-    /// Is the session dirty (unsaved edits since the last save/save_bytes)?
     pub fn is_dirty(&self, id: SessionId) -> Result<bool, EditorError> {
         self.with_session(id, |s| Ok(s.dirty()))
     }
 
-    /// Read the session's model directly — the in-process observer path for
-    /// panels that need more than the tree snapshot (inspector, textures).
-    /// Deep-read protocol commands wait until a remote client exists.
     pub fn with_model<R>(
         &self,
         id: SessionId,
@@ -873,7 +658,6 @@ impl Editor {
         self.with_session(id, |s| Ok(f(&s.model)))
     }
 
-    /// Read model data and its live revision inside one session lock.
     pub fn with_model_revision<R>(
         &self,
         id: SessionId,
@@ -882,8 +666,6 @@ impl Editor {
         self.with_session(id, |s| Ok(f(&s.model, s.rev)))
     }
 
-    /// Register an already-encoded PNG/TGA texture from bytes (the browser
-    /// picker path; native flows can keep handing paths to `TextureAdd`).
     pub fn add_texture_bytes(
         &self,
         id: SessionId,
@@ -906,8 +688,6 @@ impl Editor {
         })
     }
 
-    /// Read session state without publishing a model edit. The captured helper
-    /// also carries the revision for protocol replies and asynchronous output.
     fn with_session<R>(
         &self,
         id: SessionId,
@@ -940,10 +720,8 @@ impl Editor {
             .map(|captured| captured.value)
     }
 
-    /// The single publication seam for authored edits. The same exclusive
-    /// lock covers guards inside `f`, snapshot, execution, content comparison,
-    /// history and revision publication. Callbacks run only after unlocking.
-    /// A failed or final-content no-op edit restores its original model/rev.
+    /// The single publication seam for authored edits; callbacks run only
+    /// after unlocking. A failed or no-op edit restores the original model/rev.
     fn edit_session_captured<R>(
         &self,
         id: SessionId,
@@ -1013,8 +791,6 @@ impl Editor {
         Ok(captured)
     }
 
-    /// Current model view for an in-process observer (the GUI), rebuilt only
-    /// when the session's revision changed.
     pub fn doc_snapshot(&self, id: SessionId) -> Option<Arc<DocSnapshot>> {
         let session = self.session(id).ok()?;
         let mut session = lock(&session);
@@ -1038,7 +814,6 @@ impl Editor {
         Some(snap)
     }
 
-    /// In-process shared-view read/write (the presence path) for the GUI.
     pub fn set_presence(&self, id: SessionId, presence: Presence) -> bool {
         self.with_session(id, |s| {
             s.presence = Some(presence);
@@ -1053,10 +828,6 @@ impl Editor {
             .flatten()
     }
 
-    /// Run `f` with the session's model and the puppet animating it, baking
-    /// the puppet lazily and rebaking it if the model changed. The in-process
-    /// GUI viewport renders them on eframe's own wgpu device (no readback);
-    /// neither leaves the session lock.
     pub fn with_puppet<R>(
         &self,
         id: SessionId,
@@ -1069,14 +840,10 @@ impl Editor {
         Ok(f(model, puppet))
     }
 
-    /// The one match over every command. `attachments` holds the bytes that
-    /// came in with it, already checked against what it declared; an arm that
-    /// answers with bytes writes them into `payload`.
     fn dispatch(
         &self,
         cmd: Command,
         attachments: &mut Attachments,
-        // Export and extension reads are portable; preview rendering is native.
         payload: &mut Option<Payload>,
     ) -> Result<Captured<ResponseBody>, EditorError> {
         match cmd {
@@ -1135,16 +902,14 @@ impl Editor {
                         None => s.file.clone().ok_or(EditorError::NoSavePath)?,
                     };
                     let bytes = s.model.to_clm_bytes()?;
-                    // Save publication includes its persistent write. Closing
-                    // and later saves wait; failure leaves session metadata
-                    // untouched. Other sessions retain their independent locks.
+                    // Save publication includes its persistent write; failure
+                    // leaves session metadata untouched.
                     self.storage.write(&key, &bytes)?;
                     s.file = Some(key.clone());
                     s.saved_rev = s.rev;
                     (key, s.rev)
                 };
-                // A save moves no revision but does flip `dirty`, which a
-                // title bar reads the same way it reads the tree.
+                // A save moves no revision but flips `dirty`.
                 self.notify_model_changed(session, rev);
                 Ok(Captured::at(ResponseBody::Saved { path: key }, rev))
             }
@@ -1171,8 +936,6 @@ impl Editor {
                     (manifest, textures, s.rev)
                 };
                 self.storage.write(&path, manifest.as_bytes())?;
-                // Textures land beside the manifest, as its own references
-                // expect them.
                 let base = parent_key(&path).to_string();
                 for (name, data) in textures {
                     self.storage.write(&join_key(&base, &name), &data)?;
@@ -1193,9 +956,6 @@ impl Editor {
                     },
                 })
             }),
-            // The model-only reads. A browser tab answers these against its
-            // own replica, so they live in `query` and the editor runs the
-            // very same code against the session's model.
             Command::MeshGet { session, .. }
             | Command::ModelGet { session, .. }
             | Command::GeometryGet { session, .. }
@@ -1390,8 +1150,7 @@ impl Editor {
                 encoding,
                 texture: id,
             } => {
-                // The gate already refused a command with no `texture`
-                // attached, so this is the bytes the caller sent.
+                // The attachment gate already refused a missing `texture`.
                 let bytes = attachments.take("texture").unwrap_or_default();
                 let encoding = encoding.into();
                 self.edit_session_captured(session, move |s| {
@@ -1745,7 +1504,6 @@ impl Editor {
                 size,
                 camera,
             } => self.run_preview(session, pose, size, camera, payload),
-            // Preview requires the native headless renderer.
             #[cfg(target_arch = "wasm32")]
             Command::Preview { .. } => Err(EditorError::NativeOnly),
             Command::ExtensionSet {
@@ -1753,9 +1511,8 @@ impl Editor {
                 key,
                 value,
             } => {
-                // The gate has already refused a `value` attachment the
-                // command did not declare; which of the two kinds it is is
-                // this arm's to decide, because only the command knows.
+                // The gate refused undeclared attachments; which kind of value
+                // this is depends on the command.
                 let attached = attachments.take("value");
                 let value = match (value, attached) {
                     (ExtensionSet::Json { .. }, Some(_)) => {
@@ -1793,8 +1550,6 @@ impl Editor {
                 })?;
                 let (info, bytes) = captured.value;
                 if let Some(bytes) = bytes {
-                    // Bytes are the reply's payload, the way a preview's PNG
-                    // is: what a `.clm` holds opaquely leaves the same way.
                     *payload = Some(Payload {
                         content_type: "application/octet-stream",
                         bytes: bytes.to_vec(),
@@ -1814,11 +1569,6 @@ impl Editor {
         }
     }
 
-    /// Render one frame and hand back the PNG as the reply's payload.
-    ///
-    /// Nothing is written to a filesystem: the bytes go where the reply goes,
-    /// so a caller with no shared disk — a browser tab, a script on the other
-    /// side of HTTP — gets the same answer as one sitting next to the server.
     #[cfg(not(target_arch = "wasm32"))]
     fn run_preview(
         &self,
@@ -1836,18 +1586,14 @@ impl Editor {
             height: c.height,
         });
         let handle = self.session(session)?;
-        // The model is cloned rather than borrowed so the session lock is not
-        // held across the GPU render; a clone is a shallow copy sharing every
-        // heavy leaf, and it carries the same identity and generation, so the
-        // puppet and the cache accept it as the model they were built from.
+        // Cloned (shallow, same identity and generation) so the session lock
+        // is not held across the GPU render.
         let (model, mut puppet, rev) = {
             let mut s = lock(&handle);
             s.ensure_open(session)?;
             let puppet = s.take_preview_puppet()?;
             (s.model.clone(), puppet, s.rev)
         };
-        // Params are scalar and the wire names them by Id, so a pose is
-        // the [`Pose`] the model evaluates, with nothing to resolve.
         let pose: Pose = params.into_iter().map(|p| (p.param, p.value)).collect();
 
         let render_result = (|| {
@@ -1903,8 +1649,6 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
 }
 
-/// The binding one request names. A `param_y` makes it a two-param binding
-/// whose grid spans its two binding-owned position axes.
 fn binding_key(
     params: BindingParams,
     node: NodeId,
@@ -1917,24 +1661,16 @@ fn binding_key(
     })
 }
 
-/// Refuse joints the turn pass cannot compose, as the `BadTarget` a spine
-/// command has always answered with.
-///
-/// The rule is the core's ([`ModelSpine::check_joints`]) and the model's own
-/// mutators hold every spine to it; it is asked here first so a command is
-/// refused before it has minted a param or a node around the joints.
+/// Checked before a command mints a param or node around the joints.
 fn check_spine_joints(joints: &[[f32; 2]]) -> Result<(), EditorError> {
     ModelSpine::check_joints(joints).map_err(|e| EditorError::BadTarget(e.to_string()))
 }
 
-/// One authored transform as a matrix, through the core's own conversion so it
-/// is the same composition a bake would build.
 fn clm_transform_matrix(t: &catchlight_core::formats::clm::ClmTransform) -> Mat4 {
     catchlight_core::Transform::from(t).to_matrix()
 }
 
-/// The spine a fit will remeasure. A response chain can sit between the
-/// mesh and its spine without owning any geometry.
+/// A response chain can sit between the mesh and its spine.
 fn fitted_spine<'a>(model: &'a Model, node: &'a ModelNode) -> Option<&'a NodeId> {
     node.mesh()?;
     let mut parent = node.parent()?;
@@ -1948,8 +1684,7 @@ fn fitted_spine<'a>(model: &'a Model, node: &'a ModelNode) -> Option<&'a NodeId>
     }
 }
 
-/// Compose rest transforms up to a chosen frame. A root-locked node ends
-/// inheritance, so its matrix is already in world space.
+/// A root-locked node ends inheritance, so its matrix is already world space.
 fn rest_to_frame(model: &Model, id: &NodeId, frame: Option<&NodeId>) -> Result<Mat4, EditorError> {
     let mut cursor = Some(id);
     let mut matrix = Mat4::IDENTITY;
@@ -1976,8 +1711,6 @@ fn rest_to_frame(model: &Model, id: &NodeId, frame: Option<&NodeId>) -> Result<M
     Ok(matrix)
 }
 
-/// Measure joints in the spine's rest frame. Reuse a fitted spine and its
-/// bend params, or insert a new spine at the part's parent.
 fn spine_fit(
     s: &mut Session,
     part: &NodeId,
@@ -1991,7 +1724,6 @@ fn spine_fit(
             "a spine needs at least one link".into(),
         ));
     }
-    // Everything read off the part before the model is touched.
     let node = s
         .model
         .node(part)
@@ -2031,7 +1763,6 @@ fn spine_fit(
         .collect();
     check_spine_joints(&joints)?;
 
-    // The params the spine being re-fitted already reads.
     let held_targets = match &existing {
         Some(spine) => match s.model.node(spine).map(|n| &n.kind) {
             Some(ModelNodeKind::Spine(sp)) => sp.targets().to_vec(),
@@ -2040,11 +1771,8 @@ fn spine_fit(
         None => Vec::new(),
     };
 
-    // One param per link, reusing what the spine already read. A link that
-    // read nothing, and every link past the old end, gets a fresh one. The
-    // range is half turns outright — a spine reads a param's value and not
-    // its position along a range — with a key at each end and nothing keyed
-    // in between, because a spine carries no cells to key.
+    // Range is half turns, keyed only at its ends: a spine reads a param's
+    // value, not its position along a range, and carries no cells to key.
     let mut params = Vec::with_capacity(count);
     for i in 0..count {
         match held_targets.get(i).and_then(Option::as_ref) {
@@ -2105,12 +1833,6 @@ fn spine_fit(
     Ok(ResponseBody::SpineFit { node, params })
 }
 
-/// The wire's mesh as the model stores one.
-///
-/// The wire types carry the arity — a vertex is a pair and a triangle is a
-/// triple — so the only thing left to check is that the two lists are the same
-/// length and that every corner names a vertex that exists. `ClmMesh` is flat,
-/// so this is also where the pairs are run together.
 fn build_mesh(
     verts: Vec<[f32; 2]>,
     uvs: Vec<[f32; 2]>,
@@ -2139,20 +1861,9 @@ fn build_mesh(
     })
 }
 
-/// Derive `node`'s mesh from the alpha of the texture it draws.
-///
-/// **The editor traces, because the editor holds the bytes.** A client that
-/// did this itself would decode the image, guess the UV mapping, and send back
-/// a mesh — and any of the three could disagree with what the editor thinks
-/// the part looks like.
-///
-/// **The UV mapping comes from the mesh being replaced, when there is one to
-/// read.** `UvMap::fit` recovers where the texture actually sits relative to
-/// the node's origin, which is not the centered convention for a model
-/// imported with cropped textures; falling back to the texture's own size is
-/// right only for a part that has nothing to fit. Getting this wrong moves the
-/// art rather than failing, so the fit comes first — which is also what the
-/// desktop mesh editor does, so both produce the same mesh.
+/// The UV mapping is fitted from the mesh being replaced when there is one:
+/// cropped imported textures are not centred, and a wrong guess moves the art
+/// rather than failing.
 fn automesh(model: &Model, node: &NodeId, mode: AutoMesh) -> Result<ClmMesh, EditorError> {
     let Some(ModelNodeKind::Part(part)) = model.node(node).map(|n| &n.kind) else {
         return match model.node(node) {
@@ -2228,9 +1939,6 @@ fn automesh(model: &Model, node: &NodeId, mode: AutoMesh) -> Result<ClmMesh, Edi
     Ok(working.to_mesh(&uv_map, Some(&alpha))?)
 }
 
-/// Re-authoring a mesh empties every slot on the part: which ones is what a
-/// commit gate and a "refill these" prompt are built from, so it is the
-/// reply rather than something the client has to go and ask for.
 fn emptied_reply(node: NodeId, emptied: Vec<SlotId>) -> ResponseBody {
     ResponseBody::Emptied {
         node,
@@ -2238,9 +1946,6 @@ fn emptied_reply(node: NodeId, emptied: Vec<SlotId>) -> ResponseBody {
     }
 }
 
-/// A weld is two parts and the pairs between them, exactly as the wire says.
-/// Empty `pairs` records the two parts as welded and joins nothing yet; the
-/// model checks every pair against the slots each part carries.
 fn build_weld(a: NodeId, b: NodeId, pairs: Vec<SlotPair>) -> ModelWeld {
     ModelWeld::new(
         a,
@@ -2256,19 +1961,15 @@ fn build_weld(a: NodeId, b: NodeId, pairs: Vec<SlotPair>) -> ModelWeld {
     )
 }
 
-/// Two welds join the same pair of parts, in either order.
 fn pairs_the_same_parts(one: &ModelWeld, other: &ModelWeld) -> bool {
     (one.a() == other.a() && one.b() == other.b()) || (one.a() == other.b() && one.b() == other.a())
 }
 
-/// Whether `weld` is the one joining these two parts. A weld has no Id of its
-/// own — its two ends are what names it — so either order finds it.
 fn joins(weld: &ModelWeld, a: &NodeId, b: &NodeId) -> bool {
     (weld.a() == a && weld.b() == b) || (weld.a() == b && weld.b() == a)
 }
 
-/// In-process model view handed to observers (the GUI); refs are stable for
-/// the session's lifetime.
+/// Refs are stable for the session's lifetime.
 #[derive(Debug, Clone)]
 pub struct DocSnapshot {
     pub rev: u64,
@@ -2385,18 +2086,6 @@ fn set_opacity(kind: &mut ModelNodeKind, op: f32) {
     }
 }
 
-/// The encoding a storage key's extension implies. A key is opaque to
-/// everything else; this is the one place its tail is read, and only to
-/// pick a decoder.
-/// Build a [`clm::ClmFile`] from a JSON structure and the images that came
-/// with it.
-///
-/// Two pairings have to hold and both are the client's to get right, so both
-/// are refused here naming what is wrong: every declared texture needs its
-/// attachment, and every attachment needs a declaration. A texture the
-/// *structure* references but nobody declared is left to the reader, which
-/// already refuses a dangling albedo by Id — one check, in the one place that
-/// knows what a structure references.
 fn clm_file_from_json(
     structure: &[u8],
     textures: &[ImportTexture],
@@ -2426,9 +2115,8 @@ fn clm_file_from_json(
             data,
         });
     }
-    // Whatever is left named a texture the command did not declare. Silently
-    // dropping it would import a model missing an image the client thought it
-    // had sent.
+    // Leftover attachments named undeclared textures; dropping them silently
+    // would import a model missing an image.
     if let Some(stray) = attached.keys().min() {
         return Err(EditorError::BadRequest(format!(
             "attachment texture:{stray} names no texture this import declared"
@@ -2446,18 +2134,8 @@ fn clm_file_from_json(
     })
 }
 
-/// Read a decoded `.clm` as a fragment whose every root hangs from `parent`.
-///
-/// The two shapes are disjoint on the wire — a complete model has exactly one
-/// parentless node and a fragment has none — so this re-parents at the
-/// structure, before either reader sees it: a node whose named parent the
-/// structure does not itself carry is one of its roots, and a complete model's
-/// root, which names no parent at all, is the same thing. Both then read as a
-/// fragment, and [`Model::install`] applies the same checks to either.
-///
-/// The `parent` on the wire wins over whatever a fragment's roots name: a
-/// client says where a subtree goes, and an addon authored against another
-/// base does not get to say it instead.
+/// Re-parents every root (a complete model's root or a fragment's unparented
+/// nodes) under `parent`; the wire's `parent` wins over what a fragment names.
 fn fragment_under(mut file: clm::ClmFile, parent: &NodeId) -> Result<Model, EditorError> {
     let carried: std::collections::HashSet<&NodeId> =
         file.doc.nodes.iter().map(|n| &n.id).collect();
@@ -2475,12 +2153,6 @@ fn fragment_under(mut file: clm::ClmFile, parent: &NodeId) -> Result<Model, Edit
     Ok(Model::from_clm_file_fragment(&file)?)
 }
 
-/// Hold one command's attachments to what it declared in [`COMMAND_BYTES`].
-///
-/// Two refusals, both before the command runs: a name the command does not
-/// declare at all, and an [`Attachment::Fixed`] name that did not arrive. So a
-/// dispatch arm can take what its command declared without deciding what to do
-/// when it is not there.
 fn check_attachments(cmd: &Command, attachments: &Attachments) -> Result<(), EditorError> {
     let declared: &[Attachment] = cmd.bytes().map_or(&[], |b| b.attachments);
     for name in attachments.names() {
@@ -2504,26 +2176,10 @@ fn check_attachments(cmd: &Command, attachments: &Attachments) -> Result<(), Edi
     Ok(())
 }
 
-/// What bytes this command carries, or `None` if it carries none.
-///
-/// The one question every transport asks, phrased once — and it is
-/// [`Command::carries_bytes`], which answers for the command in hand rather
-/// than for its tag. The two differ only where an attachment is optional: an
-/// `extension_set` of a JSON value carries nothing, and the socket takes it
-/// like any other small command.
-///
-/// A transport that cannot carry bytes refuses anything this answers `Some`
-/// for with [`ErrorCode::BulkOverHttp`]; one that can reads the row to know
-/// what to frame in, and whether a payload is coming back.
 pub fn carries_bytes(cmd: &Command) -> Option<&'static Bytes> {
     cmd.carries_bytes()
 }
 
-/// How to read an image, from the tail of the reference that named it.
-///
-/// The one place a key's shape is read, and it is a *manifest's* references
-/// rather than a command's: a manifest names files by path and says nothing
-/// about how they are encoded. Every command carries an `encoding` field.
 fn encoding_from_path(path: &str) -> CoreTextureEncoding {
     if path.to_ascii_lowercase().ends_with(".tga") {
         CoreTextureEncoding::Tga
@@ -2647,10 +2303,8 @@ mod tests {
         server_thread.join().unwrap();
     }
 
-    /// An Id is validated where the request is decoded, so a string outside
-    /// the charset never reaches a command. It still has to come back as a
-    /// structured error carrying the *request's* id: a client blocks reading
-    /// until it sees its own id, so an error correlated to 0 would hang it.
+    /// A bad Id must be refused with the request's id: a client blocking on
+    /// its own id would otherwise hang.
     #[cfg(unix)]
     #[test]
     fn an_invalid_id_on_the_wire_is_an_error_against_the_requests_own_id() {
@@ -2659,8 +2313,6 @@ mod tests {
             let editor = Editor::new();
             serve_connection(&editor, server);
         });
-        // `a b` has a space; `.hidden` opens with a dot. Both are refused by
-        // `catchlight_core::id`, and an unknown command shares the code.
         for line in [
             br#"{"id":11,"cmd":"node_delete","session":1,"node":"a b"}"#.as_slice(),
             br#"{"id":12,"cmd":"node_delete","session":1,"node":".hidden"}"#.as_slice(),
@@ -2689,8 +2341,6 @@ mod tests {
         server_thread.join().unwrap();
     }
 
-    /// A well-formed Id the model does not carry is a different answer: the
-    /// command parsed, it just names nothing.
     #[test]
     fn a_well_formed_id_the_model_lacks_is_a_no_node_error() {
         let ed = Editor::new();
@@ -2717,11 +2367,8 @@ mod tests {
         ));
     }
 
-    /// Events, and who hears them.
-    ///
-    /// The observer reads the editor from inside the callback, which is the
-    /// point: an emission that still held the sessions map or a session guard
-    /// would deadlock here rather than in whatever transport ships first.
+    /// The observer re-enters the editor; an emission holding a lock would
+    /// deadlock here.
     #[test]
     fn an_observer_hears_every_change_until_it_unsubscribes() {
         let ed = Arc::new(Editor::new());
@@ -2730,7 +2377,6 @@ mod tests {
         let weak = Arc::downgrade(&ed);
         let handle = ed.subscribe(Box::new(move |event| {
             if let (Event::ModelChanged { session, .. }, Some(ed)) = (event, weak.upgrade()) {
-                // Re-entering the editor from an observer is the normal case.
                 ed.with_model(*session, |m| m.node_count()).unwrap();
             }
             lock(&sink).push(event.clone());
@@ -2796,8 +2442,6 @@ mod tests {
         );
     }
 
-    /// Every reply that names a session says which revision it reflects, so a
-    /// client can tell a stale read from a fresh one without asking again.
     #[test]
     fn a_reply_carries_the_revision_it_reflects() {
         let ed = Editor::new();
@@ -2833,7 +2477,6 @@ mod tests {
             ))
         };
         assert!(matches!(add(3), Reply::Ok { rev: Some(1), .. }));
-        // A read of the same session reports it too, unmoved.
         assert!(matches!(
             ed.handle(req(4, Command::NodeTree { session: s })),
             Reply::Ok { rev: Some(1), .. }
@@ -2966,7 +2609,6 @@ mod tests {
             ResponseBody::Saved { .. }
         ));
 
-        // a fresh session opened from the saved file has the same node count.
         let s2 = session_of(body(ed.handle(req(
             7,
             Command::SessionOpen {
@@ -2982,8 +2624,6 @@ mod tests {
         let _ = std::fs::remove_file(&tmp);
     }
 
-    /// A 1x1 PNG, which is what an upload validates and what the dimensions
-    /// come from. The bytes are never looked at again.
     fn one_pixel_png(rgba: [u8; 4]) -> Vec<u8> {
         let image = image::RgbaImage::from_raw(1, 1, rgba.to_vec()).expect("1x1");
         let mut out = std::io::Cursor::new(Vec::new());
@@ -3020,9 +2660,6 @@ mod tests {
         }
     }
 
-    /// An upload names the part it is for and both land in one edit: one
-    /// revision, and no moment where the session holds a texture nothing
-    /// draws.
     #[test]
     fn an_upload_adds_the_texture_and_assigns_it_in_one_edit() {
         let ed = Editor::new();
@@ -3057,9 +2694,6 @@ mod tests {
         );
     }
 
-    /// The cascade is in the reply: an edit that leaves a texture with no part
-    /// drawing it deletes it, and a client that has to tell an author what a
-    /// click cost reads that off the reply rather than diffing the session.
     #[test]
     fn a_reply_names_the_textures_the_edit_deleted() {
         let ed = Editor::new();
@@ -3075,15 +2709,12 @@ mod tests {
             .add_texture_bytes(s, &part, CoreTextureEncoding::Png, one_pixel_png([1; 4]))
             .expect("upload");
 
-        // A second upload to the same part displaces the first, which nothing
-        // else draws.
         let (second, dropped) = ed
             .add_texture_bytes(s, &part, CoreTextureEncoding::Png, one_pixel_png([2; 4]))
             .expect("upload");
         assert_eq!(dropped, vec![first]);
         assert_eq!(texture_ids(&ed, s, 4), vec![second.clone()]);
 
-        // Unmapping the part through the wire says the same thing.
         let other = new_part(&ed, s, 5);
         let (third, _) = ed
             .add_texture_bytes(s, &other, CoreTextureEncoding::Png, one_pixel_png([3; 4]))
@@ -3103,7 +2734,6 @@ mod tests {
             other => panic!("{other:?}"),
         }
 
-        // And so does deleting the last part drawing one.
         match body(ed.handle(req(
             8,
             Command::NodeDelete {
@@ -3386,10 +3016,8 @@ mod tests {
         }
     }
 
-    /// A Preview request names params by Id and a param is a scalar, so the
-    /// pose is the model's own [`Pose`] with nothing to resolve. Pixels are
-    /// what says it landed: a preview that quietly rendered at rest would
-    /// still write a valid PNG.
+    /// Pixels prove the pose landed: a preview rendered at rest would still
+    /// be a valid PNG.
     #[test]
     fn a_preview_honours_the_pose_it_is_given() {
         let bytes = std::fs::read(concat!(

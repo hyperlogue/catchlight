@@ -5,28 +5,9 @@
 //! catchlight-editor <command> ...
 //! ```
 //!
-//! `serve` (the default, and what a bare `.clm` argument means) runs the
-//! editor server on loopback, serves the editor page compiled into this
-//! binary at the same origin, records the HTTP door in the connection file
-//! and opens the browser. Every other command is `catchlight-editor-cli`'s,
-//! which finds that editor through the connection file: an agent runs
-//! `catchlight-editor node tree` against the session a person is looking at,
-//! and the tab sees each edit as it lands.
-//!
-//! Invariants this binary keeps:
-//!
-//! - **One editor per user.** A second `serve` that finds a live editor in
-//!   the connection file opens that one (and the model, if given) instead of
-//!   starting another, so agents and tabs never split across two processes.
-//!   "Live" means the recorded URL accepts the recorded token, not merely
-//!   that something listens on the port. A lock held from that check until
-//!   the new record is written keeps two simultaneous launches from both
-//!   starting.
-//! - **The token never travels unauthenticated.** The server does not serve
-//!   `GET /token`; the browser is opened at `/#token=…`, and a fragment is
-//!   never sent over the wire.
-//! - **Loopback only.** The listener binds `127.0.0.1`; the server's token,
-//!   `Host` and `Origin` checks are unchanged.
+//! A second `serve` that finds a live editor in the connection file opens that
+//! one instead of starting another, so agents and tabs never split across two
+//! processes.
 
 use std::ffi::OsString;
 use std::io::{Read, Write};
@@ -48,8 +29,7 @@ mod ui {
 }
 
 const NAME: &str = "catchlight-editor";
-/// The workflow an agent reads once per session (`catchlight-editor guide`),
-/// shipped in the binary so it always matches the commands it names.
+/// Shipped in the binary so it always matches the commands it names.
 const GUIDE: &str = include_str!("guide.md");
 /// Tried first so a bookmark keeps working; any free port when it is taken.
 const DEFAULT_PORT: u16 = 7323;
@@ -106,8 +86,6 @@ fn main() -> Result<()> {
     }
 }
 
-/// Whether a first argument starts a `serve` without naming it: a launcher
-/// flag, or a model file. Anything else is a cli command.
 fn is_serve_argument(arg: &str) -> bool {
     matches!(arg, "--port" | "--store" | "--no-open")
         || Path::new(arg)
@@ -161,8 +139,7 @@ fn serve(options: Serve) -> Result<()> {
         .ok_or_else(|| anyhow!("no per-user directory for the connection file; set HOME"))?;
 
     // Held from the liveness check until the new record is written, so two
-    // launches at once cannot both decide they are the first. The OS drops
-    // the lock with the process, so a crash leaves nothing to clean up.
+    // launches at once cannot both start. The OS drops it with the process.
     let lock = launch_lock(&connection_path)?;
     if let Some(running) = read_connection(&connection_path).filter(is_live) {
         drop(lock);
@@ -250,14 +227,11 @@ fn serve(options: Serve) -> Result<()> {
     served.context("serving the editor")
 }
 
-/// The page with the token in its fragment, which the browser never sends
-/// back over the wire; the page reads it and drops it from the address bar.
+/// The browser never sends the fragment over the wire.
 fn page_url(url: &str, token: &str) -> String {
     format!("{url}/#token={token}")
 }
 
-/// An exclusive lock beside the connection file, created in a directory only
-/// this user can enter.
 fn launch_lock(connection: &Path) -> Result<std::fs::File> {
     let parent = connection.parent().unwrap_or(Path::new("."));
     let mut dir = std::fs::DirBuilder::new();
@@ -278,9 +252,7 @@ fn launch_lock(connection: &Path) -> Result<std::fs::File> {
     Ok(file)
 }
 
-/// Whether the recorded editor is still the process that wrote the record:
-/// the URL accepts the recorded token on an authenticated route. A port
-/// reused by anything else, or a newer editor with another token, fails.
+/// A port reused by anything else, or a newer editor with another token, fails.
 fn is_live(connection: &Connection) -> bool {
     let Some(addr) = connection
         .url
@@ -310,9 +282,6 @@ fn is_live(connection: &Connection) -> bool {
     response.starts_with(b"HTTP/1.1 200")
 }
 
-/// Ask the running editor to open `model` through the cli, which already
-/// speaks its HTTP door; the session becomes the current one for later
-/// commands.
 fn open_in_running(running: &Connection, model: &str) -> Result<()> {
     catchlight_editor_cli::run(
         NAME,
@@ -369,8 +338,7 @@ mod tests {
         assert!(!is_serve_argument("status"));
     }
 
-    /// Every `catchlight-editor <word>` the guide shows has to be a command
-    /// this binary runs, or the guide teaches an agent to fail.
+    /// Otherwise the guide teaches an agent to fail.
     #[test]
     fn the_guide_names_only_real_commands() {
         let commands = catchlight_editor_cli::command_names();

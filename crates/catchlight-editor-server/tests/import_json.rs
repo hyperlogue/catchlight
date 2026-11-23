@@ -1,8 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 //! JSON session construction and guarded subtree import share core validation.
-//! Models round-trip through structures and exact texture attachments; subtree
-//! installation is one undoable edit against an explicitly selected parent.
 
 use std::collections::HashMap;
 use std::io;
@@ -15,8 +13,6 @@ use catchlight_editor_protocol::{
     SessionSource,
 };
 use catchlight_editor_server::{Attachments, Editor, Storage};
-
-// ------------------------------------------------------------------ harness
 
 #[derive(Debug, Default)]
 struct MemStorage(Mutex<HashMap<String, Vec<u8>>>);
@@ -68,8 +64,6 @@ fn fixtures() -> Vec<PathBuf> {
     paths
 }
 
-/// The JSON structure, the `textures` list and the attachments one file turns
-/// into — what a client authoring a model would put together itself.
 struct AsJson {
     structure: Vec<u8>,
     textures: Vec<ImportTexture>,
@@ -128,7 +122,6 @@ fn session(reply: Reply) -> SessionId {
     }
 }
 
-/// The session's model, written back out.
 fn session_bytes(ed: &Editor, session: SessionId) -> Vec<u8> {
     ed.with_model(session, |model| model.to_clm_bytes().expect("write"))
         .expect("the session is open")
@@ -146,8 +139,6 @@ fn ok(reply: Reply) {
         panic!("expected Ok, got {code:?}: {message}");
     }
 }
-
-// -------------------------------------------------------------------- tests
 
 #[test]
 fn json_and_clm_sources_construct_the_same_model() {
@@ -173,9 +164,6 @@ fn json_and_clm_sources_construct_the_same_model() {
     assert_eq!(session_bytes(&ed, from_json), session_bytes(&ed, from_file));
 }
 
-/// Every committed fixture survives the trip out through JSON and back, which
-/// is the whole promise: a client may hold a model as a structure and its
-/// images and lose nothing by it.
 #[test]
 fn every_fixture_round_trips_through_json() {
     for path in fixtures() {
@@ -247,7 +235,6 @@ fn a_texture_the_structure_references_but_nobody_sent_is_refused_by_the_reader()
     assert!(message.contains(gone.as_str()), "{message}");
 }
 
-/// The structure's roots install under the named parent as one undoable edit.
 #[test]
 fn a_structure_installs_under_the_parent_the_command_names() {
     let bytes = std::fs::read(models_dir().join("welded_seam.clm")).unwrap();
@@ -283,7 +270,6 @@ fn a_structure_installs_under_the_parent_the_command_names() {
         .expect("the session is open");
     assert!(after > before, "the subtree landed: {before} -> {after}");
 
-    // One Undo restores the model before the installation.
     ok(ed.handle(req(
         9,
         Command::Undo {
@@ -317,8 +303,6 @@ fn repeated_factory_calls_publish_independent_sessions() {
 fn a_byte_extension_marker_is_refused_by_key() {
     let bytes = std::fs::read(models_dir().join("welded_seam.clm")).unwrap();
     let mut file = clm::decode(&bytes).unwrap();
-    // A marker for bytes nothing carries: legal in a structure, unreadable
-    // without the section a JSON import has no room for.
     file.doc.extensions.insert(
         catchlight_core::id::ExtensionKey::new("acme.thumb").unwrap(),
         clm::ClmExtension::Bytes(clm::ClmExtensionMarker {
@@ -332,8 +316,6 @@ fn a_byte_extension_marker_is_refused_by_key() {
     assert!(message.contains("acme.thumb"), "{message}");
 }
 
-/// The same structure with every node and texture Id prefixed, so it can be
-/// installed beside itself.
 fn renamed_fragment(file: &ClmFile) -> ClmFile {
     let mut out = file.clone();
     let rename = |id: &str| NodeId::new(format!("copy{id}")).expect("a valid id");

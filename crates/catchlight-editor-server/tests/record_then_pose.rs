@@ -135,7 +135,6 @@ fn recorded_binding_moves_the_rebaked_puppet() {
     );
 }
 
-/// Session construction validates the supplied model before publishing it.
 fn open_bytes(editor: &Editor, title: &str, bytes: Vec<u8>) -> SessionId {
     let mut attachments = Attachments::none();
     attachments.insert("model", bytes);

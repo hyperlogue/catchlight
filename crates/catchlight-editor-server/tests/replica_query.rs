@@ -1,12 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 //! A replica answers the model-only reads exactly as the editor does.
-//!
-//! A browser tab holds a copy of the session's model and serves
-//! `CommandKind::ReplicaQuery` from it without a round trip. That is only
-//! trustworthy if the two answers are the same bytes, so every one of them is
-//! asked twice here — once of the editor, once of `replica_reply` against the
-//! model the editor is holding — and the whole envelope is compared.
 
 use std::collections::BTreeSet;
 use std::io::Cursor;
@@ -39,8 +33,6 @@ fn png() -> Vec<u8> {
     bytes
 }
 
-/// Everything the model reads have to chew on: a tree with two parts, a param
-/// with a binding, a texture, two welded parts, and one slot nothing fills.
 struct Fixture {
     editor: Editor,
     session: SessionId,
@@ -85,7 +77,6 @@ impl Fixture {
         let body_part = fixture.part(&group, "Body");
         let skirt = fixture.part(&group, "Skirt");
 
-        // A param with a binding, so `param_list` reports a binding count.
         let param = match fixture.step(Command::ParamAdd {
             session,
             name: "Pull".into(),
@@ -115,7 +106,6 @@ impl Fixture {
             ],
         });
 
-        // A texture on a part, from bytes: the browser's own upload path.
         fixture
             .editor
             .add_texture_bytes(session, &body_part, TextureEncoding::Png, png())
@@ -188,7 +178,6 @@ impl Fixture {
         }
     }
 
-    /// A part with a quad, so its slots have vertices to point at.
     fn part(&self, parent: &NodeId, name: &str) -> NodeId {
         let node = self.node(Command::NodeAdd {
             session: self.session,
@@ -219,7 +208,6 @@ impl Fixture {
         }
     }
 
-    /// A node's bindings, agreed between the editor and a replica.
     fn bindings(&self, node: &NodeId) -> Vec<BindingInfo> {
         match ok(self.agree(Command::BindingList {
             session: self.session,
@@ -236,8 +224,6 @@ impl Fixture {
             .expect("the session is open")
     }
 
-    /// Ask `command` of the editor and of a replica of the same model, and
-    /// hand back the editor's reply once the two agree in full.
     fn agree(&self, command: Command) -> Reply {
         let request = Request {
             id: self.id(),
@@ -272,8 +258,6 @@ impl Fixture {
     }
 }
 
-/// Every command a replica is meant to answer, built against a real model so
-/// each one has a real answer. Held equal to `COMMAND_KINDS` below.
 fn replica_commands(session: SessionId, node: NodeId) -> Vec<Command> {
     vec![
         Command::Check { session },
@@ -325,8 +309,6 @@ fn replica_commands(session: SessionId, node: NodeId) -> Vec<Command> {
     ]
 }
 
-/// One command of every other kind, so "a replica refuses it" is checked
-/// against Edit, Presence and ServerQuery alike.
 fn other_commands(session: SessionId, node: NodeId) -> Vec<Command> {
     vec![
         Command::SessionList,
@@ -428,15 +410,12 @@ fn a_replica_answers_every_model_only_read_exactly_as_the_editor_does() {
         }
         other => panic!("expected NodeInfo, got {other:?}"),
     }
-    // `check` reads the same model, warnings and all.
     match ok(f.agree(Command::Check { session })) {
         ResponseBody::Warnings { .. } => {}
         other => panic!("expected Warnings, got {other:?}"),
     }
 }
 
-/// What an inspector shows: every value a `node_set` authored, read back under
-/// the name that authored it, plus the kind and parent a patch cannot set.
 #[test]
 fn node_info_reads_back_what_a_node_set_wrote() {
     let f = Fixture::build();
@@ -489,8 +468,6 @@ fn node_info_reads_back_what_a_node_set_wrote() {
     assert_eq!(node.tint, Some([0.1, 0.2, 0.3]));
     assert_eq!(node.screen_tint, Some([0.4, 0.5, 0.6]));
     assert_eq!(node.mask_threshold, Some(0.75));
-    // The part draws the fixture's texture, and carries no mesh-group or
-    // composite field to report.
     assert_eq!(node.texture, Some(texture));
     assert_eq!(node.propagate_meshgroup, None);
     assert_eq!(node.mg_translate_children, None);
@@ -514,8 +491,6 @@ fn node_info_reads_back_what_a_node_set_wrote() {
     assert_eq!(group.triangle_count, None);
 }
 
-/// The kind-specific halves the other kinds carry, so each one is read from
-/// the node that actually has it.
 #[test]
 fn node_info_reports_the_fields_a_composite_and_a_mesh_group_carry() {
     let f = Fixture::build();
@@ -597,10 +572,6 @@ fn node_info_reports_the_fields_a_composite_and_a_mesh_group_carry() {
     }
 }
 
-/// What the "textured but its mesh has no triangles" lint stands in for. A
-/// client asking whether a part has been meshed reads the counts off the node
-/// rather than parsing a warning written for a person, so an unmeshed part has
-/// to answer that read — as an empty mesh, which is what it has.
 #[test]
 fn node_info_counts_the_mesh_a_part_holds() {
     let f = Fixture::build();
@@ -634,8 +605,6 @@ fn node_info_counts_the_mesh_a_part_holds() {
     });
     assert_eq!(counts(&bare), (Some(3), Some(1)));
 
-    // And the counts follow the mesh, so a re-mesh is visible without a
-    // second read of anything else.
     let ResponseBody::MeshInfo { mesh, .. } = f.step(Command::MeshGet {
         session,
         if_rev: None,
@@ -682,7 +651,6 @@ fn a_replica_refuses_a_bad_read_the_way_the_editor_does() {
         Reply::Err { code, .. } => assert_eq!(code, ErrorCode::NoNode),
         other => panic!("expected Err, got {other:?}"),
     }
-    // A node that is gone reads as gone, not as a node with no bindings.
     match f.agree(Command::BindingList {
         session: f.session,
         node: NodeId::new("nobody").unwrap(),
@@ -731,8 +699,6 @@ fn what_a_replica_answers_is_exactly_the_replica_queries_of_the_kinds_table() {
     }
 }
 
-/// The envelope: a refusal answers the request that asked, and a revision is
-/// the replica's own rather than anything the model knows.
 #[test]
 fn a_replica_stamps_the_revision_it_was_given_on_the_request_that_asked() {
     let f = Fixture::build();
@@ -772,8 +738,6 @@ fn a_replica_stamps_the_revision_it_was_given_on_the_request_that_asked() {
     }
 }
 
-/// What a binding panel is drawn from.
-///
 /// The grid is the product of the binding's axes and the model stores
 /// only the cells somebody authored, so the read has to report both: the
 /// numbers, and the holes between them. A hole is a state a rigger acts on —
@@ -848,8 +812,6 @@ fn binding_list_reports_the_authored_grid_and_the_holes_in_it() {
     let bindings = f.bindings(&f.body_part);
     assert_eq!(bindings.len(), 3, "tx, ty and the deform");
 
-    // One param: one row. The 12 the fixture keyed, the identity
-    // explicitly authored by the fixture, and a hole between them.
     let tx = find(&bindings, BindingTarget::Tx);
     assert_eq!(tx.param, pull);
     assert_eq!(tx.param_y, None);
@@ -887,8 +849,6 @@ fn binding_list_reports_the_authored_grid_and_the_holes_in_it() {
     assert_eq!(deform.authored, vec![vec![false, true]]);
     assert_eq!(deform.key_positions, vec![vec![0.0, 1.0]]);
 
-    // Every param a binding names is a param `param_list` reports, so a panel
-    // can discover the input range separately from binding-owned positions.
     let params: BTreeSet<String> = f
         .params()
         .iter()
@@ -902,9 +862,6 @@ fn binding_list_reports_the_authored_grid_and_the_holes_in_it() {
     }
 }
 
-/// Un-authoring a cell puts the hole back, and resetting one fills it with the
-/// target's identity — so a panel that draws set and unset differently keeps
-/// telling the truth across both edits.
 #[test]
 fn un_authoring_a_cell_reports_it_unset_again() {
     let f = Fixture::build();
@@ -950,7 +907,6 @@ fn un_authoring_a_cell_reports_it_unset_again() {
     );
 }
 
-/// A node nothing drives.
 #[test]
 fn a_node_with_no_bindings_reports_an_empty_list() {
     let f = Fixture::build();

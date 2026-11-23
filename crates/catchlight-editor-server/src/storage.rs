@@ -1,56 +1,21 @@
 //! Where a session's bytes live.
 //!
-//! **A `path` on the wire is an opaque storage key, not a filesystem path.**
-//! The protocol carries one string for "which file"; what that string
-//! names is this trait's business. Natively it is a filesystem path
-//! ([`FileStorage`]); in the browser it is an OPFS entry or a fetched URL; in
-//! the cloud it is a blob key. That is why the path-taking commands
-//! ([`Command::SessionOpen`](catchlight_editor_protocol::Command::SessionOpen)
-//! and friends) are not native-only: one command set serves every deployment,
-//! rather than a native surface and a browser surface that drift apart.
-//!
-//! Keys are `/`-separated by convention so [`parent_key`] and [`join_key`] can
-//! resolve one file's references relative to it. Nothing parses a key
-//! beyond that: a backend is free to treat it as flat.
-//!
-//! **A relative key resolves against the store, not against the process.**
-//! [`FileStorage`] carries a root directory fixed at construction — the
-//! current directory when nobody says otherwise — and a relative key joins
-//! onto it, so where a file lands is a property of the store a server was
-//! built with rather than of whatever directory the process happens to be in
-//! when a read arrives. An absolute key is already a path and joins onto
-//! nothing, which is what keeps `session_open /abs/model.clm` meaning the file
-//! it names.
-//!
-//! A write is expected to be **atomic** — a reader either sees the previous
-//! bytes or the new ones, never a truncated file. [`FileStorage`] gets this
-//! from temp-then-rename; a backend that cannot must say so in its own docs,
-//! because an interrupted save otherwise destroys the only copy.
-//!
-//! **The store holds the server's files, and nothing else passes through it.**
-//! Open, save and manifest export name files that are the
-//! server's to read or write. Bytes a *client* holds never become a key —
-//! there is no upload, no staging map, and so no key that names something the
-//! server never wrote. A tab that wants its own bytes opened sends
-//! [`Command::SessionNew`](catchlight_editor_protocol::Command::SessionNew)
-//! with its source and file attached, and the session it gets has no file to save back
-//! to because there is none.
+//! A wire `path` is an opaque storage key, not a filesystem path. Keys are
+//! `/`-separated by convention; nothing parses them further. A write must be
+//! atomic: a reader sees the previous bytes or the new ones, never a truncated
+//! file.
 
 use std::io;
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::{Path, PathBuf};
 
-/// A byte store addressed by opaque keys.
 pub trait Storage: Send + Sync + std::fmt::Debug {
-    /// Reads the whole value at `key`.
     fn read(&self, key: &str) -> io::Result<Vec<u8>>;
 
-    /// Replaces the value at `key`, atomically (see the module docs).
+    /// Must be atomic (see the module docs).
     fn write(&self, key: &str, bytes: &[u8]) -> io::Result<()>;
 }
 
-/// The key a relative reference inside `key`'s file resolves against —
-/// everything before the last `/`, or `""` when the key has no separator.
 pub fn parent_key(key: &str) -> &str {
     match key.rsplit_once('/') {
         Some((parent, _)) => parent,
@@ -58,8 +23,7 @@ pub fn parent_key(key: &str) -> &str {
     }
 }
 
-/// Resolves `name` against `base`. An empty base yields `name` unchanged, so a
-/// flat store stays flat.
+/// An empty base yields `name` unchanged, so a flat store stays flat.
 pub fn join_key(base: &str, name: &str) -> String {
     if base.is_empty() {
         name.to_string()
@@ -68,8 +32,7 @@ pub fn join_key(base: &str, name: &str) -> String {
     }
 }
 
-/// The human-facing stem of `key`: its last segment with one extension
-/// removed. A session title only — nothing addresses anything by it.
+/// For a session title only; nothing addresses anything by it.
 pub fn key_stem(key: &str) -> String {
     let last = key.rsplit('/').next().unwrap_or(key);
     let stem = last.rsplit_once('.').map_or(last, |(stem, _)| stem);
@@ -80,11 +43,8 @@ pub fn key_stem(key: &str) -> String {
     }
 }
 
-/// No backend configured: every key fails. The default where there is no
-/// ambient filesystem (wasm), so a caller that forgot [`with_storage`] gets a
-/// named error rather than a panic or a silent empty read.
-///
-/// [`with_storage`]: crate::Editor::with_storage
+/// The default on wasm, so a caller that forgot
+/// [`with_storage`](crate::Editor::with_storage) gets a named error.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct NoStorage;
 
@@ -105,11 +65,8 @@ fn unconfigured(key: &str) -> io::Error {
     )
 }
 
-/// The local filesystem, with keys read as paths under a root directory.
-///
-/// A relative key joins onto the root; an absolute key is itself. The root is
-/// read once, here, so nothing a process does to its working directory later
-/// moves a session's file.
+/// The root is read once at construction, so a later working-directory change
+/// does not move a session's file.
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Clone)]
 pub struct FileStorage {
@@ -118,26 +75,21 @@ pub struct FileStorage {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl FileStorage {
-    /// A store whose relative keys resolve against `root`.
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self { root: root.into() }
     }
 
-    /// The directory relative keys resolve against.
     pub fn root(&self) -> &Path {
         &self.root
     }
 
-    /// The path `key` names. `Path::join` returns an absolute argument
-    /// unchanged, which is the whole of the absolute-key rule.
+    /// `Path::join` returns an absolute argument unchanged.
     fn path(&self, key: &str) -> PathBuf {
         self.root.join(key)
     }
 }
 
-/// Rooted at the current directory, so a server nobody configured behaves as
-/// it always did. A working directory that cannot be read leaves `.`, which
-/// resolves the same way.
+/// Falls back to `.` if the working directory cannot be read.
 #[cfg(not(target_arch = "wasm32"))]
 impl Default for FileStorage {
     fn default() -> Self {
@@ -152,9 +104,8 @@ impl Storage for FileStorage {
     }
 
     fn write(&self, key: &str, bytes: &[u8]) -> io::Result<()> {
-        // Temp-then-rename: an interrupted save must not truncate the user's
-        // only copy. The temp sits beside the target so the rename stays on
-        // one filesystem.
+        // Temp-then-rename: an interrupted save must not truncate the only
+        // copy. The temp sits beside the target so the rename stays on one fs.
         let path = self.path(key);
         let tmp = path.with_extension(match path.extension().and_then(|e| e.to_str()) {
             Some(ext) => format!("{ext}.tmp"),
@@ -203,13 +154,11 @@ mod tests {
         let key = dir.join("m.clm").display().to_string();
         store.write(&key, b"hello").unwrap();
         assert_eq!(store.read(&key).unwrap(), b"hello");
-        // Overwrite goes through the same temp-then-rename path.
         store.write(&key, b"world!").unwrap();
         assert_eq!(store.read(&key).unwrap(), b"world!");
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// The root is what a relative key means; an absolute key means itself.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn a_relative_key_lands_under_the_root_and_an_absolute_one_does_not() {
@@ -219,7 +168,6 @@ mod tests {
 
         store.write("m.clm", b"under the root").unwrap();
         assert_eq!(store.read("m.clm").unwrap(), b"under the root");
-        // Not "wherever the process happens to be": the bytes are in the root.
         assert_eq!(
             std::fs::read(root.join("m.clm")).unwrap(),
             b"under the root"
@@ -229,7 +177,6 @@ mod tests {
         store.write(&absolute, b"its own path").unwrap();
         assert_eq!(store.read(&absolute).unwrap(), b"its own path");
         assert_eq!(std::fs::read(&absolute).unwrap(), b"its own path");
-        // The absolute key joined onto nothing, so the root has one file.
         let mut under_root: Vec<String> = std::fs::read_dir(&root)
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
@@ -241,7 +188,6 @@ mod tests {
         std::fs::remove_dir_all(&elsewhere).ok();
     }
 
-    /// A directory of this run's own, named after nothing but the test.
     #[cfg(not(target_arch = "wasm32"))]
     fn scratch_dir(what: &str) -> PathBuf {
         use std::sync::atomic::{AtomicU32, Ordering};
@@ -250,7 +196,6 @@ mod tests {
         let dir =
             std::env::temp_dir().join(format!("cl-storage-{}-{what}-{nth}", std::process::id()));
         std::fs::remove_dir_all(&dir).ok();
-        // A failure here surfaces as the first write's error, inside the test.
         std::fs::create_dir_all(&dir).ok();
         dir
     }

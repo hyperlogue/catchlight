@@ -1,17 +1,13 @@
-//! CPU picking against the deformed puppet: every Part's post-deform vertices
-//! already live on the CPU, so a point test is a tree walk + point-in-triangle
-//! — no renderer involvement.
+//! CPU picking against the deformed puppet.
 //!
-//! The transforms are the puppet's own (`Puppet::transforms`), never a copy
-//! passed in: a click has to hit what the last frame drew, and the puppet is
-//! what drew it.
+//! Uses the puppet's own transforms, never a copy, so a click hits what the
+//! last frame drew.
 
 use catchlight_core::Vec2;
 use catchlight_core::{BlendMode, MeshIndices, Model, NodeKind, PartData, Puppet};
 
-/// Core node ids of the Parts whose deformed mesh contains `world`,
-/// front-most first (higher cumulative z order renders in front; ties go to the
-/// later-drawn node).
+/// Front-most first: higher cumulative z order renders in front; ties go to
+/// the later-drawn node.
 pub fn pick_all(model: &Model, puppet: &Puppet, world: Vec2) -> Vec<u32> {
     let transforms = puppet.transforms();
     let mut hits: Vec<(f32, usize, u32)> = Vec::new();
@@ -43,7 +39,6 @@ pub fn pick_all(model: &Model, puppet: &Puppet, world: Vec2) -> Vec<u32> {
             stack.push((c, z));
         }
     }
-    // Descending z = front first; equal z: later visit draws on top, so it wins.
     // total_cmp, not partial_cmp: a NaN z_order (a degenerate ZOrder binding, a
     // non-finite response output) makes the partial_cmp form non-transitive,
     // which sort_by can detect and panic on.
@@ -55,7 +50,7 @@ fn opacity_culled(opacity: f32, blend: BlendMode) -> bool {
     opacity == 0.0 && blend != BlendMode::Darken
 }
 
-/// GPU local position: `v - origin + deform`, then the node matrix.
+/// Matches the GPU: `v - origin + deform`, then the node matrix.
 pub fn part_world_vertex(p: &PartData, m: &catchlight_core::Mat4, i: usize) -> Vec2 {
     let v = p.mesh.vertices[i] - p.mesh.origin
         + p.deform_stack
@@ -113,7 +108,6 @@ fn cross(a: Vec2, b: Vec2) -> f32 {
     a.x * b.y - a.y * b.x
 }
 
-/// World-space AABB over the deformed Parts of the given subtrees.
 pub fn world_bounds(puppet: &Puppet, roots: &[u32]) -> Option<(Vec2, Vec2)> {
     let transforms = puppet.transforms();
     let mut min = Vec2::splat(f32::INFINITY);
@@ -148,11 +142,8 @@ mod tests {
         TexId,
     };
 
-    /// A model builder for the picking tests: the texture is never decoded
-    /// here (a part is culled by whether its albedo slot resolves at all), so
-    /// its bytes are a placeholder rather than a real image. A texture goes to
-    /// the part that draws it, so the first part uploads one and the parts
-    /// after it share it.
+    /// The texture is never decoded here (a part is culled by whether its
+    /// albedo slot resolves), so its bytes are a placeholder.
     struct Fixture {
         model: catchlight_core::Model,
         hex: SeededHex,
@@ -229,7 +220,6 @@ mod tests {
                 .expect("add composite")
         }
 
-        /// The puppet at rest, with its transforms walked.
         fn puppet(&self) -> Puppet {
             let mut puppet = Puppet::new(&self.model);
             puppet.compute_transforms();

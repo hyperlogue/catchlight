@@ -1,14 +1,7 @@
-//! The JSON manifest: a human/agent-authored description of a puppet built from
-//! loose textures, and a best-effort text mirror of the model (`to_manifest`).
+//! The JSON manifest: authoring sugar for a puppet built from loose textures.
 //!
-//! The manifest is authoring sugar — meshes are *generated* (quad / grid) from
-//! texture dimensions, not stored vertex-for-vertex. `.clm` is the lossless
-//! form; `to_manifest` preserves structure (tree, transforms, textures, params)
-//! but re-generates meshes on re-import.
-//!
-//! Params in a model are scalars, so a manifest param with `"vec2": true`
-//! imports as the two params `<name>.x` and `<name>.y` — the pair a two-param
-//! binding spans — and `to_manifest` writes every param back as a scalar.
+//! Meshes are generated from texture dimensions, so `to_manifest` is a lossy
+//! mirror; `.clm` is the lossless form.
 
 use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
@@ -22,8 +15,7 @@ use catchlight_core::formats::clm::{
 };
 use catchlight_core::{LoadBudget, LoadLimitError, LoadResource};
 
-/// A manifest import mints Ids from this seed, so importing the same manifest
-/// twice produces the same Ids.
+/// A fixed seed, so importing the same manifest twice produces the same Ids.
 const IMPORT_SEED: u32 = 0x0c1a_7c17;
 
 use catchlight_core::id::{Name, NodeId, SeededHex, TexId};
@@ -55,8 +47,6 @@ pub enum ManifestError {
     Model(#[from] ModelError),
 }
 
-/// The decoded PNG/TGA bytes for one manifest texture, supplied by the caller
-/// (so the pure core never touches the filesystem).
 #[derive(Debug, Clone)]
 pub struct TextureData {
     pub encoding: TextureEncoding,
@@ -108,7 +98,6 @@ fn group_kind() -> String {
     "group".into()
 }
 
-/// A mesh generator: a quad covering the texture, or a `cols`x`rows` grid.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(tag = "auto", rename_all = "lowercase")]
 pub enum MeshSpec {
@@ -160,26 +149,20 @@ impl Manifest {
     }
 }
 
-/// Manifest authoring over a [`Model`]. An extension trait because the Model is
-/// defined in `catchlight-core` while the manifest lives here.
 pub trait ModelManifestExt: Sized {
-    /// Build a model from a manifest plus the caller-loaded texture bytes. Parts
-    /// auto-generate their mesh from the referenced texture's pixel dimensions.
     fn from_manifest(
         manifest: &Manifest,
         data: &HashMap<String, TextureData>,
     ) -> Result<Self, ManifestError>;
 
-    /// [`Self::from_manifest`], charged against a caller-supplied budget.
     fn from_manifest_with_budget(
         manifest: &Manifest,
         data: &HashMap<String, TextureData>,
         budget: &mut LoadBudget,
     ) -> Result<Self, ManifestError>;
 
-    /// Best-effort text mirror: structure, transforms, texture references and
-    /// param definitions. Textures get synthetic ids/paths (the caller writes
-    /// the bytes there); meshes are not emitted (re-import regenerates a quad).
+    /// Best-effort and lossy: meshes are not emitted (re-import regenerates a
+    /// quad), and textures get synthetic ids/paths the caller writes bytes to.
     fn to_manifest(&self) -> Manifest;
 }
 
@@ -199,16 +182,11 @@ impl ModelManifestExt for Model {
         budget.charge(LoadResource::Textures, manifest.textures.len() as u64)?;
         budget.charge(LoadResource::Nodes, manifest.nodes.len() as u64)?;
         budget.charge(LoadResource::Params, manifest.params.len() as u64)?;
-        // Ids are generated, not taken from the manifest, so the two id
-        // spaces stay separate; a fixed seed keeps one manifest importing to
-        // one set of Ids.
         let mut hex = SeededHex::new(IMPORT_SEED);
         let mut m = Model::new();
 
-        // Nothing is added to the model here. A texture goes to the part that
-        // draws it, so this pass only decodes the dimensions the generated
-        // meshes are sized from and holds the bytes until a part names them;
-        // a manifest texture no node names never reaches the model.
+        // A texture goes to the part that draws it, so a manifest texture no node
+        // names never reaches the model.
         let mut tex_data: HashMap<&str, &TextureData> = HashMap::new();
         let mut tex_dims: HashMap<&str, (f32, f32)> = HashMap::new();
         for t in &manifest.textures {
@@ -222,8 +200,6 @@ impl ModelManifestExt for Model {
             tex_data.insert(t.id.as_str(), d);
             tex_dims.insert(t.id.as_str(), (w as f32, h as f32));
         }
-        // What each manifest texture became, filled in by the first part to
-        // draw it; the parts after that share it.
         let mut tex_ids: HashMap<&str, TexId> = HashMap::new();
 
         let mut seen = HashSet::new();
@@ -233,8 +209,6 @@ impl ModelManifestExt for Model {
             }
         }
 
-        // Place nodes in any order: resolve a node once its parent exists (or it
-        // is top-level, attaching under the implicit root).
         let mut resolved: HashMap<&str, NodeId> = HashMap::new();
         let mut pending: Vec<&ManifestNode> = manifest.nodes.iter().collect();
         while !pending.is_empty() {
@@ -294,8 +268,6 @@ impl ModelManifestExt for Model {
         }
 
         for mp in &manifest.params {
-            // Params are scalars; a manifest asking for a 2-D one gets the two
-            // halves a binding over the pair would span.
             let (name_x, name_y) = if mp.vec2 {
                 (format!("{}.x", mp.name), format!("{}.y", mp.name))
             } else {
@@ -402,8 +374,8 @@ impl ModelManifestExt for Model {
     }
 }
 
-/// The node's kind and, for a part, the *manifest* texture it draws. The model
-/// Id it turns into is minted by the upload, which needs the part to exist.
+/// The model texture Id is minted by the upload, which needs the part to
+/// exist, so this returns the *manifest* texture.
 fn build_kind<'a>(
     mn: &'a ManifestNode,
     tex_dims: &HashMap<&str, (f32, f32)>,
@@ -449,8 +421,7 @@ fn gen_mesh(
     }
 }
 
-/// One quad centered on the origin, the texture mapped corner-to-corner. UV `v`
-/// increases downward, matching texture coordinate space.
+/// UV `v` increases downward, matching texture coordinate space.
 fn quad_mesh(w: f32, h: f32, budget: &mut LoadBudget) -> Result<ClmMesh, ManifestError> {
     budget.charge(LoadResource::Vertices, 4)?;
     budget.charge(LoadResource::Indices, 6)?;

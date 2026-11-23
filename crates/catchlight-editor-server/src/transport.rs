@@ -1,31 +1,8 @@
 //! The editor over a Unix socket: one JSON object per line, in order.
 //!
-//! One connection is one client, and it blocks: [`serve_connection`] reads a
-//! line, answers it, and only then reads the next, so nothing is pipelined and
-//! replies cannot reorder. There is no event channel — a socket client hears
-//! only what it asked for; a tab that needs pushing holds a WebSocket instead
-//! (see [`http`](crate::http)).
-//!
-//! Invariants this module enforces:
-//!
-//! - **The socket carries paths, never bytes.** A line may hold two sibling
-//!   keys beside the [`Request`]'s own fields: `files`, mapping an attachment
-//!   name to a path this process reads, and `out`, a path a payload is written
-//!   to. Both name the *client's* own files — a socket client and the editor
-//!   share a filesystem, which is the whole reason this transport exists — so
-//!   nothing is staged, nothing is uploaded, and a line stays small enough to
-//!   keep its [`MAX_REQUEST_BYTES`] cap however large the images it names are.
-//!
-//! - **A file that cannot be read is answered, not skipped.** Every path in
-//!   `files` is read before the command runs, and a path that fails is
-//!   [`ErrorCode::Io`] against the request's own id with the command never
-//!   dispatched. So a half-attached command does not exist.
-//!
-//! - **A payload needs somewhere to go.** A command whose row in
-//!   [`COMMAND_BYTES`](catchlight_editor_protocol::COMMAND_BYTES) says its
-//!   reply carries bytes is [`ErrorCode::BadRequest`] without an `out`, before
-//!   dispatch — rather than rendering a frame and dropping it. An `out` given
-//!   for a command that answers with no payload is left alone.
+//! A line may carry `files` (attachment name to a client-side path) and `out`
+//! (where a payload is written) beside the [`Request`]: the socket client
+//! shares this process's filesystem, so bytes never ride in the line.
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
@@ -44,8 +21,6 @@ pub(super) const MAX_SOCKET_CONNECTIONS: usize = 64;
 pub(super) const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 const SOCKET_IO_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Listen on a Unix socket, one thread per connection, each reading
-/// newline-delimited [`Request`]s and writing [`Reply`]s.
 pub fn serve_unix(editor: Arc<Editor>, path: &Path) -> std::io::Result<()> {
     let listener = bind_unix_listener(path)?;
     let connections = Arc::new(ConnectionLimiter::default());
@@ -213,15 +188,9 @@ pub(super) fn serve_connection(editor: &Editor, stream: UnixStream) {
     }
 }
 
-/// One line in, one [`Reply`] out — the whole of what this transport is.
-///
-/// The line is read as a JSON object first so `files` and `out` can be lifted
-/// off it; what is left is the [`Request`] every other transport sends.
 fn answer_line(editor: &Editor, line: &[u8]) -> Reply {
-    // A command that does not parse — an Id outside the charset, an unknown
-    // `cmd`, a missing field — is still answered against the id the client is
-    // blocked on, if the line carries a readable one. Without that a client
-    // waiting for its own reply waits forever.
+    // An unparsable command is still answered against the id the client is
+    // blocked on, or it would wait forever.
     let id = || serde_json::from_slice::<RequestId>(line).map_or(0, |r| r.id);
     let bad = |message: String| Reply::Err {
         op_index: None,
@@ -276,8 +245,7 @@ fn answer_line(editor: &Editor, line: &[u8]) -> Reply {
     match (payload, out) {
         (Some(payload), Some(path)) => match write_payload(&path, &payload) {
             Ok(()) => reply,
-            // The command ran; only the handoff failed. Every payload command
-            // is a read, so there is no edit stranded behind this.
+            // Every payload command is a read, so no edit is stranded here.
             Err(e) => Reply::Err {
                 op_index: None,
                 limit: None,
@@ -298,7 +266,6 @@ enum FilesError {
     Io(String),
 }
 
-/// Read every path in a line's `files` map into the bytes the command wants.
 fn read_files(files: Option<Value>) -> Result<Attachments, FilesError> {
     let mut attachments = Attachments::none();
     let Some(files) = files else {

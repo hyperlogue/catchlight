@@ -1,21 +1,9 @@
 //! The connection file: where a running editor writes down its HTTP door so a
 //! local client — the CLI, an agent — can find it without being told.
 //!
-//! Invariants this module enforces:
-//!
-//! - **Only its owner can read it.** The file holds the bearer token, so it is
-//!   created `0600` inside a `0700` directory on Unix, and the path itself
-//!   ([`default_connection_path`]) is never in a shared temp directory.
-//!
-//! - **A reader never sees half a file.** The JSON goes to a sibling temp file
-//!   first and is renamed over the target, so a client racing a launch reads
-//!   the old connection or the new one.
-//!
-//! - **A server removes only its own.** Dropping a [`ConnectionFile`] deletes
-//!   the file only while it still names this process, so an editor that
-//!   exits after a newer one took over leaves the newer one's file alone. A
-//!   killed process leaves its file behind; a client that cannot reach the
-//!   URL it names says the file is stale.
+//! It holds the bearer token, so it is `0600` inside a `0700` directory on
+//! Unix and written via temp-then-rename. Drop removes it only while it still
+//! names this process, leaving a newer server's file alone.
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -32,7 +20,6 @@ pub struct ConnectionFile {
 }
 
 impl ConnectionFile {
-    /// Record `server` at `path`, replacing whatever was there.
     pub fn write(path: &Path, server: &HttpServer) -> io::Result<Self> {
         let connection = Connection {
             url: format!("http://{}", server.addr),
@@ -60,7 +47,6 @@ impl Drop for ConnectionFile {
     }
 }
 
-/// The connection recorded at `path`, or `None` when there is no readable one.
 pub fn read_connection(path: &Path) -> Option<Connection> {
     serde_json::from_slice(&std::fs::read(path).ok()?).ok()
 }

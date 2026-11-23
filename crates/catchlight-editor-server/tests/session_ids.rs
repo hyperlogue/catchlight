@@ -2,15 +2,9 @@
 
 //! Two sessions never draw the same generated Id for the same edits.
 //!
-//! Uniqueness is checked *within* a model, so one seed shared by every session
-//! made every open session mint `root/part-<the same hex>` first. Nothing in
-//! one session noticed, and everything that carries a node out of one and into
-//! another did: a copied subtree collided on arrival, and an addon extracted
-//! from one session named a node in the other by accident.
-//!
-//! The draw stays deterministic — a given session Id always mints the same
-//! sequence — because a recorded script replayed against a fresh editor should
-//! rebuild the same model, Ids included.
+//! The draw stays deterministic per session Id because a recorded script
+//! replayed against a fresh editor should rebuild the same model, Ids
+//! included.
 
 use catchlight_editor_protocol::{
     Command, NodeId, NodeKindArg, Reply, Request, ResponseBody, SessionId, SlotAddr,
@@ -87,9 +81,6 @@ fn drawn(ed: &Editor, base: u64, session: SessionId) -> Vec<String> {
     vec![node.to_string(), param, slot]
 }
 
-/// Two sessions open at once, edited the same way, must not name their new
-/// things identically — that is what makes an Id from one recognisable inside
-/// a model merged from both.
 #[test]
 fn two_sessions_draw_different_ids_for_the_same_edits() {
     let ed = Editor::new();
@@ -113,8 +104,6 @@ fn two_sessions_draw_different_ids_for_the_same_edits() {
     }
 }
 
-/// Per-session is not per-run: replaying the same script against a fresh
-/// editor rebuilds the same model, Ids and all.
 #[test]
 fn the_same_session_id_draws_the_same_ids_every_time() {
     let once = {

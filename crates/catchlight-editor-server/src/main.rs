@@ -1,28 +1,10 @@
 //! Headless standalone server: create an [`Editor`], listen on a socket, and
-//! optionally serve a browser tab over HTTP + WebSocket. The GUI will instead
-//! embed the library and call `serve_unix` itself.
 //!
-//! ```text
-//! catchlight-editor-server [--socket <path>] [--store <dir>] [--http <addr>]
-//!                          [--allow-origin <origin>]... [--connection-file <path>]
-//!                          [<model.clm>]
-//! ```
-//!
-//! Both paths are flags rather than ambient state so a test harness can run a
-//! server of its own: `--socket` inside a private temp directory does not
-//! collide with the editor a person is already running on the default socket,
-//! and `--store` says which directory a relative `path` key names instead of
-//! leaving it to whatever the process was launched from. A unix socket path is
-//! bounded by the OS at around 100 bytes (`SUN_LEN`), so a temp directory deep
-//! enough to pass that costs an `InvalidInput` rather than a listener.
-//!
-//! The socket is Unix-only; elsewhere `--http` is required and is the only
-//! door. `--connection-file` records the HTTP door for local clients (see
-//! [`connection`](catchlight_editor_server::connection)); it is opt-in so a
-//! test server never overwrites the file a person's editor wrote.
+//! A unix socket path is bounded at around 100 bytes (`SUN_LEN`). The socket is
+//! Unix-only; elsewhere `--http` is required.
 
-// The server runs in-tab through `catchlight-editor-wasm` on wasm32, so this
-// binary has nothing to do there; it still builds for `cargo build --workspace`.
+// The server runs in-tab through `catchlight-editor-wasm` on wasm32; this
+// stub keeps `cargo build --workspace` building.
 #[cfg(target_arch = "wasm32")]
 fn main() {}
 
@@ -47,10 +29,9 @@ mod native {
 
     #[derive(Debug)]
     struct Args {
-        /// Where to listen. `None` means the default socket path.
+        /// `None` means the default socket path.
         socket: Option<PathBuf>,
-        /// What a relative `path` key resolves against. `None` means the
-        /// current directory.
+        /// `None` means the current directory.
         store: Option<PathBuf>,
         http: Option<SocketAddr>,
         allowed_origins: Vec<String>,
@@ -68,9 +49,6 @@ mod native {
             }
         };
 
-        // The store holds the server's own files: what `session_open` reads
-        // and what a save writes. Bytes a client holds arrive attached to the
-        // command that uses them and never become a key here.
         let store = match args.store {
             Some(dir) => FileStorage::new(dir),
             None => FileStorage::default(),
@@ -78,8 +56,7 @@ mod native {
         let editor = Arc::new(Editor::with_storage(Arc::new(store)));
 
         if let Some(path) = args.model {
-            // Through `handle`, not a side door: the session has to show up in
-            // `session_list` like any other.
+            // Through `handle` so the session shows up in `session_list`.
             let reply = editor.handle(Request {
                 id: 0,
                 command: Command::SessionOpen { path: path.clone() },
@@ -222,8 +199,6 @@ mod native {
             parse(args.iter().map(|s| (*s).to_string()))
         }
 
-        /// Absent means the default, which is the socket a person's editor is
-        /// already on — so a harness that wants its own has to say so.
         #[test]
         fn the_socket_is_the_default_until_a_flag_names_one() {
             assert_eq!(parse_args(&[]).ok().and_then(|a| a.socket), None);

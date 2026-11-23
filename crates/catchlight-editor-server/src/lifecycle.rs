@@ -1,10 +1,4 @@
 //! Finished-session publication and captured model transfer.
-//!
-//! Source validation and model construction finish privately before a session
-//! joins the registry. Empty creation, source creation, store opening and fork
-//! share one revision-zero initializer. Export captures under the source lock
-//! and serializes outside it; installation mutates only under the destination
-//! publication lock. Neither operation couples the CLI to editor state.
 
 use std::collections::HashSet;
 

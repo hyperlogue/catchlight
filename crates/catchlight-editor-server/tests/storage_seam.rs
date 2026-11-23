@@ -1,11 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 //! A `path` on the wire is a storage key, not a filesystem path.
-//!
-//! These drive the file commands against a store with no filesystem
-//! behind it — the shape the browser and the cloud both use. If these pass,
-//! the same commands the CLI sends over the Unix socket work unchanged in
-//! wasm, which is the whole point of the seam.
 
 use std::collections::HashMap;
 use std::io;
@@ -14,7 +9,6 @@ use std::sync::{Arc, Mutex};
 use catchlight_editor_protocol::{Command, Reply, Request, ResponseBody, SessionId};
 use catchlight_editor_server::{Editor, Storage};
 
-/// A store that is only a map. No paths, no directories, no filesystem.
 #[derive(Debug, Default)]
 struct MemStorage(Mutex<HashMap<String, Vec<u8>>>);
 
@@ -49,8 +43,6 @@ impl Storage for MemStorage {
     }
 }
 
-/// An empty model's `.clm` bytes — enough to prove the path, and it needs no
-/// LFS fixture.
 fn clm_bytes() -> Vec<u8> {
     let store = Arc::new(MemStorage::default());
     let editor = Editor::with_storage(store.clone());
@@ -104,7 +96,6 @@ fn a_session_opens_from_a_store_with_no_filesystem() {
         other => panic!("expected Session, got {other:?}"),
     };
 
-    // The title comes from the key's last segment, not from any path logic.
     match ok(&editor.handle(req(2, Command::Status { session }))) {
         ResponseBody::Status { status } => assert_eq!(status.title, "akari"),
         other => panic!("expected Status, got {other:?}"),

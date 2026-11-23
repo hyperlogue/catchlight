@@ -1,19 +1,7 @@
 //! Headless preview: pose an already-built puppet and render it to a PNG,
-//! reusing catchlight's production render path. Nothing is built
-//! here except the render cache the GPU needs.
 //!
-//! The wgpu plumbing — target, stencil, the two pools, camera, submit,
-//! readback — is [`catchlight_wgpu::RenderContext`], the one headless render
-//! path, which `catchlight-cli` renders through as well.
-//!
-//! **One renderer, one session's cache.** The server keeps a single warm
-//! renderer for every session, and a render cache's slots name GPU state
-//! inside the renderer that prepared it — so two sessions cannot hold live
-//! caches at once. The cache is therefore kept alongside the session it was
-//! prepared for and re-prepared when the previewed session changes, which is
-//! what the old per-render whole-puppet upload did unconditionally.
-//! Previewing one session repeatedly keeps its cache, and with it the GPU
-//! texture of every payload an edit did not change.
+//! A render cache's slots name GPU state inside the one warm renderer, so only
+//! one session's cache is live; switching the previewed session re-prepares it.
 
 use anyhow::{anyhow, Result};
 use catchlight_core::{Model, Pose, Puppet};
@@ -25,13 +13,11 @@ use catchlight_wgpu::{
 
 pub(super) struct PreviewRenderer {
     ctx: RenderContext,
-    /// The session whose model this cache was prepared from, and the cache.
     cache: Option<(SessionId, RenderCache)>,
 }
 
 impl PreviewRenderer {
-    /// Create the headless GPU context once. Expensive (device + ~18 pipelines);
-    /// the server keeps one alive and reuses it across every session's previews.
+    /// Expensive (device + ~18 pipelines); create once and reuse.
     pub(super) fn new() -> Result<Self> {
         let (device, queue) =
             pollster::block_on(create_headless_context()).map_err(|e| anyhow!("gpu init: {e}"))?;
@@ -40,17 +26,14 @@ impl PreviewRenderer {
             queue,
             wgpu::TextureFormat::Rgba8UnormSrgb,
         ));
-        // The first preview resizes this to whatever it asks for; the size
-        // here only has to be legal.
+        // Resized on first preview; this size only has to be legal.
         let ctx = RenderContext::with_renderer(renderer, 1, 1)
             .map_err(|e| anyhow!("render context: {e}"))?;
         Ok(Self { ctx, cache: None })
     }
 
-    /// One frame as PNG bytes.
-    ///
-    /// The frame is cleared to opaque white, so alpha is 1 everywhere and the
-    /// premultiplied readback needs nothing undone before it is encoded.
+    /// Cleared to opaque white, so the premultiplied readback needs nothing
+    /// undone before encoding.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn render_png(
         &mut self,
@@ -77,7 +60,7 @@ impl PreviewRenderer {
         Ok(png)
     }
 
-    /// Render to tightly-packed RGBA8 bytes (the in-process viewport path).
+    /// Tightly-packed RGBA8.
     #[allow(clippy::too_many_arguments)]
     fn render_rgba(
         &mut self,

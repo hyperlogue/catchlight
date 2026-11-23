@@ -3,13 +3,8 @@
 //! The browser's channels: messages over a WebSocket or one POST, bytes over
 //! HTTP.
 //!
-//! Loopback is not a permission — any page the user's browser loads can reach
-//! this port — so most of what follows is about who is refused. The rest
-//! checks that a tab can do its job: send the same commands the Unix socket
-//! takes, hear about edits another connection made, pull a session's structure
-//! against the revision it belongs to, and hand up bytes it fetched itself.
-//! `POST /request` is the same commands for a client that wants no socket, so
-//! what it is checked on is where a status ends and a `Reply::Err` begins.
+//! Loopback is not a permission: any page the user's browser loads can reach
+//! this port, so most of these tests check who is refused.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -30,12 +25,8 @@ const TOKEN: &str = "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d
 const ALLOWED_ORIGIN: &str = "http://example.test";
 const FOREIGN_ORIGIN: &str = "http://evil.test";
 
-// -------------------------------------------------------------- the fixture
-
 struct Server {
     addr: SocketAddr,
-    /// The server's own store: what `session_open` reads and what a save
-    /// writes.
     store: Arc<Mem>,
 }
 
@@ -43,11 +34,7 @@ fn start() -> Server {
     start_with(|_| {})
 }
 
-/// The fixture with one knob turned — a body ceiling low enough to hit, or a
-/// keepalive interval a test can afford to wait for.
 fn start_with(tune: impl FnOnce(&mut HttpOptions)) -> Server {
-    // Nothing here touches the filesystem: the store is a map, so a test can
-    // put a file in it and read a save back out.
     let store = Arc::new(Mem::default());
     let editor = Arc::new(Editor::with_storage(store.clone()));
     let mut options = HttpOptions {
@@ -65,7 +52,6 @@ fn start_with(tune: impl FnOnce(&mut HttpOptions)) -> Server {
     Server { addr, store }
 }
 
-/// A byte store in memory. These tests write no files.
 #[derive(Debug, Default)]
 struct Mem(Mutex<HashMap<String, Vec<u8>>>);
 
@@ -87,8 +73,6 @@ impl Storage for Mem {
         Ok(())
     }
 }
-
-// ---------------------------------------------------------- a tiny client
 
 struct HttpResponse {
     status: u16,
@@ -172,7 +156,6 @@ fn bearer() -> String {
     format!("Bearer {TOKEN}")
 }
 
-/// One command over `POST /request`, the way a client with no socket sends it.
 fn post(addr: SocketAddr, request: &Request) -> HttpResponse {
     http(
         addr,
@@ -186,7 +169,6 @@ fn post(addr: SocketAddr, request: &Request) -> HttpResponse {
     )
 }
 
-/// The reply a 200 carries.
 fn posted(response: &HttpResponse) -> Reply {
     assert_eq!(response.status, 200, "POST /request");
     assert_eq!(response.header("content-type"), Some("application/json"));
@@ -219,7 +201,6 @@ fn send(socket: &mut Socket, request: Request) {
         .unwrap();
 }
 
-/// The next reply to `id`, skipping pushed events.
 fn reply_to(socket: &mut Socket, id: u64) -> Reply {
     let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline {
@@ -292,7 +273,6 @@ fn root_of(socket: &mut Socket, id: u64, session: SessionId) -> NodeId {
     }
 }
 
-/// Open the model staged under `key`, expecting it to succeed.
 fn open_session(socket: &mut Socket, id: u64, key: &str) -> SessionId {
     send(
         socket,
@@ -309,7 +289,6 @@ fn open_session(socket: &mut Socket, id: u64, key: &str) -> SessionId {
     }
 }
 
-/// The `session_list` entry for `session`.
 fn session_info(socket: &mut Socket, id: u64, session: SessionId) -> SessionInfo {
     send(
         socket,
@@ -327,13 +306,10 @@ fn session_info(socket: &mut Socket, id: u64, session: SessionId) -> SessionInfo
     }
 }
 
-/// Stage `bytes` under `key`, the way a tab hands up a file it read.
-/// Put a file in the server's store, the way something on its machine would.
 fn store_file(server: &Server, key: &str, bytes: &[u8]) {
     server.store.write(key, bytes).expect("the store takes it");
 }
 
-/// An empty model's `.clm` bytes, built in-process so no fixture is needed.
 fn clm_bytes() -> Vec<u8> {
     let store = Arc::new(Mem::default());
     let editor = Editor::with_storage(store.clone());
@@ -359,8 +335,6 @@ fn clm_bytes() -> Vec<u8> {
     });
     store.read("scratch.clm").unwrap()
 }
-
-// ---------------------------------------------------------------- the tests
 
 #[test]
 fn the_token_is_readable_only_from_an_allowlisted_origin() {
@@ -437,8 +411,6 @@ fn an_edit_on_one_connection_is_pushed_to_the_other() {
     );
     let rev = rev_of(&reply_to(&mut editor, 3));
 
-    // The watcher sent nothing, so everything it hears is pushed. It hears
-    // about the session appearing first, then about the edit.
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         assert!(Instant::now() < deadline, "no model_changed arrived");
@@ -453,8 +425,6 @@ fn an_edit_on_one_connection_is_pushed_to_the_other() {
         }
     }
 }
-
-// ------------------------------------------------------- POST /request
 
 #[test]
 fn a_command_over_post_answers_with_its_revision() {
@@ -562,7 +532,6 @@ fn a_post_without_a_token_is_refused_before_its_body() {
         "the 401 waited on a body that was never sent"
     );
 
-    // A wrong token is the same refusal, body and all.
     let refused = http(
         server.addr,
         "POST",
@@ -579,7 +548,6 @@ fn a_post_without_a_token_is_refused_before_its_body() {
     );
     assert_eq!(refused.status, 401);
 
-    // And neither of those reached the editor: no session was made.
     match body_of(posted(&post(
         server.addr,
         &Request {
@@ -670,8 +638,6 @@ fn an_edit_made_over_post_reaches_a_websocket_subscriber() {
     }
 }
 
-// -------------------------------------------------------------- byte routes
-
 #[test]
 fn the_structure_endpoint_pairs_its_bytes_with_the_revision_they_are() {
     let server = start();
@@ -724,7 +690,6 @@ fn the_structure_endpoint_pairs_its_bytes_with_the_revision_they_are() {
     assert_eq!(missing.status, 404);
 }
 
-/// A `path` names a file of the server's, and only that.
 #[test]
 fn session_open_reads_the_store_and_nothing_else() {
     let server = start();
@@ -759,7 +724,6 @@ fn session_open_reads_the_store_and_nothing_else() {
     assert!(matches!(reply_to(&mut socket, 2), Reply::Err { .. }));
 }
 
-/// A session opened from the store keeps that file and saves back over it.
 #[test]
 fn a_session_opened_from_the_store_saves_back_to_it() {
     let server = start();
@@ -770,7 +734,6 @@ fn a_session_opened_from_the_store_saves_back_to_it() {
 
     let info = session_info(&mut socket, 2, session);
     assert_eq!(info.file.as_deref(), Some("model.clm"));
-    // The title comes from the key, which is what a person recognizes.
     assert_eq!(info.title, "model");
 
     send(
@@ -830,7 +793,6 @@ fn a_session_imported_from_bytes_has_nowhere_to_save_until_it_is_told() {
         other => panic!("expected Err, got {other:?}"),
     }
 
-    // Named, it saves through to the store and keeps the key.
     send(
         &mut socket,
         Request {
@@ -906,7 +868,6 @@ fn a_texture_comes_back_as_the_payload_the_model_holds() {
         other => panic!("expected Node, got {other:?}"),
     };
 
-    // The texture arrives the way a tab sends one: attached to the command.
     let png = one_pixel_png();
     let response = post_multipart(
         server.addr,
@@ -938,7 +899,6 @@ fn a_texture_comes_back_as_the_payload_the_model_holds() {
     assert_eq!(response.header("x-catchlight-encoding"), Some("png"));
     assert_eq!(response.body, png);
 
-    // An Id outside the charset never reaches a lookup.
     assert_eq!(
         http(
             server.addr,
@@ -981,8 +941,6 @@ fn the_clm_endpoint_hands_back_a_file_that_loads() {
         Some("application/octet-stream")
     );
 
-    // The point of the route: what comes back is a model file, and it is this
-    // session's model rather than any model.
     let model =
         catchlight_core::Model::from_clm_bytes(&response.body).expect("the bytes load as a model");
     assert!(model.node(&root).is_some());
@@ -1166,7 +1124,6 @@ fn an_idle_socket_is_pinged_and_survives_answering() {
     await_ping(&mut socket);
     await_ping(&mut socket);
 
-    // And it is still a socket a command goes over.
     let (session, _) = new_session(&mut socket, 1);
     assert_eq!(session, SessionId(1));
 }
@@ -1184,9 +1141,6 @@ fn await_ping(socket: &mut Socket) {
     panic!("no keepalive ping arrived");
 }
 
-// ------------------------------------------------- bytes beside the command
-
-/// One `multipart/form-data` body: the parts in order, each `(name, bytes)`.
 fn multipart(parts: &[(&str, &[u8])]) -> (String, Vec<u8>) {
     let boundary = "catchlightTestBoundary";
     let mut body = Vec::new();
@@ -1202,7 +1156,6 @@ fn multipart(parts: &[(&str, &[u8])]) -> (String, Vec<u8>) {
     (format!("multipart/form-data; boundary={boundary}"), body)
 }
 
-/// One command with its attachments, the way a script sends bytes.
 fn post_multipart(
     addr: SocketAddr,
     request: &Request,
@@ -1225,8 +1178,6 @@ fn post_multipart(
     )
 }
 
-/// A session with one part in it, over the socket, so a byte test can get to
-/// the interesting line quickly.
 fn a_part(socket: &mut Socket, session: SessionId, id: u64) -> NodeId {
     let root = root_of(socket, id, session);
     send(
@@ -1321,8 +1272,6 @@ fn a_payload_is_the_body_and_the_reply_is_a_header() {
     }
 }
 
-/// A payload-bearing command needs no attachments, so a plain JSON post
-/// carries it too — and the answer is still the bytes.
 #[test]
 fn a_json_post_of_a_payload_command_answers_with_the_bytes() {
     let server = start();
@@ -1372,7 +1321,6 @@ fn a_part_name_the_command_does_not_take_is_a_refusal_not_a_status() {
         },
         &[("image", &one_pixel_png())],
     );
-    // The transport carried it perfectly; the editor is what refused it.
     assert_eq!(response.status, 200);
     match serde_json::from_slice::<Reply>(&response.body).expect("one reply") {
         Reply::Err { code, .. } => assert_eq!(code, ErrorCode::BadRequest),
@@ -1414,7 +1362,6 @@ fn a_multipart_body_this_parser_will_not_take_is_a_400() {
         assert_eq!(response.status, 400, "{why}");
     }
 
-    // Well-formed multipart with no `request` part is the same answer.
     let (content_type, body) = multipart(&[("texture", b"bytes")]);
     assert_eq!(
         http(
@@ -1452,8 +1399,6 @@ fn a_multipart_body_over_the_upload_ceiling_is_refused_and_drained() {
     );
     assert_eq!(response.status, 413);
 
-    // A body between the command cap and the upload cap is fine, which is the
-    // point of the multipart route having its own ceiling.
     let server = start();
     let mut socket = connect(server.addr, TOKEN, None).unwrap();
     let (session, _) = new_session(&mut socket, 1);
@@ -1514,8 +1459,6 @@ fn a_byte_bearing_command_over_the_websocket_is_refused() {
     }
 }
 
-/// Every command that carries bytes is refused on the socket, `texture_add`
-/// included: there is no form of it that does not.
 #[test]
 fn a_texture_add_over_the_websocket_is_refused() {
     let server = start();
@@ -1540,8 +1483,6 @@ fn a_texture_add_over_the_websocket_is_refused() {
         other => panic!("expected Err, got {other:?}"),
     }
 }
-
-// ------------------------------------------------- extensions over the feed
 
 /// A byte extension is fetched by key, once, when a marker's hash moved. The
 /// structure carries the marker; this route carries the bytes.
@@ -1579,13 +1520,11 @@ fn a_byte_extension_has_a_route_of_its_own() {
         Some("application/octet-stream")
     );
     assert_eq!(fetched.body, bytes);
-    // The hash the marker carries, so a client can check what it got.
     assert_eq!(
         fetched.header("x-catchlight-extension-hash"),
         Some(catchlight_core::formats::clm::extension_hash(bytes).as_str()),
     );
 
-    // The structure names it and does not carry it: that is the whole point.
     let structure = http(
         server.addr,
         "GET",
@@ -1603,8 +1542,6 @@ fn a_byte_extension_has_a_route_of_its_own() {
     );
 }
 
-/// A JSON extension has no route: it is already in the structure. Neither does
-/// a key the model does not carry.
 #[test]
 fn only_a_byte_extension_answers_on_that_route() {
     let server = start();
@@ -1643,7 +1580,6 @@ fn only_a_byte_extension_answers_on_that_route() {
         assert_eq!(response.status, 404, "{why}");
     }
 
-    // And a key outside the charset is the request's own fault, not a miss.
     let response = http(
         server.addr,
         "GET",
@@ -1680,11 +1616,8 @@ fn the_ui_is_served_without_a_token_and_never_shadows_a_route() {
     assert_eq!(wasm.header("content-type"), Some("application/wasm"));
     assert!(wasm.header("cache-control").unwrap().contains("immutable"));
 
-    // The route answers, not the bundle's file of the same name.
     let token = http(server.addr, "GET", "/token", &[], &[]);
     assert!(String::from_utf8_lossy(&token.body).contains(TOKEN));
-    // A path the bundle lacks is still behind the token, and API routes stay
-    // there too.
     assert_eq!(
         http(server.addr, "GET", "/missing.js", &[], &[]).status,
         401

@@ -63,7 +63,6 @@ fn state_signature(puppet: &catchlight_core::Puppet) -> Vec<[i64; 2]> {
     sig
 }
 
-/// Session construction validates the supplied model before publishing it.
 fn open_bytes(editor: &Editor, title: &str, bytes: Vec<u8>) -> SessionId {
     let mut attachments = Attachments::none();
     attachments.insert("model", bytes);

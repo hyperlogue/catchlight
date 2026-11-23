@@ -1,24 +1,9 @@
 //! The reads a replica can answer: [`CommandKind::ReplicaQuery`].
 //!
-//! A browser tab holds a replica of a session's [`Model`] and never mutates
-//! it. Everything in here is a pure function of that model, so the tab answers
-//! these without a round trip and the editor answers them the same way, from
-//! the same bytes. That is only true while there is *one* implementation:
-//! `Editor::dispatch` routes its `ReplicaQuery` arms straight into
-//! [`replica_query`], so a fix to an answer reaches both ends or neither.
-//!
-//! Invariants this module carries:
-//!
-//! - **The kinds table decides what belongs here.** [`replica_query`] answers
-//!   exactly the tags [`COMMAND_KINDS`] marks [`CommandKind::ReplicaQuery`],
-//!   and anything else is [`ErrorCode::BadRequest`] naming the tag rather than
-//!   a panic — a replica is fed by an untrusted page. The two sets are held
-//!   equal by a test, so reclassifying a command in the protocol crate breaks
-//!   the build here rather than quietly making it unanswerable.
-//!
-//! - **A revision comes from the caller.** A model does not know which
-//!   revision it is; the replica that holds it does. So [`replica_reply`]
-//!   takes the `rev` it stamps on the envelope rather than inventing one.
+//! `Editor::dispatch` routes its `ReplicaQuery` arms here too, so there is one
+//! implementation. Anything outside [`COMMAND_KINDS`]'s `ReplicaQuery` set is
+//! [`ErrorCode::BadRequest`], never a panic: a replica is fed by an untrusted
+//! page.
 
 mod geometry;
 
@@ -31,12 +16,8 @@ use catchlight_editor_protocol::*;
 
 use crate::{image_dims, EditorError};
 
-/// One extension's value as a reply reports it: JSON whole, bytes as the size
-/// and hash their marker carries.
-///
-/// The one conversion, so a listing and a get never describe the same value
-/// two ways — and so what a client compares to decide whether to fetch is the
-/// hash the structure feed will carry.
+/// The one conversion, so a listing and a get agree and the hash matches what
+/// the structure feed carries.
 pub fn extension_value_info(value: &ExtensionValue) -> ExtensionValueInfo {
     match value {
         ExtensionValue::Json(json) => ExtensionValueInfo::Json {
@@ -49,10 +30,7 @@ pub fn extension_value_info(value: &ExtensionValue) -> ExtensionValueInfo {
     }
 }
 
-/// Answer one [`CommandKind::ReplicaQuery`] against `model`.
-///
-/// Any other command is [`ErrorCode::BadRequest`] naming the tag that was
-/// sent, never a panic.
+/// Any other command is [`ErrorCode::BadRequest`] naming the tag, never a panic.
 pub fn replica_query(model: &Model, command: &Command) -> Result<ResponseBody, EditorError> {
     let body = match command {
         Command::MeshGet { node, .. } => {
@@ -97,8 +75,7 @@ pub fn replica_query(model: &Model, command: &Command) -> Result<ResponseBody, E
             warnings: model.check().into_iter().map(|w| w.message).collect(),
         }),
         Command::NodeTree { .. } => {
-            // A session holds a complete model, so this is unreachable — but
-            // `Fragment` says so on the wire rather than panicking.
+            // Unreachable for a session, but `Fragment` says so on the wire.
             let root = model.root().ok_or(ModelError::Fragment)?;
             Ok(ResponseBody::Tree {
                 root: build_tree(model, root),
@@ -143,10 +120,8 @@ pub fn replica_query(model: &Model, command: &Command) -> Result<ResponseBody, E
             params: param_infos(model),
         }),
         Command::BindingList { node, .. } => {
-            // A node that is gone is `no_node` rather than an empty list: a
-            // selection outlives the node it names, and a panel showing "no
-            // bindings" for a deleted node is a lie the client cannot see
-            // through.
+            // A gone node is `no_node`, not an empty list: a selection can
+            // outlive its node, and "no bindings" would be a lie.
             if model.node(node).is_none() {
                 return Err(EditorError::NoNode(node.clone()));
             }
@@ -178,11 +153,7 @@ pub fn replica_query(model: &Model, command: &Command) -> Result<ResponseBody, E
     Ok(body)
 }
 
-/// The whole reply envelope, as `Editor::handle` would build it for the same
-/// request against the same model.
-///
-/// `rev` is the replica's own revision: the model does not carry one, and the
-/// client that holds it knows which one it last accepted.
+/// `rev` is the replica's own revision; the model does not carry one.
 pub fn replica_reply(model: &Model, rev: u64, request: Request) -> Reply {
     let answer = crate::limits::json_size(
         &request,
@@ -314,10 +285,8 @@ fn binding_cells(model: &Model, command: &Command) -> Result<ResponseBody, Edito
         .iter()
         .map(|entry| ([entry.x, entry.y], entry.value.as_slice()))
         .collect();
-    // A derived hole fills the grid over this vertex page. Bound cumulative
-    // fill work as well as returned vertices; otherwise one tiny read could
-    // materialize a complete mesh at every key. Authored cells and an entirely
-    // unset binding need no fill and can be sliced/answered directly.
+    // A derived hole fills the grid over this vertex page, so bound cumulative
+    // fill work as well as returned vertices.
     if *include_derived && !deforms.is_empty() {
         if let Some(range) = range {
             let holes = cells
@@ -397,8 +366,7 @@ fn binding_cells(model: &Model, command: &Command) -> Result<ResponseBody, Edito
     })
 }
 
-/// The tree under `id`. A missing node reads as an empty group rather than
-/// dropping the subtree, so a reply always has the shape a client expects.
+/// A missing node reads as an empty group so a reply keeps its shape.
 pub(crate) fn build_tree(model: &Model, id: &NodeId) -> TreeNode {
     let (name, kind, z_order, enabled, children) = match model.node(id) {
         Some(n) => (
@@ -420,23 +388,11 @@ pub(crate) fn build_tree(model: &Model, id: &NodeId) -> TreeNode {
     }
 }
 
-/// One node as an inspector reads it: every [`NodePatch`] field under its own
-/// name, and the four things a patch cannot set — the Id, the kind, the parent
-/// and the size of the mesh the node holds.
-///
-/// A field the node's kind does not carry stays `None` — the same rule
-/// `apply_patch` applies on the way in, where a colour set on a mesh group is
-/// ignored. So what comes back is exactly what a `node_set` on this node
-/// would keep.
-///
-/// A motion response's and a spine's settings are nested rather than flattened,
-/// in [`NodeInfo::motion_response`] and [`NodeInfo::spine`], because no `node_set`
-/// writes them: the round-trip they answer is to `motion_response_set` and `spine_set`, whose
-/// field names they carry.
+/// A field the node's kind does not carry stays `None`, matching what
+/// `apply_patch` keeps, so the reply round-trips through `node_set`.
 fn node_info(model: &Model, id: &NodeId, node: &ModelNode) -> NodeInfo {
-    // The colour a drawable carries. A group, mesh group or motion response is
-    // never drawn, so it reports none rather than a default a patch would
-    // then write back into it.
+    // Undrawn kinds report no colour rather than a default a patch would then
+    // write back.
     let (opacity, blend_mode, tint, screen_tint, mask_threshold) = match &node.kind {
         ModelNodeKind::Part(p) => (
             Some(p.opacity),
@@ -458,8 +414,7 @@ fn node_info(model: &Model, id: &NodeId, node: &ModelNode) -> NodeInfo {
         ModelNodeKind::MeshGroup(mg) => Some(mg.translate_children),
         _ => None,
     };
-    // Only the two kinds that hold a mesh report its size, so an empty mesh
-    // reads as 0 and a kind that could never have one reads as absent.
+    // An empty mesh reads as 0; a kind that cannot hold one reads as absent.
     let (vertex_count, triangle_count) = match node.mesh() {
         Some(mesh) => (
             Some(mesh.vertex_count() as u32),
@@ -554,22 +509,15 @@ fn mesh_info(mesh: &catchlight_core::formats::clm::ClmMesh) -> MeshInfo {
     }
 }
 
-/// One binding as a panel reads it: the authored grid filled in `[y][x]`,
-/// with every cell nobody set left `None`.
-///
-/// The model stores only the cells a rigger authored and derives the rest at
-/// puppet build, so the hole is the answer — spelling an unset cell as the
-/// target's identity would hand a client a number to write back that the
-/// author never wrote. A deform binding's cells hold a vertex list rather than
-/// a scalar, so they say only that they are authored.
+/// Unset cells stay `None`: the model derives them at puppet build, and
+/// spelling them out would hand a client values the author never wrote.
 fn binding_info(model: &Model, binding: &ModelBinding) -> Result<BindingInfo, EditorError> {
     let key = binding.key();
     let (width, height) = model.binding_grid(key)?;
     let (w, h) = (width as usize, height as usize);
     let mut keys = vec![vec![None; w]; h];
     let mut authored = vec![vec![false; w]; h];
-    // A cell outside the grid is one the key positions shrank away from; it
-    // cannot be addressed and it cannot be drawn, so it is not reported.
+    // A cell outside the grid is unaddressable after key positions shrank.
     let mut set = |x: u32, y: u32, value: Option<f32>| {
         let (x, y) = (x as usize, y as usize);
         if x < w && y < h {
@@ -628,7 +576,6 @@ pub(crate) fn param_infos(model: &Model) -> Vec<ParamInfo> {
     out
 }
 
-/// The wire spelling of one slot.
 fn slot_info(slot: &catchlight_core::Slot) -> SlotInfo {
     SlotInfo {
         id: slot.id().clone(),
@@ -636,7 +583,6 @@ fn slot_info(slot: &catchlight_core::Slot) -> SlotInfo {
     }
 }
 
-/// The wire spelling of one weld.
 fn weld_info(weld: &ModelWeld) -> WeldInfo {
     WeldInfo {
         a: weld.a().clone(),

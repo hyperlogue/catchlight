@@ -1,13 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 //! A part can be re-meshed from its own texture, over the wire.
-//!
-//! `contour_automesh` and `grid_automesh` have always been in editor-core, and
-//! only the desktop app could reach them: every other client would have had to
-//! decode the image itself, agree with the editor about the UV mapping, and
-//! send back a `mesh_set`. So these pin that the editor does the tracing, that
-//! the result goes through the same re-fitting path a hand-authored mesh does,
-//! and that every way it can refuse says which.
 
 use std::collections::HashMap;
 use std::io;
@@ -20,7 +13,6 @@ use catchlight_editor_protocol::{
 };
 use catchlight_editor_server::{Attachments, Editor, Storage};
 
-/// A store that is only a map, so a texture needs no filesystem.
 #[derive(Debug, Default)]
 struct MemStorage(Mutex<HashMap<String, Vec<u8>>>);
 
@@ -44,9 +36,7 @@ impl Storage for MemStorage {
 }
 
 /// The texture every test here traces: 64×64, transparent but for an opaque
-/// 32×32 square in the middle. Real alpha, and a shape whose outline and
-/// bounding box are both known, so the mesh can be checked against it rather
-/// than against itself.
+/// 32×32 square in the middle, so the mesh can be checked against a known box.
 const SIZE: u32 = 64;
 const BLOB: std::ops::Range<u32> = 16..48;
 
@@ -64,8 +54,6 @@ fn blob_png() -> Vec<u8> {
     bytes.into_inner()
 }
 
-/// A fully transparent texture of the same size: nothing to trace at any
-/// threshold.
 fn empty_png() -> Vec<u8> {
     let image = image::RgbaImage::from_pixel(SIZE, SIZE, image::Rgba([0, 0, 0, 0]));
     let mut bytes = std::io::Cursor::new(Vec::new());
@@ -75,7 +63,6 @@ fn empty_png() -> Vec<u8> {
     bytes.into_inner()
 }
 
-/// The fixture's two images, by the name the tests call them.
 fn image_named(name: &str) -> Vec<u8> {
     match name {
         "empty.png" => empty_png(),
@@ -91,8 +78,6 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
-        // The store holds nothing: images arrive with the command that uses
-        // them.
         let editor = Editor::with_storage(Arc::new(MemStorage::default()));
         let mut f = Self {
             editor,
@@ -117,7 +102,6 @@ impl Fixture {
         })
     }
 
-    /// One command with an image attached — the one way a texture gets in.
     fn body_with(&mut self, command: Command, name: &str, bytes: &[u8]) -> ResponseBody {
         self.next += 1;
         let mut attachments = Attachments::none();
@@ -159,7 +143,6 @@ impl Fixture {
         }
     }
 
-    /// A part drawing `key`.
     fn part(&mut self, key: &str) -> NodeId {
         let node = self.node(NodeKindArg::Part);
         let session = self.session;
@@ -217,8 +200,6 @@ fn triangles(mesh: &ClmMesh) -> usize {
     }
 }
 
-/// The default trace: a mesh that covers the art and nothing much else.
-///
 /// The square sits at texels 16..48 of 64, which is local −16..16 under the
 /// centered convention; the default 4-texel margin puts the outline a little
 /// outside that, and nothing should reach the edge of the texture.
@@ -231,7 +212,6 @@ fn a_contour_trace_covers_the_art_and_not_the_transparent_border() {
         Reply::Ok { body, .. } => body,
         other => panic!("{other:?}"),
     };
-    // It answers the way `mesh_set` does, because it goes the same way.
     assert!(
         matches!(&emptied, ResponseBody::Emptied { node, slots } if node == &part && slots.is_empty()),
         "{emptied:?}",
@@ -305,8 +285,6 @@ fn a_grid_lays_down_the_lattice_it_was_asked_for() {
     }
 }
 
-/// A knob left off is the editor's own, so a client that wants "an automesh"
-/// sends `{}` and gets what the desktop app's buttons give.
 #[test]
 fn an_omitted_knob_is_the_editors_default() {
     let mut f = Fixture::new();
@@ -336,8 +314,6 @@ fn an_omitted_knob_is_the_editors_default() {
     assert_eq!(spelled_out.verts, defaulted.verts);
     assert_eq!(spelled_out.uvs, defaulted.uvs);
 
-    // And a knob that *is* given changes the answer, so the defaults are not
-    // simply being used for everything.
     let filled = {
         let part = f.part("blob.png");
         f.auto(
@@ -391,8 +367,6 @@ fn a_part_that_already_has_a_mesh_keeps_its_mapping() {
     assert_eq!(f.mesh(&part).verts, fresh.verts);
 }
 
-/// A trace is an edit like any other: one revision, one undo entry,
-/// and the mesh it replaced comes back.
 #[test]
 fn a_trace_is_one_undoable_edit() {
     let mut f = Fixture::new();
@@ -420,9 +394,6 @@ fn a_trace_is_one_undoable_edit() {
     assert_eq!(f.mesh(&part).verts, before.verts);
 }
 
-/// Each way it can refuse says which, under a code a client branches on: a
-/// node that is not a part, a part with nothing to trace, and a threshold that
-/// finds no pixel.
 #[test]
 fn every_refusal_has_its_own_code() {
     let mut f = Fixture::new();
@@ -497,15 +468,9 @@ fn every_refusal_has_its_own_code() {
         );
     }
 
-    // None of the refusals moved the model: the part still draws what it
-    // drew and carries no mesh it did not have.
     assert!(f.mesh(&part).verts.is_empty());
 }
 
-/// The knobs the trace grew toward inochi-creator's automesh: rings and a
-/// minimum spacing on a contour, named axes and a fractional margin on a
-/// grid. They are fields on the mode a client already sends, and each one
-/// moves the mesh in the direction it says.
 #[test]
 fn the_added_knobs_reach_the_trace() {
     fn contour(

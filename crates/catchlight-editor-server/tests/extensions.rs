@@ -1,13 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 //! Extensions on the wire: carried, never interpreted.
-//!
-//! A vendor files a value under a dotted key and catchlight reads none of it.
-//! What is checked here is that the two kinds keep their shapes — JSON whole
-//! and inline, bytes by hash with the payload beside the reply — that undo
-//! covers a set the way it covers any other edit, and that a replica answers
-//! the listing identically, because that is what keeps a tab's panel off the
-//! wire.
 
 use std::collections::HashMap;
 use std::io;
@@ -20,7 +13,6 @@ use catchlight_editor_protocol::{
 use catchlight_editor_server::{replica_query, Attachments, Editor, Payload, Storage};
 use serde_json::json;
 
-/// A store that is only a map: nothing here needs a filesystem.
 #[derive(Debug, Default)]
 struct MemStorage(Mutex<HashMap<String, Vec<u8>>>);
 
@@ -42,8 +34,6 @@ impl Storage for MemStorage {
         Ok(())
     }
 }
-
-// ------------------------------------------------------------------ harness
 
 struct Fixture {
     editor: Editor,
@@ -101,7 +91,6 @@ impl Fixture {
         }
     }
 
-    /// `extension_set` with a JSON value.
     fn set_json(&mut self, key: &str, value: serde_json::Value) -> (ResponseBody, Option<Payload>) {
         self.ok(
             Command::ExtensionSet {
@@ -113,7 +102,6 @@ impl Fixture {
         )
     }
 
-    /// `extension_set` with bytes attached.
     fn set_bytes(&mut self, key: &str, bytes: &[u8]) -> (ResponseBody, Option<Payload>) {
         let mut attachments = Attachments::none();
         attachments.insert("value", bytes.to_vec());
@@ -156,8 +144,6 @@ impl Fixture {
 fn key(s: &str) -> ExtensionKey {
     s.parse().unwrap()
 }
-
-// ------------------------------------------------------------------- tests
 
 #[test]
 fn a_json_extension_goes_in_whole_and_comes_back_whole() {
@@ -216,7 +202,6 @@ fn a_byte_extension_arrives_attached_and_leaves_as_the_payload() {
 fn the_kind_and_the_attachment_have_to_agree() {
     let mut f = Fixture::new();
 
-    // Bytes with nothing attached.
     let code = f.code(
         Command::ExtensionSet {
             session: f.session,
@@ -227,7 +212,6 @@ fn the_kind_and_the_attachment_have_to_agree() {
     );
     assert_eq!(code, ErrorCode::BadRequest);
 
-    // JSON with bytes attached.
     let mut attachments = Attachments::none();
     attachments.insert("value", b"surprise".to_vec());
     let code = f.code(
@@ -240,7 +224,6 @@ fn the_kind_and_the_attachment_have_to_agree() {
     );
     assert_eq!(code, ErrorCode::BadRequest);
 
-    // Neither landed.
     assert!(f.list().is_empty());
 }
 
@@ -333,7 +316,6 @@ fn a_set_is_an_edit_and_undo_covers_it() {
         (other, _) => panic!("expected a json extension, got {other:?}"),
     }
 
-    // And once more takes the key away entirely.
     f.ok(
         Command::Undo {
             session: f.session,

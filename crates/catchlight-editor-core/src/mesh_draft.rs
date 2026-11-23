@@ -1,6 +1,5 @@
 //! An isolated mesh-edit transaction. The source texture mapping is captured
-//! once, so moving topology cannot become a texture deform. Gesture history
-//! is local to the draft; only `finish` produces a mesh for a model edit.
+//! once, so moving topology cannot become a texture deform.
 
 use catchlight_core::formats::clm::ClmMesh;
 
@@ -97,7 +96,7 @@ impl MeshDraft {
         self.mesh.move_vertex(index, position)
     }
 
-    /// A delta from the start of the current gesture, applied to one selection.
+    /// The delta is from the start of the current gesture.
     pub fn translate_vertices(
         &mut self,
         indices: &[u32],
@@ -202,7 +201,6 @@ impl MeshDraft {
         }
     }
 
-    /// Alpha culling happens on Apply, not once per pointer event.
     pub fn finish(&self) -> Result<ClmMesh, MeshError> {
         self.mesh.to_mesh(&self.uv, Some(&self.alpha))
     }

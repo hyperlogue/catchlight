@@ -155,10 +155,9 @@ pub(super) fn sample(model: &Model, command: &Command) -> Result<ResponseBody, E
     })
 }
 
-/// A tiny output page still evaluates the whole model. Live edits can grow a
-/// sparse binding beyond file-load budgets, so charge its dense runtime shape
-/// before constructing a Puppet. Count every binding, including unselected
-/// nodes, and count grid cells separately so zero-vertex grids remain bounded.
+/// Live edits can grow a sparse binding beyond file-load budgets, so charge
+/// its dense runtime shape before constructing a Puppet. Grid cells count
+/// separately so zero-vertex grids stay bounded.
 fn check_evaluation_work(model: &Model) -> Result<(), EditorError> {
     let limits = LoadLimits::default();
     let mut cells = 0_u64;
