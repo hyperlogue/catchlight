@@ -522,6 +522,7 @@ impl RenderCache {
         let prepped = catchlight_core::prepare_textures(
             fresh.as_slice(),
             self.options.texture_halvings,
+            renderer.max_texture_dimension(),
             &mut budget,
         )
         .map_err(|error| over(&error))?;

@@ -2850,9 +2850,8 @@ impl WgpuRenderer {
         .map(|_| ())
     }
 
-    /// The device's 2D texture size limit. Test-facing, as
-    /// [`Self::live_mesh_slots`]: it is how a test authors a texture the
-    /// device refuses.
+    /// The device's 2D texture size limit: what a texture's crop must fit,
+    /// skirt included, and how a test authors a texture the device refuses.
     #[doc(hidden)]
     pub fn max_texture_dimension(&self) -> u32 {
         self.device.limits().max_texture_dimension_2d
