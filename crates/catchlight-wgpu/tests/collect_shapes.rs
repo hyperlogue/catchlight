@@ -292,6 +292,98 @@ fn opacity_zero_drawables_are_culled_except_darken() {
     assert!(drawn.contains(&mesh_slot(&scene, &visible)));
 }
 
+#[test]
+fn invisible_composite_children_do_not_prepare_masks_but_can_supply_them() {
+    pollster::block_on(async {
+        let mut build = Build::new();
+        let root = build.root();
+        let tex = one_texture(&mut build);
+        let unused_source = composite(&mut build, &root, "unused source", 0.0);
+        part(
+            &mut build,
+            &unused_source,
+            "unused shape",
+            0.0,
+            &tex,
+            |_| {},
+        );
+        build
+            .model
+            .update_node(&unused_source, |node| node.enabled = false)
+            .unwrap();
+        let hidden = composite(&mut build, &root, "hidden", 0.0);
+        build
+            .model
+            .update_node_kind(&hidden, |kind| {
+                if let ModelNodeKind::Composite(c) = kind {
+                    c.opacity = 0.0;
+                }
+            })
+            .unwrap();
+        let source = composite(&mut build, &hidden, "source", 0.0);
+        part(&mut build, &source, "shape", 0.0, &tex, |_| {});
+        let invisible = part(&mut build, &hidden, "invisible", 0.0, &tex, |_| {});
+        build
+            .model
+            .mask_add(&invisible, &unused_source, MaskMode::Mask)
+            .unwrap();
+
+        let mut ctx =
+            catchlight_wgpu::RenderContext::with_renderer(renderer().await, 64, 64).unwrap();
+        let mut scene = Scene::new(&mut ctx.renderer, build.model);
+        let list = scene.frame(&mut ctx.renderer, 0.0);
+        assert!(list.root_drawables.is_empty());
+        assert!(list.composite_children.values().all(Vec::is_empty));
+        assert!(list.composite_mask_sources.is_empty());
+        let stats = ctx.render(&list, Some(wgpu::Color::TRANSPARENT)).unwrap();
+        assert_eq!(stats.total_draw_calls, 0);
+        assert_eq!(stats.composite_slots_used, 0);
+
+        let receiver = scene
+            .model
+            .add_node(
+                &root,
+                catchlight_core::ModelNode::new(
+                    "receiver",
+                    ModelNodeKind::Part(ModelPart::new(common::quad(1.0, 1.0))),
+                ),
+                &mut build.hex,
+            )
+            .unwrap();
+        scene.model.set_part_albedo(&receiver, Some(tex)).unwrap();
+        scene
+            .model
+            .mask_add(&receiver, &source, MaskMode::Mask)
+            .unwrap();
+        let list = scene.frame(&mut ctx.renderer, 0.0);
+        assert_eq!(list.root_drawables.len(), 1);
+        assert_eq!(list.composite_mask_sources.len(), 1);
+        assert!(list
+            .composite_mask_sources
+            .contains_key(&node_slot(&scene, &source)));
+        ctx.render(&list, Some(wgpu::Color::TRANSPARENT)).unwrap();
+        assert!(ctx
+            .read_rgba()
+            .unwrap()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|p| p[3] != 0));
+
+        scene
+            .model
+            .update_node_kind(&hidden, |kind| {
+                if let ModelNodeKind::Composite(c) = kind {
+                    c.blend_mode = BlendMode::Darken;
+                }
+            })
+            .unwrap();
+        let list = scene.frame(&mut ctx.renderer, 0.0);
+        assert!(composites(&list.root_drawables).contains(&node_slot(&scene, &hidden)));
+        assert_eq!(list.composite_mask_sources.len(), 2);
+    });
+}
+
 /// The structural pass-through memo must be invalidated when the tree grows.
 #[test]
 fn growing_a_composite_re_evaluates_the_passthrough_verdict() {

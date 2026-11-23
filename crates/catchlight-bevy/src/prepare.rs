@@ -88,9 +88,35 @@ impl CatchlightRenderState {
 
 pub(crate) struct FormatResources {
     pub pipelines: Arc<Pipelines>,
+    targets: HashMap<Entity, ViewResources>,
+}
+
+pub(crate) struct ViewResources {
     pub stencil: StencilTarget,
     pub composites: CompositePool,
     pub snapshots: FramebufferSnapshotPool,
+}
+
+impl FormatResources {
+    pub(crate) fn targets_for_view(
+        &mut self,
+        view: Entity,
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+    ) -> &mut ViewResources {
+        let targets = self.targets.entry(view).or_insert_with(|| ViewResources {
+            stencil: StencilTarget::new_for_pipelines(&self.pipelines, device, width, height),
+            composites: CompositePool::new(width, height),
+            snapshots: FramebufferSnapshotPool::new(width, height),
+        });
+        targets
+            .stencil
+            .ensure_size_for_pipelines(&self.pipelines, device, width, height);
+        targets.composites.ensure_size(width, height);
+        targets.snapshots.ensure_size(width, height);
+        targets
+    }
 }
 
 /// Keyed by `Arc` pointer identity, not `AssetId`: an id survives a hot
@@ -138,7 +164,6 @@ pub(crate) struct PuppetGpu {
     pub collected: bool,
 }
 
-/// Building compiles ~18 pipelines (~20 ms), once per format ever seen.
 pub(crate) fn format_resources<'a>(
     formats: &'a mut HashMap<wgpu::TextureFormat, FormatResources>,
     format: wgpu::TextureFormat,
@@ -147,11 +172,8 @@ pub(crate) fn format_resources<'a>(
 ) -> &'a mut FormatResources {
     formats.entry(format).or_insert_with(|| {
         let pipelines = Arc::new(Pipelines::new_autodetect(adapter, device, format));
-        // 1x1 placeholders: the render node sizes them per view.
         FormatResources {
-            stencil: StencilTarget::new_for_pipelines(&pipelines, device, 1, 1),
-            composites: CompositePool::new(1, 1),
-            snapshots: FramebufferSnapshotPool::new(1, 1),
+            targets: HashMap::new(),
             pipelines,
         }
     })
@@ -201,6 +223,15 @@ pub(crate) fn prepare_puppets(
 ) {
     let mut inner = state.inner.lock().unwrap();
     let options = inner.options;
+
+    for resources in inner.formats.values_mut() {
+        let format = resources.pipelines.surface_format;
+        resources.targets.retain(|entity, _| {
+            views
+                .get(*entity)
+                .is_ok_and(|target| target.main_texture_format() == format)
+        });
+    }
 
     let view_formats = unique_formats(views.iter().map(ViewTarget::main_texture_format));
     let pipelines: Vec<_> = view_formats
@@ -333,7 +364,46 @@ pub(crate) fn prepare_puppets(
 
 #[cfg(test)]
 mod tests {
-    use super::unique_formats;
+    use super::{unique_formats, FormatResources};
+    use bevy::prelude::*;
+    use std::{collections::HashMap, sync::Arc};
+
+    #[test]
+    fn different_sized_views_keep_their_targets_between_frames() {
+        let (device, _queue) = bevy::tasks::block_on(catchlight_wgpu::create_headless_context())
+            .expect("headless device");
+        let pipelines = Arc::new(catchlight_wgpu::Pipelines::new(
+            &device,
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+        ));
+        let mut resources = FormatResources {
+            pipelines: pipelines.clone(),
+            targets: HashMap::new(),
+        };
+        let mut world = World::new();
+        let a = world.spawn_empty().id();
+        let b = world.spawn_empty().id();
+        let mut targets = |entity, width, height| {
+            let targets = resources.targets_for_view(entity, &device, width, height);
+            targets.composites.reset();
+            (
+                targets.stencil.texture.clone(),
+                targets.composites.acquire(&pipelines, &device).view,
+            )
+        };
+        let first_a = targets(a, 64, 64);
+        let first_b = targets(b, 128, 96);
+        for _ in 0..3 {
+            assert_eq!(targets(a, 64, 64), first_a);
+            assert_eq!(targets(b, 128, 96), first_b);
+        }
+        assert_ne!(
+            targets(a, 80, 60),
+            first_a,
+            "a resized view replaces its targets"
+        );
+        assert_eq!(targets(b, 128, 96), first_b, "the other view stays warm");
+    }
 
     #[test]
     fn keeps_every_distinct_marked_view_format() {

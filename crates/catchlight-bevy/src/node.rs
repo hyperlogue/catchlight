@@ -13,6 +13,7 @@ use crate::prepare::{CatchlightRenderInner, CatchlightRenderState, ModelGpu, Mod
 pub(crate) fn catchlight_2d_pass(
     world: &World,
     view: ViewQuery<(
+        Entity,
         &'static ExtractedCamera,
         &'static ExtractedView,
         &'static ViewTarget,
@@ -20,7 +21,7 @@ pub(crate) fn catchlight_2d_pass(
     )>,
     mut render_context: RenderContext,
 ) {
-    let (camera, view, target, _marked) = view.into_inner();
+    let (view_entity, camera, view, target, _marked) = view.into_inner();
     let device = world.resource::<RenderDevice>();
     let state_res = world.resource::<CatchlightRenderState>();
     let mut guard = state_res.inner.lock().unwrap();
@@ -60,8 +61,7 @@ pub(crate) fn catchlight_2d_pass(
         }
         return;
     };
-    res.stencil
-        .ensure_size_for_pipelines(&res.pipelines, device.wgpu_device(), w, h);
+    let res = res.targets_for_view(view_entity, device.wgpu_device(), w, h);
     *size = (w, h);
 
     let encoder = render_context.command_encoder();

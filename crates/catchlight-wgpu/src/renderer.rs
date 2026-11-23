@@ -688,23 +688,6 @@ pub struct Texture {
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
     pub bind_group: wgpu::BindGroup,
-    // A shared byte allocation is not a complete upload identity: callers can
-    // reuse it with different dimensions, which requires a new GPU texture.
-    source: Option<TextureSource>,
-}
-
-struct TextureSource {
-    rgba: std::sync::Arc<[u8]>,
-    width: u32,
-    height: u32,
-}
-
-impl TextureSource {
-    fn matches(&self, texture: &DecodedTexture) -> bool {
-        self.width == texture.width
-            && self.height == texture.height
-            && std::sync::Arc::ptr_eq(&self.rgba, &texture.rgba)
-    }
 }
 
 /// Matches the piecewise curve `Rgba8UnormSrgb` applies on texture read.
@@ -791,7 +774,7 @@ impl Texture {
     pub fn from_decoded_rgba8(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        rgba: Vec<u8>,
+        rgba: &[u8],
         width: u32,
         height: u32,
         pipelines: &Pipelines,
@@ -833,7 +816,7 @@ impl Texture {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            &rgba,
+            rgba,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(bytes_per_row),
@@ -864,7 +847,6 @@ impl Texture {
             texture,
             view,
             bind_group,
-            source: None,
         })
     }
 }
@@ -1439,6 +1421,7 @@ pub struct WgpuRenderer {
     draw_filter_scratch: Vec<usize>,
     instance_scratch: Vec<InstanceRaw>,
     composite_mask_textures: HashMap<u32, PreparedCompositeMask>,
+    composite_bounds: HashMap<u32, Option<[f32; 4]>>,
 }
 
 /// Viewport-sized mask target shared across every puppet in a frame:
@@ -1715,6 +1698,7 @@ impl WgpuRenderer {
             draw_filter_scratch: Vec::new(),
             instance_scratch: Vec::new(),
             composite_mask_textures: HashMap::new(),
+            composite_bounds: HashMap::new(),
         }
     }
 
@@ -2124,35 +2108,51 @@ impl WgpuRenderer {
         )
     }
 
-    /// None (full viewport) when any child's bound is unknown or a child is a
-    /// nested composite.
-    fn children_union_scissor(
-        &self,
-        children: &[crate::collect::DrawableInfo],
+    /// Bounds the nontransparent contents, not the area a blend can affect.
+    /// A Darken blit must still cover the whole target.
+    fn composite_pixel_aabb(
+        &mut self,
+        node_id: u32,
+        render_list: &crate::collect::RenderList,
         width: u32,
         height: u32,
-    ) -> Option<ScreenRect> {
+    ) -> Option<[f32; 4]> {
         use crate::collect::DrawableInfo;
-        let mut acc: Option<[f32; 4]> = None;
-        for c in children {
-            let DrawableInfo::Part {
-                mesh_id, transform, ..
-            } = c
-            else {
-                return None;
-            };
-            let aabb = self.part_pixel_aabb(*mesh_id, *transform, width, height)?;
-            acc = Some(match acc {
-                None => aabb,
-                Some(a) => [
-                    a[0].min(aabb[0]),
-                    a[1].min(aabb[1]),
-                    a[2].max(aabb[2]),
-                    a[3].max(aabb[3]),
-                ],
-            });
+        if let Some(bounds) = self.composite_bounds.get(&node_id) {
+            return *bounds;
         }
-        pixels_to_scissor(acc?, width, height)
+        let bounds = (|| {
+            let mut acc: Option<[f32; 4]> = None;
+            for child in render_list.composite_children.get(&node_id)? {
+                let aabb = match child {
+                    DrawableInfo::Part {
+                        mesh_id, transform, ..
+                    } => self.part_pixel_aabb(*mesh_id, *transform, width, height)?,
+                    DrawableInfo::Composite { node_id, .. } => {
+                        if !render_list
+                            .composite_children
+                            .get(node_id)
+                            .is_some_and(|c| !c.is_empty())
+                        {
+                            continue;
+                        }
+                        self.composite_pixel_aabb(*node_id, render_list, width, height)?
+                    }
+                };
+                acc = Some(match acc {
+                    None => aabb,
+                    Some(a) => [
+                        a[0].min(aabb[0]),
+                        a[1].min(aabb[1]),
+                        a[2].max(aabb[2]),
+                        a[3].max(aabb[3]),
+                    ],
+                });
+            }
+            acc
+        })();
+        self.composite_bounds.insert(node_id, bounds);
+        bounds
     }
 
     /// Meshes that went inactive are zeroed, otherwise the vertex shader keeps
@@ -2445,28 +2445,17 @@ impl WgpuRenderer {
     }
 
     pub fn upload_texture(&mut self, texture_id: u32, tex: &DecodedTexture) -> RendererResult<()> {
-        if let Some(existing) = self.textures.get(texture_id as usize) {
-            if existing.source.as_ref().is_some_and(|src| src.matches(tex)) {
-                return Ok(());
-            }
-        }
-
-        let mut texture = Texture::from_decoded_rgba8(
+        let texture = Texture::from_decoded_rgba8(
             &self.device,
             &self.queue,
-            tex.rgba.to_vec(),
+            &tex.rgba,
             tex.width,
             tex.height,
             &self.shared,
             &format!("Texture {texture_id}"),
         )?;
         // Mip generation submits its own command buffer.
-        self.frame_stats.queue_submits += 1;
-        texture.source = Some(TextureSource {
-            rgba: tex.rgba.clone(),
-            width: tex.width,
-            height: tex.height,
-        });
+        self.frame_stats.queue_submits += u32::from(texture.texture.mip_level_count() > 1);
 
         self.textures.insert(texture_id as usize, texture);
         Ok(())
@@ -4099,6 +4088,7 @@ impl WgpuRenderer {
 
         composites.ensure_size(width, height);
         composites.reset();
+        self.composite_bounds.clear();
         let mut snapshots_opt = if dst_in_shader_active {
             snapshots
         } else {
@@ -4546,7 +4536,9 @@ impl WgpuRenderer {
         };
 
         // Computed before the children render so the borrow doesn't collide.
-        let union = self.children_union_scissor(children, width, height);
+        let union = self
+            .composite_pixel_aabb(*node_id, render_list, width, height)
+            .and_then(|bounds| pixels_to_scissor(bounds, width, height));
 
         let part_uniform_offset =
             self.write_part_uniform(*opacity, *tint, *screen_tint, *mask_threshold);
@@ -4991,31 +4983,9 @@ mod tests {
     use super::{
         blend_mode_to_wgpu, blend_transparent_src_is_identity, camera_slot_offset,
         pixels_to_scissor, project_aabb_to_pixels, renders_as_over, same_mask_signature, Aabb2,
-        ScreenRect, TextureSource, CAMERA_RING_SLOTS,
+        ScreenRect, CAMERA_RING_SLOTS,
     };
-    use catchlight_core::{BlendMode, DecodedTexture};
-    use std::sync::Arc;
-
-    #[test]
-    fn texture_source_identity_includes_dimensions() {
-        let rgba: Arc<[u8]> = vec![0; 8].into();
-        let source = TextureSource {
-            rgba: rgba.clone(),
-            width: 1,
-            height: 2,
-        };
-
-        assert!(source.matches(&DecodedTexture {
-            width: 1,
-            height: 2,
-            rgba: rgba.clone(),
-        }));
-        assert!(!source.matches(&DecodedTexture {
-            width: 2,
-            height: 1,
-            rgba,
-        }));
-    }
+    use catchlight_core::BlendMode;
 
     #[test]
     fn camera_slot_offsets_stay_inside_the_ring() {
@@ -5314,6 +5284,87 @@ mod tests {
         );
         let off = [200.0, 200.0, 300.0, 300.0];
         assert_eq!(pixels_to_scissor(off, 100, 100), None);
+    }
+
+    #[test]
+    fn nested_composites_keep_tight_bounds_without_clipping_darken() {
+        use crate::{DrawableInfo, RenderContext, RenderList};
+        let mut ctx = pollster::block_on(RenderContext::new(100, 100)).expect("headless context");
+        ctx.renderer
+            .upload_mesh(0, &catchlight_core::Mesh::quad(1.0, 1.0))
+            .expect("mesh");
+        ctx.renderer
+            .upload_texture(
+                0,
+                &catchlight_core::DecodedTexture {
+                    width: 4,
+                    height: 4,
+                    rgba: vec![255; 64].into(),
+                },
+            )
+            .expect("texture");
+        let composite = |node_id| DrawableInfo::Composite {
+            node_id,
+            z_order: 0.0,
+            blend_mode: BlendMode::Normal,
+            opacity: 1.0,
+            tint: glam::Vec3::ONE,
+            screen_tint: glam::Vec3::ZERO,
+            mask_sources: Default::default(),
+            mask_threshold: 0.5,
+        };
+        let part = |mesh_id| DrawableInfo::Part {
+            mesh_id,
+            texture_id: 0,
+            transform: glam::Mat4::IDENTITY,
+            z_order: 0.0,
+            blend_mode: BlendMode::Normal,
+            opacity: 1.0,
+            tint: glam::Vec3::ONE,
+            screen_tint: glam::Vec3::ZERO,
+            mask_sources: Default::default(),
+            mask_threshold: 0.5,
+        };
+        let mut list = RenderList::default();
+        list.root_drawables.push(composite(1));
+        list.composite_children
+            .insert(1, vec![composite(2), composite(3)]);
+        list.composite_children.insert(2, vec![part(0)]);
+        list.composite_children.insert(3, Vec::new());
+        ctx.render(&list, Some(wgpu::Color::WHITE)).expect("render");
+        assert_eq!(
+            ctx.renderer.composite_bounds.get(&1),
+            Some(&Some([25.0, 25.0, 75.0, 75.0]))
+        );
+
+        ctx.renderer
+            .update_camera(glam::Mat4::from_translation(glam::vec3(0.25, 0.0, 0.0)));
+        ctx.render(&list, Some(wgpu::Color::WHITE))
+            .expect("moved camera");
+        assert_eq!(
+            ctx.renderer.composite_bounds.get(&1),
+            Some(&Some([37.5, 25.0, 87.5, 75.0]))
+        );
+
+        if let DrawableInfo::Composite { blend_mode, .. } = &mut list.root_drawables[0] {
+            *blend_mode = BlendMode::Darken;
+        }
+        ctx.render(&list, Some(wgpu::Color::WHITE)).expect("darken");
+        let pixels = ctx.read_rgba().expect("pixels");
+        assert_eq!(
+            &pixels[..4],
+            &[0, 0, 0, 0],
+            "Darken affects pixels outside the nested bounds"
+        );
+        assert_eq!(&pixels[(50 * 100 + 50) * 4..][..4], &[255; 4]);
+
+        list.composite_children
+            .get_mut(&2)
+            .expect("children")
+            .push(part(99));
+        ctx.render(&list, Some(wgpu::Color::WHITE))
+            .expect("unknown bounds");
+        assert_eq!(ctx.renderer.composite_bounds.get(&1), Some(&None));
     }
 
     #[test]

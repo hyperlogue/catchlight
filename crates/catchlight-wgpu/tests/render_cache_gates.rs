@@ -118,6 +118,31 @@ fn a_frame_whose_deforms_did_not_move_uploads_nothing() {
     });
 }
 
+#[test]
+fn mesh_groups_keep_their_deforms_off_the_gpu() {
+    pollster::block_on(async {
+        let mut ctx = context().await;
+        let mut build = common::Build::new();
+        let group = build.node(
+            &build.root(),
+            "mesh group",
+            0.0,
+            ModelNodeKind::MeshGroup(catchlight_core::ModelMeshGroup::new(common::quad(1.0, 1.0))),
+        );
+        let mut scene = common::Scene::new(&mut ctx.renderer, build.model);
+        let group = scene.puppet.node_idx(&group).unwrap();
+        assert_eq!(scene.cache.mesh_count(), 0);
+        assert!(scene.cache.mesh_slot_of_node(group.0).is_none());
+        assert!(scene
+            .puppet
+            .set_scratch_deform(group, &[Vec2::new(0.2, 0.0); 4]));
+        let list = scene.frame(&mut ctx.renderer, 0.0);
+        let stats = ctx.render(&list, CLEAR).unwrap();
+        assert_eq!(stats.deform_bytes_uploaded, 0);
+        assert_eq!(stats.total_draw_calls, 0);
+    });
+}
+
 #[cfg(debug_assertions)]
 #[test]
 #[should_panic(expected = "baked against a different model state")]

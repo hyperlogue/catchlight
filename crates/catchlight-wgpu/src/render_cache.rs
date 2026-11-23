@@ -222,11 +222,10 @@ impl RenderCache {
 
         let mesh_of_node = &self.mesh_of_node;
         let active = puppet.iter_deform_nodes().filter_map(|(idx, node)| {
-            let stack = match &node.kind {
-                NodeKind::Part(part) => &part.deform_stack,
-                NodeKind::MeshGroup(group) => &group.deform_stack,
-                _ => return None,
+            let NodeKind::Part(part) = &node.kind else {
+                return None;
             };
+            let stack = &part.deform_stack;
             if !stack.is_active() {
                 return None;
             }
@@ -389,25 +388,20 @@ impl RenderCache {
             let Some(node) = model.node(id) else {
                 continue;
             };
-            let Some(authored) = model.node_mesh(id) else {
+            let ModelNodeKind::Part(part) = &node.kind else {
                 continue;
             };
+            let authored = part.mesh();
             if authored.verts.is_empty() {
                 continue;
             }
-            let is_part = matches!(node.kind, ModelNodeKind::Part(_));
-            let uv_crop = match &node.kind {
-                ModelNodeKind::Part(part) => part
-                    .albedo()
-                    .and_then(|tex| tex_slot_of_id.get(tex))
-                    .and_then(|&s| uv_crops.get(s as usize).copied())
-                    .flatten(),
-                _ => None,
-            };
+            let uv_crop = part
+                .albedo()
+                .and_then(|tex| tex_slot_of_id.get(tex))
+                .and_then(|&s| uv_crops.get(s as usize).copied())
+                .flatten();
             let mesh = build_mesh(authored, uv_crop);
-            // A MeshGroup without uvs is normal; a Part without uvs draws with
-            // zeros, so warn.
-            if is_part && mesh.uvs.is_empty() {
+            if mesh.uvs.is_empty() {
                 tracing::warn!(
                     node = %id,
                     "part mesh has no uvs; substituting (0,0) for every vertex",
