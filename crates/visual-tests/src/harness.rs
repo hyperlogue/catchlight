@@ -14,6 +14,21 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+/// One device per process, never destroyed: NVIDIA's Vulkan driver can hang
+/// in `vkDestroyDevice` while other threads are inside the driver.
+pub fn shared_context() -> Result<(wgpu::Device, wgpu::Queue)> {
+    static CONTEXT: Mutex<Option<(wgpu::Device, wgpu::Queue)>> = Mutex::new(None);
+    let mut context = CONTEXT
+        .lock()
+        .map_err(|_| anyhow!("shared context lock poisoned"))?;
+    if let Some(context) = context.as_ref() {
+        return Ok(context.clone());
+    }
+    let created = pollster::block_on(create_headless_context())
+        .map_err(|e| anyhow!("create_headless_context: {e}"))?;
+    Ok(context.insert(created).clone())
+}
+
 /// Renders are serialized through `inner`: `WgpuRenderer`'s per-frame
 /// instance/uniform buffers alias under concurrent renders.
 pub struct SharedHarness {
@@ -48,8 +63,7 @@ impl SharedHarness {
     }
 
     pub fn with_models(models: Vec<ModelSpec>) -> Result<Self> {
-        let (device, queue) = pollster::block_on(create_headless_context())
-            .map_err(|e| anyhow!("create_headless_context: {e}"))?;
+        let (device, queue) = shared_context()?;
         let pipelines = Arc::new(Pipelines::new(&device, TARGET_FORMAT));
         let mut models_map = HashMap::new();
         for m in models {

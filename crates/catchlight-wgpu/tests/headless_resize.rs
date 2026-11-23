@@ -6,11 +6,7 @@
 mod common;
 
 use catchlight_core::{Mesh, Model, Puppet};
-use catchlight_wgpu::{
-    collect, create_headless_context, Framing, PrepareOptions, RenderCache, RenderContext,
-    WgpuRenderer,
-};
-use common::NO_ADAPTER;
+use catchlight_wgpu::{collect, Framing, PrepareOptions, RenderCache, RenderContext, WgpuRenderer};
 
 const CAMERA: Framing = Framing {
     center: glam::Vec2::ZERO,
@@ -41,7 +37,7 @@ fn one_quad_model() -> Model {
 
 #[test]
 fn rendering_at_a_second_size_returns_a_buffer_for_that_size() {
-    let (device, queue) = pollster::block_on(create_headless_context()).expect(NO_ADAPTER);
+    let (device, queue) = common::shared_context();
     let renderer = pollster::block_on(WgpuRenderer::new(
         device,
         queue,
@@ -75,7 +71,7 @@ fn rendering_at_a_second_size_returns_a_buffer_for_that_size() {
 /// wgpu rejects zero sizes, so they are clamped.
 #[test]
 fn a_zero_size_is_clamped_to_one_pixel() {
-    let (device, queue) = pollster::block_on(create_headless_context()).expect(NO_ADAPTER);
+    let (device, queue) = common::shared_context();
     let renderer = pollster::block_on(WgpuRenderer::new(
         device,
         queue,

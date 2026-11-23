@@ -6,8 +6,7 @@
 mod common;
 
 use catchlight_core::{Mesh, Model, ModelNodeKind, Puppet};
-use catchlight_wgpu::{collect, create_headless_context, DrawableInfo, WgpuRenderer};
-use common::NO_ADAPTER;
+use catchlight_wgpu::{collect, DrawableInfo, WgpuRenderer};
 
 /// Distinct z at every level so a dropped ancestor shows as a wrong sum.
 fn nested_model() -> (Model, Vec<&'static str>) {
@@ -37,7 +36,7 @@ fn nested_model() -> (Model, Vec<&'static str>) {
 
 #[test]
 fn a_drawables_z_and_opacity_are_the_puppets() {
-    let (device, queue) = pollster::block_on(create_headless_context()).expect(NO_ADAPTER);
+    let (device, queue) = common::shared_context();
     let mut renderer = pollster::block_on(WgpuRenderer::new(
         device,
         queue,
@@ -93,7 +92,7 @@ fn a_drawables_z_and_opacity_are_the_puppets() {
 /// it.
 #[test]
 fn a_composite_does_not_fold_its_opacity_into_its_children() {
-    let (device, queue) = pollster::block_on(create_headless_context()).expect(NO_ADAPTER);
+    let (device, queue) = common::shared_context();
     let mut renderer = pollster::block_on(WgpuRenderer::new(
         device,
         queue,

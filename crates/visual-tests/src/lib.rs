@@ -18,7 +18,7 @@ pub use config::{
     build_matrix, default_models, Camera, Config, FramePuppet, ModelSpec, ParamSetting, Thresholds,
 };
 pub use diff::Metrics;
-pub use harness::{list_configs, run_one, update_all, RunOutcome, SharedHarness};
+pub use harness::{list_configs, run_one, shared_context, update_all, RunOutcome, SharedHarness};
 pub use render::{render_one_to_rgba, RenderContext};
 
 use std::path::{Path, PathBuf};

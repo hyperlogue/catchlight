@@ -8,10 +8,9 @@ mod common;
 
 use catchlight_core::{Mesh, Model, Puppet, Vec2};
 use catchlight_wgpu::{
-    apply_uniform_scratch_deform, create_headless_context, create_orthographic_camera, DeformSet,
-    PrepareOptions, RenderCache, RenderContext, RenderList, WgpuRenderer,
+    apply_uniform_scratch_deform, create_orthographic_camera, DeformSet, PrepareOptions,
+    RenderCache, RenderContext, RenderList, WgpuRenderer,
 };
-use common::NO_ADAPTER;
 
 const W: u32 = 128;
 const H: u32 = 128;
@@ -41,7 +40,7 @@ fn one_quad_model() -> Model {
 }
 
 fn ctx() -> RenderContext {
-    let (device, queue) = pollster::block_on(create_headless_context()).expect(NO_ADAPTER);
+    let (device, queue) = common::shared_context();
     let renderer = pollster::block_on(WgpuRenderer::new(
         device,
         queue,

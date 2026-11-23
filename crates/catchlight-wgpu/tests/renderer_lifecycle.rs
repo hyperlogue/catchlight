@@ -8,11 +8,11 @@ mod common;
 
 use catchlight_core::{Mesh, Model, Vec3};
 use catchlight_wgpu::{
-    create_headless_context, create_orthographic_camera, CompositePool, FrameStats,
-    FramebufferSnapshotPool, Pipelines, RenderList, RenderStats, RendererError, StencilTarget,
-    Submission, WgpuRenderer, CAMERA_RING_SLOTS,
+    create_orthographic_camera, CompositePool, FrameStats, FramebufferSnapshotPool, Pipelines,
+    RenderList, RenderStats, RendererError, StencilTarget, Submission, WgpuRenderer,
+    CAMERA_RING_SLOTS,
 };
-use common::{Scene, NO_ADAPTER};
+use common::Scene;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -40,7 +40,7 @@ struct Stage {
 
 impl Stage {
     fn new() -> Self {
-        let (device, queue) = pollster::block_on(create_headless_context()).expect(NO_ADAPTER);
+        let (device, queue) = common::shared_context();
         let format = wgpu::TextureFormat::Rgba8UnormSrgb;
         let target = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("lifecycle-target"),

@@ -10,7 +10,13 @@ fn lan_visual_regressions_fringe_coverage() {
     // This rectangle lies inside the bangs above the right eye. Rendering at
     // 4 pixels per model unit catches thin skin-colored cracks that disappear
     // into the aggregate tolerance of the full-face baseline.
-    let mut ctx = pollster::block_on(RenderContext::new(55, 135)).expect("renderer");
+    let (device, queue) = visual_tests::shared_context().expect("headless device");
+    let renderer = pollster::block_on(catchlight_wgpu::WgpuRenderer::new(
+        device,
+        queue,
+        wgpu::TextureFormat::Rgba8UnormSrgb,
+    ));
+    let mut ctx = RenderContext::with_renderer(renderer, 55, 135).expect("renderer");
     for roll in [0.0, -2.0, 2.0] {
         let config = Config {
             name: format!("lan_fringe_coverage_{roll}"),

@@ -5,10 +5,7 @@
 mod common;
 
 use catchlight_core::{Model, ModelNodeKind, ModelPart, Puppet, SeededHex, Vec2};
-use catchlight_wgpu::{
-    create_headless_context, PrepareOptions, RenderCache, RenderContext, WgpuRenderer,
-};
-use common::NO_ADAPTER;
+use catchlight_wgpu::{PrepareOptions, RenderCache, RenderContext, WgpuRenderer};
 
 const W: u32 = 64;
 const H: u32 = 64;
@@ -29,7 +26,7 @@ fn one_quad_model() -> (Model, SeededHex) {
 }
 
 async fn context() -> RenderContext {
-    let (device, queue) = create_headless_context().await.expect(NO_ADAPTER);
+    let (device, queue) = common::shared_context();
     let renderer = WgpuRenderer::new(device, queue, wgpu::TextureFormat::Rgba8UnormSrgb).await;
     RenderContext::with_renderer(renderer, W, H).expect("render context")
 }

@@ -12,14 +12,13 @@ use catchlight_core::{
     MaskMode, Model, ModelComposite, ModelNodeKind, ModelPart, NodeId, Puppet, TexId,
 };
 use catchlight_wgpu::{
-    collect, create_headless_context, DrawableInfo, MaskSourceData, PrepareOptions, RenderCache,
-    RenderList, WgpuRenderer,
+    collect, DrawableInfo, MaskSourceData, PrepareOptions, RenderCache, RenderList, WgpuRenderer,
 };
-use common::{Build, Scene, NO_ADAPTER};
+use common::{Build, Scene};
 use std::path::PathBuf;
 
 async fn renderer() -> WgpuRenderer {
-    let (device, queue) = create_headless_context().await.expect(NO_ADAPTER);
+    let (device, queue) = common::shared_context();
     WgpuRenderer::new(device, queue, wgpu::TextureFormat::Rgba8UnormSrgb).await
 }
 

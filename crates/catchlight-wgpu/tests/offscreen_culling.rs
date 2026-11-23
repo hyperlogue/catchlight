@@ -9,7 +9,7 @@ use catchlight_wgpu::{
 };
 
 fn context() -> RenderContext {
-    let mut ctx = pollster::block_on(RenderContext::new(64, 64)).unwrap();
+    let mut ctx = common::render_context(64, 64);
     ctx.renderer.upload_mesh(0, &Mesh::quad(1.0, 1.0)).unwrap();
     ctx.renderer
         .upload_texture(

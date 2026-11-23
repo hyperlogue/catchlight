@@ -40,8 +40,8 @@ fn render_poses(
 
 #[test]
 fn edits_reuse_geometry_and_keep_three_puppets_equal_to_fresh_uploads() {
-    let mut ctx = pollster::block_on(RenderContext::new(96, 96)).unwrap();
-    let mut reference = pollster::block_on(RenderContext::new(96, 96)).unwrap();
+    let mut ctx = common::render_context(96, 96);
+    let mut reference = common::render_context(96, 96);
     let sets = [
         DeformSet::FIRST,
         ctx.renderer.acquire_deform_set(),
@@ -158,7 +158,7 @@ fn edits_reuse_geometry_and_keep_three_puppets_equal_to_fresh_uploads() {
 
 #[test]
 fn rebuild_reuploads_meshes_the_renderer_dropped() {
-    let mut ctx = pollster::block_on(RenderContext::new(96, 96)).unwrap();
+    let mut ctx = common::render_context(96, 96);
     let mut build = common::Build::new();
     let root = build.root();
     let red = build.texture(common::solid_texture(64, 64, [255, 0, 0, 255]));

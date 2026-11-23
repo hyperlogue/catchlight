@@ -366,7 +366,7 @@ pub async fn read_texture_to_rgba(
         },
     );
 
-    queue.submit(std::iter::once(encoder.finish()));
+    let submission = queue.submit(std::iter::once(encoder.finish()));
 
     let buffer_slice = buffer.slice(..);
     let (sender, receiver) = futures::channel::oneshot::channel();
@@ -375,9 +375,11 @@ pub async fn read_texture_to_rgba(
     });
     #[cfg(not(target_arch = "wasm32"))]
     device.poll(wgpu::PollType::Wait {
-        submission_index: None,
+        submission_index: Some(submission),
         timeout: None,
     })?;
+    #[cfg(target_arch = "wasm32")]
+    let _ = submission;
     receiver.await??;
 
     let data = buffer_slice.get_mapped_range();

@@ -4,10 +4,9 @@ mod common;
 
 use catchlight_core::{Model, Vec2};
 use catchlight_wgpu::{
-    apply_uniform_scratch_deform, collect, create_headless_context, create_orthographic_camera,
-    RenderContext, WgpuRenderer,
+    apply_uniform_scratch_deform, collect, create_orthographic_camera, RenderContext, WgpuRenderer,
 };
-use common::{Scene, NO_ADAPTER};
+use common::Scene;
 use std::path::{Path, PathBuf};
 
 const W: u32 = 320;
@@ -20,7 +19,7 @@ fn lan() -> PathBuf {
 async fn render_with_test_deform(path: &Path, shift: Vec2) -> Vec<u8> {
     let model = Model::from_clm_bytes(&std::fs::read(path).unwrap()).expect("load model");
 
-    let (device, queue) = create_headless_context().await.expect(NO_ADAPTER);
+    let (device, queue) = common::shared_context();
     let renderer = WgpuRenderer::new(device, queue, wgpu::TextureFormat::Rgba8Unorm).await;
     let mut ctx = RenderContext::with_renderer(renderer, W, H).expect("render context");
     let mut scene = Scene::new(&mut ctx.renderer, model);

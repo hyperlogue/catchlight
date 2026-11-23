@@ -9,10 +9,8 @@ mod common;
 
 use catchlight_core::{BlendMode, Model, ModelComposite, ModelNodeKind};
 use catchlight_wgpu::{
-    collect, create_headless_context, FramebufferSnapshotPool, PrepareOptions, RenderCache,
-    WgpuRenderer,
+    collect, FramebufferSnapshotPool, PrepareOptions, RenderCache, WgpuRenderer,
 };
-use common::NO_ADAPTER;
 
 const W: u32 = 8;
 const H: u32 = 8;
@@ -50,7 +48,7 @@ async fn render_blend(blend: BlendMode, bg_rgba_u8: [u8; 4], src_rgba_u8: [u8; 4
 }
 
 async fn render_model(model: Model, bg_rgba_u8: [u8; 4]) -> Vec<u8> {
-    let (device, queue) = create_headless_context().await.expect(NO_ADAPTER);
+    let (device, queue) = common::shared_context();
     let format = wgpu::TextureFormat::Rgba8UnormSrgb;
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("dst-in-shader-test target"),
@@ -295,7 +293,7 @@ fn overlay_with_normal_fallback_differs_from_overlay_with_snapshot() {
     // `render_list` without a snapshot pool falls back to OVER for Overlay.
     let model = make_model(BlendMode::Overlay, src);
     let fallback_center = pollster::block_on(async {
-        let (device, queue) = create_headless_context().await.expect(NO_ADAPTER);
+        let (device, queue) = common::shared_context();
         let format = wgpu::TextureFormat::Rgba8UnormSrgb;
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: None,

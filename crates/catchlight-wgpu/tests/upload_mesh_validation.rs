@@ -1,10 +1,12 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use catchlight_core::{DecodedTexture, Mesh, MeshIndices, Vec2};
-use catchlight_wgpu::{create_headless_context, RendererError, WgpuRenderer};
+use catchlight_wgpu::{RendererError, WgpuRenderer};
+
+mod common;
 
 async fn make_renderer() -> WgpuRenderer {
-    let (device, queue) = create_headless_context().await.expect("headless");
+    let (device, queue) = common::shared_context();
     WgpuRenderer::new(device, queue, wgpu::TextureFormat::Rgba8Unorm).await
 }
 

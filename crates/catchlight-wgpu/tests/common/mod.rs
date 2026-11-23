@@ -9,11 +9,33 @@ use catchlight_core::{
     Mesh, Model, ModelNode, ModelNodeKind, ModelPart, ModelTexture, NodeId, Puppet, SeededHex,
     TexId,
 };
-use catchlight_wgpu::{PrepareOptions, RenderCache, RenderList, WgpuRenderer};
+use catchlight_wgpu::{
+    create_headless_context, PrepareOptions, RenderCache, RenderContext, RenderList, WgpuRenderer,
+};
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 pub const NO_ADAPTER: &str =
     "no Vulkan adapter for the headless context; see AGENTS.md, \"Native headless rendering\"";
+
+/// One device per test binary, never destroyed: NVIDIA's Vulkan driver can
+/// hang in `vkDestroyDevice` while other threads are inside the driver.
+pub fn shared_context() -> (wgpu::Device, wgpu::Queue) {
+    static CONTEXT: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
+    CONTEXT
+        .get_or_init(|| pollster::block_on(create_headless_context()).expect(NO_ADAPTER))
+        .clone()
+}
+
+pub fn render_context(width: u32, height: u32) -> RenderContext {
+    let (device, queue) = shared_context();
+    let renderer = pollster::block_on(WgpuRenderer::new(
+        device,
+        queue,
+        wgpu::TextureFormat::Rgba8UnormSrgb,
+    ));
+    RenderContext::with_renderer(renderer, width, height).expect("headless render target")
+}
 
 /// Straight alpha, as an editor writes.
 pub fn solid_texture(width: u32, height: u32, rgba: [u8; 4]) -> ModelTexture {
