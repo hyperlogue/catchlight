@@ -27,9 +27,8 @@ fn upload_mesh_rejects_vertex_uv_length_mismatch() {
     }
 }
 
-// Importer tolerance: a trailing
-// partial triangle is truncated and missing uvs get zeros substituted —
-// neither may fail the upload, or one quirky mesh blanks the puppet.
+// A trailing partial triangle is truncated and missing uvs get zeros; neither
+// may fail the upload.
 #[test]
 fn upload_mesh_tolerates_non_triangle_index_count() {
     let mut r = pollster::block_on(make_renderer());

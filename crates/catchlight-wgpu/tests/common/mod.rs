@@ -1,10 +1,6 @@
-//! Shared helpers for the wgpu integration tests: building a small [`Model`]
-//! by hand, and driving one through a [`RenderCache`].
-//!
-//! A model keeps its textures source-encoded, so a synthetic texture is
-//! written as a PNG here rather than handed over as raw bytes. That is the
-//! same path a `.clm` takes, alpha crop and all — a test that wants exact
-//! texels reads away from the crop's boundary.
+//! Shared helpers for the wgpu integration tests. Synthetic textures are PNGs
+//! and get alpha-cropped like a `.clm`'s; read exact texels away from the
+//! crop boundary.
 #![allow(dead_code)]
 
 use catchlight_core::formats::clm::{ClmIndices, ClmMesh};
@@ -19,14 +15,12 @@ use std::collections::HashMap;
 pub const NO_ADAPTER: &str =
     "no Vulkan adapter for the headless context; see AGENTS.md, \"Native headless rendering\"";
 
-/// A `width` x `height` texture of one colour, PNG-encoded the way a model
-/// stores it. Straight alpha, which is what an editor writes.
+/// Straight alpha, as an editor writes.
 pub fn solid_texture(width: u32, height: u32, rgba: [u8; 4]) -> ModelTexture {
     let pixels: Vec<u8> = (0..width * height).flat_map(|_| rgba).collect();
     png_texture(width, height, &pixels)
 }
 
-/// PNG-encode `pixels` (straight-alpha RGBA8, row-major) as a model texture.
 pub fn png_texture(width: u32, height: u32, pixels: &[u8]) -> ModelTexture {
     let image = image::RgbaImage::from_raw(width, height, pixels.to_vec())
         .expect("pixel buffer matches the dimensions");
@@ -41,13 +35,10 @@ pub fn png_texture(width: u32, height: u32, pixels: &[u8]) -> ModelTexture {
     }
 }
 
-/// The model form of [`Mesh::quad`] — a `width` x `height` quad centred on
-/// the origin, with UVs spanning the whole texture.
 pub fn quad(width: f32, height: f32) -> ClmMesh {
     mesh_to_clm(&Mesh::quad(width, height))
 }
 
-/// A `components::Mesh` in the form a model stores.
 pub fn mesh_to_clm(mesh: &Mesh) -> ClmMesh {
     ClmMesh {
         verts: mesh.vertices.iter().flat_map(|v| [v.x, v.y]).collect(),
@@ -60,17 +51,10 @@ pub fn mesh_to_clm(mesh: &Mesh) -> ClmMesh {
     }
 }
 
-/// Builds a model with generated Ids, so a test says what it means rather
-/// than bookkeeping Ids it never reads.
 pub struct Build {
     pub model: Model,
-    /// Public so a test can keep minting Ids after the model has moved into
-    /// a [`Scene`] — an edit between frames is a case worth writing.
     pub hex: SeededHex,
-    /// Textures asked for but not yet in the model. A texture goes to the
-    /// part that draws it, so [`Build::texture`] only mints the Id and holds
-    /// the bytes; the first [`Build::part`] to name it does the upload and
-    /// the parts after that share it.
+    /// Uploaded by the first [`Build::part`] that names it.
     pending: HashMap<TexId, ModelTexture>,
 }
 
@@ -93,8 +77,6 @@ impl Build {
         self.model.root().expect("a complete model").clone()
     }
 
-    /// Reserve a texture Id for `texture`. Nothing reaches the model until a
-    /// part names it — see [`Build::pending`].
     pub fn texture(&mut self, texture: ModelTexture) -> TexId {
         let id = std::iter::repeat_with(|| TexId::generate(&mut self.hex))
             .find(|id| !self.pending.contains_key(id) && self.model.texture(id).is_none())
@@ -103,7 +85,6 @@ impl Build {
         id
     }
 
-    /// Add `kind` under `parent` at `z_order`.
     pub fn node(
         &mut self,
         parent: &NodeId,
@@ -118,7 +99,6 @@ impl Build {
             .expect("add node")
     }
 
-    /// Add a part drawing `mesh` with `albedo`.
     pub fn part(
         &mut self,
         parent: &NodeId,
@@ -145,8 +125,6 @@ impl Build {
     }
 }
 
-/// A model, its puppet and the cache that holds its GPU state: the three
-/// things every render needs.
 pub struct Scene {
     pub model: Model,
     pub puppet: Puppet,
@@ -154,7 +132,6 @@ pub struct Scene {
 }
 
 impl Scene {
-    /// Prepare `model` against `renderer` and build a puppet for it.
     pub fn new(renderer: &mut WgpuRenderer, model: Model) -> Self {
         let cache = RenderCache::prepare(renderer, &model, PrepareOptions::default())
             .expect("prepare the render cache");
@@ -166,7 +143,6 @@ impl Scene {
         }
     }
 
-    /// Prepare `model` with a non-default texture budget.
     pub fn with_options(
         renderer: &mut WgpuRenderer,
         model: Model,
@@ -182,7 +158,6 @@ impl Scene {
         }
     }
 
-    /// Tick one frame, push its deforms, and collect the drawables.
     pub fn frame(&mut self, renderer: &mut WgpuRenderer, dt: f32) -> RenderList {
         self.puppet.tick(&self.model, dt);
         self.cache

@@ -1,18 +1,4 @@
 //! A catchlight [`Model`] as a bevy asset.
-//!
-//! Invariants this module enforces:
-//!
-//! - **The asset owns an `Arc<Model>`, never a bare `Model`.** The render
-//!   world needs the model every frame — a [`crate::CatchlightPuppet`]'s cache
-//!   is prepared and refreshed from it — and extracting it must not copy
-//!   megabytes of textures. Cloning the `Arc` is what makes that free, and it
-//!   is also what lets one loaded model back many puppets.
-//! - **Loading never poses and never animates.** A file becomes a `Model` and
-//!   nothing else; the pose, the drivers and the evaluated frame belong to the
-//!   `Puppet` on the entity.
-//! - **The format is decided by the path, then by the file's magic.** An asset
-//!   path with no recognised extension still loads if the bytes name
-//!   themselves, which is what a `.clm` served from an opaque URL needs.
 
 use std::fmt;
 use std::sync::Arc;
@@ -23,43 +9,27 @@ use bevy::prelude::*;
 use catchlight_core::{Model, ModelFormat};
 
 /// A loaded [`Model`], shared by every puppet animating it.
-///
-/// Clone it to hand the same model to another system; the clone shares the
-/// model rather than copying it.
 #[derive(Asset, TypePath, Clone)]
 pub struct CatchlightModel {
     model: Arc<Model>,
 }
 
 impl CatchlightModel {
-    /// Wrap a model that is already in memory — a fixture, an import, a model
-    /// an editor just built.
     pub fn new(model: Model) -> Self {
         Self {
             model: Arc::new(model),
         }
     }
 
-    /// The model itself. Read-only: an edit belongs to whoever owns the
-    /// `Assets` entry, through [`Assets::get_mut`], and bumps the model's own
-    /// generation so every puppet and cache rebakes.
     pub fn model(&self) -> &Model {
         &self.model
     }
 
-    /// The model, to edit it — the editor's path, and a hot reload's.
-    ///
-    /// Copy-on-write: a model the render world is still holding is cloned
-    /// rather than mutated under it, so the frame in flight keeps the model it
-    /// started with. Every edit bumps the model's own generation, which is
-    /// what makes each puppet rebake and each render cache rebuild.
+    /// Copy-on-write, so the frame in flight keeps the model it started with.
     pub fn model_mut(&mut self) -> &mut Model {
         Arc::make_mut(&mut self.model)
     }
 
-    /// The model behind its `Arc`, for a caller that has to hold it past the
-    /// borrow of the asset — extraction into the render world, for one.
-    /// Cloning it shares the model rather than copying it.
     pub fn shared(&self) -> &Arc<Model> {
         &self.model
     }
@@ -83,10 +53,6 @@ impl fmt::Debug for CatchlightModel {
 }
 
 /// Loads a `.clm` into a [`CatchlightModel`].
-///
-/// `.clm` is the only model format catchlight reads. An inochi2d `.inx` /
-/// `.inp` is converted once, with `catchlight-importer`, and the `.clm` it
-/// writes is what an app ships.
 #[derive(Default, TypePath)]
 pub struct CatchlightModelLoader;
 
@@ -117,25 +83,14 @@ impl AssetLoader for CatchlightModelLoader {
     }
 }
 
-/// Read model-file `bytes` of a known `format` into a [`Model`].
-///
-/// The dispatch is the core's ([`catchlight_core::load_model`]); this only
-/// re-labels its error, because an asset loader can do nothing with a reader's
-/// error but log it.
 pub fn model_from_bytes(bytes: &[u8], format: ModelFormat) -> Result<Model, ModelAssetError> {
     catchlight_core::load_model(bytes, format).map_err(ModelAssetError::parse)
 }
 
-/// Why a model asset could not be loaded.
 #[derive(Debug)]
 pub enum ModelAssetError {
-    /// The asset source could not be read.
     Read(std::io::Error),
-    /// Neither the path's extension nor the file's leading bytes named a
-    /// format catchlight can read.
     UnknownFormat,
-    /// The bytes named a format but did not parse as one. The message is the
-    /// reader's own, kept as text because a caller can only log this.
     Parse(String),
 }
 

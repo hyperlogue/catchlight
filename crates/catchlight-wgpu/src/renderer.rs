@@ -1,99 +1,5 @@
 //! Draws a `RenderList` into a frame the renderer owns, or into a
 //! caller-supplied command encoder.
-//!
-//! `renderer.rs` is one ~5.7k-line file on purpose. Every
-//! `queue.write_buffer` and every buffer allocation is visible in one place,
-//! which is how the aliasing bugs below were caught — twice. It gets split
-//! once targeted renderer tests cover the invariants, not before.
-//!
-//! - **`write_buffer` batches at submit start.** Two writes to the same
-//!   buffer offset inside one frame both land before the submit, and the
-//!   later one wins for *every* draw that reads that range — silently, and
-//!   for the wrong parts. So each buffer offset is written exactly once per
-//!   frame. Per-part instance and uniform data is staged in CPU-side buffers
-//!   and flushed as a single `write_buffer` at frame end
-//!   (`flush_instance_writes`, `flush_part_uniform_writes`, both called from
-//!   `record_frame`).
-//! - **Cursor allocation, never a bare offset 0.** Take instance slots with
-//!   `reserve_instances(count)` and uniform slots with `write_part_uniform(..)`;
-//!   both hand out offsets from a monotonic per-frame cursor. A helper that
-//!   writes offset 0 itself reintroduces the aliasing above.
-//! - **The renderer owns the frame and its submit.** [`WgpuRenderer::frame`]
-//!   makes the encoder, [`Frame::render`] / [`Frame::render_ext`] records the
-//!   frame into it and hands back a [`Recorded`], and [`Recorded::submit`] is
-//!   the only exit that submits — so one frame is one submit. A `Recorded`
-//!   dropped instead draws nothing: it is `#[must_use]`, and a drop that
-//!   still holds the encoder warns. A caller with more to record puts it in
-//!   [`Recorded::encoder`] first. The exception is
-//!   [`WgpuRenderer::render_into`], the borrowed-encoder path for a host that
-//!   owns the submit itself; the only other `queue.submit` in here is
-//!   `generate_mips`, at texture-upload time.
-//! - **A frame is one render call, not one list.** The cursors above are
-//!   monotonic *per frame*, and a frame may carry several puppets of one
-//!   model. [`Frame::render_ext`] sizes the frame over every list, records
-//!   them back to back, and flushes once. Two render calls inside one submit
-//!   would each reset the cursors and rewrite offset 0 — the aliasing above,
-//!   on every draw the first call recorded. The lists draw in the order
-//!   given, each puppet atomic, and only the first may consume the frame's
-//!   `clear_color`.
-//! - **Never grow a GPU buffer mid-frame.** `begin_frame_instances` and
-//!   `begin_frame_uniforms` size the frame up front, before any pass is
-//!   recorded. A realloc after that strands already-recorded passes on the
-//!   freed buffer.
-//! - **A deform set per puppet, a mesh slot per model.** The deform atlas is
-//!   N copies of the cache's mesh layout; a [`DeformSet`] names which copy and
-//!   a [`crate::RenderList`] carries the set its draws read. That is what lets
-//!   one renderer and one [`crate::RenderCache`] serve N puppets: they share
-//!   every texture and every vertex buffer and differ only in these bytes.
-//!   Sets are recycled by index, and a set whose bytes may still hold a
-//!   previous tenant's pose is zeroed before its first upload.
-//! - **An owned frame is camera slot 0; the ring belongs to the borrowed
-//!   path.** Distinct camera slots are what keep views recorded into *one*
-//!   submission from aliasing under `write_buffer` batching; across
-//!   submissions a slot is free to be reused, since the later submission's
-//!   write is ordered after the earlier one's draws on the queue timeline. A
-//!   [`Frame`] *is* one submission, so it always writes slot 0.
-//!   [`WgpuRenderer::render_into`] cannot see a submission boundary, so it
-//!   takes the slots from the caller's [`Submission`] token, one per view,
-//!   out of a `CAMERA_RING_SLOTS`-deep ring. **One token per submit is the
-//!   host's promise.** A token kept past its submit runs the ring out and
-//!   the next view is refused loudly ([`RendererError::CameraViewsExhausted`])
-//!   rather than aliasing onto a slot an earlier command buffer still reads;
-//!   two tokens in one submit alias silently, because neither can see the
-//!   other. That residual is why `catchlight-bevy`, whose render graph owns
-//!   the submit, is the only caller of this path.
-//! - **Masking blends need matching color and alpha factors.** A mode whose
-//!   color component masks via `DstAlpha` or `Zero` (`ClipToLower`,
-//!   `SliceFromLower`, and likewise `Multiply` / `ColorDodge`) must use the
-//!   same factors on alpha. Alpha falling through to OVER writes α=1 where
-//!   color is 0, producing opaque-black halos — invisible at identity pose,
-//!   visible once a deform shrinks the mask. Pinned by
-//!   `masking_blend_modes_have_matching_color_and_alpha_factors`.
-//! - **Multi-puppet resource sharing.** `StencilTarget`, `CompositePool` and
-//!   `FramebufferSnapshotPool` are caller-owned and passed into the render
-//!   call, so several puppets in one frame share them. A renderer is shared
-//!   by every puppet of **one** model and no more: mesh and texture slots
-//!   are a cache's, and a second cache on one renderer would overwrite them.
-//!   Two models are two `(renderer, cache)` pairs over shared `Pipelines`
-//!   and per-format pools, each drawing its own frame in turn onto the one
-//!   target — see `crates/catchlight-bevy/src/prepare.rs` and
-//!   `crates/visual-tests/src/harness.rs`, which serializes every render
-//!   through one mutex for the same reason.
-//! - **The stencil path has a WebGL fallback.** When `Pipelines::has_stencil`
-//!   is false (Chromium swiftshader WebGL2 fails `Depth24PlusStencil8`),
-//!   mask/masked draws sample `StencilTarget::mask_alpha_view` instead of
-//!   stencil-testing. A masking change has to hold on both paths.
-//! - **`base_instance` is native-only.** Part draws select an instance with a
-//!   non-zero `first_instance` on Vulkan/DX12/Metal and re-slice vertex buffer
-//!   1 per draw on GL/WebGL2 and the adapter-less constructors
-//!   (`emit_part_draw`).
-//!
-//! Most of these are invisible to pixels, so they are pinned directly: the
-//! renderer keeps per-frame lifecycle counters (queue writes and buffer
-//! reallocs per buffer, slots reserved vs written) and `debug_assert!`s that
-//! every staged write starts at or above a monotonic watermark. Targeted
-//! per-invariant tests live in `crates/catchlight-wgpu/tests/`;
-//! `crates/visual-tests` covers the ones that do reach pixels.
 
 use catchlight_core::{BlendMode, DecodedTexture};
 use smallvec::SmallVec;
@@ -168,96 +74,48 @@ pub struct RenderStats {
     pub skipped_missing_texture: u32,
     pub skipped_missing_mask_mesh: u32,
     pub skipped_missing_mask_texture: u32,
-    /// Number of texture bind-group rebinds emitted in the main render
-    /// pass. Below drawn_parts when consecutive parts share a texture.
     pub texture_binds: u32,
-    /// Number of pipeline swaps in the main render pass. Below
-    /// drawn_parts when consecutive parts share a blend mode.
     pub pipeline_swaps: u32,
-    /// `encoder.begin_render_pass` calls this frame, including
-    /// mask-write, blit, and no-draw clear passes. The dominant
-    /// driver-CPU cost on tiled / browser backends; the metric the
-    /// pass-batching work in the render path targets.
+    /// Includes mask-write, blit, and no-draw clear passes.
     pub render_passes: u32,
-    /// `draw` / `draw_indexed` calls this frame across all passes.
     pub total_draw_calls: u32,
-    /// Bytes written into `instance_buffer` this frame (the single
-    /// batched `write_buffer` flushed at frame end).
     pub instance_bytes_uploaded: u64,
-    /// Bytes written into the deform atlas by the preceding
-    /// [`WgpuRenderer::upload_deforms`]. Zero on a static frame where every
-    /// resident deform generation already matched.
+    /// Zero when every resident deform generation already matched.
     pub deform_bytes_uploaded: u64,
-    /// Offscreen composite slots acquired this frame (peak concurrent
-    /// is the pool's reuse cursor — non-nested composites share a slot).
     pub composite_slots_used: u32,
 }
 
-/// Resource-lifecycle counters for the current frame, reset at every
-/// frame entry and readable afterwards via
-/// [`WgpuRenderer::frame_stats`]. Plain integers bumped unconditionally —
-/// no allocation, no timing — so tests can pin the buffer invariants that
-/// pixels cannot see: one queue write per buffer per frame, no growth
-/// after the frame is sized, and one write per reserved slot.
+/// Per-frame resource-lifecycle counters, reset at every frame entry.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct FrameStats {
-    /// `queue.submit` calls the renderer made this frame **besides the
-    /// frame's own**. [`Recorded::submit`] is not counted — it is the one
-    /// submit every frame has, and a stat that counted it would carry no
-    /// information. So this reads 0 for an ordinary frame and goes non-zero
-    /// only when an upload that submits (texture mip generation) ran inside
-    /// it.
+    /// Excludes [`Recorded::submit`]; non-zero only when an upload (mip
+    /// generation) submitted inside the frame.
     pub queue_submits: u32,
-    /// `queue.write_buffer` calls made this frame, all buffers.
     pub queue_writes: u32,
-    /// `queue.write_buffer` calls targeting `instance_buffer`. At most 1:
-    /// per-part instance data is staged and flushed once at frame end,
-    /// because `write_buffer` batches at submit start and a second write
-    /// to a live offset would win for every draw that reads it.
+    /// At most 1: `write_buffer` batches at submit start, so a second write to
+    /// a live offset would win for every draw that reads it.
     pub instance_buffer_writes: u32,
-    /// `queue.write_buffer` calls targeting `part_uniform_buffer`. At most
-    /// 1, for the same reason as `instance_buffer_writes`.
+    /// At most 1, as `instance_buffer_writes`.
     pub part_uniform_buffer_writes: u32,
-    /// `queue.write_buffer` calls targeting `camera_buffer` — one per
-    /// frame, into that view's own camera slot.
     pub camera_buffer_writes: u32,
-    /// `queue.write_buffer` calls targeting the deform atlas. Deforms
-    /// upload from [`WgpuRenderer::upload_deforms`], outside the frame, so
-    /// this reads 0.
+    /// Reads 0: deforms upload outside the frame.
     pub deform_buffer_writes: u32,
-    /// Times `instance_buffer` was recreated this frame. Only
-    /// `begin_frame_instances` may do this, so: 1 on the first frame that
-    /// outgrows the current capacity, 0 on every later frame of that size.
     pub instance_buffer_reallocs: u32,
-    /// Times `part_uniform_buffer` was recreated this frame. Same
-    /// discipline as `instance_buffer_reallocs`.
     pub part_uniform_buffer_reallocs: u32,
-    /// Times the deform atlas was recreated this frame. Deform sizing
-    /// happens at mesh-upload time, so this reads 0 within a frame.
     pub deform_buffer_reallocs: u32,
-    /// Buffer recreations that happened after the frame's sizing phase
-    /// closed. **Always 0**: growing mid-frame strands already-recorded
-    /// passes on the freed buffer.
+    /// Always 0: growing mid-frame strands already-recorded passes on the
+    /// freed buffer.
     pub late_buffer_reallocs: u32,
-    /// Instance slots `begin_frame_instances` sized the frame for.
     pub instance_slots_budgeted: u32,
-    /// Instance slots handed out by `reserve_instances` this frame; never
-    /// above `instance_slots_budgeted`.
+    /// Never above `instance_slots_budgeted`.
     pub instance_slots_reserved: u32,
-    /// Instance slots actually written. Equals `instance_slots_reserved`
-    /// when every reserved slot is filled exactly once.
     pub instance_slots_written: u32,
-    /// Bytes staged into `instance_buffer` this frame.
     pub instance_bytes_written: u64,
-    /// Part-uniform slots `begin_frame_uniforms` sized the frame for.
     pub part_uniform_slots_budgeted: u32,
-    /// `write_part_uniform` calls this frame — one per slot consumed,
-    /// never above `part_uniform_slots_budgeted`.
+    /// Never above `part_uniform_slots_budgeted`.
     pub part_uniform_writes: u32,
 }
 
-/// Which renderer-owned GPU buffer a `FrameStats` write / realloc tally
-/// belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RenderBuffer {
     Instance,
@@ -299,12 +157,8 @@ fn blend_mode_to_wgpu(mode: BlendMode) -> wgpu::BlendState {
             },
             alpha: wgpu::BlendComponent::OVER,
         },
-        // Alpha must multiply by DstAlpha too. With OVER (src*1 + dst*(1-srcA))
-        // the alpha outside the mask becomes 1 while the color term is
-        // already 0, producing opaque-black pixels wherever the clipped
-        // mesh extends past its mask. Invisible when the mask and content
-        // stay aligned (identity pose), visible as black halos as soon as
-        // a deform shrinks the mask — e.g. an eye mask at blink=1.
+        // Alpha must multiply by DstAlpha too: OVER would write alpha 1 where
+        // color is 0, an opaque-black halo once a deform shrinks the mask.
         BlendMode::ClipToLower => wgpu::BlendState {
             color: wgpu::BlendComponent {
                 src_factor: wgpu::BlendFactor::DstAlpha,
@@ -329,22 +183,19 @@ fn blend_mode_to_wgpu(mode: BlendMode) -> wgpu::BlendState {
                 operation: wgpu::BlendOperation::Add,
             },
         },
-        // ColorDodge: additive with destination color influence
         BlendMode::ColorDodge => wgpu::BlendState {
             color: wgpu::BlendComponent {
                 src_factor: wgpu::BlendFactor::Dst,
                 dst_factor: wgpu::BlendFactor::One,
                 operation: wgpu::BlendOperation::Add,
             },
-            // Alpha uses the same destination-color and additive factors.
             alpha: wgpu::BlendComponent {
                 src_factor: wgpu::BlendFactor::Dst,
                 dst_factor: wgpu::BlendFactor::One,
                 operation: wgpu::BlendOperation::Add,
             },
         },
-        // LinearDodge (Add): blends color with inverse src color for softer highlight
-        // Reference: glBlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_COLOR, GL_ONE, GL_ONE_MINUS_SRC_ALPHA)
+        // Matches glBlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_COLOR, GL_ONE, GL_ONE_MINUS_SRC_ALPHA).
         BlendMode::LinearDodge => wgpu::BlendState {
             color: wgpu::BlendComponent {
                 src_factor: wgpu::BlendFactor::One,
@@ -357,7 +208,6 @@ fn blend_mode_to_wgpu(mode: BlendMode) -> wgpu::BlendState {
                 operation: wgpu::BlendOperation::Add,
             },
         },
-        // Pure additive: src + dst (both color and alpha).
         BlendMode::Add => wgpu::BlendState {
             color: wgpu::BlendComponent {
                 src_factor: wgpu::BlendFactor::One,
@@ -370,8 +220,6 @@ fn blend_mode_to_wgpu(mode: BlendMode) -> wgpu::BlendState {
                 operation: wgpu::BlendOperation::Add,
             },
         },
-        // dst - src (ReverseSubtract): darkens the framebuffer by the
-        // src contribution, clipped to [0, 1] by the hardware.
         BlendMode::Subtract => wgpu::BlendState {
             color: wgpu::BlendComponent {
                 src_factor: wgpu::BlendFactor::One,
@@ -384,7 +232,6 @@ fn blend_mode_to_wgpu(mode: BlendMode) -> wgpu::BlendState {
                 operation: wgpu::BlendOperation::ReverseSubtract,
             },
         },
-        // min(src, dst): per-channel darken.
         BlendMode::Darken => wgpu::BlendState {
             color: wgpu::BlendComponent {
                 src_factor: wgpu::BlendFactor::One,
@@ -397,7 +244,6 @@ fn blend_mode_to_wgpu(mode: BlendMode) -> wgpu::BlendState {
                 operation: wgpu::BlendOperation::Min,
             },
         },
-        // max(src, dst): per-channel lighten.
         BlendMode::Lighten => wgpu::BlendState {
             color: wgpu::BlendComponent {
                 src_factor: wgpu::BlendFactor::One,
@@ -410,9 +256,7 @@ fn blend_mode_to_wgpu(mode: BlendMode) -> wgpu::BlendState {
                 operation: wgpu::BlendOperation::Max,
             },
         },
-        // Inverse is directly expressible as fixed-function
-        // (BlendFactor::OneMinusDst's alpha component is 1-dst.a, matching
-        // GL's GL_ONE_MINUS_DST_COLOR alpha behaviour).
+        // OneMinusDst's alpha is 1-dst.a, matching GL_ONE_MINUS_DST_COLOR.
         BlendMode::Inverse => wgpu::BlendState {
             color: wgpu::BlendComponent {
                 src_factor: wgpu::BlendFactor::OneMinusDst,
@@ -425,16 +269,8 @@ fn blend_mode_to_wgpu(mode: BlendMode) -> wgpu::BlendState {
                 operation: wgpu::BlendOperation::Add,
             },
         },
-        // Overlay / ColorBurn / LinearBurn can't be expressed as a single
-        // fixed-function wgpu BlendState — the math reads the destination.
-        // The dispatcher in `record_list` routes these through
-        // `blit_composite_dst_in_shader`, which renders the src into a
-        // composite slot, snapshots the framebuffer, then runs a
-        // shader-math blit pipeline that emits the final pixel via
-        // `BlendState::REPLACE`. The Normal-OVER returned here is only
-        // used by the unmasked composite-child pipeline that renders the
-        // src into the offscreen slot, so the src lands premultiplied —
-        // matching what every other blit path expects.
+        // Dst-reading modes draw via `blit_composite_dst_in_shader`; this OVER
+        // state only renders their src into the offscreen slot, premultiplied.
         BlendMode::Overlay | BlendMode::ColorBurn | BlendMode::LinearBurn => wgpu::BlendState {
             color: wgpu::BlendComponent {
                 src_factor: wgpu::BlendFactor::One,
@@ -446,11 +282,8 @@ fn blend_mode_to_wgpu(mode: BlendMode) -> wgpu::BlendState {
     }
 }
 
-/// True for blend modes whose math reads the destination color and
-/// can't be expressed as a single wgpu fixed-function BlendState.
-/// `record_list` routes these through the composite +
-/// framebuffer-snapshot path; every other mode renders directly to the
-/// main color attachment with hardware blending.
+/// Blend modes whose math reads the destination color, which no
+/// fixed-function BlendState can express.
 fn is_dst_in_shader(mode: BlendMode) -> bool {
     matches!(
         mode,
@@ -458,11 +291,8 @@ fn is_dst_in_shader(mode: BlendMode) -> bool {
     )
 }
 
-/// Pipeline-lookup key for a part draw. The dst-in-shader trio's
-/// fixed-function state *is* Normal's OVER (their shader math only
-/// runs in the snapshot blit path), so binding Normal's pipeline
-/// object avoids spurious pipeline swaps when a run alternates e.g.
-/// Normal and ColorBurn parts.
+/// The dst-in-shader trio shares Normal's OVER pipeline to avoid spurious
+/// pipeline swaps.
 fn canonical_part_blend(mode: BlendMode) -> BlendMode {
     if is_dst_in_shader(mode) {
         BlendMode::Normal
@@ -471,16 +301,9 @@ fn canonical_part_blend(mode: BlendMode) -> BlendMode {
     }
 }
 
-/// True when a mode's fixed-function blend is plain premultiplied OVER
-/// (`src = One`, `dst = OneMinusSrcAlpha` on both color and alpha). OVER
-/// is associative: `(a OVER b) OVER c == a OVER (b OVER c)`. That is the
-/// exact condition under which a composite's children can be drawn
-/// straight to the parent target instead of into an offscreen slot that
-/// is then OVER-blitted — the root-composite flattening fast path. The
-/// dst-in-shader trio qualifies here only for its no-snapshot fallback
-/// (where it degrades to OVER); when the snapshot path is active the
-/// flatten guard rejects such children separately, since their shader
-/// math reads the composite's own transparent-start buffer.
+/// Premultiplied OVER is associative, so a composite whose children all
+/// blend OVER can draw them straight to the parent target. The
+/// dst-in-shader trio qualifies only for its no-snapshot fallback.
 fn renders_as_over(mode: BlendMode) -> bool {
     let s = blend_mode_to_wgpu(mode);
     let over = wgpu::BlendComponent::OVER;
@@ -492,36 +315,22 @@ fn renders_as_over(mode: BlendMode) -> bool {
     eq(&s.color) && eq(&s.alpha)
 }
 
-/// True when a fully-transparent src texel `(0,0,0,0)` leaves the
-/// destination unchanged under `mode`'s fixed-function blend. This is the
-/// exact condition for a scissored composite blit to match the
-/// full-screen blit: outside a composite's content the offscreen slot is
-/// a transparent clear, so only a mode that is identity-on-transparent
-/// may skip shading those pixels.
-///
-/// Derived from `blend_mode_to_wgpu`'s factors/ops (a unit test replays
-/// the table to keep this in sync): the OVER family, the DstAlpha/Zero
-/// masking modes, ColorDodge/LinearDodge, Add, Inverse and the OVER
-/// fallback for the dst-in-shader trio all reduce to `dst` for a zero
-/// src; `Subtract` gives `dst − 0 = dst`; `Lighten` is `max(0,dst) = dst`.
-/// `Darken` is the sole exclusion — `BlendOperation::Min` with a zero src
-/// yields `min(0,dst) = 0`, so a full-screen Darken blit blackens
-/// everything outside the composite and a scissored one would not.
+/// A transparent src leaves dst unchanged, so a scissored composite blit
+/// matches the full-screen one. `Darken` (`min(0, dst) = 0`) is the sole
+/// exclusion; a unit test replays `blend_mode_to_wgpu` to keep this in sync.
 fn blend_transparent_src_is_identity(mode: BlendMode) -> bool {
     !matches!(mode, BlendMode::Darken)
 }
 
-/// Axis-aligned bounding box in a mesh's local (origin-shifted) space —
-/// the coordinate the vertex shader transforms by the instance model
-/// matrix. Projected to a screen scissor rect to bound per-part GPU work.
+/// AABB in a mesh's local (origin-shifted) space, before the instance
+/// model matrix.
 #[derive(Copy, Clone, Debug)]
 struct Aabb2 {
     min: glam::Vec2,
     max: glam::Vec2,
 }
 
-/// Framebuffer-pixel rectangle, guaranteed within the viewport. Used as a
-/// scissor (and as the copy sub-rect for the dst-in-shader snapshot).
+/// Framebuffer pixels, within the viewport.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ScreenRect {
     x: u32,
@@ -530,17 +339,11 @@ pub(crate) struct ScreenRect {
     height: u32,
 }
 
-/// Pixels added on every side of a projected part bound before it becomes
-/// a scissor, absorbing floor/ceil rounding and any rasterization slack so
-/// the rect never clips the content it bounds.
+/// Absorbs floor/ceil rounding and rasterization slack.
 const SCISSOR_PAD: f32 = 2.0;
 
-/// Project a local-space AABB through `mvp` (= view_proj · model) to a
-/// framebuffer-pixel AABB `[min_x, min_y, max_x, max_y]`. All four corners
-/// are projected and their screen extents unioned, so the box stays
-/// conservative under rotation/scale in `model`. Returns None when a
-/// corner is non-finite or lands on/behind the `w ≈ 0` plane — the caller
-/// then falls back to the full viewport rather than risk clipping.
+/// Returns `[min_x, min_y, max_x, max_y]` in framebuffer pixels, or None when
+/// a corner is non-finite or on/behind `w ≈ 0` (callers use the full viewport).
 fn project_aabb_to_pixels(
     local: Aabb2,
     mvp: glam::Mat4,
@@ -562,8 +365,7 @@ fn project_aabb_to_pixels(
         if clip.w.abs() < 1e-6 {
             return None;
         }
-        // NDC → framebuffer pixels: +X right, +Y up in NDC; framebuffer y
-        // grows downward, so the y axis flips.
+        // NDC +Y is up; framebuffer y grows downward.
         let px = (clip.x / clip.w * 0.5 + 0.5) * width;
         let py = (0.5 - clip.y / clip.w * 0.5) * height;
         if !px.is_finite() || !py.is_finite() {
@@ -577,10 +379,8 @@ fn project_aabb_to_pixels(
     Some([min_x, min_y, max_x, max_y])
 }
 
-/// Pad a pixel-space AABB, round outward, and clamp to the viewport.
-/// Returns None for a degenerate / off-screen rect: the caller then uses
-/// the full viewport, which is byte-identical because off-screen geometry
-/// contributes nothing under the rasterizer either way.
+/// None for a degenerate or off-screen rect; the full viewport is then
+/// byte-identical.
 fn pixels_to_scissor(aabb: [f32; 4], width: u32, height: u32) -> Option<ScreenRect> {
     let w = width as f32;
     let h = height as f32;
@@ -599,11 +399,6 @@ fn pixels_to_scissor(aabb: [f32; 4], width: u32, height: u32) -> Option<ScreenRe
     })
 }
 
-/// Every render pipeline in `Pipelines` shares the same primitive /
-/// multisample / multiview / cache state and a single color target;
-/// they differ only in layout, shader entry points, vertex buffers,
-/// blend, color write mask, and the optional depth-stencil state. This
-/// collapses that boilerplate into one call site.
 #[allow(clippy::too_many_arguments)]
 fn make_render_pipeline(
     device: &wgpu::Device,
@@ -709,12 +504,8 @@ impl DeformAttr {
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct InstanceRaw {
-    // Model-matrix columns x_axis, y_axis, w_axis (48 B). The z_axis
-    // column is dropped: vertices enter at z = 0 (the shader builds
-    // `vec4(pos.xy, 0, 1)`), so z_axis never contributes, and an SRT
-    // matrix has no projective row so w_out is always 1 — the shader
-    // rebuilds the affine sum and forces w = 1. Columns stay vec4 (not
-    // vec3) so the vertex attributes keep 16-byte alignment.
+    // z_axis is dropped: vertices enter at z = 0 and an SRT matrix keeps
+    // w = 1, which the shader forces. Columns stay vec4 for 16-byte alignment.
     col_x: [f32; 4],
     col_y: [f32; 4],
     col_w: [f32; 4],
@@ -761,7 +552,6 @@ struct CameraUniform {
     view_proj: [[f32; 4]; 4],
 }
 
-/// Per-draw resource references for the unmasked Part pipeline.
 #[derive(Copy, Clone, Debug)]
 struct PartDraw {
     mesh_id: u32,
@@ -770,30 +560,20 @@ struct PartDraw {
     blend_mode: BlendMode,
 }
 
-/// A `PartDraw` paired with the part-uniform slot it reads. Batched
-/// runs of unmasked parts each carry their own slot so one render pass
-/// can re-bind group 2 per draw without re-binding pipeline / texture.
 #[derive(Copy, Clone, Debug)]
 struct PreparedPartDraw {
     draw: PartDraw,
     part_uniform_offset: u32,
 }
 
-/// A masked `PreparedPartDraw` plus the mask sources whose signature
-/// decides whether it can share one mask-write pass with its
-/// neighbours. The `mask_sources` slice borrows the RenderList; each
-/// source carries its own alpha threshold, which the mask-write pass
-/// reads from a per-source part-uniform slot.
 #[derive(Copy, Clone)]
 struct PreparedMaskedPartDraw<'a> {
     draw: PreparedPartDraw,
     mask_sources: &'a [crate::collect::MaskSourceData],
 }
 
-/// Two masked draws share a mask-write pass only when their mask shapes
-/// rasterize identically. Compare each source's mesh / texture / mode /
-/// threshold — not the target part's own mesh or texture, which the
-/// masked draw rebinds per draw.
+/// Compares mask sources only; the masked draw rebinds its own mesh and
+/// texture per draw.
 fn same_mask_signature(
     a_sources: &[crate::collect::MaskSourceData],
     b_sources: &[crate::collect::MaskSourceData],
@@ -837,35 +617,23 @@ fn same_mask_signature(
         })
 }
 
-/// One color+stencil render pass kept open across consecutive part
-/// batches targeting `view` (stencil path only). `next_ref` allocates
-/// a fresh stencil reference per masked batch within the open pass:
-/// batch k's mask sources REPLACE k where they rasterize (dodge
-/// sources punch 0) and its content tests Equal k — stale stencil
-/// values from earlier batches are all < k, so no clear between
-/// batches is needed. `next_load` is the color LoadOp for the next
-/// (re)open: the frame clear until some pass consumes it, then Load.
+/// Stencil path only. Masked batch k's sources REPLACE k (dodge sources
+/// punch 0) and its content tests Equal k; earlier batches' values are all
+/// < k, so no clear between batches is needed.
 struct StencilPassState<'v> {
     view: &'v wgpu::TextureView,
     stencil_view: &'v wgpu::TextureView,
     label: &'static str,
     next_load: wgpu::LoadOp<wgpu::Color>,
-    // `forget_lifetime` detaches the pass from the encoder borrow so it
-    // can be held across z-walk iterations; it must be dropped (set to
-    // None) before the encoder records anything else — wgpu validates
-    // this at runtime.
+    // Must be dropped before the encoder records anything else (wgpu
+    // validates this at runtime).
     pass: Option<wgpu::RenderPass<'static>>,
     next_ref: u32,
-    // Texture currently bound at group 1, shared across every record
-    // helper feeding this pass: bind-group state is pass-scoped in wgpu,
-    // so a mask-source or part draw whose texture is already bound
-    // (atlas pages make this the common case) can skip the rebind.
+    // Bind-group state is pass-scoped, so a draw whose texture is already
+    // bound can skip the rebind.
     bound_texture: Option<u32>,
-    // Scissor applied on every (re)open. Set only for a single-part slot
-    // pass (dst-in-shader render), where the whole pass draws one part and
-    // its rect is known up front; None everywhere else (the main pass and
-    // composite-children pass draw many parts with different bounds). A
-    // LoadOp::Clear still clears the whole attachment regardless.
+    // Only for a single-part slot pass. A LoadOp::Clear still clears the whole
+    // attachment.
     scissor: Option<ScreenRect>,
 }
 
@@ -893,10 +661,7 @@ impl<'v> StencilPassState<'v> {
     }
 }
 
-/// Where a run of batched part draws lands. Stencil: one shared pass
-/// per color target, masked batches distinguished by per-batch stencil
-/// references. Alpha (WebGL fallback): per-batch passes — mask-alpha
-/// texture writes plus sampled masked draws.
+/// Alpha is the WebGL fallback: per-batch passes with mask-alpha textures.
 enum PartSink<'a, 'v> {
     Stencil(&'a mut StencilPassState<'v>),
     Alpha {
@@ -910,8 +675,7 @@ enum PartSink<'a, 'v> {
 }
 
 impl PartSink<'_, '_> {
-    /// The target view received content from a pass outside the sink
-    /// (composite blit, dst-in-shader blit) — the frame clear is spent.
+    /// A pass outside the sink wrote the target, spending the frame clear.
     fn mark_rendered(&mut self) {
         match self {
             PartSink::Stencil(s) => s.next_load = wgpu::LoadOp::Load,
@@ -943,9 +707,7 @@ impl TextureSource {
     }
 }
 
-/// sRGB→linear conversion matching the piecewise curve that
-/// `Rgba8UnormSrgb` applies on texture read. Used to pre-convert
-/// CPU-side tint uniforms so fragment math stays in linear space.
+/// Matches the piecewise curve `Rgba8UnormSrgb` applies on texture read.
 fn srgb_to_linear(c: f32) -> f32 {
     if c <= 0.04045 {
         c / 12.92
@@ -962,19 +724,11 @@ fn srgb_to_linear_vec3(c: glam::Vec3) -> glam::Vec3 {
     )
 }
 
-/// Every puppet texture uploads as premultiplied linear encoded in sRGB
-/// bytes, so the sampler's decode hands shaders premultiplied linear.
-/// CPU-side tints go through `srgb_to_linear_vec3` before upload; all
-/// fragment math is linear.
+/// Bytes are premultiplied linear encoded as sRGB; the sampler's decode hands
+/// shaders premultiplied linear, so CPU-side tints are converted to linear.
 pub const PUPPET_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
 /// Fill mips 1.. by successively halving the level above on the GPU.
-///
-/// The CPU alternative walks ~1.33x the base pixel count per texture
-/// through an sRGB decode/encode per channel, single-threaded, before the
-/// first frame can draw — the largest remaining slice of a model's load
-/// time after PNG decode, and unlike PNG decode it has a direct GPU
-/// analogue.
 pub fn generate_mips(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -1057,10 +811,8 @@ impl Texture {
 
         let mip_level_count = 32 - w.max(h).max(1).leading_zeros();
 
-        // Importer produces bytes encoding premultiplied LINEAR color
-        // (see ModelTexture::decode). Upload as `Rgba8UnormSrgb` so the
-        // sampler decodes sRGB→linear and returns premultiplied linear
-        // values — shaders can blend / tint directly in linear space.
+        // Bytes encode premultiplied linear color; the sRGB format makes the
+        // sampler return linear values.
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some(label),
             size,
@@ -1157,9 +909,7 @@ pub struct MeshBuffer {
     pub vert_count: u32,
     pub num_indices: u32,
     pub index_format: wgpu::IndexFormat,
-    /// AABB over the shifted positions this mesh uploads (`pos - origin`,
-    /// what the shader transforms). None for an empty mesh — no bound to
-    /// project, so callers use the full viewport.
+    /// AABB over `pos - origin`. None for an empty mesh.
     local_bounds: Option<Aabb2>,
 }
 
@@ -1169,9 +919,6 @@ pub struct CompositeTexture {
     // A dst-in-shader child blends against this composite's contents, and
     // the snapshot copy needs the texture handle (COPY_SRC), not a view.
     texture: wgpu::Texture,
-    // Bind group the blit pipelines use to sample this composite. Built
-    // once when the composite texture is created (or resized) and reused
-    // across every frame's blit calls.
     blit_bind_group: wgpu::BindGroup,
 }
 
@@ -1223,12 +970,8 @@ impl CompositeTexture {
     }
 }
 
-/// Sample-able copy of the main color attachment used by the dst-in-shader
-/// blit path (Overlay/ColorBurn/LinearBurn). Each blit requires
-/// snapshotting the framebuffer just before the pass so the fragment
-/// shader can read the destination at the same screen pixel; the source
-/// must therefore be the user-supplied color texture and must carry
-/// `COPY_SRC` usage. The snapshot itself owns COPY_DST + TEXTURE_BINDING.
+/// Snapshot of the main color attachment for the dst-in-shader blit. The
+/// source must carry `COPY_SRC`.
 struct SnapshotTexture {
     texture: wgpu::Texture,
     bind_group: wgpu::BindGroup,
@@ -1272,13 +1015,7 @@ impl SnapshotTexture {
     }
 }
 
-/// Pool of viewport-sized framebuffer snapshots, reused across the four
-/// dst-in-shader blit modes within one frame. Same growth/reset
-/// discipline as `CompositePool`: cursor reset at frame entry,
-/// slots grow on first miss and are then reused for the rest of the
-/// program's lifetime. Allocates nothing when no dst-in-shader part
-/// shows up — the cursor stays at 0 and `acquire` is never called, so
-/// the slot vec stays empty.
+/// Allocates nothing until a dst-in-shader part shows up.
 pub struct FramebufferSnapshotPool {
     slots: Vec<SnapshotTexture>,
     cursor: usize,
@@ -1311,12 +1048,10 @@ impl FramebufferSnapshotPool {
         self.cursor = 0;
     }
 
-    /// See [`CompositePool::mark`].
     pub fn mark(&self) -> usize {
         self.cursor
     }
 
-    /// See [`CompositePool::rewind`].
     pub fn rewind(&mut self, mark: usize) {
         self.cursor = self.cursor.min(mark);
     }
@@ -1336,26 +1071,20 @@ impl FramebufferSnapshotPool {
     }
 }
 
-/// Where a composite's finished slot blits to: the main view for a root
-/// composite, or the enclosing composite's slot for a nested one. `texture`
-/// names the same surface as `view` and is only needed by the dst-in-shader
-/// blit, which snapshots it; `None` sends that blit down the Normal-OVER
-/// fallback instead.
+/// `texture` is only needed by the dst-in-shader blit's snapshot; `None`
+/// sends that blit down the Normal-OVER fallback.
 #[derive(Clone, Copy)]
 struct CompositeTarget<'a> {
     view: &'a wgpu::TextureView,
     texture: Option<&'a wgpu::Texture>,
 }
 
-/// Pool of viewport-sized offscreen textures reused across composites.
-/// One pool per render world; `reset()` at the start of every frame
-/// call. Slots are allocated lazily (grown on demand).
+/// Viewport-sized offscreen textures reused across composites; `reset()` at
+/// the start of every frame.
 pub struct CompositePool {
     slots: Vec<CompositeTexture>,
     cursor: usize,
-    // Highest cursor reached since `reset`. `cursor` alone can't answer "how
-    // many slots did this frame need": rewinds pull it back, so by the end of
-    // a frame it has usually returned to 0.
+    // Rewinds pull `cursor` back, so it cannot say how many slots a frame needed.
     peak: usize,
     width: u32,
     height: u32,
@@ -1384,32 +1113,22 @@ impl CompositePool {
         }
     }
 
-    /// Reset the allocation cursor. Call once per frame so each
-    /// frame's composites re-use slots 0, 1, 2…
     pub fn reset(&mut self) {
         self.cursor = 0;
         self.peak = 0;
     }
 
-    /// Current cursor, to hand back to [`Self::rewind`] once every slot
-    /// acquired since is dead. This is what makes non-nested composites share
-    /// a slot instead of each permanently growing the pool.
+    /// Lets non-nested composites share a slot instead of each growing the pool.
     pub fn mark(&self) -> usize {
         self.cursor
     }
 
-    /// Release every slot acquired since `mark`. Never moves the cursor
-    /// forward, so a nested acquire that outlives its mark can't be freed
-    /// out from under a recorded pass.
+    /// Never moves the cursor forward, so a nested acquire that outlives its
+    /// mark is not freed under a recorded pass.
     pub fn rewind(&mut self, mark: usize) {
         self.cursor = self.cursor.min(mark);
     }
 
-    /// Acquire the next slot, growing the pool if needed. Returns owned
-    /// handles (cheap — wgpu resources are internally ref-counted), so a
-    /// caller can hold one slot while the pool hands out further slots,
-    /// e.g. a composite's own slot plus the scratch slot its
-    /// dst-in-shader children render through.
     pub fn acquire(&mut self, pipelines: &Pipelines, device: &wgpu::Device) -> CompositeTexture {
         if self.cursor >= self.slots.len() {
             self.slots.push(CompositeTexture::new(
@@ -1425,18 +1144,13 @@ impl CompositePool {
         self.slots[idx].clone()
     }
 
-    /// Snapshot for debugging/overlays: `(peak_this_frame, capacity,
-    /// width, height)`. The peak is the most slots live at once since
-    /// `reset` — with nested composites that is the nesting depth, and it
-    /// survives the rewinds that return `cursor` to 0 before the frame ends.
+    /// `(peak_this_frame, capacity, width, height)`.
     pub fn stats(&self) -> (usize, usize, u32, u32) {
         (self.peak, self.slots.len(), self.width, self.height)
     }
 }
 
-// Matches `struct PartUniforms` in basic.wgsl — see there for the
-// screen_tint.w / mask_threshold packing invariant. `tint` keeps a w lane
-// purely for std140 alignment.
+// Matches `struct PartUniforms` in basic.wgsl. `tint.w` is std140 padding.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct PartUniform {
@@ -1471,12 +1185,8 @@ impl Default for PartUniform {
     }
 }
 
-/// GPU resources that are safe to share across every puppet rendering in
-/// one world: pipelines, bind-group layouts, samplers, and shared texture
-/// placeholders. Camera buffers live per `WgpuRenderer`; only their layout
-/// and dynamic-offset stride are shared. Built once per (device,
-/// surface_format) pair. Wrap in an `Arc` when instantiating multiple
-/// `WgpuRenderer`s to avoid recompiling ~18 pipelines per puppet.
+/// Shared across every puppet in one world; built once per (device,
+/// surface_format).
 pub struct Pipelines {
     pub surface_format: wgpu::TextureFormat,
     pub(crate) pipelines: HashMap<BlendMode, wgpu::RenderPipeline>,
@@ -1486,86 +1196,54 @@ pub struct Pipelines {
     pub(crate) composite_mask_alpha_dodge_pipeline: Option<wgpu::RenderPipeline>,
     pub(crate) masked_pipelines: HashMap<BlendMode, wgpu::RenderPipeline>,
     pub(crate) blit_pipelines: HashMap<BlendMode, wgpu::RenderPipeline>,
-    // Stencil-path masked blits draw inside the same stencil-attached
-    // pass as their mask-source writes, so they carry the Equal-test
-    // depth-stencil state the plain blit pipelines (stencil-free
-    // passes) lack. Empty when has_stencil == false.
+    // Equal-test stencil variants for blits drawn inside the mask pass. Empty
+    // when has_stencil == false.
     pub(crate) masked_blit_pipelines: HashMap<BlendMode, wgpu::RenderPipeline>,
-    // Fullscreen triangle that REPLACEs the whole viewport's stencil
-    // with the pass reference (color writes off, binds nothing). Seeds
-    // an all-DodgeMask batch so dodge sources can punch 0 out of it.
-    // Only populated when has_stencil == true.
+    // Seeds an all-DodgeMask batch so dodge sources can punch 0 out of it.
+    // None when has_stencil == false.
     pub(crate) stencil_fill_pipeline: Option<wgpu::RenderPipeline>,
     pub(crate) blit_bind_group_layout: wgpu::BindGroupLayout,
     pub(crate) blit_sampler: wgpu::Sampler,
-    // Mip generation for uploaded puppet textures. Fixed to
-    // `Rgba8UnormSrgb` (every puppet texture's format), independent of
-    // `surface_format`.
+    // Fixed to `Rgba8UnormSrgb`, independent of `surface_format`.
     pub(crate) mip_pipeline: wgpu::RenderPipeline,
     pub(crate) mip_bind_group_layout: wgpu::BindGroupLayout,
-    // One pipeline per dst-in-shader BlendMode (Overlay/ColorBurn/
-    // LinearBurn). Each samples the framebuffer snapshot at the
-    // current screen pixel, computes the per-channel blend, and emits
-    // the final pixel via `BlendState::REPLACE` — no fixed-function
-    // blending is involved on the output side.
     pub(crate) blit_dst_in_shader_pipelines: HashMap<BlendMode, wgpu::RenderPipeline>,
     pub(crate) snapshot_bind_group_layout: wgpu::BindGroupLayout,
     pub(crate) snapshot_sampler: wgpu::Sampler,
-    // Camera (group 0) is bound with a dynamic offset so a renderer can
-    // hold one view-proj slot per view it draws into within a single
-    // submit. The buffer + bind group live per-`WgpuRenderer`; only the
-    // layout and slot stride are shared here. A single shared camera
-    // buffer written once per view would alias under the queue
-    // write_buffer batching when multiple views share one submit (the
-    // "last camera wins" hazard documented at the top of this file).
+    // Dynamic offset: one camera slot per view in a submit, so views do not
+    // alias under `write_buffer` batching.
     pub(crate) camera_bind_group_layout: wgpu::BindGroupLayout,
     pub(crate) camera_stride: u64,
     pub(crate) texture_bind_group_layout: wgpu::BindGroupLayout,
     pub(crate) texture_sampler: wgpu::Sampler,
     pub(crate) part_uniform_bind_group_layout: wgpu::BindGroupLayout,
-    // part_uniform_buffer is bound with dynamic offset so each draw can
-    // point at its own PartUniform slot. `stride` is sizeof(PartUniform)
-    // rounded up to the device's min_uniform_buffer_offset_alignment.
-    // Blit draws reuse this layout (identical wire format) — see blit.wgsl.
+    // Rounded up to `min_uniform_buffer_offset_alignment`. Blits share the
+    // wire format.
     pub(crate) part_uniform_stride: u64,
-    // When true, part draws bind the instance buffer once per pass and
-    // select each instance with a non-zero `first_instance` rather than
-    // re-slicing the vertex binding per draw. Enabled on native backends
-    // (Vulkan/DX12/Metal), which drive `first_instance` in hardware;
-    // false on GL/WebGL2 (which only emulate it by rebinding per draw)
-    // and on the adapter-less constructors, both of which keep the
-    // explicit per-draw slice.
+    // Native backends drive `first_instance` in hardware; GL/WebGL2 and the
+    // adapter-less constructors re-slice the instance buffer per draw.
     pub(crate) base_instance: bool,
-    // When false, the adapter/backend lacks a usable stencil
-    // attachment (Chromium swiftshader WebGL2 fails
-    // framebufferTexture2D on Depth24PlusStencil8). Mask/masked paths
-    // then sample an offscreen mask alpha texture instead of stencil
-    // tests — see the `masked_sampled_*` pipelines and
-    // `StencilTarget::mask_alpha_view`.
+    // False where the backend lacks a usable stencil attachment (Chromium
+    // swiftshader WebGL2 fails Depth24PlusStencil8); masks then sample an
+    // offscreen alpha texture.
     pub(crate) has_stencil: bool,
     // Only populated when has_stencil == false.
     pub(crate) mask_bind_group_layout: Option<wgpu::BindGroupLayout>,
     pub(crate) mask_sampler: Option<wgpu::Sampler>,
     pub(crate) mask_alpha_pipeline: Option<wgpu::RenderPipeline>,
-    // DodgeMask counterpart of mask_alpha_pipeline: writes alpha 0 where
-    // the source rasterizes, mirroring the stencil path's REPLACE-with-0
-    // (regular sources write 1; masked draws pass where the value is 1).
+    // Writes alpha 0 where the source rasterizes, mirroring the stencil
+    // path's REPLACE-with-0.
     pub(crate) mask_alpha_dodge_pipeline: Option<wgpu::RenderPipeline>,
     pub(crate) masked_sampled_pipelines: HashMap<BlendMode, wgpu::RenderPipeline>,
     pub(crate) masked_sampled_blit_pipelines: HashMap<BlendMode, wgpu::RenderPipeline>,
 }
 
-/// Slots in the per-renderer camera ring. Bounds how many distinct
-/// view-proj matrices one [`Submission`] can carry (i.e. the number of
-/// `CatchlightCamera` views a puppet draws into per host-owned submit).
-/// The view past the last is refused rather than wrapping onto a slot an
-/// already-recorded command buffer still reads. A [`Frame`] is one submit
-/// of its own and never leaves slot 0.
+/// Views past the last are refused rather than wrapping onto a slot an
+/// already-recorded command buffer still reads.
 #[doc(hidden)]
 pub const CAMERA_RING_SLOTS: u32 = 64;
 
-/// Byte offset of a camera ring slot. Callers bound `slot` below
-/// [`CAMERA_RING_SLOTS`] before asking — the ring does not wrap.
+/// `slot` must be below [`CAMERA_RING_SLOTS`]; the ring does not wrap.
 fn camera_slot_offset(slot: u32, stride: u64) -> u64 {
     debug_assert!(
         slot < CAMERA_RING_SLOTS,
@@ -1574,44 +1252,26 @@ fn camera_slot_offset(slot: u32, stride: u64) -> u64 {
     u64::from(slot) * stride
 }
 
-/// One host-owned submit's worth of camera views, handed out by
-/// [`WgpuRenderer::submission`] and spent by [`WgpuRenderer::render_into`].
-///
-/// Only a host that owns the submit itself needs one — everyone else takes
-/// a [`Frame`], which is its own submit. The token exists because the
-/// borrowed-encoder path cannot see a submission boundary: it counts the
-/// views it has issued so each takes its own camera slot, and refuses the
-/// one past the ring instead of aliasing onto a slot the submit still
-/// reads. Make a fresh one per submit; keeping one alive across submits
-/// runs the ring out.
-///
-/// Not `Clone`: two tokens over one submit would each start at slot 0 and
-/// alias, which is the failure this type exists to make impossible to
-/// reach by accident.
+/// One host-owned submit's worth of camera views for
+/// [`WgpuRenderer::render_into`]. Make a fresh one per submit: one kept
+/// across submits runs the ring out, and two over one submit alias (hence
+/// not `Clone`).
 #[derive(Debug)]
 pub struct Submission {
-    /// Which renderer's ring these slots come from. A token spent on
-    /// another renderer is refused: its count means nothing there.
+    /// A token spent on another renderer is refused.
     renderer: u64,
     views: u32,
 }
 
 impl Submission {
-    /// Camera views this token has issued. Test-facing, as
-    /// [`WgpuRenderer::camera_dynamic_offset`]: it is how a host's test
-    /// sees that it renews its token every submit.
     #[doc(hidden)]
     pub fn views_issued(&self) -> u32 {
         self.views
     }
 }
 
-/// Dense `Vec<Option<V>>` keyed by a small integer id. MeshId and
-/// TextureIdx are puppet-slot / texture-table indices probed several
-/// times per drawable per frame; indexing a vector avoids the default
-/// SipHash `HashMap` on that hot path. Grows to the largest id inserted
-/// — ids come from real puppets (no adversarial sparsity), so the
-/// backing storage stays bounded by the puppet's node / texture count.
+/// Dense `Vec<Option<V>>` keyed by small ids, avoiding SipHash on the
+/// per-drawable hot path.
 #[derive(Default)]
 struct DenseMap<V> {
     slots: Vec<Option<V>>,
@@ -1643,8 +1303,6 @@ impl<V> DenseMap<V> {
         }
     }
 
-    /// Take the value at `index` out, leaving the slot empty. What a rebuild
-    /// moving a texture to a slot it did not previously occupy takes it with.
     fn take(&mut self, index: usize) -> Option<V> {
         self.slots.get_mut(index).and_then(Option::take)
     }
@@ -1653,13 +1311,10 @@ impl<V> DenseMap<V> {
         self.slots.clear();
     }
 
-    /// How many slots currently hold a value.
     fn live(&self) -> usize {
         self.slots.iter().flatten().count()
     }
 
-    /// Indices currently holding a value, ascending. Used to sweep the
-    /// deform-upload set for meshes that went inactive this frame.
     fn keys(&self) -> impl Iterator<Item = usize> + '_ {
         self.slots
             .iter()
@@ -1668,28 +1323,15 @@ impl<V> DenseMap<V> {
     }
 }
 
-/// One puppet's slice of a renderer's deform atlas.
-///
-/// A [`crate::RenderCache`] is per *model*; a deform set is per *puppet*. The
-/// atlas is laid out as N copies of the cache's mesh layout and a set names
-/// which copy, so two puppets of one model upload their own frame into their
-/// own bytes while drawing from the same mesh and texture slots. Without it,
-/// the second puppet's upload would overwrite the first's before either drew:
-/// every draw of a frame lands in one submit, and `queue.write_buffer`
-/// batches at submit start.
-///
-/// [`DeformSet::FIRST`] is the set every renderer starts with, and the one a
-/// single-puppet caller never has to name.
+/// One puppet's copy of the cache's mesh layout in the deform atlas, so
+/// puppets sharing a [`crate::RenderCache`] do not overwrite each other's
+/// deforms within one submit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct DeformSet(u32);
 
 impl DeformSet {
-    /// The set a renderer always has. `RenderCache::refresh` uploads into it
-    /// and a default [`crate::RenderList`] draws from it, so a caller with one
-    /// puppet per model never touches the rest of this API.
     pub const FIRST: Self = Self(0);
 
-    /// The set's index, which is also its position in the atlas. Test-facing.
     #[doc(hidden)]
     pub fn index(self) -> u32 {
         self.0
@@ -1702,28 +1344,18 @@ impl Default for DeformSet {
     }
 }
 
-/// What one [`DeformSet`] currently holds on the GPU.
 #[derive(Default)]
 struct DeformSetState {
-    /// Mesh slots whose bytes in this set hold active deform data, paired
-    /// with the `DeformStack` generation that produced them. `upload_deforms`
-    /// skips a write when the active generation is already resident and
-    /// zero-fills meshes that transition back to inactive.
+    /// Mesh slots with active deform data, keyed to the `DeformStack`
+    /// generation that produced them.
     uploaded: DenseMap<u64>,
-    /// Scratch for one upload's "still active" sweep, pooled across frames.
     still_active: DenseMap<()>,
-    /// Per-mesh max absolute deform component resident in this set, tracked
-    /// alongside `uploaded` (same generation memo, same inactive sweep). The
-    /// shader adds deform in local space before the instance transform, so
-    /// expanding a mesh's local AABB by this magnitude on both axes bounds
-    /// the deformed geometry exactly.
+    /// Per-mesh max absolute deform component. Deform is added in local
+    /// space, so expanding the local AABB by this bounds the deformed geometry.
     max: DenseMap<f32>,
-    /// The set's bytes are not known to be zero: it was just acquired, or a
-    /// rebuild re-laid-out the atlas under it. The next upload zeroes the
-    /// whole slice first, so a released set's leftovers can never draw for
-    /// whoever acquires the index next.
+    /// The next upload zeroes the whole slice first, so a previous tenant's
+    /// bytes never draw.
     needs_clear: bool,
-    /// Acquired and not yet released. `FIRST` is live from construction.
     live: bool,
 }
 
@@ -1735,8 +1367,6 @@ impl DeformSetState {
         }
     }
 
-    /// Forget everything resident and re-zero on the next upload. What a
-    /// re-layout of the atlas (a cache rebuild) leaves behind.
     fn invalidate(&mut self) {
         self.uploaded.clear();
         self.still_active.clear();
@@ -1745,15 +1375,12 @@ impl DeformSetState {
     }
 }
 
-/// Hands every renderer an identity, so a [`Submission`] can name the ring
-/// it counts against. Nothing outside this file reads it.
 static NEXT_RENDERER_ID: AtomicU64 = AtomicU64::new(0);
 
 pub struct WgpuRenderer {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     pub shared: std::sync::Arc<Pipelines>,
-    /// This renderer's own id, stamped into every [`Submission`] it mints.
     id: u64,
     part_uniform_buffer: wgpu::Buffer,
     part_uniform_bind_group: wgpu::BindGroup,
@@ -1761,11 +1388,8 @@ pub struct WgpuRenderer {
     textures: DenseMap<Texture>,
     instance_buffer: wgpu::Buffer,
     instance_buffer_capacity: usize,
-    // Bytes consumed from instance_buffer within the current frame.
-    // Reset at the start of each frame. Distinct offsets
-    // matter because wgpu::queue.write_buffer batches at submit-start —
-    // multiple writes to the same offset inside one frame would alias
-    // and every pass would read the last write.
+    // Distinct offsets per frame: `write_buffer` batches at submit start, so
+    // two writes to one offset alias.
     instance_cursor: u64,
     instance_staging: Vec<u8>,
     instance_staging_len: usize,
@@ -1779,102 +1403,56 @@ pub struct WgpuRenderer {
     deform_buffer_capacity: u64,
     deform_buffer_len: u64,
     deform_upload_mirror: Vec<u8>,
-    // Bytes written by the most recent `upload_deforms`, folded into the
-    // next frame's RenderStats (the upload runs before the frame, which
-    // resets current_stats, so it can't accumulate directly).
+    // Folded into the next frame's stats; the upload runs before the frame
+    // resets them.
     pending_deform_bytes: u64,
-    // Per-frame pass / draw tallies. Atomics, not plain counters on
-    // current_stats: the blit helpers borrow `&self`, so they can't
-    // mutate current_stats — a relaxed fetch_add lets every pass/draw
-    // site count uniformly regardless of &self vs &mut self. Reset at
-    // frame entry, folded into current_stats at exit.
+    // Atomic so `&self` blit helpers can count too.
     frame_render_passes: AtomicU32,
     frame_draw_calls: AtomicU32,
-    // Per-view camera uniform ring. A render call writes the retained
-    // view-proj into one slot and binds that dynamic offset for all its
-    // passes. Distinct slots keep views recorded into one submission from
-    // aliasing under queue.write_buffer batching; across submissions a slot
-    // is free to be reused, since queue order puts the later write after the
-    // earlier draws. An owned `Frame` is one submission, so it takes slot 0;
-    // the ring is spent by `render_into`, out of the caller's `Submission`.
+    // Owned frames use slot 0; `render_into` spends the ring from the
+    // caller's `Submission`.
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
     camera_offset: u32,
     current_stats: RenderStats,
-    // Per-frame resource-lifecycle counters, reset alongside
-    // `current_stats` at frame entry. See `FrameStats`.
     frame_stats: FrameStats,
-    // Set once `begin_frame_uniforms` has closed the frame's sizing
-    // phase. Any buffer recreation after that strands already-recorded
-    // passes on the freed buffer, so it counts into
-    // `FrameStats::late_buffer_reallocs` and trips a debug assertion.
+    // Any buffer recreation after this is set trips a debug assertion.
     frame_sizing_closed: bool,
-    // High-water mark of the bytes staged into instance_buffer /
-    // part_uniform_buffer this frame. Both offset cursors are monotonic,
-    // so a write landing below its watermark is a second write to an
-    // offset earlier draws already read — the aliasing hazard that
-    // `write_buffer`'s submit-start batching makes silent.
+    // Cursors are monotonic, so a write below the watermark aliases an offset
+    // earlier draws already read.
     instance_write_watermark: u64,
     part_uniform_write_watermark: u64,
-    /// Set when the device exposes `Features::TIMESTAMP_QUERY`. When
-    /// absent (WebGL2 / WebGPU surfaces without the feature) the
-    /// profiler is `None` and the render path falls back to CPU-only
-    /// `tracing` spans.
+    /// None without `Features::TIMESTAMP_QUERY`; CPU `tracing` spans only.
     gpu_profiler: Option<wgpu_profiler::GpuProfiler>,
-    /// What each [`DeformSet`] currently holds on the GPU, indexed by the
-    /// set. Slot 0 is [`DeformSet::FIRST`], which every renderer has and a
-    /// single-puppet caller never names.
+    /// Indexed by set; slot 0 is [`DeformSet::FIRST`].
     deform_sets: Vec<DeformSetState>,
-    /// Set indices handed back by `release_deform_set`, reused before the
-    /// atlas grows another stride.
     deform_free: Vec<u32>,
     deform_inactive_scratch: Vec<u32>,
-    // Dirty deform byte ranges `[start, end)` collected each sync, then
-    // sorted and coalesced so two far-apart meshes don't force one write
-    // over the untouched span between them. Pooled across frames.
+    // Sorted and coalesced so far-apart meshes don't force one write over
+    // the untouched span between them.
     deform_write_ranges: Vec<(u64, u64)>,
-    /// The deform set whose passes are being recorded, and its byte base in
-    /// the atlas. Frame-scoped: `record_frame` points them at each list
-    /// before recording it, and every deform slice and deformed-bounds
-    /// lookup reads them rather than taking a parameter through a dozen
-    /// draw helpers.
+    /// Frame-scoped: `record_frame` points these at each list before recording it.
     deform_recording_set: DeformSet,
     deform_recording_base: u64,
-    /// CPU copy of the last `update_camera` view-proj, kept so per-part
-    /// bounds can project to clip space. Multi-view renderers call
-    /// `update_camera` per view before each render call, so this is the
-    /// matrix that frame's passes bind.
+    /// CPU copy kept so per-part bounds can project to clip space.
     camera_view_proj: glam::Mat4,
-    // Per-batch scratch reused across frames (taken out for the duration
-    // of a draw helper, put back at its end). Indices into the caller's
-    // draw slice rather than references, so the renderer can own them.
     draw_filter_scratch: Vec<usize>,
     instance_scratch: Vec<InstanceRaw>,
     composite_mask_textures: HashMap<u32, PreparedCompositeMask>,
 }
 
-/// Viewport-sized texture used for mask compositing. Shared across
-/// every puppet in a frame — one allocation per viewport, not per
-/// puppet.
-///
-/// When `Pipelines::has_stencil == true`, `view` is a
-/// `Depth24PlusStencil8` texture used as the render pass
-/// depth_stencil_attachment for stencil-based masking. When false
-/// (WebGL fallback), `view` is instead a color texture (surface
-/// format) used as a sampled mask: mask sources draw into it via
-/// `fs_mask_alpha`, masked parts sample it via `fs_masked_sampled`
-/// with alpha-discard.
+/// Viewport-sized mask target shared across every puppet in a frame:
+/// `Depth24PlusStencil8` on the stencil path, otherwise a sampled color
+/// mask texture (WebGL fallback).
 pub struct StencilTarget {
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
-    // Bind group that masked draws/blits use to sample the mask
-    // texture in the alpha-mask path. None when has_stencil == true.
+    // None when has_stencil == true.
     pub mask_bind_group: Option<wgpu::BindGroup>,
 }
 
 impl StencilTarget {
-    /// Build a stencil-backed StencilTarget (Depth24PlusStencil8).
-    /// Use `new_for_pipelines` for backend-aware allocation.
+    /// Stencil-backed only; `new_for_pipelines` picks by backend.
     pub fn new(device: &wgpu::Device, width: u32, height: u32) -> Self {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Stencil Texture"),
@@ -1921,10 +1499,6 @@ impl StencilTarget {
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        // Safe to unwrap: has_stencil == false path always builds the
-        // mask bind group layout + sampler in Pipelines::new_with_options.
-        // The `expect`s below would only fire on a Pipelines assembled
-        // by hand with the flag flipped post-hoc — not a real path.
         let mask_bind_group = {
             let layout = pipelines
                 .mask_bind_group_layout
@@ -1956,10 +1530,6 @@ impl StencilTarget {
         }
     }
 
-    /// Backend-aware constructor: stencil when `pipelines.has_stencil`,
-    /// color mask texture otherwise. Prefer this over `new()` so the
-    /// WebGL fallback path gets a sampleable mask target instead of a
-    /// Depth24PlusStencil8 texture the backend can't bind.
     pub fn new_for_pipelines(
         pipelines: &Pipelines,
         device: &wgpu::Device,
@@ -1973,9 +1543,6 @@ impl StencilTarget {
         }
     }
 
-    /// Recreate when viewport resized. No-op if size already matches.
-    /// Rebuilds using `new_for_pipelines` so the mask-alpha target
-    /// stays a mask-alpha target across resizes.
     pub fn ensure_size_for_pipelines(
         &mut self,
         pipelines: &Pipelines,
@@ -1992,31 +1559,23 @@ impl StencilTarget {
 }
 
 impl WgpuRenderer {
-    /// Build a renderer that owns a fresh `Pipelines`. Prefer
-    /// `WgpuRenderer::from_pipelines` when you need multiple renderers to
-    /// share pipelines (e.g. one per puppet in a bevy scene) — each
-    /// `Pipelines::new` compiles ~18 pipelines and is not cheap.
+    /// Prefer `from_pipelines` to share pipelines across renderers; each
+    /// `Pipelines::new` compiles ~18 pipelines.
     pub async fn new(
         device: wgpu::Device,
         queue: wgpu::Queue,
         surface_format: wgpu::TextureFormat,
     ) -> Self {
-        // `Arc`, not `Rc`: `Pipelines` holds wgpu resources that lose Send and
-        // Sync only on wasm32 with wgpu's `webgl` feature. The same type is a
-        // render-world resource in catchlight-bevy, where Send + Sync is
-        // required, so the atomic refcount is what makes sharing legal at all
-        // and costs nothing beside compiling ~18 pipelines.
+        // `Arc`, not `Rc`: catchlight-bevy needs `Pipelines` Send + Sync, which it
+        // lacks only on wasm32 with wgpu's `webgl` feature.
         #[allow(clippy::arc_with_non_send_sync)]
         let shared = std::sync::Arc::new(Pipelines::new(&device, surface_format));
         Self::from_pipelines(device, queue, shared)
     }
 
-    /// Auto-detect the stencil path based on the adapter's backend.
-    /// GL backend (WebGL2) runs the shader-side alpha-discard fallback
-    /// because Chromium swiftshader WebGL2 fails framebufferTexture2D
-    /// on Depth24PlusStencil8. Every other backend keeps the stencil
-    /// path. Respects the `CATCHLIGHT_DISABLE_STENCIL` env var for
-    /// manual overrides.
+    /// GL (WebGL2) takes the alpha-discard fallback because Chromium
+    /// swiftshader fails Depth24PlusStencil8. `CATCHLIGHT_DISABLE_STENCIL`
+    /// forces it elsewhere.
     pub async fn new_autodetect(
         adapter: &wgpu::Adapter,
         device: wgpu::Device,
@@ -2030,8 +1589,6 @@ impl WgpuRenderer {
         Self::from_pipelines(device, queue, shared)
     }
 
-    /// Build a renderer sharing the given pre-built `Pipelines`. Allocates
-    /// only the per-puppet scratch buffers (instance, part-uniform, stencil).
     pub fn from_pipelines(
         device: wgpu::Device,
         queue: wgpu::Queue,
@@ -2161,13 +1718,11 @@ impl WgpuRenderer {
         }
     }
 
-    /// Resource-lifecycle counters for the frame in progress. Reset at
-    /// each frame entry, so read it after the render call returns.
+    /// Reset at each frame entry; read it after the render call returns.
     pub fn frame_stats(&self) -> FrameStats {
         self.frame_stats
     }
 
-    /// Tally one `queue.write_buffer` against the buffer it targets.
     fn note_queue_write(&mut self, buffer: RenderBuffer) {
         self.frame_stats.queue_writes += 1;
         match buffer {
@@ -2178,10 +1733,6 @@ impl WgpuRenderer {
         }
     }
 
-    /// Tally one buffer recreation. Growth is only legal while the frame
-    /// is being sized: once `begin_frame_uniforms` has closed the sizing
-    /// phase, passes are recording against the buffers that exist, and a
-    /// new allocation would strand them on the freed one.
     fn note_realloc(&mut self, buffer: RenderBuffer) {
         match buffer {
             RenderBuffer::Instance => self.frame_stats.instance_buffer_reallocs += 1,
@@ -2199,11 +1750,8 @@ impl WgpuRenderer {
         }
     }
 
-    /// Size instance_buffer for the whole frame and reset the cursor.
-    /// Callers must pass the total instance count needed by every draw
-    /// in the frame — growing mid-frame would leave already-recorded
-    /// passes pointing at the old buffer while later writes land in the
-    /// new one.
+    /// `total_instances` must cover every draw in the frame; growing mid-frame
+    /// strands recorded passes.
     fn begin_frame_instances(&mut self, total_instances: usize) {
         self.frame_stats.instance_slots_budgeted = total_instances as u32;
         if total_instances > self.instance_buffer_capacity {
@@ -2222,13 +1770,8 @@ impl WgpuRenderer {
         self.batch_instance_writes = true;
     }
 
-    /// Grow the atlas to `needed` bytes, carrying the mirror across.
-    ///
-    /// The mirror is a byte-exact copy of the atlas, so re-uploading all of
-    /// it makes the new buffer identical to the old one and every set's
-    /// residency memo stays true. Growth only ever happens between frames —
-    /// from a mesh upload or from the first upload after a set was acquired —
-    /// and `note_realloc` asserts as much.
+    /// The mirror is a byte-exact copy of the atlas, so re-uploading it keeps
+    /// every set's residency memo true. Only legal between frames.
     fn ensure_deform_buffer_capacity(&mut self, needed: u64) {
         let needed = needed.max(8);
         if needed <= self.deform_buffer_capacity {
@@ -2271,9 +1814,8 @@ impl WgpuRenderer {
         offset
     }
 
-    /// Bytes one puppet's deforms occupy in the atlas: the mesh layout the
-    /// last build reserved, padded so every set's base stays 16-byte aligned
-    /// (`set_vertex_buffer` needs 4).
+    /// Padded so every set's base stays 16-byte aligned (`set_vertex_buffer`
+    /// needs 4).
     fn deform_stride(&self) -> u64 {
         self.deform_buffer_len.next_multiple_of(16)
     }
@@ -2284,13 +1826,8 @@ impl WgpuRenderer {
         set.0 as u64 * self.deform_stride()
     }
 
-    /// Take a deform set for one more puppet of this renderer's model.
-    ///
-    /// Sets are cheap: one is `deform_stride()` bytes of the atlas, which is
-    /// two floats per vertex of the model — orders below the textures and
-    /// meshes that sharing a [`crate::RenderCache`] is what saves. Release it
-    /// with [`Self::release_deform_set`] when the puppet goes; the index is
-    /// then reused rather than growing the atlas again.
+    /// Take a deform set for one more puppet of this renderer's model. Release
+    /// it with [`Self::release_deform_set`] so the index is reused.
     pub fn acquire_deform_set(&mut self) -> DeformSet {
         let index = match self.deform_free.pop() {
             Some(index) => index,
@@ -2299,15 +1836,12 @@ impl WgpuRenderer {
                 (self.deform_sets.len() - 1) as u32
             }
         };
-        // A reused index may still hold the previous tenant's bytes; the
-        // first upload zeroes the slice before writing into it.
         self.deform_sets[index as usize] = DeformSetState::live();
         self.deform_sets[index as usize].needs_clear = true;
         DeformSet(index)
     }
 
-    /// Hand a deform set back. The atlas keeps its bytes — the index is what
-    /// is recycled — and [`DeformSet::FIRST`] is never released.
+    /// [`DeformSet::FIRST`] is never released.
     pub fn release_deform_set(&mut self, set: DeformSet) {
         if set == DeformSet::FIRST {
             return;
@@ -2322,16 +1856,13 @@ impl WgpuRenderer {
         self.deform_free.push(set.0);
     }
 
-    /// Deform sets currently acquired, [`DeformSet::FIRST`] included.
-    /// Test-facing, as [`Self::live_mesh_slots`].
     #[doc(hidden)]
     pub fn live_deform_sets(&self) -> usize {
         self.deform_sets.iter().filter(|s| s.live).count()
     }
 
-    /// Size the atlas and its mirror for every set that exists. Runs at
-    /// upload time rather than at acquire time because a set's base depends
-    /// on the mesh layout, which a rebuild can still change afterwards.
+    /// Runs at upload time because a set's base depends on the mesh layout,
+    /// which a rebuild can still change.
     fn ensure_deform_sets_sized(&mut self) {
         let needed = self.deform_stride() * self.deform_sets.len() as u64;
         if self.deform_upload_mirror.len() < needed as usize {
@@ -2340,7 +1871,6 @@ impl WgpuRenderer {
         self.ensure_deform_buffer_capacity(needed);
     }
 
-    /// One mesh's deform bytes inside the set currently being recorded.
     fn deform_slice(&self, mesh: &MeshBuffer) -> wgpu::BufferSlice<'_> {
         let start = self.deform_recording_base + mesh.deform_offset;
         self.deform_buffer.slice(start..start + mesh.deform_size)
@@ -2360,22 +1890,14 @@ impl WgpuRenderer {
         offset
     }
 
-    /// Bind the whole instance buffer once for a part-draw pass on the
-    /// BASE_INSTANCE fast path, where each draw then selects its instance
-    /// via a non-zero `first_instance`. A no-op on the portable fallback
-    /// — there `emit_part_draw` re-slices vertex buffer 1 per draw.
     fn bind_pass_instances(&self, render_pass: &mut wgpu::RenderPass<'_>) {
         if self.shared.base_instance {
             render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
         }
     }
 
-    /// Record one part/mask draw of `num_indices`, selecting its instance
-    /// by `first_instance` (fast path; caller bound the buffer via
-    /// `bind_pass_instances`) or by re-slicing vertex buffer 1 to the one
-    /// instance (fallback). `instance_offset` is the instance's byte
-    /// offset; `reserve_instances` hands out stride-aligned offsets from a
-    /// zero cursor, so the derived instance index is exact.
+    /// `instance_offset` is stride-aligned from a zero cursor, so the derived
+    /// instance index is exact.
     fn emit_part_draw(
         &self,
         render_pass: &mut wgpu::RenderPass<'_>,
@@ -2402,11 +1924,8 @@ impl WgpuRenderer {
             return;
         }
         let bytes: &[u8] = bytemuck::cast_slice(instances);
-        // Offsets come from the monotonic `reserve_instances` cursor, so a
-        // write starting below the watermark overlaps one already made
-        // this frame. Both land before the frame's single submit, where
-        // write_buffer batching makes the later one win for every draw
-        // that reads the range — silently, and for the wrong parts.
+        // A write below the watermark overlaps one already made this frame, and
+        // write_buffer batching makes the later one win for every draw.
         debug_assert!(
             offset >= self.instance_write_watermark,
             "instance_buffer offset {offset} rewrites bytes already staged this frame \
@@ -2444,9 +1963,6 @@ impl WgpuRenderer {
         self.instance_staging_len = 0;
     }
 
-    /// Grow part_uniform_buffer to fit `count` slots and reset the
-    /// cursor. Mid-frame growth would strand already-recorded draws on
-    /// the old buffer, so sizing must happen up front.
     fn begin_frame_uniforms(&mut self, count: u32) {
         self.frame_stats.part_uniform_slots_budgeted = count;
         if count > self.part_uniform_capacity {
@@ -2496,8 +2012,6 @@ impl WgpuRenderer {
         self.part_uniform_staging_len = 0;
     }
 
-    /// Writes a PartUniform into the next slot and returns its offset,
-    /// suitable for passing as a dynamic offset in `set_bind_group`.
     pub fn write_part_uniform(
         &mut self,
         opacity: f32,
@@ -2505,18 +2019,13 @@ impl WgpuRenderer {
         screen_tint: glam::Vec3,
         mask_threshold: f32,
     ) -> u32 {
-        // Tints are authored in sRGB space; textures are sampled as
-        // Rgba8UnormSrgb (linear on read), so the per-fragment multiply
-        // / screen-tint math must also run in linear space. Convert
-        // once here on the CPU rather than in the shader.
+        // Tints are authored in sRGB; fragment math runs in linear.
         let tint_linear = srgb_to_linear_vec3(tint);
         let screen_tint_linear = srgb_to_linear_vec3(screen_tint);
         let uniform = PartUniform::new(opacity, tint_linear, screen_tint_linear, mask_threshold);
         let offset = self.part_uniform_cursor;
         let bytes = bytemuck::bytes_of(&uniform);
-        // Same aliasing hazard as `write_instances`: the cursor below is
-        // monotonic, so a slot at or under the watermark is one an
-        // earlier draw this frame already bound as a dynamic offset.
+        // Same aliasing hazard as `write_instances`.
         debug_assert!(
             offset >= self.part_uniform_write_watermark,
             "part_uniform slot at offset {offset} rewritten this frame (watermark {}); \
@@ -2547,22 +2056,16 @@ impl WgpuRenderer {
         offset as u32
     }
 
-    /// Set the camera view-projection retained for the next render call.
-    /// That call uploads it into a camera slot of its own.
+    /// Uploaded into a camera slot of its own by the next render call.
     pub fn update_camera(&mut self, view_proj: glam::Mat4) {
         self.camera_view_proj = view_proj;
     }
 
-    /// The camera-ring dynamic offset the last render call bound.
-    /// Test-facing, as [`Self::live_mesh_slots`]: it is how a test sees that
-    /// two views recorded into one submission took distinct slots.
     #[doc(hidden)]
     pub fn camera_dynamic_offset(&self) -> u32 {
         self.camera_offset
     }
 
-    /// Write the retained view-proj into `slot` and bind that slot for the
-    /// frame about to be recorded.
     fn write_camera(&mut self, slot: u32) {
         let offset = camera_slot_offset(slot, self.shared.camera_stride);
         let camera_uniform = CameraUniform {
@@ -2577,11 +2080,8 @@ impl WgpuRenderer {
         self.camera_offset = offset as u32;
     }
 
-    /// Framebuffer-pixel AABB of one part's rendered geometry: its
-    /// deform-expanded local bounds projected through `model` and the
-    /// retained camera. None when the bound is unknown (boundless / not
-    /// yet uploaded mesh, or a non-finite projection) — callers then use
-    /// the full viewport.
+    /// None when the bound is unknown or the projection is non-finite; callers
+    /// then use the full viewport.
     fn part_pixel_aabb(
         &self,
         mesh_id: u32,
@@ -2610,8 +2110,6 @@ impl WgpuRenderer {
         )
     }
 
-    /// Scissor rect tightly bounding one part's rendered pixels, or None to
-    /// signal "use the full viewport".
     fn part_scissor_rect(
         &self,
         mesh_id: u32,
@@ -2626,9 +2124,8 @@ impl WgpuRenderer {
         )
     }
 
-    /// Scissor rect bounding the UNION of a composite's children — the
-    /// region its blit can touch. None (full viewport) when any child's
-    /// bound is unknown or a nested composite child appears.
+    /// None (full viewport) when any child's bound is unknown or a child is a
+    /// nested composite.
     fn children_union_scissor(
         &self,
         children: &[crate::collect::DrawableInfo],
@@ -2658,11 +2155,8 @@ impl WgpuRenderer {
         pixels_to_scissor(acc?, width, height)
     }
 
-    /// Shared deform-upload core: write each changed mesh's combined verts
-    /// into the mirror, zero meshes that went inactive (otherwise the
-    /// vertex shader keeps reading a stale config's offsets), and flush the
-    /// single touched byte range. The `generation` skips re-uploading a
-    /// mesh whose deform is unchanged from the last sync.
+    /// Meshes that went inactive are zeroed, otherwise the vertex shader keeps
+    /// reading a stale config's offsets.
     pub(crate) fn upload_deforms<'a>(
         &mut self,
         set: DeformSet,
@@ -2676,8 +2170,6 @@ impl WgpuRenderer {
         self.ensure_deform_sets_sized();
         let base = self.deform_base(set);
         let stride = self.deform_stride();
-        // Taken out so the per-mesh loop can borrow the mirror and the mesh
-        // table at the same time; put back at the end.
         let Some(mut state) = self
             .deform_sets
             .get_mut(set.0 as usize)
@@ -2690,9 +2182,6 @@ impl WgpuRenderer {
         state.still_active.clear();
         let mut ranges = std::mem::take(&mut self.deform_write_ranges);
         ranges.clear();
-        // A freshly acquired set, or one whose atlas was re-laid-out, may
-        // still hold bytes nothing here will write. Zero the slice once so a
-        // mesh this puppet never deforms cannot inherit them.
         if state.needs_clear {
             state.needs_clear = false;
             let end = (base + stride).min(self.deform_upload_mirror.len() as u64);
@@ -2725,9 +2214,6 @@ impl WgpuRenderer {
             ranges.push((start as u64, end as u64));
             state.uploaded.insert(mesh_id as usize, generation);
             state.still_active.insert(mesh_id as usize, ());
-            // Bounds padding: the largest per-axis local shift this deform
-            // applies. Recomputed only on a real upload; the generation
-            // memo-hit above keeps the cached value.
             let max_abs = combined
                 .iter()
                 .fold(0.0f32, |m, v| m.max(v.x.abs()).max(v.y.abs()));
@@ -2753,9 +2239,7 @@ impl WgpuRenderer {
             ranges.push((start as u64, end as u64));
         }
 
-        // Merge sorted ranges across sub-threshold gaps, then flush one
-        // write per run. pending_deform_bytes is the bytes actually sent
-        // (merged-run lengths), not the min..max span.
+        // pending_deform_bytes counts merged-run lengths, not the min..max span.
         ranges.sort_unstable_by_key(|&(start, _)| start);
         let mut written = 0u64;
         let mut run: Option<(u64, u64)> = None;
@@ -2786,9 +2270,7 @@ impl WgpuRenderer {
             );
             written += run_end - run_start;
         }
-        // Accumulated, not assigned: N puppets of one model each upload
-        // before the frame that draws them all, and the frame's stats want
-        // the sum. `record_frame` zeroes it once it has folded it in.
+        // Accumulated: N puppets each upload before the frame that draws them all.
         self.pending_deform_bytes += written;
 
         ranges.clear();
@@ -2804,25 +2286,9 @@ impl WgpuRenderer {
     }
 
     /// Release the GPU state a [`crate::RenderCache`] rebuild is about to
-    /// replace, leaving only what the new build named again.
-    ///
-    /// Mesh slots and the whole deform atlas go: mesh ids are handed out
-    /// densely from zero on every build, so a rebuild renames every one of
-    /// them and the atlas ranges reserved for the old ones are dead.
-    ///
-    /// `keep` is `(old slot, new slot)` for every texture the new build wants
-    /// and the last build already uploaded. Those are **moved** into their new
-    /// slots rather than freed; every other texture slot is dropped, so a
-    /// model that shrank strands nothing under a number the new build does not
-    /// address. Moving is the point: a texture removed from the middle of a
-    /// model shifts every later one down a slot, and a sweep that only
-    /// truncated would make each of those a re-decode and a re-upload of an
-    /// image the GPU already holds. A moved texture keeps the debug label its
-    /// first upload gave it, which is the one place a slot number here can go
-    /// stale.
-    ///
-    /// A rebuild runs from `prepare` or `refresh`, both outside a frame, so
-    /// this never strands a recorded pass on a freed buffer.
+    /// replace. `keep` is `(old slot, new slot)` for textures to move rather than
+    /// re-upload; every other texture slot, every mesh slot, and the deform atlas
+    /// are dropped. A moved texture keeps its first upload's debug label.
     pub(crate) fn release_for_rebuild(&mut self, keep: &[(u32, u32)]) {
         self.clear_meshes();
         let mut moved: Vec<(u32, Texture)> = Vec::with_capacity(keep.len());
@@ -2837,9 +2303,8 @@ impl WgpuRenderer {
         }
     }
 
-    /// Everything [`Self::upload_texture`] would refuse, checked without
-    /// touching GPU state — so a rebuild can validate every upload before it
-    /// releases the build those uploads replace.
+    /// Checked without touching GPU state, so a rebuild can validate before
+    /// releasing the build it replaces.
     pub(crate) fn validate_texture_upload(&self, tex: &DecodedTexture) -> RendererResult<()> {
         validate_rgba8_texture(
             tex.width,
@@ -2850,39 +2315,28 @@ impl WgpuRenderer {
         .map(|_| ())
     }
 
-    /// The device's 2D texture size limit: what a texture's crop must fit,
-    /// skirt included, and how a test authors a texture the device refuses.
     #[doc(hidden)]
     pub fn max_texture_dimension(&self) -> u32 {
         self.device.limits().max_texture_dimension_2d
     }
 
-    /// Mesh slots currently holding a GPU buffer. Test-facing: it is how a
-    /// rebuild's release is observable from outside the crate.
     #[doc(hidden)]
     pub fn live_mesh_slots(&self) -> usize {
         self.mesh_buffers.live()
     }
 
-    /// Texture slots currently holding a GPU texture. Test-facing, as
-    /// [`Self::live_mesh_slots`].
     #[doc(hidden)]
     pub fn live_texture_slots(&self) -> usize {
         self.textures.live()
     }
 
-    /// Bytes of the deform atlas currently reserved by uploaded meshes.
-    /// Test-facing, as [`Self::live_mesh_slots`].
     #[doc(hidden)]
     pub fn reserved_deform_bytes(&self) -> u64 {
         self.deform_buffer_len
     }
 
-    /// Tolerance matches the importer's: uvs are optional (zeros
-    /// substituted) and a trailing
-    /// partial triangle is ignored — the runtime only walks whole
-    /// triangles. An out-of-range index stays an error: it would poison
-    /// vertex fetches for this mesh.
+    /// Missing uvs become zeros and a trailing partial triangle is ignored,
+    /// matching the importer. An out-of-range index is an error.
     pub fn upload_mesh(
         &mut self,
         mesh_id: u32,
@@ -2927,9 +2381,6 @@ impl WgpuRenderer {
             })
             .collect();
 
-        // AABB over the shifted positions the shader transforms. Empty
-        // mesh → None (boundless): a bounds consumer then uses the full
-        // viewport rather than an ill-defined box.
         let local_bounds = vertices.first().map(|first| {
             let mut min = glam::Vec2::from(first.position);
             let mut max = min;
@@ -2980,7 +2431,6 @@ impl WgpuRenderer {
             deform_offset,
             deform_size,
             vert_count: vertex_count as u32,
-            // Truncate a trailing partial triangle.
             num_indices: (mesh.indices.len() - mesh.indices.len() % 3) as u32,
             index_format,
             local_bounds,
@@ -2990,18 +2440,10 @@ impl WgpuRenderer {
         Ok(())
     }
 
-    /// Resolve the bind group used for a Part draw: the albedo Texture's
-    /// own bind group (albedo + sampler). Returns None only if the albedo
-    /// texture has not been uploaded.
     fn part_bind_group(&self, albedo: u32) -> Option<&wgpu::BindGroup> {
         self.textures.get(albedo as usize).map(|t| &t.bind_group)
     }
 
-    /// Uploads a canonical [`DecodedTexture`] straight to the GPU as
-    /// `Rgba8UnormSrgb`. The importer has already normalised the bytes
-    /// to premultiplied LINEAR color encoded as sRGB bytes (byte =
-    /// srgb_encode(linear * alpha); see `ModelTexture::decode` and the
-    /// basic.wgsl header), so the upload needs no branching.
     pub fn upload_texture(&mut self, texture_id: u32, tex: &DecodedTexture) -> RendererResult<()> {
         if let Some(existing) = self.textures.get(texture_id as usize) {
             if existing.source.as_ref().is_some_and(|src| src.matches(tex)) {
@@ -3018,10 +2460,7 @@ impl WgpuRenderer {
             &self.shared,
             &format!("Texture {texture_id}"),
         )?;
-        // Mip generation for a freshly created texture submits its own
-        // command buffer. Harmless where uploads belong (between frames),
-        // but tallied so a frame that ends up doing texture work reports a
-        // non-zero submit count instead of silently splitting in two.
+        // Mip generation submits its own command buffer.
         self.frame_stats.queue_submits += 1;
         texture.source = Some(TextureSource {
             rgba: tex.rgba.clone(),
@@ -3123,13 +2562,8 @@ impl WgpuRenderer {
         }
     }
 
-    /// Alpha-mask fallback (has_stencil == false): rasterize each mask
-    /// source's shape into the shared mask-alpha texture
-    /// (`stencil.view`). Each mask source's instance transform must
-    /// already be written into `instance_buffer` at `base_offset + i *
-    /// size_of::<InstanceRaw>()`. Each source draw writes its own
-    /// part-uniform slot carrying the source's alpha threshold
-    /// (a mask uses the source's own alpha threshold).
+    /// Alpha-mask fallback. Each source's instance must already be at
+    /// `base_offset + i * size_of::<InstanceRaw>()`.
     #[allow(clippy::expect_used)]
     fn write_mask_sources(
         &mut self,
@@ -3176,10 +2610,8 @@ impl WgpuRenderer {
             })
             .collect();
 
-        // Initialize the mask to 1 when every source is a DodgeMask, otherwise 0;
-        // per-source draws then REPLACE with 1 (Mask) or 0 (DodgeMask),
-        // and the masked content is gated on mask==1. Mirror that here
-        // so DodgeMask sources invert the mask region rather than erasing it.
+        // Start at 1 for an all-DodgeMask batch, else 0; sources REPLACE with 1
+        // (Mask) or 0 (DodgeMask) and content passes where the mask is 1.
         let any_regular_mask = mask_sources
             .iter()
             .any(|m| m.mode() == catchlight_core::MaskMode::Mask);
@@ -3291,15 +2723,9 @@ impl WgpuRenderer {
         }
     }
 
-    /// Stencil-path mask-source recording into the caller's open
-    /// color+stencil pass: regular sources REPLACE the stencil with
-    /// `ref_value` where they rasterize, dodge sources punch 0. An
-    /// all-DodgeMask batch first seeds the whole viewport with
-    /// `ref_value` via the fullscreen stencil fill so pixels outside every
-    /// dodge source remain enabled. Per-source
-    /// part-uniform slots carry each source's alpha threshold. The
-    /// caller must have bound the camera at group 0 (the mask-write
-    /// pipeline shares the part pipeline layout).
+    /// Stencil path: regular sources REPLACE `ref_value`, dodge sources punch
+    /// 0, and an all-DodgeMask batch first fills the viewport with `ref_value`.
+    /// The caller must have bound the camera at group 0.
     // Invariant: only called on the stencil path, where
     // stencil_fill_pipeline is always built.
     #[allow(clippy::expect_used)]
@@ -3445,17 +2871,9 @@ impl WgpuRenderer {
         render_pass.set_bind_group(0, &self.camera_bind_group, &[self.camera_offset]);
     }
 
-    /// Filter a masked batch for resident GPU resources into
-    /// renderer-owned index scratch and write the batch's instance
-    /// block — `[mask0, .., maskK-1, part0, .., partN-1]` at distinct
-    /// offsets in the frame-wide instance_buffer (one reserve carves
-    /// the whole block; every pass in the frame shares one submit, so
-    /// all writes replay together regardless of pass order). Returns
-    /// the surviving indices plus the mask and part instance base
-    /// offsets, or None when nothing survives. The caller must hand
-    /// the indices back to `draw_filter_scratch`; an early `?` that
-    /// skips that loses the scratch (the field reverts to an empty
-    /// Vec) — harmless.
+    /// Writes the batch's instance block `[mask0..maskK-1, part0..partN-1]` and
+    /// returns the surviving indices plus mask and part bases. The caller must
+    /// return the indices to `draw_filter_scratch`.
     fn prepare_masked_part_draws(
         &mut self,
         draws: &[PreparedMaskedPartDraw<'_>],
@@ -3512,12 +2930,6 @@ impl WgpuRenderer {
     // Invariant: `valid` only holds indices whose mesh / texture were
     // verified resident by prepare_masked_part_draws; part_bind_group
     // is populated by record_list.
-    //
-    // Record a masked batch's content draws into the caller's open
-    // pass: pipeline / texture / mesh state switch on change, bind
-    // group 2 re-binds per draw. The caller has already set up the
-    // mask test (stencil reference on the stencil path, group 3 mask
-    // texture on the alpha path). Draw order is preserved.
     #[allow(clippy::unwrap_used, clippy::expect_used)]
     fn record_masked_part_draws(
         &mut self,
@@ -3589,16 +3001,9 @@ impl WgpuRenderer {
         Ok(())
     }
 
-    // Alpha-path batched masked-Part render (has_stencil == false): a
-    // run of consecutive masked parts that share one mask signature
-    // (see `same_mask_signature`) collapses to one mask-alpha write
-    // pass plus one masked-draw pass that samples the mask texture via
-    // group 3. Draw order is preserved — callers must not reorder.
-    //
-    // `clear_target` clears the color target on the masked-draw pass
-    // (used to fold a composite-slot clear into the first masked
-    // child); the mask-alpha attachment is unaffected. Returns whether
-    // a masked-draw pass was emitted.
+    // Alpha path: a same-signature masked run is one mask-alpha write pass
+    // plus one sampled masked-draw pass. `clear_target` folds a composite-slot
+    // clear into the masked-draw pass. Returns whether that pass was emitted.
     #[allow(clippy::too_many_arguments, clippy::expect_used)]
     fn render_masked_prepared_parts_to(
         &mut self,
@@ -3617,8 +3022,6 @@ impl WgpuRenderer {
         };
         let mask_sources = draws[0].mask_sources;
 
-        // Shared mask write (the sources are identical across a
-        // same-signature batch); writes its own per-source uniforms.
         self.write_mask_sources(
             encoder,
             mask_write_label,
@@ -3667,9 +3070,8 @@ impl WgpuRenderer {
                 .expect("mask_bind_group must exist when has_stencil == false"),
             &[],
         );
-        // Only the content draw is scissored — the mask-alpha texture was
-        // written full above, but the masked draw samples it only inside
-        // the rect, and the part's geometry lives inside the rect.
+        // Only the content draw is scissored; it samples the mask only inside the
+        // rect.
         if let Some(r) = scissor {
             render_pass.set_scissor_rect(r.x, r.y, r.width, r.height);
         }
@@ -3680,11 +3082,7 @@ impl WgpuRenderer {
         Ok(true)
     }
 
-    /// Filter `drawables` for resident GPU resources into
-    /// renderer-owned index scratch (no per-frame allocation) and
-    /// write their instance block. Returns the surviving indices and
-    /// the instance base offset, or None when nothing survives. The
-    /// caller must hand the indices back to `draw_filter_scratch`.
+    /// The caller must hand the indices back to `draw_filter_scratch`.
     fn prepare_part_draws(&mut self, drawables: &[PreparedPartDraw]) -> Option<(Vec<usize>, u64)> {
         let mut filtered = std::mem::take(&mut self.draw_filter_scratch);
         filtered.clear();
@@ -3733,11 +3131,6 @@ impl WgpuRenderer {
     // Invariant: `filtered` only holds indices whose mesh / texture
     // were verified resident by prepare_part_draws; the Normal blend
     // mode pipeline is always compiled.
-    //
-    // Record a run of unmasked part draws into the caller's open pass.
-    // Each draw carries its own `part_uniform_offset`, so bind group 2
-    // is re-bound per draw while pipeline / texture / mesh state only
-    // switch on change. Draw order is preserved exactly.
     #[allow(clippy::unwrap_used, clippy::expect_used)]
     fn record_unmasked_part_draws(
         &mut self,
@@ -3797,12 +3190,8 @@ impl WgpuRenderer {
         self.current_stats.texture_binds += texture_binds;
     }
 
-    // Alpha-path batched unmasked-Part render: collapses a run of
-    // consecutive unmasked parts into one render pass of its own.
-    // Returns whether a draw pass was emitted (false when the batch is
-    // empty or every draw filtered out for missing GPU resources) so
-    // callers can fold the composite-slot clear into the first batch
-    // that actually draws.
+    // Alpha path. Returns whether a draw pass was emitted, so callers can fold
+    // the composite-slot clear into the first batch that draws.
     fn render_prepared_parts(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -3865,10 +3254,8 @@ impl WgpuRenderer {
         Ok(true)
     }
 
-    /// Open `s`'s pass if it isn't already open: color = `s.next_load`
-    /// into `s.view`, stencil cleared to 0 at open and discarded at the
-    /// end (nothing reads stencil across passes), camera bound at
-    /// group 0. Resets the per-segment stencil-reference allocator.
+    /// Stencil is cleared at open and discarded at the end: nothing reads it
+    /// across passes.
     fn open_stencil_pass(&self, encoder: &mut wgpu::CommandEncoder, s: &mut StencilPassState<'_>) {
         if s.pass.is_some() {
             return;
@@ -3911,12 +3298,8 @@ impl WgpuRenderer {
         s.pass = Some(pass);
     }
 
-    /// End the sink's open pass (stencil path) before a pass outside
-    /// the sink touches the target view (composite slot render + blit,
-    /// dst-in-shader snapshot + blit). If the frame clear is still
-    /// pending, emit it as an explicit pass — the external consumer
-    /// loads the target. Alpha sink: no-op; its up-front explicit
-    /// clear covers the first-drawable case.
+    /// Ends the stencil sink's pass before an outside pass touches the target,
+    /// emitting a still-pending frame clear first. No-op for the alpha sink.
     fn end_sink_pass(&self, encoder: &mut wgpu::CommandEncoder, sink: &mut PartSink<'_, '_>) {
         let PartSink::Stencil(s) = sink else { return };
         s.pass = None;
@@ -3926,12 +3309,7 @@ impl WgpuRenderer {
         }
     }
 
-    /// Flush a pending run of unmasked parts as one batch. Stencil
-    /// sink: record into the shared pass (opened lazily — a batch
-    /// whose draws all filtered out leaves the pass and its clear
-    /// untouched). Alpha sink: one pass of its own; the first batch
-    /// that draws consumes the clear color, later flushes load. No-op
-    /// when the batch is empty so barriers can call it unconditionally.
+    /// No-op when the batch is empty, so barriers can call it unconditionally.
     fn flush_pending_parts(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -3973,10 +3351,6 @@ impl WgpuRenderer {
         Ok(())
     }
 
-    /// Flush a pending run of same-signature masked parts. Stencil
-    /// sink: allocate the next stencil reference and record mask
-    /// sources + content into the shared pass. Alpha sink: one
-    /// mask-alpha write pass + one masked draw pass.
     fn flush_pending_masked(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -4059,9 +3433,7 @@ impl WgpuRenderer {
             .expect("Normal blend mode blit pipeline must exist")
     }
 
-    /// `begin_render_pass` that also tallies the pass. Takes `&self` so
-    /// the `&self` blit helpers count too; the returned pass borrows
-    /// only `encoder`, so the `&self` borrow ends at the call.
+    /// Takes `&self` so the `&self` blit helpers count too.
     fn counted_begin_pass<'e>(
         &self,
         encoder: &'e mut wgpu::CommandEncoder,
@@ -4071,9 +3443,7 @@ impl WgpuRenderer {
         encoder.begin_render_pass(desc)
     }
 
-    /// No-draw pass that clears `view` to `color`. Used wherever the
-    /// frame's clear can't be folded into a drawing pass (first drawable
-    /// isn't an unmasked-Part batch, or nothing drew at all).
+    /// For when the frame clear can't be folded into a drawing pass.
     fn explicit_clear_pass(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -4102,8 +3472,6 @@ impl WgpuRenderer {
         );
     }
 
-    /// Fold the per-frame atomic tallies and the byte/slot counts into
-    /// `current_stats`. Called once at each frame exit.
     fn finalize_frame_stats(&mut self, composites: &CompositePool) {
         self.current_stats.render_passes = self.frame_render_passes.load(Ordering::Relaxed);
         self.current_stats.total_draw_calls = self.frame_draw_calls.load(Ordering::Relaxed);
@@ -4112,10 +3480,8 @@ impl WgpuRenderer {
         self.current_stats.composite_slots_used = composites.stats().0 as u32;
     }
 
-    /// Sampled masked blit (has_stencil == false): blends `composite`
-    /// onto `target_view` where the mask-alpha texture (group 2) holds
-    /// 1; the stencil path instead folds mask write and masked blit
-    /// into one pass — see `blit_composite_with_masks`.
+    /// Alpha path only; the stencil path folds the mask write and blit into
+    /// one pass (`blit_composite_with_masks`).
     #[allow(clippy::expect_used, clippy::too_many_arguments)]
     fn blit_composite_masked(
         &self,
@@ -4214,10 +3580,8 @@ impl WgpuRenderer {
         render_pass.draw(0..3, 0..1);
     }
 
-    // Invariant: blend_mode is always one of the three dst-in-shader modes
-    // (Overlay/ColorBurn/LinearBurn) — render_list filters before
-    // calling this helper. Pipeline lookup falls back to the Overlay
-    // pipeline if a future variant is added without wiring its pipeline.
+    // Invariant: blend_mode is a dst-in-shader mode; lookup falls back to the
+    // Overlay pipeline for an unwired future variant.
     #[allow(clippy::too_many_arguments, clippy::expect_used)]
     fn blit_composite_dst_in_shader(
         &self,
@@ -4232,15 +3596,9 @@ impl WgpuRenderer {
         height: u32,
         scissor: Option<ScreenRect>,
     ) -> RendererResult<()> {
-        // Snapshot the framebuffer before the dst-in-shader pass. The
-        // copy executes in encoder order (unlike queue.write_buffer
-        // which batches at submit-start), so it sees every prior pass's
-        // contributions in this frame. With a scissor, only that rect is
-        // copied and only that rect is shaded: the snapshot is sampled
-        // 1:1 at screen pixels, so the untouched region is never read, and
-        // outside the src's content the shader returns dst unchanged (all
-        // dst-in-shader modes early-out on src alpha 0) — matching what a
-        // full-screen blit would write there.
+        // The copy runs in encoder order (unlike write_buffer), so it sees every
+        // prior pass. A scissored copy suffices: the snapshot is sampled 1:1 and
+        // dst-in-shader modes return dst where src alpha is 0.
         let (copy_origin, copy_extent) = match scissor {
             Some(r) => (
                 wgpu::Origin3d {
@@ -4316,10 +3674,7 @@ impl WgpuRenderer {
         Ok(())
     }
 
-    /// Render a Part (optionally masked) into a freshly-cleared
-    /// composite slot using Normal premultiplied blend. Used by the
-    /// dst-in-shader path so each Part has a sample-able src texture
-    /// independent of the framebuffer.
+    /// Gives the dst-in-shader blit a src texture independent of the framebuffer.
     #[allow(clippy::too_many_arguments)]
     fn render_part_to_composite_slot(
         &mut self,
@@ -4408,10 +3763,6 @@ impl WgpuRenderer {
         Ok(())
     }
 
-    /// Blit a composite with mask compositing. Stencil path: one pass —
-    /// rasterize the mask shapes into the stencil (reference 1), then
-    /// the stencil-tested blit of `composite` onto `target_view`. Alpha
-    /// path: a mask-alpha write pass plus a sampled masked blit pass.
     #[allow(clippy::too_many_arguments, clippy::expect_used)]
     pub(crate) fn blit_composite_with_masks(
         &mut self,
@@ -4499,14 +3850,10 @@ impl WgpuRenderer {
                 multiview_mask: None,
             },
         );
-        // Camera at group 0 for the mask-source draws (part pipeline
-        // layout); the blit pipeline below rebinds group 0 to the
-        // composite texture.
+        // Mask-source draws use the part layout; the blit pipeline rebinds group 0.
         render_pass.set_bind_group(0, &self.camera_bind_group, &[self.camera_offset]);
-        // One scissor bounds both the mask-source stencil writes and the
-        // blit to the composite's children union: outside it the composite
-        // is a transparent clear (identity under this blend mode) and the
-        // stencil there is never tested.
+        // Outside the children union the composite is a transparent clear and the
+        // stencil is never tested.
         if let Some(r) = scissor {
             render_pass.set_scissor_rect(r.x, r.y, r.width, r.height);
         }
@@ -4526,14 +3873,8 @@ impl WgpuRenderer {
         render_pass.draw(0..3, 0..1);
     }
 
-    /// Open a frame: a command encoder of the renderer's own, to be filled
-    /// by [`Frame::render`] / [`Frame::render_ext`] and submitted by
-    /// [`Recorded::submit`].
-    ///
-    /// One frame is one submit, which is what lets the frame keep its view
-    /// in camera slot 0 and its buffer cursors monotonic from the first draw
-    /// to the last. A host whose own render graph owns the submit takes
-    /// [`Self::submission`] and [`Self::render_into`] instead.
+    /// One frame is one submit, so it keeps camera slot 0 and monotonic
+    /// cursors. Hosts that own the submit use [`Self::render_into`].
     pub fn frame(&mut self) -> Frame<'_> {
         let encoder = self
             .device
@@ -4546,9 +3887,7 @@ impl WgpuRenderer {
         }
     }
 
-    /// A token for one submit the **caller** will make, spent by
-    /// [`Self::render_into`]. Make a fresh one per submit; see
-    /// [`Submission`].
+    /// Make a fresh one per submit; see [`Submission`].
     pub fn submission(&self) -> Submission {
         Submission {
             renderer: self.id,
@@ -4556,16 +3895,9 @@ impl WgpuRenderer {
         }
     }
 
-    /// Record a frame into a **caller-owned** encoder, taking a camera slot
-    /// from `submission`.
-    ///
-    /// The borrowed-encoder path, for a host whose render graph makes the
-    /// encoder and the submit — `catchlight-bevy` and nothing else. Everyone
-    /// else takes [`Self::frame`], which owns both and needs no token.
-    ///
-    /// Errors without recording anything when `submission` came from another
-    /// renderer, or when it has already issued [`CAMERA_RING_SLOTS`] views —
-    /// the loud end of a token kept past its submit.
+    /// Record into a caller-owned encoder (catchlight-bevy's render graph).
+    /// Errors without recording when `submission` came from another renderer or
+    /// has already issued [`CAMERA_RING_SLOTS`] views.
     #[allow(clippy::too_many_arguments)]
     pub fn render_into(
         &mut self,
@@ -4606,31 +3938,11 @@ impl WgpuRenderer {
         )
     }
 
-    /// Draw several puppets of **one** model into one frame, binding the
-    /// retained view-proj at camera slot `camera_slot`.
-    ///
-    /// The one implementation both paths share, and the reason a renderer
-    /// and its [`crate::RenderCache`] can be shared: the lists are recorded
-    /// back to back into one encoder, sharing the frame's instance and
-    /// part-uniform buffers under one monotonic cursor and one camera slot,
-    /// and each list draws from the [`DeformSet`] it carries. A second call
-    /// inside one submit would instead rewrite the first's instance and
-    /// uniform slots — `write_buffer` batches at submit start, so the later
-    /// write wins for every draw already recorded.
-    ///
-    /// `lists` draw in the order given, each puppet atomic: within a list z
-    /// order decides, across lists the caller's order does. `clear_color`
-    /// belongs to the frame, so only the first list may consume it.
-    ///
-    /// `target_color_texture` and `snapshots` let the dst-in-shader blend
-    /// modes `Overlay`, `ColorBurn` and `LinearBurn` snapshot the current
-    /// framebuffer per blit: root drawables snapshot the main framebuffer,
-    /// composite children their composite's offscreen target. When either is
-    /// `None` those modes fall back to the Normal-OVER approximation
-    /// `blend_mode_to_wgpu` returns for them — approximate output, not an
-    /// error. `target_color_texture` must be the texture whose view was
-    /// passed as `view` and must carry `wgpu::TextureUsages::COPY_SRC`; the
-    /// snapshot texture in the pool carries `COPY_DST | TEXTURE_BINDING`.
+    /// Lists record back to back under one cursor and camera slot: a second
+    /// call inside one submit would rewrite the first's slots. Only the first
+    /// list may consume `clear_color`. Without `target_color_texture` (which
+    /// must carry `COPY_SRC`) and `snapshots`, dst-in-shader modes fall back to
+    /// Normal-OVER.
     #[allow(clippy::too_many_arguments, clippy::expect_used)]
     fn record_frame(
         &mut self,
@@ -4655,9 +3967,7 @@ impl WgpuRenderer {
         );
         let _entered = span.enter();
 
-        // Frame boundary for the resource-lifecycle counters: the camera
-        // slot write below is this frame's first queue write, so the
-        // reset has to precede it.
+        // Must precede the camera write, this frame's first queue write.
         self.frame_stats = FrameStats::default();
         self.frame_sizing_closed = false;
         self.write_camera(camera_slot);
@@ -4665,21 +3975,12 @@ impl WgpuRenderer {
         self.frame_render_passes.store(0, Ordering::Relaxed);
         self.frame_draw_calls.store(0, Ordering::Relaxed);
 
-        // Open a single GPU-side timer scope around all GPU work in this
-        // frame when TIMESTAMP_QUERY is supported. The query lives until
-        // end_query is called on the same encoder; nested CPU tracing spans
-        // below give finer-grained per-callsite breakdown.
         let gpu_query = self
             .gpu_profiler
             .as_ref()
             .map(|p| p.begin_query("render_list", encoder));
 
-        // Per-frame snapshot bookkeeping. `dst_in_shader_active` is
-        // true only when both the caller-supplied texture handle and a
-        // snapshot pool are present AND there's at least one Part /
-        // Composite (root or composite child) using a shader-math mode —
-        // keeps the common case (zero such parts) on exactly the same
-        // code path as a plain render.
+        // Keeps frames without shader-math modes on the plain render path.
         let drawables = || {
             lists.iter().flat_map(|list| {
                 list.root_drawables
@@ -4691,9 +3992,7 @@ impl WgpuRenderer {
         let dst_in_shader_active =
             dst_in_shader_present && target_color_texture.is_some() && snapshots.is_some();
         if dst_in_shader_present && !dst_in_shader_active {
-            // Once per process: a caller on the plain render path hits this
-            // on every frame (the reference model carries ColorBurn parts),
-            // and a per-frame warn would drown the log.
+            // Once per process: the plain render path hits this every frame.
             static FALLBACK_WARNED: std::sync::Once = std::sync::Once::new();
             FALLBACK_WARNED.call_once(|| {
                 tracing::warn!(
@@ -4704,18 +4003,11 @@ impl WgpuRenderer {
             });
         }
 
-        // Pre-size frame resources over *every* list, so passes recorded
-        // below all refer to the same instance_buffer / part_uniform_buffer
-        // and no mid-frame growth strands earlier passes on a freed buffer.
+        // Sized over every list; mid-frame growth would strand earlier passes.
         let total_instances: usize = lists.iter().map(|l| l.total_instance_count()).sum();
         self.begin_frame_instances(total_instances);
-        // One uniform slot per root drawable (Part or Composite) plus
-        // one per composite child Part, plus one per mask-source draw
-        // (each mask write binds its source's threshold in its own
-        // slot — total_mask_source_count is the per-frame upper bound).
-        // Dst-in-shader Parts get one extra slot each (the
-        // composite-blit slot they're routed through), and so does each
-        // masked dst-in-shader Composite.
+        // One slot per drawable, composite child and mask source, plus one per
+        // dst-in-shader part and masked dst-in-shader composite.
         let dst_in_shader_extra = if dst_in_shader_active {
             drawables()
                 .filter(|d| match d {
@@ -4747,8 +4039,6 @@ impl WgpuRenderer {
 
         let mut result = Ok(());
         for (i, list) in lists.iter().enumerate() {
-            // Every deform slice and deformed-bounds lookup this list's
-            // passes make reads these two.
             self.deform_recording_set = list.deform_set;
             self.deform_recording_base = self.deform_base(list.deform_set);
             result = self.record_list(
@@ -4779,18 +4069,14 @@ impl WgpuRenderer {
         self.flush_instance_writes();
         self.flush_part_uniform_writes();
         self.finalize_frame_stats(composites);
-        // Folded in; the next frame's uploads start the count over.
         self.pending_deform_bytes = 0;
         span.record("drawn_parts", self.current_stats.drawn_parts);
-        // Frame over: uploads between frames may size buffers again.
         self.frame_sizing_closed = false;
         result.map(|()| self.current_stats)
     }
 
-    /// Record one puppet's list into an already-sized frame. Everything that
-    /// belongs to the frame rather than to the puppet — the camera slot, the
-    /// instance and uniform sizing, the GPU timer scope, the stats — is
-    /// [`Self::record_frame`]'s, so this may run several times per frame.
+    /// Frame-level state belongs to [`Self::record_frame`], so this may run
+    /// several times per frame.
     #[allow(clippy::too_many_arguments, clippy::expect_used)]
     fn record_list(
         &mut self,
@@ -4824,19 +4110,10 @@ impl WgpuRenderer {
         }
         self.prepare_composite_mask_textures(encoder, render_list, composites);
 
-        // Root-composite flattening: a single root Composite with an
-        // identity blit (Normal, opacity 1, white tint, zero screen tint,
-        // unmasked) whose children all composite as plain OVER can be
-        // drawn straight to the main view, skipping the offscreen slot,
-        // the full-screen blit, and the slot's viewport-sized bandwidth.
-        // OVER associativity makes "(children OVER clear) blitted OVER bg"
-        // identical to "children OVER bg" drawn directly. Guard out nested
-        // composites and any non-OVER child (Multiply/Screen/… read the
-        // destination, so isolating them in a transparent slot is not
-        // equivalent to drawing them onto the populated main view).
-        // Dst-in-shader children read the destination too once the
-        // snapshot path is active, so they block flattening as well;
-        // without snapshots they degrade to OVER and may flatten.
+        // Root-composite flattening: OVER is associative, so an identity-blit
+        // root composite whose children all blend OVER draws them straight to the
+        // main view. Nested composites, non-OVER children, and dst-in-shader
+        // children on the snapshot path read the destination and block it.
         let flatten_children: Option<&[DrawableInfo]> = (|| {
             if render_list.root_drawables.len() != 1 {
                 return None;
@@ -4882,19 +4159,10 @@ impl WgpuRenderer {
 
         let has_stencil = self.shared.has_stencil;
 
-        // Alpha path: if the first drawable doesn't take the
-        // unmasked-Part fast path (which is the only place that consumes
-        // `clear_color` via a `LoadOp::Clear`), emit an explicit clear
-        // pass up front. The dst-in-shader path snapshots the
-        // framebuffer per blit and would otherwise sample uninitialized
-        // contents on frame 0; composites and masked Parts both use
-        // `LoadOp::Load` for the main view too. Skip when `clear_color`
-        // is None — that signals "preserve whatever the caller already
-        // drew" (bevy). Skip too when flattening: the flattened children
-        // fold the clear into their first batch (one fewer pass). The
-        // stencil sink instead defers the clear in `next_load` until its
-        // first pass opens (or `end_sink_pass` flushes it ahead of an
-        // external consumer).
+        // Alpha path: clear up front unless the first drawable is an unmasked
+        // part batch (the only LoadOp::Clear consumer) or flattening applies;
+        // snapshots would otherwise read uninitialized memory on frame 0. A None
+        // clear color preserves the caller's content (bevy).
         let needs_explicit_clear = !has_stencil
             && flatten_children.is_none()
             && clear_color.is_some()
@@ -4931,10 +4199,7 @@ impl WgpuRenderer {
             }
         };
 
-        // Flattened root composite: draw its children straight to the main
-        // view (no slot, no blit). The first drawing pass folds in the
-        // clear; if every child filtered out, the fallback below still
-        // clears so the frame isn't uninitialized.
+        // If every child filtered out, the fallback below still clears.
         if let Some(children) = flatten_children {
             self.render_children_run(encoder, &mut sink, children)?;
             self.end_sink_pass(encoder, &mut sink);
@@ -4952,24 +4217,12 @@ impl WgpuRenderer {
             return Ok(());
         }
 
-        // Consecutive unmasked root parts accumulate here and flush as
-        // one batched pass at the next barrier (masked / dst-in-shader
-        // part, composite) or at loop end. Dst-in-shader parts, offscreen
-        // composites and framebuffer snapshots can't be folded into a
-        // peer's pass, so they force a flush first to preserve z-order.
+        // Dst-in-shader parts, composites, and snapshots can't share a peer's
+        // pass, so they flush pending runs first to preserve z-order.
         let mut pending_parts: Vec<PreparedPartDraw> = Vec::new();
-        // Consecutive masked root parts that share one mask signature
-        // accumulate here and flush as one mask-write + one masked-draw
-        // pass. Mixing with `pending_parts` is mutually exclusive: an
-        // unmasked part flushes any pending masked run first and vice
-        // versa, so z-order across the two kinds is preserved.
+        // Mutually exclusive with `pending_parts`, preserving z-order.
         let mut pending_masked: Vec<PreparedMaskedPartDraw> = Vec::new();
 
-        // Single z-ordered pass. Composites render their children into a
-        // pool slot on demand, then blit that slot before moving on —
-        // keeps live offscreen-texture count bounded by max concurrent
-        // composites per frame (1 for most models; never grows with puppet
-        // count).
         for drawable in &render_list.root_drawables {
             match drawable {
                 DrawableInfo::Part {
@@ -4993,29 +4246,15 @@ impl WgpuRenderer {
                     let route_dst_in_shader = dst_in_shader_active && is_dst_in_shader(*blend_mode);
 
                     if route_dst_in_shader {
-                        // Barrier: snapshots the framebuffer, so any
-                        // pending parts (masked or not) must land first,
-                        // and the sink's open pass must end before the
-                        // snapshot copy + slot passes record.
+                        // Barrier: the snapshot must see pending parts.
                         self.flush_pending_parts(encoder, &mut sink, &mut pending_parts)?;
                         self.flush_pending_masked(encoder, &mut sink, &mut pending_masked)?;
                         self.end_sink_pass(encoder, &mut sink);
-                        // Render the part into a composite slot using
-                        // Normal blend (premultiplied) so the snapshot
-                        // blit shader receives a normal premultiplied
-                        // src. Then snapshot the framebuffer and run
-                        // the dst-in-shader blit pipeline. Composite
-                        // uniform slot is separate from the part's
-                        // child uniform slot above.
-                        // One rect bounds both the slot render and the
-                        // snapshot copy+blit: the part's contribution lives
-                        // inside it, and the dst-in-shader shader returns
-                        // dst untouched for the transparent region outside.
+                        // One rect bounds the slot render and the snapshot copy+blit; the shader
+                        // returns dst outside the part's content.
                         let part_scissor =
                             self.part_scissor_rect(*mesh_id, *transform, width, height);
-                        // Both slots are dead once the blit below is recorded,
-                        // so release them for the next root drawable rather
-                        // than growing the pools once per dst-in-shader part.
+                        // Release both slots after the blit so the pools don't grow per part.
                         let composite_mark = composites.mark();
                         let snapshot_mark = snapshots_opt.as_ref().map(|s| s.mark());
                         let slot = composites.acquire(&self.shared, &self.device);
@@ -5058,10 +4297,6 @@ impl WgpuRenderer {
                         }
                         sink.mark_rendered();
                     } else if !mask_sources.is_empty() {
-                        // Masked: flush any pending unmasked run (z-order
-                        // barrier), then accumulate into the masked batch.
-                        // A signature change from the current masked run
-                        // forces that run to flush first.
                         self.flush_pending_parts(encoder, &mut sink, &mut pending_parts)?;
                         if let Some(first) = pending_masked.first() {
                             if !same_mask_signature(first.mask_sources, mask_sources) {
@@ -5081,16 +4316,8 @@ impl WgpuRenderer {
                             mask_sources,
                         });
                     } else {
-                        // Unmasked: flush any pending masked run (z-order
-                        // barrier), then accumulate into the pending batch.
-                        // The flush (here on the next barrier, or at loop
-                        // end) decides the clear — only the first pass of
-                        // the frame clears, and only when the caller
-                        // supplied a clear color. A None clear color means
-                        // "preserve existing content" (e.g. bevy already
-                        // cleared the ViewTarget to its configured color);
-                        // clearing to transparent black would drop bevy's
-                        // contribution.
+                        // A None clear color preserves existing content (bevy already cleared
+                        // the ViewTarget).
                         self.flush_pending_masked(encoder, &mut sink, &mut pending_masked)?;
                         pending_parts.push(PreparedPartDraw {
                             draw: PartDraw {
@@ -5123,10 +4350,6 @@ impl WgpuRenderer {
                         continue;
                     }
 
-                    // Barrier: a composite renders offscreen then blits
-                    // in z-order, so pending root parts (masked or not)
-                    // flush first and the sink's open pass ends before
-                    // the slot + blit passes record.
                     self.flush_pending_parts(encoder, &mut sink, &mut pending_parts)?;
                     self.flush_pending_masked(encoder, &mut sink, &mut pending_masked)?;
                     self.end_sink_pass(encoder, &mut sink);
@@ -5152,18 +4375,12 @@ impl WgpuRenderer {
             }
         }
 
-        // Flush the trailing run of pending parts (the common case: a
-        // model whose last drawables are plain parts). At most one of the
-        // two is non-empty.
         self.flush_pending_parts(encoder, &mut sink, &mut pending_parts)?;
         self.flush_pending_masked(encoder, &mut sink, &mut pending_masked)?;
         self.end_sink_pass(encoder, &mut sink);
 
-        // Alpha sink: nothing consumed the clear (empty render list, or
-        // every batch filtered out on missing GPU resources) — the
-        // target still holds the previous frame, so clear it now. (The
-        // stencil sink's end_sink_pass above already flushed a pending
-        // clear.)
+        // Alpha sink: nothing consumed the clear, so the target still holds the
+        // previous frame.
         if !has_stencil && !has_rendered_first {
             if let Some(color) = clear_color {
                 self.explicit_clear_pass(encoder, view, color, "render_list fallback clear");
@@ -5174,26 +4391,16 @@ impl WgpuRenderer {
         Ok(())
     }
 
-    /// Resolve pending wgpu-profiler timer queries into `encoder`. Records
-    /// a query-set resolve + copy into the profiler's read buffer, so it
-    /// must run while the encoder is still open and **before** the encoder
-    /// is submitted. Pair with `end_gpu_frame` once that submit lands.
-    /// No-op when timestamp queries aren't supported.
-    ///
-    /// For the borrowed-encoder path, whose host owns the encoder.
-    /// [`Recorded::submit`] does this itself.
+    /// Must run while the encoder is open and before it is submitted; pair
+    /// with `end_gpu_frame` after. [`Recorded::submit`] does this itself.
     pub fn resolve_gpu_queries(&mut self, encoder: &mut wgpu::CommandEncoder) {
         if let Some(profiler) = self.gpu_profiler.as_mut() {
             profiler.resolve_queries(encoder);
         }
     }
 
-    /// Close the current wgpu-profiler frame and map its read buffer for
-    /// readback. Must run **after** the encoder carrying
-    /// `resolve_gpu_queries` has been submitted: `end_frame` maps the read
-    /// buffer, and a submit that still writes a mapped buffer fails wgpu
-    /// validation ("Buffer is still mapped"). No-op when timestamp queries
-    /// aren't supported.
+    /// Must run after the submit carrying `resolve_gpu_queries`: it maps the
+    /// read buffer, and a submit still writing a mapped buffer fails validation.
     pub fn end_gpu_frame(&mut self) {
         if let Some(profiler) = self.gpu_profiler.as_mut() {
             if let Err(e) = profiler.end_frame() {
@@ -5202,23 +4409,15 @@ impl WgpuRenderer {
         }
     }
 
-    /// Drain finished GPU timer results since the last call. Returns
-    /// `None` when timestamp queries are unsupported or no completed
-    /// frame is available yet.
+    /// `None` when timestamp queries are unsupported or no frame completed yet.
     pub fn process_gpu_frame(&mut self) -> Option<Vec<wgpu_profiler::GpuTimerQueryResult>> {
         let profiler = self.gpu_profiler.as_mut()?;
         let period = self.queue.get_timestamp_period();
         profiler.process_finished_frame(period)
     }
 
-    // Batch a composite's children (or a flattened root composite's
-    // children, drawn straight to the main view) into as few batches as
-    // possible against `sink`: consecutive unmasked children share one
-    // batch; consecutive masked children with one mask signature share
-    // one mask write + one masked-draw batch. At most one pending run is
-    // non-empty at a time, so z-order across masked / unmasked children
-    // is preserved. The caller owns the sink's end-of-run handling
-    // (`end_sink_pass` / fallback clear).
+    // At most one pending run is non-empty at a time, preserving z-order.
+    // The caller owns the sink's end-of-run handling.
     fn render_children_run(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -5286,11 +4485,8 @@ impl WgpuRenderer {
         Ok(())
     }
 
-    /// Alpha sink only: a barrier is about to read the target (a snapshot
-    /// copy, or a nested composite blitting over it), so a clear that is still
-    /// pending has to land first or that read sees the previous frame. The
-    /// stencil sink has no equivalent — `end_sink_pass` already flushed its
-    /// deferred clear.
+    /// Alpha sink only: a pending clear must land before a barrier reads the
+    /// target.
     fn spend_pending_alpha_clear(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -5313,15 +4509,8 @@ impl WgpuRenderer {
         }
     }
 
-    /// Render one Composite drawable into `target`: children go into a fresh
-    /// pool slot, then that slot blits out under the composite's own
-    /// blend/opacity/tint/mask. Serves root composites (target = the main
-    /// view) and nested ones (target = the enclosing composite's slot)
-    /// identically, so the outer blit covers nested content and orders it with
-    /// the outer's other children.
-    ///
-    /// Returns whether anything was drawn. The caller must have flushed its
-    /// pending runs and ended the sink's pass: this records its own passes.
+    /// Serves root and nested composites identically. The caller must have
+    /// flushed its pending runs and ended the sink's pass.
     #[allow(clippy::too_many_arguments)]
     fn render_composite_drawable(
         &mut self,
@@ -5356,20 +4545,14 @@ impl WgpuRenderer {
             _ => return Ok(false),
         };
 
-        // The composite's blit can only touch the union of its children's
-        // screen rects; everything outside is the transparent slot clear.
-        // Computed before the children render so the immutable borrow
-        // doesn't collide.
+        // Computed before the children render so the borrow doesn't collide.
         let union = self.children_union_scissor(children, width, height);
 
         let part_uniform_offset =
             self.write_part_uniform(*opacity, *tint, *screen_tint, *mask_threshold);
 
-        // Acquire a pool slot, render children into it, blit out. Marks are
-        // taken before the acquire and rewound after the blit, so sibling
-        // composites share slots instead of each adding one. A nested
-        // composite acquires while its parent's slot is still live, so the
-        // pool grows to the nesting depth and no further.
+        // Rewinding after the blit lets siblings share slots; the pool grows to
+        // the nesting depth and no further.
         let composite_mark = composites.mark();
         let snapshot_mark = snapshots.as_ref().map(|s| s.mark());
         let slot = composites.acquire(&self.shared, &self.device);
@@ -5386,9 +4569,7 @@ impl WgpuRenderer {
             height,
         )?;
 
-        // Needs both a destination texture to snapshot and a pool to snapshot
-        // into; without either, fall through to the fixed-function blit (the
-        // documented Normal-OVER approximation) rather than panicking.
+        // Without a texture or pool, fall through to the Normal-OVER blit.
         let mut blitted = false;
         if dst_in_shader_active && is_dst_in_shader(*blend_mode) {
             if let (Some(main_tex), Some(snap_pool)) = (target.texture, snapshots.as_deref_mut()) {
@@ -5434,9 +4615,6 @@ impl WgpuRenderer {
         }
 
         if !blitted {
-            // Fixed-function composite blits only skip the outside-union
-            // region when a transparent src is a no-op under the mode (all
-            // but Darken).
             let blit_scissor = if blend_transparent_src_is_identity(*blend_mode) {
                 union
             } else {
@@ -5495,11 +4673,8 @@ impl WgpuRenderer {
             a: 0.0,
         };
 
-        // The slot needs clearing before the first child composites onto
-        // it. Rather than a standalone no-draw clear pass, the first
-        // pass that draws folds in a transparent clear. If every child
-        // filters out, the fallback clear keeps the blit from sampling
-        // stale pool contents.
+        // The first drawing pass folds in the slot clear; the fallback clear
+        // keeps the blit from sampling stale pool contents.
         if self.shared.has_stencil {
             let mut state = StencilPassState::new(
                 composite_view,
@@ -5561,12 +4736,8 @@ impl WgpuRenderer {
         Ok(())
     }
 
-    /// Children of a composite, split at every child that has to read the
-    /// composite's own buffer rather than just blend onto it: a dst-in-shader
-    /// Part or a nested Composite (which renders its own slot
-    /// and blits it in). Each such child lands between two plain runs: the
-    /// preceding run flushes, the sink's pass ends, the child records its own
-    /// passes, then the run resumes. With no such child this is one plain run.
+    /// Splits at children that read the composite's own buffer (dst-in-shader
+    /// parts, nested composites); each records its own passes between runs.
     #[allow(clippy::too_many_arguments)]
     fn render_children_with_dst_blends(
         &mut self,
@@ -5601,8 +4772,6 @@ impl WgpuRenderer {
                 continue;
             }
 
-            // Barrier: the preceding run lands first (z-order), and the
-            // sink's open pass must end before this child's passes record.
             self.render_children_run(encoder, sink, &children[run_start..i])?;
             run_start = i + 1;
             self.end_sink_pass(encoder, sink);
@@ -5642,12 +4811,8 @@ impl WgpuRenderer {
                 } => {
                     let part_uniform_offset =
                         self.write_part_uniform(*opacity, *tint, *screen_tint, *mask_threshold);
-                    // Same rect for the scratch-slot render and the snapshot
-                    // copy+blit against the composite target (see the
-                    // root-part path). The scratch slot and snapshot are
-                    // re-acquired per child at the same cursor — each child's
-                    // slot render, snapshot copy and blit record in encoder
-                    // order, so the next child safely overwrites both.
+                    // Scratch slot and snapshot are re-acquired per child at one cursor;
+                    // encoder order makes overwriting them safe.
                     let child_scissor = self.part_scissor_rect(*mesh_id, *transform, width, height);
                     let composite_mark = composites.mark();
                     let scratch = composites.acquire(&self.shared, &self.device);
@@ -5708,9 +4873,7 @@ pub struct Frame<'r> {
 }
 
 impl<'r> Frame<'r> {
-    /// Draw `lists` — every puppet of the one model this renderer holds —
-    /// into `view`. See [`Self::render_ext`] for the dst-in-shader blend
-    /// modes, which need the target texture and a snapshot pool.
+    /// See [`Self::render_ext`] for the dst-in-shader blend modes.
     #[allow(clippy::too_many_arguments)]
     pub fn render(
         self,
@@ -5735,12 +4898,8 @@ impl<'r> Frame<'r> {
         )
     }
 
-    /// [`Self::render`] plus what the dst-in-shader blend modes need: the
-    /// target colour texture and a snapshot pool, for `Overlay`, `ColorBurn`
-    /// and `LinearBurn`. Without them those modes fall back to a
-    /// Normal-OVER approximation rather than erroring.
-    ///
-    /// An owned frame is one submit, so its view is always camera slot 0.
+    /// Without the target texture and snapshot pool, `Overlay`, `ColorBurn`
+    /// and `LinearBurn` fall back to Normal-OVER.
     #[allow(clippy::too_many_arguments)]
     pub fn render_ext(
         mut self,
@@ -5775,29 +4934,18 @@ impl<'r> Frame<'r> {
     }
 }
 
-/// A recorded frame, waiting for its submit.
-///
-/// There is no second render call on it: the frame's buffer cursors were
-/// spent recording it, and a second call would reset them under the draws
-/// already recorded. What a caller may still add is its own work —
-/// a readback copy, a UI pass, a blit — through [`Self::encoder`], before
-/// [`Self::submit`] closes the frame.
+/// A recorded frame, waiting for its submit. Add caller work through
+/// [`Self::encoder`]; a second render call would reset the spent cursors.
 #[must_use = "a recorded frame reaches the queue only through submit()"]
 pub struct Recorded<'r> {
     renderer: &'r mut WgpuRenderer,
-    /// Taken by [`Self::submit`], which is how `Drop` tells a dropped frame
-    /// from a submitted one.
     encoder: Option<wgpu::CommandEncoder>,
     stats: RenderStats,
 }
 
 impl Recorded<'_> {
-    /// The frame's encoder, for the passes the caller records alongside it.
-    /// They land in the same submit, so what they read is this frame.
     pub fn encoder(&mut self) -> &mut wgpu::CommandEncoder {
-        // `submit` is the only thing that takes the encoder and it consumes
-        // the frame, so a live `Recorded` always has one; the fallback only
-        // satisfies the type.
+        // A live `Recorded` always has one; the fallback only satisfies the type.
         self.encoder.get_or_insert_with(|| {
             self.renderer
                 .device
@@ -5807,16 +4955,11 @@ impl Recorded<'_> {
         })
     }
 
-    /// What this frame drew.
     pub fn stats(&self) -> RenderStats {
         self.stats
     }
 
-    /// Submit the frame. The one exit that reaches the queue.
-    ///
-    /// Timer queries opened while recording are resolved into this same
-    /// encoder first: the caller never sees it, so this is the only place
-    /// they can be resolved before the submit that carries them.
+    /// Resolves timer queries into this encoder before submitting.
     pub fn submit(mut self) -> wgpu::SubmissionIndex {
         let mut encoder = self.encoder.take();
         if let Some(encoder) = encoder.as_mut() {
@@ -5831,9 +4974,7 @@ impl Recorded<'_> {
 impl Drop for Recorded<'_> {
     fn drop(&mut self) {
         if self.encoder.is_some() {
-            // Once per process, as the dst-in-shader fallback below: a
-            // caller that drops one frame drops every frame, and a per-frame
-            // warn would drown the log.
+            // Once per process: a caller that drops one frame drops every frame.
             static DROPPED_WARNED: std::sync::Once = std::sync::Once::new();
             DROPPED_WARNED.call_once(|| {
                 tracing::warn!(
@@ -5876,9 +5017,6 @@ mod tests {
         }));
     }
 
-    /// The ring does not wrap: `render_into` refuses the view past the last
-    /// slot instead. So every offset a caller can reach names its own slot,
-    /// and the last one ends exactly at the buffer the constructor sized.
     #[test]
     fn camera_slot_offsets_stay_inside_the_ring() {
         let stride = 256;
@@ -5896,15 +5034,8 @@ mod tests {
         );
     }
 
-    /// Root-composite flattening draws children straight to the parent
-    /// target, which is only equivalent to slot-render + OVER-blit when
-    /// every child composites with associative premultiplied OVER. This
-    /// pins exactly which modes qualify: Normal plus the dst-in-shader
-    /// trio (whose no-snapshot fallback degrades to OVER; the flatten
-    /// guard rejects them separately when the snapshot path is active).
-    /// A blend-table edit that made e.g. Multiply look like OVER, or
-    /// Normal stop being OVER, would silently make flattening produce
-    /// wrong pixels — and trip here first.
+    /// A blend-table edit that made a mode look like OVER would make
+    /// flattening silently wrong.
     #[test]
     fn renders_as_over_matches_the_flatten_safe_blend_set() {
         for over in [
@@ -5935,10 +5066,6 @@ mod tests {
         }
     }
 
-    /// A masked-part batch shares one mask-write pass, so two draws may
-    /// only join when their mask shapes rasterize identically. Verify
-    /// the signature splits on source count and per-source
-    /// mesh/texture/mode/threshold — and ignores the target part itself.
     #[test]
     fn same_mask_signature_distinguishes_mask_shapes() {
         use crate::collect::MaskSourceData;
@@ -5954,19 +5081,15 @@ mod tests {
         let src = |mesh: u32, tex: u32, mode| src_t(mesh, tex, mode, 0.5);
         let a = [src(1, 1, MaskMode::Mask)];
 
-        // Identical signature.
         assert!(same_mask_signature(&a, &[src(1, 1, MaskMode::Mask)]));
-        // Differing source threshold.
         assert!(!same_mask_signature(
             &a,
             &[src_t(1, 1, MaskMode::Mask, 0.25)]
         ));
-        // Differing source count.
         assert!(!same_mask_signature(
             &a,
             &[src(1, 1, MaskMode::Mask), src(2, 2, MaskMode::Mask)]
         ));
-        // Differing mesh / texture / mode.
         assert!(!same_mask_signature(&a, &[src(2, 1, MaskMode::Mask)]));
         assert!(!same_mask_signature(&a, &[src(1, 2, MaskMode::Mask)]));
         assert!(!same_mask_signature(&a, &[src(1, 1, MaskMode::DodgeMask)]));
@@ -5992,12 +5115,7 @@ mod tests {
         assert!(!same_mask_signature(&composite, &a));
     }
 
-    /// AGENTS.md invariant: blend modes whose color component masks via
-    /// `DstAlpha` or `Zero` must use the same factors on the alpha
-    /// component. If alpha falls through to the default OVER blend, the
-    /// framebuffer gets α=1 where color is 0, producing opaque-black
-    /// halos (silent at identity pose, visible once a deform shrinks
-    /// the mask — cf. an eye mask at blink=1).
+    /// Alpha falling through to OVER writes α=1 where color is 0: black halos.
     #[test]
     fn masking_blend_modes_have_matching_color_and_alpha_factors() {
         for mode in [BlendMode::ClipToLower, BlendMode::SliceFromLower] {
@@ -6044,9 +5162,6 @@ mod tests {
         }
     }
 
-    /// Every BlendMode must resolve to a well-formed wgpu::BlendState —
-    /// this exhaustively matches the enum so a future variant can't be
-    /// added without either listing it here or getting a compile error.
     #[test]
     fn every_blend_mode_produces_a_well_formed_wgpu_blend_state() {
         let all = [
@@ -6067,13 +5182,8 @@ mod tests {
             BlendMode::Subtract,
         ];
         for mode in all {
-            // Exercises every arm of blend_mode_to_wgpu. The values are
-            // Copy, so just constructing the state is enough — a panicking
-            // arm or unreachable fallthrough would show here.
             let _ = blend_mode_to_wgpu(mode);
         }
-        // The exhaustive match below will fail to compile if a variant is
-        // added to BlendMode without being covered in `all`.
         fn _exhaustive(mode: BlendMode) {
             match mode {
                 BlendMode::Normal
@@ -6095,10 +5205,8 @@ mod tests {
         }
     }
 
-    /// Add / Subtract / Darken / Lighten use factors of One for both
-    /// color and alpha so the operation applies directly to the raw src
-    /// and dst values — without that, Min/Max would compare scaled
-    /// values and Subtract would drop terms.
+    /// Without One factors, Min/Max would compare scaled values and Subtract
+    /// would drop terms.
     #[test]
     fn wgpu_native_modes_use_unit_factors() {
         for mode in [
@@ -6115,13 +5223,6 @@ mod tests {
         }
     }
 
-    /// Scissoring a composite blit is byte-equivalent to the full-screen
-    /// blit only when a fully-transparent src leaves dst unchanged under
-    /// the mode's fixed-function blend. Replay every mode's actual
-    /// `blend_mode_to_wgpu` state with src = (0,0,0,0) over a nontrivial
-    /// dst and check the classifier agrees — so a blend-table edit that
-    /// changed which modes qualify trips here before it can silently
-    /// corrupt a scissored blit.
     #[test]
     fn blend_transparent_src_identity_matches_the_blend_table() {
         fn factor(f: wgpu::BlendFactor, s: [f32; 4], d: [f32; 4], ch: usize) -> f32 {
@@ -6187,15 +5288,10 @@ mod tests {
                 "{mode:?}: simulated identity={is_identity} out={out:?} vs dst={dst:?}",
             );
         }
-        // Darken is the one mode a transparent src does NOT leave alone.
         assert!(!blend_transparent_src_is_identity(BlendMode::Darken));
     }
 
-    /// The bounds projection maps a local AABB to a framebuffer-pixel
-    /// scissor with the correct Y-flip and conservative outward rounding.
-    /// A half-unit box under an identity transform in a 100×100 viewport
-    /// covers the centre quarter [25,75]²; the 2px pad rounds it outward
-    /// to [23,77]².
+    /// Half-unit box, identity, 100×100: [25,75]² padded outward to [23,77]².
     #[test]
     fn project_aabb_to_scissor_is_conservative_and_y_flipped() {
         let local = Aabb2 {
@@ -6216,15 +5312,10 @@ mod tests {
                 height: 54,
             }),
         );
-        // A box projecting fully off-screen yields no rect (caller then
-        // uses the full viewport).
         let off = [200.0, 200.0, 300.0, 300.0];
         assert_eq!(pixels_to_scissor(off, 100, 100), None);
     }
 
-    /// `CompositePool::stats()` reports the width/height it was built
-    /// with and (used, capacity) from the cursor and slot vec. ensure_size
-    /// on a new dimension clears both, so stats drops to (0, 0).
     #[test]
     fn composite_pool_stats_track_size_and_reset() {
         use super::CompositePool;

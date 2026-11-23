@@ -3,14 +3,8 @@ use bevy::prelude::*;
 use crate::asset::CatchlightModel;
 use crate::components::CatchlightPuppet;
 
-/// Main-world system: bake every puppet whose model is ready and tick it.
-///
-/// A puppet is rebaked when its handle now names a different model (a swap) or
-/// when the asset's *value* was replaced under the same handle (a hot reload,
-/// or an `Assets::insert` over the id) — neither of which the model's own
-/// generation counter can report, because a fresh model starts back at zero.
-/// An in-place edit through `Assets::get_mut` does move the generation, and
-/// `Puppet::tick` rebakes on that by itself.
+/// Rebakes on asset replacement explicitly: a fresh model's generation
+/// counter starts back at zero, so `Puppet::tick` cannot see it.
 pub(crate) fn update_puppets(
     time: Res<Time>,
     models: Res<Assets<CatchlightModel>>,
@@ -34,9 +28,6 @@ pub(crate) fn update_puppets(
         if puppet.needs_bake(id) || replaced.contains(&id) {
             puppet.bake(model, id);
         }
-        // The entity's world placement is the puppet's root, so a moved,
-        // rotated or scaled entity moves the whole model. Transform propagation
-        // runs earlier in PostUpdate, so this reads *this* frame's placement.
         let root = global_transform.to_matrix();
         if let Some(puppet) = puppet.puppet_mut() {
             puppet.tick_with_root(model, root, dt);

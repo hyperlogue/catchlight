@@ -1,8 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! The two gates a render cache lives by: the model's generation, which says
-//! when the cache itself is stale, and the deform stacks' generations, which
-//! say whether a frame has anything to upload at all.
+//! The render cache's model-generation and deform-generation gates.
 
 mod common;
 
@@ -22,8 +20,6 @@ const CLEAR: Option<wgpu::Color> = Some(wgpu::Color {
     a: 1.0,
 });
 
-/// One opaque quad, plus the hex source that minted its Ids so a test can go
-/// on editing the model afterwards.
 fn one_quad_model() -> (Model, SeededHex) {
     let mut build = common::Build::new();
     let tex = build.texture(common::solid_texture(4, 4, [200, 60, 40, 255]));
@@ -42,9 +38,7 @@ fn camera() -> glam::Mat4 {
     glam::Mat4::orthographic_rh(-1.0, 1.0, -1.0, 1.0, -1000.0, 1000.0)
 }
 
-/// Adding a node to the model between frames must reach the GPU: the puppet
-/// rebakes on its next tick and the cache rebuilds on its next refresh, with
-/// nothing for the caller to invalidate by hand.
+/// A model edit between frames reaches the GPU with no manual invalidation.
 #[test]
 fn a_model_edit_between_frames_rebuilds_the_cache() {
     let options = PrepareOptions::default();
@@ -62,7 +56,6 @@ fn a_model_edit_between_frames_rebuilds_the_cache() {
         let stats = ctx.render(&before, CLEAR).expect("render");
         assert_eq!(stats.drawn_parts, 1);
 
-        // The edit. Nothing tells the puppet or the cache about it.
         let mut model = model;
         let root = model.root().expect("a complete model").clone();
         let tex = model.texture_ids()[0].clone();
@@ -87,9 +80,7 @@ fn a_model_edit_between_frames_rebuilds_the_cache() {
     });
 }
 
-/// A frame whose deform stacks have not moved must upload nothing. This is
-/// the whole point of carrying the stack generation into the cache: a still
-/// puppet costs one collect and zero bytes.
+/// A frame whose deform stacks have not moved uploads nothing.
 #[test]
 fn a_frame_whose_deforms_did_not_move_uploads_nothing() {
     pollster::block_on(async {
@@ -101,8 +92,6 @@ fn a_frame_whose_deforms_did_not_move_uploads_nothing() {
         ctx.renderer.update_camera(camera());
         puppet.compute_transforms();
 
-        // A scratch deform stands in for any source that moves a vertex; it
-        // is the one a caller can drive without authoring a binding.
         let part = puppet
             .iter()
             .find_map(|(idx, node)| {
@@ -120,7 +109,6 @@ fn a_frame_whose_deforms_did_not_move_uploads_nothing() {
             "a deform that moved must reach the atlas",
         );
 
-        // Same pose, same stacks: the generation memo must skip the upload.
         cache.refresh(&mut ctx.renderer, &model, &puppet).unwrap();
         let still = ctx.render(&list, CLEAR).expect("render");
         assert_eq!(
@@ -130,9 +118,6 @@ fn a_frame_whose_deforms_did_not_move_uploads_nothing() {
     });
 }
 
-/// Refreshing with a puppet baked against a different state of the model is a
-/// programmer error, not something to paper over: the two disagree about what
-/// every node index names.
 #[cfg(debug_assertions)]
 #[test]
 #[should_panic(expected = "baked against a different model state")]
@@ -144,7 +129,6 @@ fn refreshing_with_a_puppet_from_another_generation_is_a_programmer_error() {
             .expect("prepare");
         let puppet = Puppet::new(&model);
 
-        // Edit the model but never sync the puppet, so its bake is stale.
         let root = model.root().expect("a complete model").clone();
         model
             .add_node(
@@ -158,10 +142,7 @@ fn refreshing_with_a_puppet_from_another_generation_is_a_programmer_error() {
     });
 }
 
-/// Two models that have not been edited since they were built sit at the same
-/// generation — every loader hands one back at 0 — so the generation gate
-/// alone would let a cache prepared from one be refreshed against the other
-/// and never notice. The model identity is what catches it.
+/// Unedited models share generation 0, so only identity tells them apart.
 #[cfg(debug_assertions)]
 #[test]
 #[should_panic(expected = "prepared from a different model")]

@@ -1,13 +1,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! One [`RenderCache`] serving several puppets of one model.
-//!
-//! The property under test is the one a shared cache costs: a puppet's
-//! deforms must reach the GPU without disturbing any other puppet's. Every
-//! draw of a frame lands in one submit and `queue.write_buffer` batches at
-//! submit start, so before deform sets the second puppet's upload won the
-//! whole atlas and *both* puppets drew the second one's pose. These assert on
-//! pixels, because that failure is invisible in every counter.
+//! One [`RenderCache`] serving several puppets: `write_buffer` batches at
+//! submit start, so one puppet's deforms must not overwrite another's.
+//! Asserts on pixels, since the failure is invisible in counters.
 
 mod common;
 
@@ -21,8 +16,6 @@ use common::NO_ADAPTER;
 const W: u32 = 128;
 const H: u32 = 128;
 const CAMERA_HEIGHT: f32 = 100.0;
-/// Half the camera's height: a puppet shifted this far sits well clear of one
-/// shifted the other way, so "did A move" is answerable per pixel column.
 const SHIFT: f32 = 25.0;
 
 const CLEAR: wgpu::Color = wgpu::Color {
@@ -32,8 +25,6 @@ const CLEAR: wgpu::Color = wgpu::Color {
     a: 1.0,
 };
 
-/// One orange quad on a transparent field, small enough that a `SHIFT` in
-/// either direction lands it entirely in one half of the viewport.
 fn one_quad_model() -> Model {
     let mut build = common::Build::new();
     let tex = build.texture(common::solid_texture(4, 4, [230, 120, 40, 255]));
@@ -62,8 +53,6 @@ fn ctx() -> RenderContext {
     ctx
 }
 
-/// A puppet posed by shifting every vertex, which is the shortest path from a
-/// number in a test to bytes in the deform atlas.
 fn posed(model: &Model, shift: f32) -> Puppet {
     let mut puppet = Puppet::new(model);
     puppet.compute_transforms();
@@ -71,7 +60,6 @@ fn posed(model: &Model, shift: f32) -> Puppet {
     puppet
 }
 
-/// Columns of non-background pixels, as `(leftmost, rightmost)`.
 fn drawn_span(pixels: &[u8]) -> Option<(u32, u32)> {
     let mut span: Option<(u32, u32)> = None;
     for (i, px) in pixels.as_chunks::<4>().0.iter().enumerate() {
@@ -103,8 +91,6 @@ fn two_puppets_of_one_model_share_a_cache_and_keep_their_own_deforms() {
     let mut cache = RenderCache::prepare(&mut ctx.renderer, &model, PrepareOptions::default())
         .expect("prepare one cache for the model");
 
-    // One cache, one renderer, two puppets: the left one on the set every
-    // renderer has, the right one on a set of its own.
     let left_set = DeformSet::FIRST;
     let right_set = ctx.renderer.acquire_deform_set();
     assert_ne!(left_set, right_set, "a second puppet gets a second set");
@@ -115,7 +101,6 @@ fn two_puppets_of_one_model_share_a_cache_and_keep_their_own_deforms() {
     let mut left_list = RenderList::default();
     let mut right_list = RenderList::default();
 
-    // Each puppet alone, for the spans the shared frame has to reproduce.
     cache
         .refresh_puppet(&mut ctx.renderer, &model, &left, left_set, &mut left_list)
         .unwrap();
@@ -139,7 +124,6 @@ fn two_puppets_of_one_model_share_a_cache_and_keep_their_own_deforms() {
         "the fixture must separate the two puppets: {left_alone:?} vs {right_alone:?}",
     );
 
-    // Both in one frame, one submit, off one cache.
     cache
         .refresh_puppet(&mut ctx.renderer, &model, &left, left_set, &mut left_list)
         .unwrap();
@@ -165,7 +149,6 @@ fn two_puppets_of_one_model_share_a_cache_and_keep_their_own_deforms() {
         "the shared frame must span both poses; a span matching one of them \
          alone means the second puppet's deform upload overwrote the first's",
     );
-    // Both quads, not one drawn twice at the same place.
     assert!(
         drawn_pixels(&both)
             > drawn_pixels(&{
@@ -202,8 +185,7 @@ fn a_released_deform_set_is_reused_and_starts_clean() {
     let second = ctx.renderer.acquire_deform_set();
     assert_eq!(second, first, "the index is recycled, not grown past");
 
-    // An undeformed puppet on the recycled index must draw undeformed: the
-    // previous tenant's bytes are still in the atlas until this upload.
+    // The previous tenant's bytes stay in the atlas until this upload.
     let mut plain = Puppet::new(&model);
     plain.compute_transforms();
     cache
@@ -248,9 +230,7 @@ fn one_frame_of_many_puppets_takes_one_write_per_frame_buffer() {
     let frame = ctx.renderer.frame_stats();
 
     assert_eq!(stats.drawn_parts, 8);
-    // The whole point of one frame call rather than eight: one cursor, one
-    // flush. Eight one-list frames in this submit would each rewrite
-    // offset 0 and the last would win for all of them.
+    // Eight one-list frames would each rewrite offset 0; the last would win.
     assert_eq!(frame.instance_buffer_writes, 1, "{frame:?}");
     assert_eq!(frame.part_uniform_buffer_writes, 1, "{frame:?}");
     assert_eq!(frame.camera_buffer_writes, 1, "{frame:?}");

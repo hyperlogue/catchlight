@@ -8,11 +8,6 @@ use bevy::render::{
 use crate::extract::{ExtractedCatchlightCamera, ExtractedPuppet};
 use crate::prepare::{CatchlightRenderInner, CatchlightRenderState, ModelGpu, ModelKey};
 
-/// Render system that draws every visible `ExtractedPuppet` onto the camera's
-/// color attachment. Runs in the Core2d render schedule after the built-in main
-/// pass (so puppets composite over bevy sprites/ui) and before post-process.
-/// `ExtractedCatchlightCamera` in the [`ViewQuery`] gates it: a current view
-/// without that marker fails the query and the system is skipped for that view.
 // Invariant: the render-state Mutex is only poisoned on panic, treated as fatal.
 #[allow(clippy::unwrap_used)]
 pub(crate) fn catchlight_2d_pass(
@@ -30,20 +25,12 @@ pub(crate) fn catchlight_2d_pass(
     let state_res = world.resource::<CatchlightRenderState>();
     let mut guard = state_res.inner.lock().unwrap();
 
-    // ExtractedView.clip_from_world is Option: bevy leaves it None
-    // unless a system (TAA, custom projection) populates it. 2D
-    // cameras leave it None and bevy derives the matrix on the fly
-    // from `clip_from_view * view_from_world`. Do the same here so
-    // the puppet doesn't silently render with identity view-proj.
+    // 2D cameras leave clip_from_world None; bevy derives it the same way.
     let view_proj = view
         .clip_from_world
         .unwrap_or_else(|| view.clip_from_view * view.world_from_view.to_matrix().inverse());
 
-    // Size the shared per-format resources to *this* view's target
-    // rather than the first window — a render-to-texture or
-    // second-window camera has its own dimensions. The stencil is
-    // resized below; the render call sizes the composite / snapshot
-    // pools itself from (w, h).
+    // Per view, not per window: render-to-texture cameras have their own size.
     let (w, h) = camera
         .physical_target_size
         .map(|s| (s.x.max(1), s.y.max(1)))
@@ -54,7 +41,6 @@ pub(crate) fn catchlight_2d_pass(
 
     let view_format = target.main_texture_format();
 
-    // Destructure for disjoint borrows on the fields.
     let CatchlightRenderInner {
         gpus,
         puppets,
@@ -80,21 +66,11 @@ pub(crate) fn catchlight_2d_pass(
 
     let encoder = render_context.command_encoder();
     let color_view = target.main_texture_view();
-    // bevy creates ViewTarget main textures with
-    // `CameraMainTextureUsages::default()` = RENDER_ATTACHMENT |
-    // TEXTURE_BINDING | COPY_SRC, so the render call can snapshot
-    // the framebuffer for the dst-in-shader blend modes
-    // (Overlay / ColorBurn / LinearBurn).
+    // bevy's default main-texture usages include COPY_SRC, which the
+    // dst-in-shader blend modes need for framebuffer snapshots.
     let color_texture: &wgpu::Texture = target.main_texture();
 
-    // Deterministic draw order: ascending entity z, so a higher-z
-    // puppet composites in front (bevy 2D convention). `puppets` is
-    // a HashMap, so equal-z puppets need the Entity tie-break or their
-    // order would follow hash iteration order and flicker across
-    // runs. Hidden puppets are skipped, and so is one whose list was not
-    // collected at extract — a cache prepared this frame has not been
-    // collected into yet, so its puppets draw from the next frame on rather
-    // than drawing a list whose slots name another cache's resources.
+    // Entity tie-break: `puppets` is a HashMap, so equal z would flicker.
     let mut order: Vec<(ModelKey, f32, Entity)> = puppets
         .iter()
         .filter_map(|(key, puppet)| {
@@ -107,16 +83,9 @@ pub(crate) fn catchlight_2d_pass(
         .collect();
     order.sort_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.2.cmp(&b.2)));
 
-    // One frame call per renderer, and a renderer holds one model. Every
-    // puppet of a model therefore draws in one `render_into`: the frame's
-    // instance and part-uniform cursors are monotonic across the whole call,
-    // and a second call on the same renderer inside this submit would reset
-    // them and rewrite offsets the first call's draws read.
-    //
-    // So z decides the order **within** a model, and models are ordered by
-    // their backmost puppet. Two models whose puppets interleave in z
-    // therefore do not interleave on screen; cross-model z-interleaving
-    // needs one renderer over both models' slots and is not what this is.
+    // One `render_into` per renderer per submit: a second call would reset
+    // the frame cursors under draws already recorded. So z orders only within
+    // a model; models are ordered by their backmost puppet.
     let mut groups: Vec<(ModelKey, Vec<Entity>)> = Vec::new();
     for (model, _z, entity) in &order {
         match groups.iter_mut().find(|(key, _)| key == model) {
@@ -143,10 +112,6 @@ pub(crate) fn catchlight_2d_pass(
             continue;
         }
 
-        // Per-renderer camera write, out of this frame's token: each view
-        // takes its own slot, so two marked cameras in one submit don't
-        // alias on a shared offset-0 write. `prepare_puppets` renewed the
-        // token this frame; the graph submits after this system.
         gpu.renderer.update_camera(view_proj);
         let ModelGpu {
             renderer,
@@ -170,14 +135,7 @@ pub(crate) fn catchlight_2d_pass(
         }
     }
 
-    // Resolve wgpu-profiler timestamp queries into the same encoder
-    // bevy will submit. Without this, `process_gpu_frame` always
-    // returns None and GPU timing never lands in the overlay. Calling
-    // it per view is safe — resolve_queries only records the queries
-    // added since the last call, so a second CatchlightCamera in the
-    // same frame resolves its own work. The matching once-per-frame
-    // end_gpu_frame runs in `prepare_puppets`, after this encoder has
-    // been submitted.
+    // Safe per view: only queries added since the last resolve are recorded.
     for (key, gpu) in gpus.iter_mut() {
         if key.format == view_format {
             gpu.renderer.resolve_gpu_queries(encoder);

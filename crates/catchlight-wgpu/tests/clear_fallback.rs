@@ -1,8 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! With `Some(clear_color)`, `render_list` must clear the target even
-//! when nothing draws — an empty render list (or one whose draws all
-//! filter out) previously left the previous frame's pixels in place.
+//! With `Some(clear_color)`, `render_list` clears even when nothing draws.
 
 use catchlight_wgpu::{
     create_headless_context, CompositePool, RenderList, StencilTarget, WgpuRenderer,
@@ -38,7 +36,6 @@ fn empty_render_list_still_clears_the_target() {
         let stencil = StencilTarget::new_for_pipelines(&renderer.shared, &renderer.device, W, H);
         let mut composites = CompositePool::new(W, H);
 
-        // Frame 1: green garbage standing in for "the previous frame".
         let mut paint = |renderer: &mut WgpuRenderer, list: &RenderList, color: wgpu::Color| {
             renderer
                 .frame()
@@ -57,7 +54,6 @@ fn empty_render_list_still_clears_the_target() {
                 a: 1.0,
             },
         );
-        // Frame 2: empty list with a red clear must fully replace it.
         paint(
             &mut renderer,
             &empty,

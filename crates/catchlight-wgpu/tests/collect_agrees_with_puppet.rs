@@ -1,13 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! The collector and `Puppet` report the same z and the same opacity.
-//!
-//! `catchlight-cli poses` dumps both for a rig evaluator, and the whole point
-//! of that dump is that it describes the frame the renderer would draw. The z
-//! rule lives on `Puppet` and reaches the collector through `DrawSource`, so
-//! that half cannot drift; opacity is read straight off the node in both
-//! places, which is exactly the kind of agreement that rots silently. This
-//! pins both against what `collect` actually put in the list.
+//! The collector and `Puppet` report the same z and opacity, so
+//! `catchlight-cli poses` describes the frame the renderer draws.
 
 mod common;
 
@@ -15,9 +9,7 @@ use catchlight_core::{Mesh, Model, ModelNodeKind, Puppet};
 use catchlight_wgpu::{collect, create_headless_context, DrawableInfo, WgpuRenderer};
 use common::NO_ADAPTER;
 
-/// Two parts, each two groups deep, with distinct z at every level so a
-/// dropped ancestor shows up as a wrong sum rather than a coincidence, and
-/// distinct opacities so the two drawables cannot be confused.
+/// Distinct z at every level so a dropped ancestor shows as a wrong sum.
 fn nested_model() -> (Model, Vec<&'static str>) {
     let mut build = common::Build::new();
     let tex = build.texture(common::solid_texture(4, 4, [200, 120, 60, 255]));
@@ -61,7 +53,6 @@ fn a_drawables_z_and_opacity_are_the_puppets() {
         .expect("refresh");
     let list = collect(&scene.cache, &scene.puppet);
 
-    // What the puppet says, in the order the collector sorts by.
     let mut expected: Vec<(f32, f32)> = names
         .iter()
         .map(|name| {
@@ -78,9 +69,7 @@ fn a_drawables_z_and_opacity_are_the_puppets() {
         .collect();
     expected.sort_by(|a, b| a.0.total_cmp(&b.0));
 
-    // The sums the tree actually spells out, so a bug that changed both the
-    // rule and this test still fails: root 0 + lower -5 + back 0.5, and
-    // root 0 + upper 2 + front 4.
+    // Literal sums, so a bug changing both rule and test still fails.
     assert_eq!(
         expected,
         vec![(-4.5, 0.75), (6.0, 0.25)],
@@ -100,10 +89,8 @@ fn a_drawables_z_and_opacity_are_the_puppets() {
     assert_eq!(drawn, expected, "collect and Puppet disagree");
 }
 
-/// A composite's opacity is reported the same way, and is *not* multiplied
-/// into the parts under it: the composite renders into its own target and
-/// that target is blitted at its opacity, so folding it in here would apply
-/// it twice.
+/// A composite's opacity is not multiplied into its parts; its blit applies
+/// it.
 #[test]
 fn a_composite_does_not_fold_its_opacity_into_its_children() {
     let (device, queue) = pollster::block_on(create_headless_context()).expect(NO_ADAPTER);
@@ -132,7 +119,7 @@ fn a_composite_does_not_fold_its_opacity_into_its_children() {
     );
     let model = build.model;
     let mut puppet = Puppet::new(&model);
-    // An opacity below 1 keeps the composite from being flattened away.
+    // Below 1 so the composite is not flattened.
     let composite_idx = puppet
         .iter()
         .find(|(_, node)| node.name == "group")

@@ -1,26 +1,8 @@
-//! The one headless render path: an offscreen target, the pools a frame
-//! needs, a camera and a readback, held together and reused across frames.
+//! The one headless render path: [`RenderContext`].
 //!
-//! Everything that renders without a window goes through [`RenderContext`]:
-//! `catchlight-cli`'s `render`, and the editor server's
-//! preview. That is the point of it being one type. A second
-//! hand-rolled copy of "make a target, size the stencil and the two pools,
-//! set the camera, submit, read back" is exactly how two callers drift apart
-//! on pool sizing, on the clear colour, or on what the bytes coming back
-//! mean.
-//!
-//! [`RenderContext::render_rgba`] is that whole sequence in one call, and
-//! [`RenderContext::resize`] is a no-op when the size already matches, so a
-//! caller previewing the same size over and over rebuilds nothing.
-//!
-//! **The readback is premultiplied, linear under sRGB encoding.** The
-//! renderer composites into a premultiplied-alpha `Rgba8UnormSrgb` target,
-//! which blends in linear and encodes on store, and `render_rgba` hands back
-//! what the target holds, untouched. A caller writing a straight-alpha PNG of
-//! a frame with any transparency in it has to unpremultiply first, and in
-//! linear: `catchlight_core::texture::unpremultiply_linear_from_srgb_inplace`,
-//! not the byte-space inverse beside it. One clearing to an opaque colour has
-//! nothing to undo, because alpha is 1 everywhere.
+//! The readback is premultiplied alpha, sRGB-encoded linear. Unpremultiply in
+//! linear (`catchlight_core::texture::unpremultiply_linear_from_srgb_inplace`)
+//! before writing straight-alpha output.
 
 use catchlight_core::{NodeKind, Puppet, Vec2};
 
@@ -29,12 +11,8 @@ use crate::{
     FramebufferSnapshotPool, RenderList, RenderStats, StencilTarget, WgpuRenderer,
 };
 
-/// What an orthographic frame looks at: `height` world units tall, centred on
-/// `center`, with the width following from the target's aspect.
-///
-/// The wire has a camera of the same shape, but this is not it: nothing in
-/// this crate may depend on the editor protocol, so the two are converted at
-/// the edge.
+/// `height` is in world units; width follows the target's aspect. Distinct
+/// from the wire camera because this crate must not depend on the protocol.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Framing {
     pub center: glam::Vec2,
@@ -42,7 +20,6 @@ pub struct Framing {
 }
 
 impl Framing {
-    /// `height` world units tall, centred on the origin.
     pub fn centered(height: f32) -> Self {
         Self {
             center: glam::Vec2::ZERO,
@@ -101,10 +78,7 @@ impl RenderContext {
         })
     }
 
-    /// Re-make the target, its view, the stencil and the two pools for a new
-    /// size. A no-op when the size already matches, so re-rendering at one
-    /// size costs nothing. Zero in either axis is clamped to one, which is
-    /// what wgpu will accept.
+    /// A no-op when the size already matches. Zero is clamped to one.
     pub fn resize(&mut self, width: u32, height: u32) {
         let width = width.max(1);
         let height = height.max(1);
@@ -132,10 +106,7 @@ impl RenderContext {
         self.height = height;
     }
 
-    /// Resize to `width` x `height`, frame `render_list` with `camera`, draw
-    /// it over `clear` and read the target back as tightly packed RGBA8.
-    ///
-    /// The bytes are premultiplied; see this module's doc.
+    /// Returns tightly packed premultiplied RGBA8.
     pub fn render_rgba(
         &mut self,
         render_list: &RenderList,
@@ -163,8 +134,6 @@ impl RenderContext {
         self.render_many(std::slice::from_ref(&render_list), clear)
     }
 
-    /// One frame, one submit, several puppets of the one model this context's
-    /// renderer holds — each list drawing from the deform set it carries.
     pub fn render_many(
         &mut self,
         render_lists: &[&RenderList],
@@ -220,9 +189,8 @@ fn create_target(
     })
 }
 
-/// Shift every part's vertices by `shift` through the puppet's scratch
-/// deform, then recombine — the end-to-end "a deform reaches the shader"
-/// check, with no param machinery in the way.
+/// Shift every part's vertices through the puppet's scratch deform, bypassing
+/// params.
 pub fn apply_uniform_scratch_deform(puppet: &mut Puppet, shift: Vec2) {
     let parts: Vec<(catchlight_core::NodeIdx, usize)> = puppet
         .iter()

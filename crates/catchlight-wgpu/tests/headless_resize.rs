@@ -1,12 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! [`RenderContext::render_rgba`] across a size change.
-//!
-//! The context caches everything a frame draws into — target, stencil,
-//! composite and snapshot pools — so rendering at a second size has to rebuild
-//! all four together. Miss one and the frame either draws into a target of the
-//! old size or reads back a buffer that does not match it, which is why this
-//! asserts on the byte counts rather than on any pixel.
+//! [`RenderContext::render_rgba`] across a size change must rebuild target,
+//! stencil and both pools together; asserted on byte counts.
 
 mod common;
 
@@ -64,8 +59,6 @@ fn rendering_at_a_second_size_returns_a_buffer_for_that_size() {
         .expect("refresh");
     let list = collect(&cache, &puppet);
 
-    // The size it was built at, then a larger one, then a smaller one: growing
-    // and shrinking take the same path but not the same allocations.
     for (width, height) in [(64, 64), (128, 96), (32, 48)] {
         let pixels = ctx
             .render_rgba(&list, CAMERA, width, height, Some(CLEAR))
@@ -79,8 +72,7 @@ fn rendering_at_a_second_size_returns_a_buffer_for_that_size() {
     }
 }
 
-/// A zero in either axis is clamped rather than handed to wgpu, which would
-/// reject it.
+/// wgpu rejects zero sizes, so they are clamped.
 #[test]
 fn a_zero_size_is_clamped_to_one_pixel() {
     let (device, queue) = pollster::block_on(create_headless_context()).expect(NO_ADAPTER);

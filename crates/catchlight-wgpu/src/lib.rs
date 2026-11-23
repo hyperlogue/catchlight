@@ -1,20 +1,8 @@
 //! The wgpu rendering backend: it turns a posed [`catchlight_core::Puppet`]
 //! into pixels.
 //!
-//! Three pieces, in the order a frame uses them. A [`RenderCache`] holds one
-//! model's GPU state, uploaded once by `prepare` and kept in step with
-//! `refresh`. [`collect`] flattens one posed puppet into a [`RenderList`],
-//! which names cache slots rather than Ids. [`WgpuRenderer`] draws those
-//! lists, and [`RenderContext`] is the same thing with a target and a
-//! readback attached for anything rendering without a window.
-//!
-//! **One cache per model, serving every puppet of it.** A cache's slots name
-//! GPU state inside the renderer that prepared it, so a renderer holds one
-//! cache and no more; two models are two `(renderer, cache)` pairs over
-//! shared pipelines. `crates/catchlight-wgpu/src/render_cache.rs` states the
-//! rule and what `prepare` owns against `refresh`.
-//!
-//! # One puppet, headless
+//! A renderer holds exactly one [`RenderCache`]; that cache serves every
+//! puppet of its model.
 //!
 //! ```no_run
 //! use catchlight_core::{load_model, ModelFormat, Pose, Puppet};
@@ -23,16 +11,11 @@
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let bytes = std::fs::read("model.clm")?;
 //! let model = load_model(&bytes, ModelFormat::Clm)?;
-//!
-//! // The device and the target. Both are expensive; build them once and
-//! // keep them for as long as you are drawing this model.
 //! let mut ctx = pollster::block_on(RenderContext::new(960, 1600))?;
 //! let mut cache = RenderCache::prepare(&mut ctx.renderer, &model, PrepareOptions::default())?;
 //! let mut puppet = Puppet::new(&model);
 //!
-//! // Per frame: pose, evaluate, push what moved, flatten, draw.
-//! let pose = Pose::new();
-//! puppet.apply_pose(&pose);
+//! puppet.apply_pose(&Pose::new());
 //! puppet.tick(&model, 1.0 / 60.0);
 //! cache.refresh(&mut ctx.renderer, &model, &puppet)?;
 //! let list = collect(&cache, &puppet);
@@ -41,16 +24,6 @@
 //! # Ok(())
 //! # }
 //! ```
-//!
-//! `render_rgba` resizes when the size changes and reads the target back; a
-//! caller drawing to a window takes `WgpuRenderer::frame` and renders against
-//! its own surface view instead, never reading back. Several puppets of the
-//! one model share the cache: tick each, `refresh` each, `collect` each, and
-//! hand the lists to `RenderContext::render_many` for one submit.
-//!
-//! For the shape a host engine wants — who owns the model, the puppet and the
-//! cache across frames, and how they hang off entities — see
-//! `crates/catchlight-bevy`.
 
 pub mod collect;
 pub mod headless;
@@ -66,19 +39,14 @@ pub fn create_orthographic_camera(camera_height: f32, aspect: f32) -> glam::Mat4
     create_orthographic_camera_at(camera_height, aspect, glam::Vec2::ZERO)
 }
 
-/// Orthographic view-projection framing `camera_height` world units around
-/// `center`.
-///
-/// **The camera holds no axis flip.** This is a textbook Y-up ortho;
-/// catchlight world space is Y-up end to end.
+/// `camera_height` is in world units. World space is Y-up and the camera
+/// holds no axis flip.
 pub fn create_orthographic_camera_at(
     camera_height: f32,
     aspect: f32,
     center: glam::Vec2,
 ) -> glam::Mat4 {
     let camera_width = camera_height * aspect;
-    // catchlight world space is Y-up. A textbook Y-up ortho (bottom < top)
-    // maps world +Y to NDC +Y; no axis flip lives in the camera.
     glam::Mat4::orthographic_rh(
         center.x - camera_width / 2.0,
         center.x + camera_width / 2.0,
@@ -108,8 +76,7 @@ impl SurfaceContext {
     }
 
     pub fn acquire(&self) -> Option<(wgpu::SurfaceTexture, wgpu::TextureView)> {
-        // wgpu 29 returns an enum instead of a Result; present the texture for
-        // the good/suboptimal cases, otherwise signal the caller to re-acquire.
+        // `None` tells the caller to re-acquire.
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t)
             | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
@@ -123,11 +90,8 @@ impl SurfaceContext {
     }
 }
 
-/// Build a device/queue + SurfaceContext for the given surface. Picks
-/// an sRGB surface format so the GPU encodes linear→sRGB on write. Textures upload as
-/// `Rgba8UnormSrgb` and the fragment shader operates in linear space;
-/// a non-sRGB surface would skip the gamma encode on present and the
-/// result looks washed out / dark.
+/// Renders through an sRGB view: shaders work in linear space, so a
+/// non-sRGB target would skip the gamma encode on present.
 pub async fn create_surface_context(
     instance: &wgpu::Instance,
     surface: wgpu::Surface<'static>,
@@ -144,10 +108,7 @@ pub async fn create_surface_context(
 
     let optional_features = wgpu::Features::ADDRESS_MODE_CLAMP_TO_BORDER;
     let required_features = adapter.features() & optional_features;
-    // Mobile Safari's WebGPU has no compute support and reports
-    // `max_compute_workgroups_per_dimension = 0`; `Limits::default()`
-    // demands 65535 and device creation fails. Catchlight is pure
-    // render, so just take whatever the adapter actually offers.
+    // Mobile Safari reports no compute limits, so `Limits::default()` fails.
     let required_limits = adapter.limits();
     let (device, queue) = adapter
         .request_device(&wgpu::DeviceDescriptor {
@@ -164,15 +125,8 @@ pub async fn create_surface_context(
     Ok((device, queue, context))
 }
 
-/// Configure `surface` for a device that **already exists**, with the same
-/// format and compositing choices [`create_surface_context`] makes.
-///
-/// A browser tab holds one device and as many canvases as it has viewports, so
-/// the second surface has nothing left to request: asking for another device
-/// would give each canvas its own GPU-side world and no texture could be
-/// shared between them. This is that path, and it is synchronous — the two
-/// promises WebGPU has are the adapter and the device, and both are already
-/// resolved by the time a canvas appears.
+/// For a second canvas on an existing device; a new device per canvas could
+/// not share textures.
 pub fn configure_surface(
     adapter: &wgpu::Adapter,
     device: &wgpu::Device,
@@ -181,14 +135,8 @@ pub fn configure_surface(
     height: u32,
 ) -> SurfaceContext {
     let caps = surface.get_capabilities(adapter);
-    // WebGPU canvas contexts only advertise the non-sRGB swapchain
-    // formats (Bgra8Unorm, Rgba8Unorm, Rgba16Float). To get the GPU
-    // to encode linear→sRGB on write — which is what the rest of our
-    // pipeline assumes (textures upload as Rgba8UnormSrgb, fragment
-    // shader works in linear) — we keep the swapchain in its native
-    // non-sRGB format and render through an sRGB view. WebGL backends
-    // typically expose the sRGB-suffixed variant directly, in which
-    // case we use it for both surface and view.
+    // WebGPU canvases advertise only non-sRGB formats, so render through an
+    // sRGB view of the native format.
     let (surface_format, render_format, view_formats) =
         if let Some(&fmt) = caps.formats.iter().find(|f| f.is_srgb()) {
             (fmt, fmt, Vec::<wgpu::TextureFormat>::new())
@@ -202,12 +150,8 @@ pub fn configure_surface(
             (base, srgb, vec![srgb])
         };
 
-    // Prefer Opaque compositing: the frame clear writes alpha 1.0, so the
-    // canvas never needs per-pixel alpha blending against the page. Opaque
-    // lets the browser compositor skip that blend. Fall back to whatever
-    // the surface advertises first if Opaque isn't offered. A future
-    // transparent-canvas caller should make this a configurable option
-    // rather than forcing PreMultiplied here.
+    // The frame clear writes alpha 1.0, so Opaque lets the compositor skip
+    // blending against the page.
     let alpha_mode = caps
         .alpha_modes
         .iter()
@@ -235,24 +179,9 @@ pub fn configure_surface(
     }
 }
 
-/// Device and queue for headless rendering (tests, the visual baselines, the
-/// editor server's warm renderer).
-///
-/// Requests `Backends::PRIMARY` — deliberately not `all()`, because the
-/// `webgl` feature unifies `wgc/gles` across the workspace and GL then tries
-/// to init EGL and panics headless. `create_headless_context_ext` takes its
-/// backend set from the caller, but everything below applies to it too.
-///
-/// `HighPerformance` so that when the Vulkan loader sees both a real driver
-/// and a CPU one, the hardware adapter wins; a CPU adapter (mesa's lavapipe)
-/// is only the fallback on a box with no GPU. In the nix dev shell mesa is a
-/// build input and its `share/` is on `XDG_DATA_DIRS`, which is where the
-/// loader looks for ICDs, so lavapipe is found with no `VK_ICD_FILENAMES` and
-/// plain `cargo test --workspace` works headless.
-///
-/// If the loader finds no ICD at all, `request_adapter` fails and every GPU
-/// test panics with `NotFound { active_backends: Backends(0x0), .. }`;
-/// `vulkaninfo --summary` shows what the loader actually sees.
+/// `Backends::PRIMARY`, not `all()`: the workspace-unified `webgl` feature
+/// enables GL, which panics initializing EGL headless. `HighPerformance` makes
+/// a hardware adapter win over lavapipe when both are present.
 pub async fn create_headless_context(
 ) -> Result<(wgpu::Device, wgpu::Queue), Box<dyn std::error::Error>> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
@@ -288,15 +217,8 @@ pub async fn create_headless_context(
     Ok((device, queue))
 }
 
-/// Headless context for GPU benchmarking: select the backend explicitly
-/// and request `TIMESTAMP_QUERY` + `TIMESTAMP_QUERY_INSIDE_ENCODERS`
-/// (when the adapter supports them) so the renderer's GPU profiler is
-/// active. The renderer profiles with `begin_query(encoder)` — an
-/// encoder-scope timer — which `wgpu_profiler` only opens under
-/// `INSIDE_ENCODERS`; `TIMESTAMP_QUERY` alone leaves it silently
-/// inactive. Returns the adapter too, for `new_autodetect` and backend
-/// reporting. Kept separate from `create_headless_context` so the
-/// deterministic render/test path is unaffected by the extra features.
+/// Benchmarking variant. The profiler uses encoder-scope queries, which
+/// `wgpu_profiler` opens only under `TIMESTAMP_QUERY_INSIDE_ENCODERS`.
 pub async fn create_headless_context_ext(
     backends: wgpu::Backends,
 ) -> Result<(wgpu::Adapter, wgpu::Device, wgpu::Queue), Box<dyn std::error::Error>> {
@@ -451,8 +373,6 @@ pub async fn read_texture_to_rgba(
     buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
         let _ = sender.send(result);
     });
-    // Native drives the mapping with a blocking poll; on the web the browser
-    // resolves it while the future is parked.
     #[cfg(not(target_arch = "wasm32"))]
     device.poll(wgpu::PollType::Wait {
         submission_index: None,

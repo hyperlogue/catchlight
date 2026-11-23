@@ -1,19 +1,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! End-to-end blend-math tests. Overlay / ColorBurn / LinearBurn are
-//! dst-in-shader modes (the shader reads the framebuffer snapshot and
-//! computes the blend per-channel). Inverse is *not* — it's a plain
-//! fixed-function blend (`OneMinusDst` / `OneMinusSrcAlpha`), included here
-//! only as the fixed-function counter-case.
-//! Each test builds a synthetic single-Part model on a known
-//! background, runs it through `Frame::render_ext`, and checks a center
-//! pixel against the math computed in linear color space (matching the
-//! shader, which samples sRGB textures as linear).
-//!
-//! The centre pixel is what every assertion reads: alpha-cropping surrounds
-//! each texture with a transparent skirt and remaps the UVs onto the crop, so
-//! the quad's own edge fragments straddle the boundary while its middle
-//! samples the authored texel exactly.
+//! End-to-end blend-math tests in linear color space. Overlay / ColorBurn /
+//! LinearBurn are dst-in-shader; Inverse is the fixed-function counter-case.
+//! Assertions read the centre pixel: alpha-cropping makes the quad's edge
+//! fragments straddle the crop boundary.
 
 mod common;
 
@@ -46,9 +36,6 @@ fn linear_to_srgb_u8(c: f32) -> u8 {
 }
 
 fn make_model(blend: BlendMode, src_rgba: [u8; 4]) -> Model {
-    // One Part covering the full viewport. The mesh is a quad in world
-    // units that matches the orthographic camera below; uvs span [0,1]
-    // so the Part samples its solid-color texture at every fragment.
     let mut build = common::Build::new();
     let tex = build.texture(common::solid_texture(4, 4, src_rgba));
     let root = build.root();
@@ -62,8 +49,6 @@ async fn render_blend(blend: BlendMode, bg_rgba_u8: [u8; 4], src_rgba_u8: [u8; 4
     render_model(make_model(blend, src_rgba_u8), bg_rgba_u8).await
 }
 
-/// Render any model through `Frame::render_ext` (snapshot pool wired)
-/// onto a solid background and read back the pixels.
 async fn render_model(model: Model, bg_rgba_u8: [u8; 4]) -> Vec<u8> {
     let (device, queue) = create_headless_context().await.expect(NO_ADAPTER);
     let format = wgpu::TextureFormat::Rgba8UnormSrgb;
@@ -86,8 +71,6 @@ async fn render_model(model: Model, bg_rgba_u8: [u8; 4]) -> Vec<u8> {
     let mut renderer = WgpuRenderer::new(device, queue, format).await;
     let mut scene = common::Scene::new(&mut renderer, model);
 
-    // Orthographic camera matching the quad's [-1,1] world bounds, so
-    // the part covers the entire framebuffer.
     let view_proj = glam::Mat4::orthographic_rh(-1.0, 1.0, 1.0, -1.0, -1000.0, 1000.0);
     renderer.update_camera(view_proj);
 
@@ -97,12 +80,7 @@ async fn render_model(model: Model, bg_rgba_u8: [u8; 4]) -> Vec<u8> {
     let mut composites = catchlight_wgpu::CompositePool::new(W, H);
     let mut snapshots = FramebufferSnapshotPool::new(W, H);
 
-    // wgpu/WebGPU clear color values are interpreted as **linear-space**
-    // floats: when the attachment is sRGB the value is sRGB-encoded on
-    // store. So the bg_rgba_u8 byte triple — which is the desired sRGB
-    // pixel — must first be sRGB→linear converted before being passed
-    // as the clear color (otherwise wgpu re-encodes a value already in
-    // sRGB space and the final byte is brighter than intended).
+    // Clear colors are linear floats, sRGB-encoded on store.
     let clear = wgpu::Color {
         r: srgb_to_linear(bg_rgba_u8[0] as f32 / 255.0) as f64,
         g: srgb_to_linear(bg_rgba_u8[1] as f32 / 255.0) as f64,
@@ -130,10 +108,6 @@ async fn render_model(model: Model, bg_rgba_u8: [u8; 4]) -> Vec<u8> {
         .expect("readback")
 }
 
-/// Pad (gray, x in [-0.5, 0.5]) behind a full-viewport ColorBurn quad,
-/// both children of one Normal Composite. Higher z_order draws last
-/// (in front), so the burn part blends against the pad where they overlap
-/// and against the composite's transparent clear elsewhere.
 fn make_nested_burn_model(pad_rgba: [u8; 4], src_rgba: [u8; 4]) -> Model {
     let mut build = common::Build::new();
     let pad_tex = build.texture(common::solid_texture(4, 4, pad_rgba));
@@ -176,8 +150,7 @@ fn assert_pixel_close(actual: [u8; 4], expected_linear: [f32; 3], label: &str) {
         linear_to_srgb_u8(expected_linear[1]),
         linear_to_srgb_u8(expected_linear[2]),
     ];
-    // Allow ±2 LSB for precision drift through u8 round-trips and the
-    // shader's per-channel math.
+    // ±2 LSB for u8 round-trips and shader precision.
     let ok = approx_eq(actual[0], exp[0], 2)
         && approx_eq(actual[1], exp[1], 2)
         && approx_eq(actual[2], exp[2], 2);
@@ -190,9 +163,7 @@ fn assert_pixel_close(actual: [u8; 4], expected_linear: [f32; 3], label: &str) {
 
 #[test]
 fn overlay_blend_runs_dst_in_shader_math() {
-    // Background gray (sRGB 128/255 ≈ 0.502). Src red (sRGB 204/255 ≈
-    // 0.8). Overlay with d ≥ 0.5 takes the high branch:
-    //   out = 1 - 2*(1-s)*(1-d), per channel.
+    // Overlay with d ≥ 0.5: out = 1 - 2*(1-s)*(1-d).
     let bg = [128u8, 128, 128, 255];
     let src = [204u8, 76, 76, 255]; // sRGB ~ (0.8, 0.3, 0.3)
 
@@ -224,8 +195,7 @@ fn overlay_blend_runs_dst_in_shader_math() {
 
 #[test]
 fn linear_burn_blend_runs_dst_in_shader_math() {
-    // LinearBurn: src + dst - 1, clamped. Pick values where the result
-    // doesn't underflow to zero.
+    // Values chosen so the result doesn't clamp to zero.
     let bg = [200u8, 200, 200, 255];
     let src = [200u8, 100, 200, 255];
 
@@ -252,14 +222,9 @@ fn linear_burn_blend_runs_dst_in_shader_math() {
 
 #[test]
 fn inverse_blend_runs_fixed_function_math() {
-    // Inverse is fixed-function, NOT dst-in-shader: color and alpha both
-    // blend src*OneMinusDst + dst*OneMinusSrcAlpha.
-    // For an opaque part (src.a=1) over an opaque bg (dst.a=1):
-    //   color = src*(1-dst) + dst*(1-1) = src*(1-dst)
-    //   alpha = 1*(1-1) + 1*(1-1)       = 0
-    // The alpha=0 is the correct result, not a bug — it's the
-    // same OneMinusSrcAlpha family as the masking blends (AGENTS.md), here
-    // with color and alpha agreeing on factors.
+    // Inverse is fixed-function: src*OneMinusDst + dst*OneMinusSrcAlpha.
+    // Opaque over opaque gives color = src*(1-dst) and alpha = 0, which is
+    // correct.
     let bg = [100u8, 100, 100, 255];
     let src = [50u8, 200, 100, 255];
 
@@ -290,12 +255,8 @@ fn inverse_blend_runs_fixed_function_math() {
 
 #[test]
 fn color_burn_inside_composite_blends_against_composite_content() {
-    // A dst-in-shader Part nested in a Composite must blend against the
-    // composite's own transparent-cleared buffer, never against the
-    // framebuffer behind the composite.
-    // Over the pad the ColorBurn math applies; past the pad the
-    // composite is transparent, so KHR degrades to plain src — not
-    // colorburn(src, background).
+    // A dst-in-shader Part in a Composite blends against the composite's
+    // transparent-cleared buffer, so past the pad KHR degrades to plain src.
     let bg = [100u8, 100, 200, 255];
     let pad = [200u8, 200, 200, 255];
     let src = [230u8, 180, 150, 255];
@@ -310,18 +271,12 @@ fn color_burn_inside_composite_blends_against_composite_content() {
     ];
     let d = srgb_to_linear(200.0 / 255.0);
 
-    // Center pixel sits over the pad: 1 - (1 - d) / s, per channel
-    // (r and g land mid-range; b clamps to 0).
     let mut blend = [0.0f32; 3];
     for c in 0..3 {
         blend[c] = (1.0 - (1.0 - d) / s[c]).clamp(0.0, 1.0);
     }
     assert_pixel_close(center_pixel(&pixels), blend, "nested ColorBurn over pad");
 
-    // x=6 (world x = 0.625) is past the pad: the composite holds plain
-    // src there, and the Normal composite blit lays it over the
-    // background unchanged. Matching the raw src color pins that the
-    // child blended against the composite buffer, not the main view.
     assert_pixel_close(
         pixel_at(&pixels, 6, (H / 2) as usize),
         s,
@@ -331,20 +286,13 @@ fn color_burn_inside_composite_blends_against_composite_content() {
 
 #[test]
 fn overlay_with_normal_fallback_differs_from_overlay_with_snapshot() {
-    // Sanity check that the dst-in-shader path actually does something
-    // different from the OVER-blend approximation. With OVER, an
-    // opaque red Part draws solid red over the gray bg; with Overlay,
-    // the result is very different. Bypass the snapshot-pool path by
-    // using `render_list` (no main_color_texture) and compare.
     let bg = [128u8, 128, 128, 255];
     let src = [204u8, 76, 76, 255];
 
     let with_snapshot = pollster::block_on(render_blend(BlendMode::Overlay, bg, src));
     let with_snapshot_center = center_pixel(&with_snapshot);
 
-    // Re-render via the legacy `render_list` (no snapshot pool) — that
-    // path falls back to Normal OVER blend for Overlay so the part
-    // simply paints its solid color.
+    // `render_list` without a snapshot pool falls back to OVER for Overlay.
     let model = make_model(BlendMode::Overlay, src);
     let fallback_center = pollster::block_on(async {
         let (device, queue) = create_headless_context().await.expect(NO_ADAPTER);
@@ -413,9 +361,6 @@ fn overlay_with_normal_fallback_differs_from_overlay_with_snapshot() {
         center_pixel(&buf)
     });
 
-    // The two paths must produce visibly different center pixels: the
-    // dst-in-shader Overlay differs from the fallback OVER blend by at
-    // least one channel beyond rounding noise.
     let max_diff = (0..3)
         .map(|c| (with_snapshot_center[c] as i32 - fallback_center[c] as i32).abs())
         .max()

@@ -1,18 +1,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! What the collector makes of a model's shape: which drawables it emits,
-//! where it routes them, in what order, and which it drops.
+//! What the collector makes of a model's shape.
 //!
-//! These ran as unit tests over the legacy draw source until it was deleted.
-//! They need a `RenderCache` now, so they are integration tests on the
-//! headless context — which is the better place for them anyway: they exercise
-//! the draw source the product actually collects through, and the slot
-//! numbering that goes with it.
-//!
-//! Two numberings appear in a [`RenderList`] and they are not the same:
-//! a **part** is named by its dense mesh slot, a **composite** by its node
-//! slot. Every assertion here goes through `mesh_slot` / `node_slot` rather
-//! than a literal, because a literal would encode that confusion.
+//! A part is named by its mesh slot and a composite by its node slot; go
+//! through `mesh_slot` / `node_slot` rather than literals.
 
 mod common;
 
@@ -32,7 +23,6 @@ async fn renderer() -> WgpuRenderer {
     WgpuRenderer::new(device, queue, wgpu::TextureFormat::Rgba8UnormSrgb).await
 }
 
-/// A model, its puppet and its cache, with one frame already collected.
 fn framed(model: Model) -> (Scene, RenderList) {
     pollster::block_on(async {
         let mut renderer = renderer().await;
@@ -53,7 +43,6 @@ fn mesh_slot(scene: &Scene, id: &NodeId) -> u32 {
         .expect("the node's mesh uploaded")
 }
 
-/// The parts of a drawable list, by mesh slot, in list order.
 fn parts(drawables: &[DrawableInfo]) -> Vec<u32> {
     drawables
         .iter()
@@ -64,7 +53,6 @@ fn parts(drawables: &[DrawableInfo]) -> Vec<u32> {
         .collect()
 }
 
-/// The composites of a drawable list, by node slot, in list order.
 fn composites(drawables: &[DrawableInfo]) -> Vec<u32> {
     drawables
         .iter()
@@ -75,7 +63,6 @@ fn composites(drawables: &[DrawableInfo]) -> Vec<u32> {
         .collect()
 }
 
-/// Every composite drawable in the list, wherever it is routed.
 fn all_composites(list: &RenderList) -> Vec<u32> {
     composites(&list.root_drawables)
         .into_iter()
@@ -83,7 +70,6 @@ fn all_composites(list: &RenderList) -> Vec<u32> {
         .collect()
 }
 
-/// A composite under `parent`, with the defaults a new one has.
 fn composite(build: &mut Build, parent: &NodeId, name: &str, z_order: f32) -> NodeId {
     build.node(
         parent,
@@ -93,7 +79,6 @@ fn composite(build: &mut Build, parent: &NodeId, name: &str, z_order: f32) -> No
     )
 }
 
-/// A textured unit quad under `parent`.
 fn part(
     build: &mut Build,
     parent: &NodeId,
@@ -158,15 +143,10 @@ fn a_part_mask_source_is_collected_with_its_mode() {
         "got {:?}",
         mask_sources[0],
     );
-    // The source part, the composite's one mask source, and the content part.
     assert_eq!(list.total_instance_count(), 3);
 }
 
-/// A composite used as a mask source is flattened into the parts that draw its
-/// shape, kept under its own slot with the composite's own opacity and
-/// threshold. A Model refuses to *author* a composite mask source
-/// (`mask_add` takes a part), so the case comes from a file — which is where
-/// it comes from in production too.
+/// A Model refuses to author a composite mask source, so it comes from a file.
 #[test]
 fn a_composite_mask_source_keeps_its_descendant_parts() {
     let path =
@@ -196,9 +176,7 @@ fn a_composite_mask_source_keeps_its_descendant_parts() {
 
     assert_eq!(data.opacity, opacity, "the composite's own opacity");
     assert_eq!(data.mask_threshold, threshold);
-    // Compared as a set: mask sources all stencil into one buffer, so the
-    // collector never sorts them and their order is the descent's, not a
-    // promise.
+    // Mask sources stencil into one buffer and are never sorted.
     let mut shapes: Vec<u32> = data.parts.iter().map(|p| p.mesh_id).collect();
     shapes.sort_unstable();
     let mut expected = vec![mesh_slot(&scene, &left), mesh_slot(&scene, &center)];
@@ -209,21 +187,11 @@ fn a_composite_mask_source_keeps_its_descendant_parts() {
     );
 }
 
-/// A pass-through Composite (Normal/opaque/identity/no-mask, all-Normal
-/// children, no nested Composite) inside another Composite is flattened: its
-/// Parts join the enclosing composite's children, interleaved by cumulative z,
-/// and it emits no Composite drawable of its own. This lets a Part it holds
-/// sort *behind* a more-positive-z Part of the enclosing composite — the
-/// eyelash-behind-hair-bangs case. Without flattening the inner composite
-/// hoists to root and paints on top of the bangs.
 #[test]
 fn passthrough_nested_composite_flattens_into_enclosing() {
     let mut build = Build::new();
     let tex = one_texture(&mut build);
     let root = build.root();
-    // Outer isolates (it is a root composite). A direct Part at z=10 draws in
-    // front; the nested pass-through composite holds a Part at z=0 that must
-    // sort behind it.
     let outer = composite(&mut build, &root, "outer", 0.0);
     let front = part(&mut build, &outer, "front", 10.0, &tex, |_| {});
     let inner = composite(&mut build, &outer, "inner", 0.0);
@@ -266,14 +234,6 @@ fn drawable_order_is_low_to_high_and_stable_for_equal_z() {
     );
 }
 
-/// An inner Composite that isolates something — here a Multiply child, which
-/// reads the destination — is NOT flattened: it keeps its own drawable so the
-/// child blends against the isolated buffer, not the enclosing composite's
-/// accumulated content. That drawable belongs to the *enclosing* composite,
-/// not to the root: the renderer blits the inner's slot into the outer's, so
-/// the outer's opacity/tint/blend/mask cover it and it z-sorts among the
-/// outer's children. Escaping to `root_drawables` would render it straight to
-/// the framebuffer at root z.
 #[test]
 fn isolating_nested_composite_is_not_flattened() {
     let mut build = Build::new();
@@ -309,9 +269,6 @@ fn isolating_nested_composite_is_not_flattened() {
     );
 }
 
-/// Opacity 0 is a no-op for every blend mode except Darken
-/// (BlendOperation::Min ignores blend factors, so a zero-alpha src still
-/// darkens), so the collector culls all but Darken.
 #[test]
 fn opacity_zero_drawables_are_culled_except_darken() {
     let mut build = Build::new();
@@ -335,14 +292,7 @@ fn opacity_zero_drawables_are_culled_except_darken() {
     assert!(drawn.contains(&mesh_slot(&scene, &visible)));
 }
 
-/// The cached structural pass-through verdict must be re-evaluated when the
-/// model grows. A collector reused across frames caches "inner is a
-/// pass-through group" on the first frame; adding a Multiply Part under
-/// `inner` makes it genuinely isolating, and the second frame must stop
-/// flattening it.
-///
-/// The cache's own collector is what carries the memo across frames, so this
-/// goes through `collect_into` rather than the allocating `collect`.
+/// The structural pass-through memo must be invalidated when the tree grows.
 #[test]
 fn growing_a_composite_re_evaluates_the_passthrough_verdict() {
     let mut build = Build::new();
@@ -371,7 +321,6 @@ fn growing_a_composite_re_evaluates_the_passthrough_verdict() {
             "inner starts as a pass-through group and flattens into outer",
         );
 
-        // Grow the tree: a Multiply Part under inner makes it isolating.
         let mut multiply = ModelPart::new(common::quad(1.0, 1.0));
         multiply.blend_mode = BlendMode::Multiply;
         let added = scene
@@ -402,8 +351,6 @@ fn growing_a_composite_re_evaluates_the_passthrough_verdict() {
     });
 }
 
-/// The same verdict has to follow a composite's blend mode and masks, which an
-/// author changes without adding or removing a node.
 #[test]
 fn editing_a_composites_blend_or_masks_re_routes_it() {
     let mut build = Build::new();
@@ -459,8 +406,6 @@ fn editing_a_composites_blend_or_masks_re_routes_it() {
     });
 }
 
-/// The allocating `collect` and the cache's `collect_into` must agree; the
-/// difference between them is only who owns the buffers.
 #[test]
 fn collect_and_collect_into_produce_the_same_list() {
     let mut build = Build::new();
@@ -498,8 +443,6 @@ fn collect_and_collect_into_produce_the_same_list() {
     });
 }
 
-/// A prepared cache is not a posed one: nothing here should need a renderer to
-/// answer "which mesh slot is this node's".
 #[test]
 fn a_node_without_a_mesh_has_no_mesh_slot() {
     let mut build = Build::new();

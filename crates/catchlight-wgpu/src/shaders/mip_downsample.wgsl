@@ -1,22 +1,9 @@
-// Mip generation: one full-screen triangle per level, averaging the 2x2
-// block of the level above.
-//
-// The four texels are fetched explicitly rather than gathered with one
-// bilinear tap. A bilinear tap only coincides with the box average when
-// the parent's dimensions are even; textures here are alpha-cropped to
-// arbitrary sizes, and `downsample_box_filter` handles an odd dimension by
-// clamping the out-of-range column or row to the edge.
-//
-// The averaging lands in linear space for free: the texture is
-// `Rgba8UnormSrgb`, so `textureLoad` decodes and the ROP re-encodes on
-// write. Averaging gamma-encoded bytes would bias minified texels dark.
-// Alpha is not gamma-coded in sRGB formats and passes through both ends
-// untouched, matching the CPU path's direct average.
+// Four explicit texel fetches, not one bilinear tap: alpha-cropped textures
+// have odd sizes, where a bilinear tap is not the box average. The
+// `Rgba8UnormSrgb` format makes the average linear.
 
 @vertex
 fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
-    // One oversized triangle rather than two quad triangles: no seam along
-    // the diagonal and one fewer vertex.
     let corner = vec2<f32>(f32((index << 1u) & 2u), f32(index & 2u));
     return vec4<f32>(corner * 2.0 - 1.0, 0.0, 1.0);
 }

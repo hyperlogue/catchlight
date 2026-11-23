@@ -9,53 +9,23 @@ use crate::components::{CatchlightCamera, CatchlightPuppet};
 use crate::plugin::CatchlightSettings;
 use crate::prepare::{CatchlightRenderInner, CatchlightRenderState, PuppetKey};
 
-/// Render-world half of a `CatchlightPuppet`, retained across frames and
-/// refilled in place by `extract_puppets`.
-///
-/// It carries what the render world needs and cannot get from a cache: the
-/// model to prepare from, and the entity's placement in the scene. The
-/// drawables and the deforms are not here — those go straight into the render
-/// cache during extraction, while the main world is paused.
+/// Render-world half of a `CatchlightPuppet`, retained across frames.
 #[derive(Component)]
 pub struct ExtractedPuppet {
-    /// The model this entity animates. An `Arc`, so extraction copies a
-    /// pointer rather than a model.
     pub model: Arc<Model>,
-    /// Which asset it came from. For a reader asking what a render entity
-    /// draws — staleness is decided by the model's own identity, not by this,
-    /// because an id outlives the value behind it.
+    /// Informational only: staleness is decided by `model`'s `Arc` identity.
     pub model_id: AssetId<CatchlightModel>,
-    /// World-space z of the entity, used to order overlapping puppets
-    /// deterministically (higher z renders in front).
+    /// World-space z; higher renders in front.
     pub z: f32,
-    /// Hierarchy visibility (`Visibility::Hidden` or a hidden ancestor
-    /// clears this). The render node skips drawing when false; the cache is
-    /// kept resident so unhiding doesn't re-upload the model.
     pub visible: bool,
 }
 
-// bevy 0.19's `SyncComponentPlugin` needs this `SyncComponent` impl: it
-// registers `SyncToRenderWorld` as required on `CatchlightPuppet` (so each gets
-// a paired `RenderEntity`), and on removal strips `Target` from the render
-// entity — dropping `ExtractedPuppet` makes `prepare`'s GC release the cache
-// instead of drawing the frozen render list forever.
 impl bevy::render::sync_component::SyncComponent for CatchlightPuppet {
     type Target = ExtractedPuppet;
 }
 
-/// Extract system. Bevy's Extract schedule: main world frozen, we hand the
-/// render world what this frame needs.
-///
-/// This is where a puppet reaches its render cache. Bevy's `extract` is
-/// catchlight's
-/// [`RenderCache::refresh_puppet`](catchlight_wgpu::RenderCache::refresh_puppet):
-/// the frame's deforms are uploaded and the drawables collected here, against
-/// the live puppet, because **the main world is paused and nothing else may
-/// read it**. Under bevy's pipelined rendering the next main-world frame runs
-/// while the render world draws, and a tick overwrites the puppet's combined
-/// deforms in place — so a later read would race. Doing it here also means the
-/// render world never holds a puppet, so nothing needs a frozen per-frame copy
-/// of the frame's deforms.
+/// Refreshes render caches here because only extract may read the live
+/// puppet: under pipelined rendering the next tick overwrites its deforms.
 // Invariant: the render-state Mutex is only poisoned on panic, treated as fatal.
 #[allow(clippy::unwrap_used)]
 pub(crate) fn extract_puppets(
@@ -74,15 +44,11 @@ pub(crate) fn extract_puppets(
     >,
 ) {
     let mut inner = state.inner.lock().unwrap();
-    // Copied in here so `prepare_puppets`, which has no main-world access,
-    // builds caches the way the app asked for.
     inner.options = settings.prepare;
     let formats = inner.formats();
 
     for (puppet_component, transform, visibility, render_entity) in query.iter() {
         let Some(puppet) = puppet_component.puppet() else {
-            // The model has not loaded yet, so there is nothing to draw and
-            // nothing for `prepare_puppets` to build a cache from.
             continue;
         };
         let model_id = puppet_component.model().id();
@@ -90,9 +56,6 @@ pub(crate) fn extract_puppets(
             continue;
         };
         let visible = visibility.get();
-        // A hidden puppet skips the upload and the collect: nothing draws it,
-        // and the frame it is unhidden extracts `visible = true` first, so it
-        // catches up right here.
         if visible {
             for format in &formats {
                 let key = PuppetKey {
@@ -106,10 +69,7 @@ pub(crate) fn extract_puppets(
                 let Some(model_gpu) = gpus.get_mut(&state.model) else {
                     continue;
                 };
-                // The entity swapped models between this extract and the last
-                // prepare: its deform set and its list belong to the cache it
-                // is leaving. `prepare_puppets` rebinds it at the end of this
-                // frame and the next extract collects against the new cache.
+                // Swapped models; `prepare_puppets` rebinds it this frame.
                 if !Arc::ptr_eq(&model_gpu.model, asset.shared()) {
                     state.collected = false;
                     continue;
@@ -152,7 +112,6 @@ pub(crate) fn extract_puppets(
     }
 }
 
-/// Marker on render-world cameras that should render puppets.
 #[derive(Component, Default, Clone, Copy)]
 pub(crate) struct ExtractedCatchlightCamera;
 

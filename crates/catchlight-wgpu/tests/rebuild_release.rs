@@ -1,13 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! What a [`RenderCache`] rebuild hands back. A rebuild renames every slot it
-//! is about to fill, so the GPU state under the slots the new build does not
-//! reach has to go — otherwise a model that shrank leaves mesh buffers,
-//! textures and deform-atlas ranges resident under numbers nothing addresses.
-//!
-//! The counterweight is in the same tests: releasing must not cost the
-//! textures the new build names again, which the cache keeps by Id and
-//! payload rather than decoding and uploading a second time.
+//! A [`RenderCache`] rebuild releases GPU state the new build does not name,
+//! and keeps textures it names again.
 
 mod common;
 
@@ -46,8 +40,6 @@ fn camera() -> glam::Mat4 {
     glam::Mat4::orthographic_rh(-1.0, 1.0, -1.0, 1.0, -1000.0, 1000.0)
 }
 
-/// A `half`-sized quad centred on (`cx`, `cy`) rather than on the origin, so
-/// three parts can occupy three disjoint columns of the frame.
 fn quad_at(cx: f32, cy: f32, half: f32) -> ClmMesh {
     let mut mesh = common::quad(half * 2.0, half * 2.0);
     for (i, v) in mesh.verts.iter_mut().enumerate() {
@@ -56,9 +48,7 @@ fn quad_at(cx: f32, cy: f32, half: f32) -> ClmMesh {
     mesh
 }
 
-/// Three parts side by side, each with its own solid texture: left red,
-/// middle green, right blue. Returns the model with the node and texture Ids
-/// in that order, so a test can delete one by position.
+/// Left red, middle green, right blue.
 fn three_quad_model() -> (Model, Vec<NodeId>, Vec<TexId>) {
     let mut build = common::Build::new();
     let root = build.root();
@@ -80,13 +70,10 @@ fn three_quad_model() -> (Model, Vec<NodeId>, Vec<TexId>) {
     (build.model, nodes, textures)
 }
 
-/// The pixel at the centre of the column each part occupies.
 fn column_centre(x: f32) -> (u32, u32) {
     (((x + 1.0) / 2.0 * W as f32) as u32, H / 2)
 }
 
-/// Which of the palette colours a pixel is closest to, so an assertion says
-/// "the right part drew here" instead of chasing exact texels.
 fn nearest(pixels: &[u8], x: u32, y: u32) -> [u8; 4] {
     let i = ((y * W + x) * 4) as usize;
     let px = &pixels[i..i + 4];
@@ -101,14 +88,8 @@ fn nearest(pixels: &[u8], x: u32, y: u32) -> [u8; 4] {
         .expect("the palette is not empty")
 }
 
-/// Deleting a part and its texture must hand the GPU state under their slots
-/// back, not leave it resident: mesh buffers, textures and the deform-atlas
-/// ranges the old meshes reserved.
-///
-/// The deleted one is the *middle* on purpose. `delete_texture` closes the gap
-/// in the texture order, so blue moves from slot 2 to slot 1 — a rebuild that
-/// released the slot but kept the old contents would draw green where blue
-/// belongs, which the pixel checks catch.
+/// Deletes the middle part so blue shifts from texture slot 2 to 1; stale
+/// contents would draw green there.
 #[test]
 fn a_rebuild_releases_the_slots_the_smaller_model_no_longer_names() {
     pollster::block_on(async {
@@ -134,10 +115,6 @@ fn a_rebuild_releases_the_slots_the_smaller_model_no_longer_names() {
             assert_eq!(nearest(&pixels, px, py), expected, "column at x={x}");
         }
 
-        // The shrink. Same model, so the cache's identity gate still passes
-        // and its generation gate is what notices.
-        // Deleting the part takes its texture: nothing else draws it, and a
-        // texture with no part drawing it is not a thing a model holds.
         model
             .delete_node(&nodes[1])
             .expect("delete the middle part");
@@ -170,8 +147,7 @@ fn a_rebuild_releases_the_slots_the_smaller_model_no_longer_names() {
             assert_eq!(nearest(&pixels, px, py), expected, "column at x={x}");
         }
 
-        // The atlas is laid out afresh too, so the meshes that survived have
-        // new offsets: a deform pushed after the shrink still has to land.
+        // Surviving meshes have new atlas offsets; deforms must still land.
         catchlight_wgpu::apply_uniform_scratch_deform(&mut puppet, Vec2::new(0.1, 0.0));
         cache.refresh(&mut ctx.renderer, &model, &puppet).unwrap();
         let list = catchlight_wgpu::collect(&cache, &puppet);
@@ -184,10 +160,6 @@ fn a_rebuild_releases_the_slots_the_smaller_model_no_longer_names() {
     });
 }
 
-/// Releasing is a sweep of what the new build will not name, not a wipe: a
-/// texture slot the rebuild fills with the same image again must keep its GPU
-/// texture. That is what keeps a rebuild affordable in an editor, which
-/// rebuilds on every edit.
 #[test]
 fn a_rebuild_keeps_the_textures_it_names_again() {
     pollster::block_on(async {
@@ -203,13 +175,9 @@ fn a_rebuild_keeps_the_textures_it_names_again() {
         let list = catchlight_wgpu::collect(&cache, &puppet);
         ctx.render(&list, CLEAR).expect("render");
 
-        // `frame_stats` is reset at `render_list` entry and a texture upload
-        // is the only thing that submits outside a frame, so what it counts
-        // from here is exactly the rebuild's re-uploads.
+        // A texture upload is the only submit outside a frame.
         assert_eq!(ctx.renderer.frame_stats().queue_submits, 0);
 
-        // Drop the *last* part, which takes its texture with it and leaves
-        // the surviving two at the slots they already hold.
         model.delete_node(&nodes[2]).expect("delete the right part");
         assert!(model.texture(&textures[2]).is_none());
         puppet.tick(&model, 0.0);
@@ -230,11 +198,8 @@ fn a_rebuild_keeps_the_textures_it_names_again() {
             assert_eq!(nearest(&pixels, px, py), expected, "column at x={x}");
         }
 
-        // Now the *first* part, which is the harder shape: the survivor is
-        // wanted at slot 0 having been uploaded at slot 1. A memo keyed by
-        // slot calls that a miss and uploads an image the GPU already holds;
-        // keyed by Id the texture is moved, and the moved texture still has
-        // to be the one the part draws.
+        // Removing the first part moves the survivor from slot 1 to 0; keyed
+        // by Id it is relocated, not re-uploaded.
         model.delete_node(&nodes[0]).expect("delete the left part");
         puppet.tick(&model, 0.0);
         cache.refresh(&mut ctx.renderer, &model, &puppet).unwrap();
@@ -256,10 +221,7 @@ fn a_rebuild_keeps_the_textures_it_names_again() {
     });
 }
 
-/// A rebuild that cannot finish must leave the previous build resident. The
-/// fallible work — decode and upload validation — runs before anything is
-/// released, so a failed rebuild never guts the renderer under a cache (and
-/// a caller's last-good `RenderList`) that still describe the old build.
+/// A failed rebuild must leave the previous build resident.
 #[test]
 fn a_failed_rebuild_leaves_the_previous_build_resident() {
     pollster::block_on(async {
@@ -275,9 +237,6 @@ fn a_failed_rebuild_leaves_the_previous_build_resident() {
         let list = catchlight_wgpu::collect(&cache, &puppet);
         assert_eq!(ctx.render(&list, CLEAR).expect("render").drawn_parts, 3);
 
-        // The two ways texture work fails: bytes that do not decode, and a
-        // decoded texture the device refuses. Each case grows the model by
-        // one part, so the three originals keep their slots and order.
         let mut hex = SeededHex::new(7);
         let root = model.root().expect("a complete model").clone();
         let cases: [(&str, ModelTexture); 2] = [
@@ -318,8 +277,6 @@ fn a_failed_rebuild_leaves_the_previous_build_resident() {
             assert_eq!(ctx.renderer.live_texture_slots(), 3, "{why}");
             assert_eq!(cache.texture_count(), 3, "{why}");
 
-            // Roll the model back, which also proves the failure did not
-            // wedge the cache: the next refresh rebuilds and draws.
             model.delete_node(&part).expect("delete the bad part");
             puppet.tick(&model, 0.0);
             cache.refresh(&mut ctx.renderer, &model, &puppet).unwrap();

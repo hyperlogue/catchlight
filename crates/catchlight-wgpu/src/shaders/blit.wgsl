@@ -24,8 +24,8 @@ var composite_sampler: sampler;
 struct BlitUniforms {
     opacity: f32,
     tint: vec3<f32>,
-    // Shares layout with basic.wgsl's PartUniforms; .w is the composite's
-    // mask threshold (unused by fs_main but needed for layout parity).
+    // .w is the mask threshold, unused here but kept for layout parity with
+    // basic.wgsl's PartUniforms.
     screen_tint_and_threshold: vec4<f32>,
 }
 
@@ -34,9 +34,6 @@ var<uniform> uniforms: BlitUniforms;
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    // Composite slot is Rgba8UnormSrgb; sampler returns premultiplied
-    // linear values. Operate on the premultiplied sample directly,
-    // before applying the composite's tint and opacity.
     let tex_color = textureSample(composite_texture, composite_sampler, in.tex_coords);
     let pm_rgb = tex_color.rgb;
 
@@ -71,11 +68,7 @@ fn fs_composite_mask_dodge(in: VertexOutput) -> @location(0) vec4<f32> {
     return vec4<f32>(0.0);
 }
 
-// WebGL fallback masked blit: sampled mask path. Bind group 2 carries
-// the viewport-sized mask alpha texture (written via fs_mask_alpha in
-// basic.wgsl). Each fragment reads the mask at its screen position and
-// discards outside the shape — stencil-test replacement for platforms
-// without Depth24PlusStencil8.
+// Sampled-mask path for adapters without Depth24PlusStencil8.
 @group(2) @binding(0)
 var t_mask: texture_2d<f32>;
 @group(2) @binding(1)
@@ -90,8 +83,6 @@ fn fs_masked_sampled(in: VertexOutput) -> @location(0) vec4<f32> {
         discard;
     }
 
-    // Premultiplied linear sample (Rgba8UnormSrgb composite slot);
-    // same formula as fs_main.
     let tex_color = textureSample(composite_texture, composite_sampler, in.tex_coords);
     let pm_rgb = tex_color.rgb;
 

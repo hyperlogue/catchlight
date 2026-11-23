@@ -1,11 +1,6 @@
-// Color textures arrive pre-normalised by the importer: bytes encoding
-// premultiplied LINEAR color (sRGB-encoded byte = srgb_encode(linear *
-// alpha)). Uploaded as `Rgba8UnormSrgb`, the sampler decodes sRGB→linear
-// and returns the premultiplied linear value. The shader operates on the
-// premultiplied sample directly and emits premultiplied output for the
-// standard `(One, 1-SrcAlpha)` blend in linear space. See
-// `catchlight_core::formats::ModelTexture::decode` for the importer-side
-// normalisation.
+// Color textures hold premultiplied linear color, sRGB-encoded; the
+// `Rgba8UnormSrgb` sampler decodes to premultiplied linear and output is
+// premultiplied for `(One, 1-SrcAlpha)` blending.
 
 struct Camera {
     view_proj: mat4x4<f32>,
@@ -16,11 +11,9 @@ var<uniform> camera: Camera;
 
 struct PartUniforms {
     opacity: f32,
-    // .xyz is tint (multiply); .w is unused padding (keeps the field a vec4).
+    // .w is padding.
     tint: vec4<f32>,
-    // .xyz is screen_tint, .w is the mask_threshold for the mask_main
-    // fragment shader — packed here so the uniform stays three vec4s
-    // and keeps std140 alignment trivial.
+    // .w is the mask threshold.
     screen_tint_and_threshold: vec4<f32>,
 }
 
@@ -41,8 +34,7 @@ struct VertexOutput {
     @location(0) uv: vec2<f32>,
 }
 
-// Model-matrix columns x_axis, y_axis, w_axis. The z_axis column is
-// omitted: vertices enter at z = 0 so it never contributes.
+// z_axis is omitted: vertices enter at z = 0.
 struct InstanceInput {
     @location(2) col_x: vec4<f32>,
     @location(3) col_y: vec4<f32>,
@@ -57,9 +49,6 @@ fn vs_main(
 ) -> VertexOutput {
     var out: VertexOutput;
     let deformed = vertex.position + deform_in.deform;
-    // Affine SRT transform of `vec4(deformed, 0, 1)`: the dropped z_axis
-    // column would multiply z = 0, and an SRT matrix's projective row
-    // makes w_out = 1, so this is the exact matrix product.
     let world_position = vec4<f32>(
         instance.col_x.xyz * deformed.x + instance.col_y.xyz * deformed.y + instance.col_w.xyz,
         1.0,
@@ -75,12 +64,6 @@ var t_diffuse: texture_2d<f32>;
 var s_diffuse: sampler;
 
 fn shade_part(tex_color: vec4<f32>, uv: vec2<f32>) -> vec4<f32> {
-    // tex_color is premultiplied LINEAR (Rgba8UnormSrgb sampler decode
-    // applied; importer pre-stored linear * alpha).
-    // Apply screen tint, then multiplicative tint, then opacity:
-    //   albedoOut = screen(texColor.xyz, texColor.a) * mult
-    //   outAlbedo = albedoOut * opacity
-    // catchlight renders albedo only (no emissive/lighting pass).
     let screen_tint = part.screen_tint_and_threshold.xyz;
     let screen_out = vec3<f32>(1.0) - ((vec3<f32>(1.0) - tex_color.rgb) *
                                         (vec3<f32>(1.0) - (screen_tint * tex_color.a)));
@@ -91,20 +74,10 @@ fn shade_part(tex_color: vec4<f32>, uv: vec2<f32>) -> vec4<f32> {
     return vec4<f32>(final_rgb, final_a);
 }
 
-// ClampToBorder+TransparentBlack emulation for the WebGPU/WebGL fallback.
-// Native catchlight uses a sampler with `ClampToBorder`+`TransparentBlack`,
-// so bilinear filtering at uv=0/1 mixes the edge texel with (0,0,0,0).
-// The WebGPU/WebGL fallback uses `ClampToEdge` because ADDRESS_MODE_CLAMP_TO_BORDER
-// isn't exposed there — bilinear at the boundary then samples the edge
-// texel at full weight, creating a faint "ghost" rectangle wherever a
-// mesh triangle's UV footprint reaches an opaque texture edge. Some
-// rigs have hair-shadow textures with α=255 along their top row, which
-// the artist relied on the transparent border to mask.
-//
-// Modulate the (premultiplied) sample by the in-bounds fraction of the
-// 1-texel bilinear footprint along each axis. At uv=0 / uv=1 this
-// halves the contribution; at uv = 0.5/size and beyond it leaves the
-// sample unchanged.
+// Emulates ClampToBorder+TransparentBlack where ADDRESS_MODE_CLAMP_TO_BORDER
+// is unavailable (WebGPU/WebGL): ClampToEdge would draw a faint edge "ghost"
+// where a triangle's UVs reach an opaque texture edge. Scales the sample by
+// the in-bounds fraction of the 1-texel bilinear footprint per axis.
 fn border_emulate(tex_color: vec4<f32>, uv: vec2<f32>) -> vec4<f32> {
     if (UV_DISCARD <= 0.5) {
         return tex_color;
@@ -137,14 +110,9 @@ fn fs_mask(in: VertexOutput) -> @location(0) vec4<f32> {
     return vec4<f32>(1.0, 1.0, 1.0, 1.0);
 }
 
-// WebGL fallback shaders: when the adapter lacks Depth24PlusStencil8
-// (Chromium swiftshader WebGL2), stencil masking is replaced by
-// sampling an offscreen "mask alpha" texture. `fs_mask_alpha` /
-// `fs_mask_alpha_dodge` write the mask shape into that texture
-// (regular sources write 1, dodge sources write 0 — mirroring the
-// stencil path's REPLACE references); `fs_masked_sampled` samples it
-// by the fragment's screen position and discards fragments outside
-// the mask. See Pipelines::new for the has_stencil branch.
+// Sampled-mask fallback for adapters without Depth24PlusStencil8 (e.g.
+// swiftshader WebGL2). Regular sources write 1 and dodge sources 0, mirroring
+// the stencil path's REPLACE references.
 @group(3) @binding(0)
 var t_mask: texture_2d<f32>;
 @group(3) @binding(1)

@@ -1,14 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! What a browser replica costs per commit.
-//!
-//! An editor server owns the model and pushes only its `Structure` after
-//! every change; the client rebuilds its whole `Model` from those bytes over
-//! the texture payloads it already holds. That is a new model *state* on every
-//! keystroke-sized edit, so the render cache's whole-cache rebuild runs each
-//! time — and it has to cost no texture work at all unless a texture actually
-//! changed. The numbers here are the reason per-commit sync is usable on a
-//! real rig.
+//! A browser replica rebuilds its `Model` on every commit; the rebuild must
+//! cost no texture work unless a texture changed.
 
 mod common;
 
@@ -26,8 +19,6 @@ use common::NO_ADAPTER;
 const W: u32 = 64;
 const H: u32 = 64;
 
-/// Two parts drawing two different textures, plus the hex source that minted
-/// the Ids so the "server" can go on editing.
 fn two_texture_model() -> (Model, SeededHex) {
     let mut build = common::Build::new();
     let root = build.root();
@@ -38,8 +29,6 @@ fn two_texture_model() -> (Model, SeededHex) {
     (build.model, build.hex)
 }
 
-/// Three parts, each drawing a texture nothing else draws, so deleting one
-/// part is exactly one texture leaving the model.
 fn three_texture_model() -> (Model, Vec<NodeId>) {
     let mut build = common::Build::new();
     let root = build.root();
@@ -68,8 +57,6 @@ async fn context() -> RenderContext {
     RenderContext::with_renderer(renderer, W, H).expect("render context")
 }
 
-/// A replica's texture store: payloads by Id, exactly what
-/// `Model::replace_structure` sources from.
 fn store(model: &Model) -> HashMap<TexId, ModelTexture> {
     model
         .texture_ids()
@@ -78,8 +65,6 @@ fn store(model: &Model) -> HashMap<TexId, ModelTexture> {
         .collect()
 }
 
-/// A structure push that changed no texture must decode and upload nothing;
-/// one that changed a single texture must cost exactly that one.
 #[test]
 fn a_structure_push_only_pays_for_the_textures_that_changed() {
     pollster::block_on(replica_sync(PrepareOptions::default()));
@@ -88,7 +73,6 @@ fn a_structure_push_only_pays_for_the_textures_that_changed() {
 async fn replica_sync(options: PrepareOptions) {
     let mut ctx = context().await;
 
-    // The server's model, and the replica built from the file it sent once.
     let (mut server, mut hex) = two_texture_model();
     let mut replica = Model::from_clm_bytes(&server.to_clm_bytes().unwrap()).expect("load replica");
     let mut held = store(&replica);
@@ -102,7 +86,6 @@ async fn replica_sync(options: PrepareOptions) {
     );
     assert_eq!(cache.stats().textures_kept, 0);
 
-    // An edit that touches no texture. Only the structure crosses.
     let root = server.root().expect("a complete model").clone();
     server
         .add_node(
@@ -130,9 +113,7 @@ async fn replica_sync(options: PrepareOptions) {
     assert_eq!(after.textures_kept - before.textures_kept, 2);
     assert_eq!(cache.texture_count(), 2, "and both are still addressable");
 
-    // Now one texture really changes: the server repaints what the second
-    // part draws. A payload is immutable under its Id, so that is a new
-    // texture and the old one goes with it.
+    // Payloads are immutable under their Id, so a repaint is a new texture.
     let right = server
         .nodes_in_order()
         .into_iter()
@@ -144,8 +125,6 @@ async fn replica_sync(options: PrepareOptions) {
         .expect("repaint");
     let structure = server.to_structure_bytes().unwrap();
 
-    // The client's half of the push: read what the structure names, fetch
-    // what the store lacks, then apply.
     let listed = catchlight_core::formats::clm::structure_texture_ids(&structure).unwrap();
     let missing: Vec<TexId> = listed
         .iter()
@@ -175,15 +154,12 @@ async fn replica_sync(options: PrepareOptions) {
     assert_eq!(after.textures_kept - before.textures_kept, 1);
 }
 
-/// The decoded-texture limit is over the whole model, so the textures a
-/// rebuild keeps count against it as much as the ones it decodes. Otherwise
-/// a model over the limit loads so long as it arrives one texture at a time.
+/// Kept textures count against the decoded-texture limit too.
 #[test]
 fn the_decoded_texture_limit_counts_the_textures_a_rebuild_keeps() {
     pollster::block_on(async {
         let mut ctx = context().await;
         let (mut model, mut hex) = two_texture_model();
-        // Two 8x8 textures, RGBA8.
         let both = 2 * 8 * 8 * 4;
 
         let tight = PrepareOptions {
@@ -205,8 +181,6 @@ fn the_decoded_texture_limit_counts_the_textures_a_rebuild_keeps() {
         let mut cache = RenderCache::prepare(&mut ctx.renderer, &model, exact).expect("prepare");
         let mut puppet = Puppet::new(&model);
 
-        // A third texture, alone well under the limit; with the two the
-        // cache keeps it is over.
         let root = model.root().expect("a complete model").clone();
         let part = model
             .add_node(
@@ -242,8 +216,6 @@ fn the_decoded_texture_limit_counts_the_textures_a_rebuild_keeps() {
     });
 }
 
-/// The in-tab handoff takes the same path: `replace_from` shares the payload
-/// `Arc`s, so the cache keeps every GPU texture it holds.
 #[test]
 fn an_in_tab_handoff_keeps_every_gpu_texture() {
     pollster::block_on(async {
@@ -286,10 +258,8 @@ fn an_in_tab_handoff_keeps_every_gpu_texture() {
     });
 }
 
-/// Removing a texture shifts every later slot down one. A memo keyed by slot
-/// calls each of those a miss and re-decodes and re-uploads an image the GPU
-/// already holds; keyed by Id, nothing that survived the removal is touched
-/// and the GPU textures move to their new slots instead.
+/// Removing a texture shifts later slots; keyed by Id, survivors are moved,
+/// not re-decoded.
 #[test]
 fn removing_the_first_texture_re_uploads_no_survivor() {
     pollster::block_on(async {
@@ -304,9 +274,6 @@ fn removing_the_first_texture_re_uploads_no_survivor() {
             "the first build uploads all three"
         );
 
-        // Deleting the part takes the one texture it drew with it, so the two
-        // survivors are wanted at slots 0 and 1 having been uploaded at 1
-        // and 2.
         model.delete_node(&parts[0]).expect("delete the first part");
         assert_eq!(model.texture_ids().len(), 2, "one texture left the model");
 

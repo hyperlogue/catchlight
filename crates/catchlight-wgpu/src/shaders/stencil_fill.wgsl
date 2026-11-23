@@ -1,7 +1,5 @@
-// Fullscreen triangle whose only effect is the pipeline's stencil
-// REPLACE: it seeds the whole viewport with the pass's stencil
-// reference before an all-DodgeMask batch punches 0 out of it. Color
-// writes are masked off in the pipeline; no bind groups.
+// Seeds the viewport's stencil with the pass reference before an
+// all-DodgeMask batch punches 0 out of it.
 
 @vertex
 fn vs_main(@builtin(vertex_index) vertex_index: u32) -> @builtin(position) vec4<f32> {

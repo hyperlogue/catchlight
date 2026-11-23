@@ -4,8 +4,7 @@ use bevy::prelude::*;
 
 use crate::components::CatchlightCamera;
 
-/// Plugin: scroll-wheel zoom + left-drag pan + single-touch pan + pinch zoom
-/// for any `CatchlightCamera` entity with a `Projection` and `Transform`.
+/// Scroll/pinch zoom and drag/touch pan for `CatchlightCamera` entities.
 pub struct CameraControlsPlugin;
 
 impl Plugin for CameraControlsPlugin {
@@ -18,13 +17,10 @@ impl Plugin for CameraControlsPlugin {
 
 #[derive(Resource)]
 pub struct CameraControls {
-    /// Multiplicative zoom factor applied per scroll line (or per pixel
-    /// scaled down). A line of scroll multiplies scale by
-    /// `zoom_per_line^-delta.y`.
+    /// Scale multiplier per scroll line: `zoom_per_line^-delta.y`.
     pub zoom_per_line: f32,
     pub min_scale: f32,
     pub max_scale: f32,
-    /// Mouse button that triggers pan when held.
     pub pan_button: MouseButton,
 }
 
@@ -41,7 +37,6 @@ impl Default for CameraControls {
 
 #[derive(Resource, Default)]
 struct PinchState {
-    /// Previous distance between two active touches, if any.
     prev_distance: Option<f32>,
 }
 
@@ -78,8 +73,7 @@ fn pan_system(
     }
     for (mut tf, projection) in q.iter_mut() {
         let scale = ortho_scale(projection);
-        // Screen Y is down, world Y is up → invert Y so content follows
-        // the cursor.
+        // Screen Y is down, world Y is up.
         tf.translation.x -= motion.delta.x * scale;
         tf.translation.y += motion.delta.y * scale;
     }

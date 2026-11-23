@@ -1,11 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! winit viewer for a `.clm` model — the interactive way to look at one.
-//!
-//! `.clm` only; import an `.inx` with `catchlight-importer` first.
-//!
-//! `--control` (or the `C` key) opens the egui panel of per-param sliders and
-//! stops animation playback.
+//! winit viewer for a `.clm` model. `--control` (or `C`) opens per-param
+//! sliders and stops animation playback.
 
 use catchlight_core::{load_model, Model, ModelFormat, ParamId, Puppet};
 use catchlight_wgpu::{
@@ -15,11 +11,6 @@ use catchlight_wgpu::{
 use std::path::Path;
 use std::sync::Arc;
 
-/// Read a `.clm` off disk. The format dispatch lives in the core; this is
-/// only the filesystem half, which the core deliberately does not have.
-///
-/// `.clm` is the only model file catchlight loads. Convert an inochi2d model
-/// once with `catchlight-importer <model.inx>` and open the `.clm` it writes.
 fn load_model_file(path: &Path) -> Result<Model, Box<dyn std::error::Error>> {
     let bytes = std::fs::read(path)?;
     let format = ModelFormat::from_path(path).ok_or_else(|| {
@@ -42,9 +33,7 @@ const INITIAL_CAMERA_HEIGHT: f32 = 8000.0;
 const MIN_CAMERA_HEIGHT: f32 = 500.0;
 const MAX_CAMERA_HEIGHT: f32 = 40000.0;
 
-/// One puppet param's slider state. Values are owned here rather than read
-/// back from the puppet, so they stay a stable, single source of truth even
-/// when motion responses write their output params during playback.
+/// Owned here so motion responses writing output params cannot move sliders.
 struct ParamSlider {
     param: ParamId,
     name: String,
@@ -58,8 +47,6 @@ fn param_group(name: &str) -> &str {
     name.split(" - ").next().unwrap_or(name)
 }
 
-/// egui integration for the direct-control mode, wired into the example's
-/// own winit + wgpu loop.
 struct ControlUi {
     egui_ctx: egui::Context,
     egui_state: egui_winit::State,
@@ -102,8 +89,7 @@ impl ControlUi {
                 })
             })
             .collect();
-        // Sorted so params sharing a "Group - Name" prefix land adjacent,
-        // which is what the chunk_by_mut grouping in `prepare` below relies on.
+        // `chunk_by_mut` grouping in `prepare` relies on this sort.
         param_sliders.sort_by(|a, b| a.name.cmp(&b.name));
 
         Self {
@@ -115,8 +101,6 @@ impl ControlUi {
         }
     }
 
-    /// Builds this frame's panel; slider edits land directly in
-    /// `param_sliders` for the caller to fold into the puppet's params.
     fn prepare(&mut self, window: &Window) -> egui::FullOutput {
         let raw_input = self.egui_state.take_egui_input(window);
         let motion_responses_enabled = &mut self.motion_responses_enabled;
@@ -210,22 +194,16 @@ struct App {
     composites: Option<catchlight_wgpu::CompositePool>,
     model: Model,
     puppet: Puppet,
-    /// Built in `resumed`, alongside the renderer whose GPU state it names.
     cache: Option<RenderCache>,
     start: std::time::Instant,
     last_frame: std::time::Instant,
-    /// The first param with at least one deform binding. If present we
-    /// sine-animate its value so the deform path is visible.
     demo_param: Option<ParamId>,
-    // Camera state: world-space center the view is looking at, and
-    // ortho camera height. Left-drag pans; scroll zooms.
+    // World-space view center and ortho height in world units.
     camera_center: glam::Vec2,
     camera_height: f32,
     last_window_size: (u32, u32),
     dragging: bool,
     last_cursor: Option<(f64, f64)>,
-    // Direct parameter-control mode: toggled by --control at startup or the
-    // 'C' key at runtime. Built lazily in `resumed` alongside the renderer.
     control_enabled: bool,
     control: Option<ControlUi>,
 }
@@ -332,9 +310,7 @@ impl ApplicationHandler for App {
             return;
         }
 
-        // Route input to the panel first so dragging a slider doesn't also
-        // pan the camera underneath it. Only wired in while the mode is on,
-        // so a hidden panel never steals events from the viewer controls.
+        // The panel gets input first so a slider drag doesn't also pan.
         if self.control_enabled {
             if let (Some(control), Some(window)) = (self.control.as_mut(), self.window.as_ref()) {
                 let response = control.egui_state.on_window_event(window, &event);
@@ -377,14 +353,10 @@ impl ApplicationHandler for App {
                 if self.dragging {
                     if let Some((lx, ly)) = self.last_cursor {
                         let (_, h) = self.last_window_size;
-                        // Map screen-pixel delta to world-unit delta:
-                        // one screen height = self.camera_height world
-                        // units, so world-per-pixel = camera_height / h.
                         let world_per_pixel = self.camera_height / h.max(1) as f32;
                         let dx = (position.x - lx) as f32 * world_per_pixel;
                         let dy = (position.y - ly) as f32 * world_per_pixel;
-                        // World is Y-up but screen Y grows downward, so the pan
-                        // follows the cursor only if the Y delta is added back.
+                        // World is Y-up, screen Y grows down.
                         self.camera_center.x -= dx;
                         self.camera_center.y += dy;
                         self.update_camera();
@@ -393,8 +365,7 @@ impl ApplicationHandler for App {
                 self.last_cursor = Some((position.x, position.y));
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                // Lines: 1 notch zooms by 10%. Pixels (trackpad):
-                // normalize by an arbitrary ~30px per notch.
+                // ~30px per notch for pixel (trackpad) deltas.
                 let notches = match delta {
                     MouseScrollDelta::LineDelta(_, y) => y,
                     MouseScrollDelta::PixelDelta(p) => (p.y / 30.0) as f32,
@@ -425,20 +396,13 @@ impl ApplicationHandler for App {
                             control_output = Some(output);
                         }
                     } else if let Some(param) = &self.demo_param {
-                        // Animate the first deform param so the param -> DeformStack
-                        // -> GPU deform_buffer path shows on screen. A shallow
-                        // 0..0.5 sine looks more like breathing than 0..1.0,
-                        // which visibly over-deforms the reference model's shoulders/body.
+                        // 0..0.5: a full 0..1 sweep over-deforms the reference
+                        // model.
                         let t = self.start.elapsed().as_secs_f32();
                         let v = 0.25 + 0.25 * (t * std::f32::consts::TAU * 0.3).sin();
                         self.puppet.set_param_value(param, v);
                     }
 
-                    // Control mode with motion responses off releases the outputs, so
-                    // the pose is exactly what the sliders say. Every other
-                    // case leaves them running, so each response still
-                    // responds to whatever the sliders (or the demo animation)
-                    // set.
                     let responses_enabled = !self.control_enabled
                         || self
                             .control
@@ -453,8 +417,6 @@ impl ApplicationHandler for App {
                     }
                     let render_list = collect(cache, &self.puppet);
 
-                    // wgpu 29: acquire returns None for any non-presentable
-                    // state (lost/outdated/timeout/…); reconfigure and retry.
                     let Some((frame, view)) = surface_ctx.acquire() else {
                         surface_ctx.reconfigure(&renderer.device);
                         window.request_redraw();
@@ -481,9 +443,6 @@ impl ApplicationHandler for App {
                         .composites
                         .get_or_insert_with(|| catchlight_wgpu::CompositePool::new(w, h));
 
-                    // The device and queue the control panel paints with:
-                    // the frame below holds the renderer for as long as it
-                    // owns the encoder they paint into.
                     let (device, queue) = (renderer.device.clone(), renderer.queue.clone());
                     match renderer.frame().render(
                         &[&render_list],
@@ -549,7 +508,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut puppet = Puppet::new(&model);
 
     use catchlight_core::BindingTarget;
-    // First param (in the model's own order) that any deform binding names.
     let demo_param: Option<ParamId> = model
         .param_ids()
         .iter()
@@ -567,10 +525,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Animating deform param: {name}");
     }
 
-    // Synthesize a blink animation targeting every param whose name
-    // contains "Blink" (the reference model: "Left Eye - Blink" and
-    // "Right Eye - Blink"). value=0 -> open, value=1 -> closed.
-    // Sequence: 3s open -> quick close -> brief hold -> quick reopen.
+    // Synthesized blink for every param named "*Blink*": 0 = open, 1 = closed.
     if puppet.animations().is_empty() {
         use catchlight_core::formats::clm::{ClmAnimation, ClmKeyframe, ClmLane};
         use catchlight_core::InterpolateMode;
@@ -586,9 +541,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .collect();
         if !blink_params.is_empty() {
             let kfs = || -> Vec<ClmKeyframe> {
-                // 60 fps timestep below; frame values become seconds * 60.
-                // Short cycle with noticeable closed phase so the blink
-                // is obvious without having to watch for seconds.
+                // Frame values are seconds * 60 (60 fps timestep below).
                 vec![
                     ClmKeyframe {
                         frame: 0,
@@ -628,8 +581,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ..Default::default()
             };
             puppet.set_animations(vec![anim]);
-            // Direct-control mode disables automation up front; skip the
-            // initial play so it doesn't fight the sliders from frame one.
             if !control_enabled && puppet.play_animation("Blink") {
                 println!(
                     "Playing built-in animation: Blink ({} eye(s))",

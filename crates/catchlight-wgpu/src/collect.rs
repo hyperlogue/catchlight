@@ -1,81 +1,36 @@
 //! Collects a posed runtime's drawables into the `RenderList` the renderer
 //! draws.
 //!
-//! Invariants this module enforces:
-//!
-//! - **Z order: higher `z_order` draws in front.** A node's z is its own
-//!   plus every ancestor's, which is `Puppet::accumulated_z` and reaches this
-//!   walk through `DrawSource::accumulated_z` — the rule is in core so the
-//!   CLI's `poses` dump reports the same order the renderer draws. The sort
-//!   is ascending, so the last draw is the frontmost. `.inx` is authored the
-//!   other way round, lower in front; the flip happens at import, never
-//!   here.
-//! - **A disabled node hides its whole subtree**, so `enabled` is ANDed down
-//!   the tree rather than read per node.
-//! - **A pass-through composite is dropped, an isolating one is not.** See
-//!   [`Collector::composite_is_passthrough_group`]: only a composite whose
-//!   slot would change nothing is flattened away, and its parts then
-//!   interleave by z with the enclosing composite's. An isolating composite is
-//!   a drawable *of its enclosing composite*, never of the root, or the
-//!   outer's opacity, tint, blend and mask would not cover it.
-//! - **Opacity 0 culls everything but Darken**, whose `Min` blend ignores
-//!   blend factors and darkens even at zero alpha.
-//! - **The walk is behind [`DrawSource`].** It is what the walk needs from a
-//!   posed runtime: the tree, the evaluated transforms, and the cache slots
-//!   its resources landed in. The render cache is the one implementation; the
-//!   indirection is what let a second runtime be swapped in underneath while
-//!   the two paths were proved to agree on pixels, and what keeps this module
-//!   free of GPU types.
-//!
-//! Everything the list names is a **slot** — a dense `u32` position in the
-//! render cache's mesh, texture or node tables — never an Id. A list is only
-//! meaningful against the cache it was collected from.
+//! Higher accumulated `z_order` draws in front. A list holds dense render-cache
+//! slots, never Ids, and is meaningful only against the cache it was collected
+//! from.
 
 use crate::renderer::DeformSet;
 use catchlight_core::{BlendMode, CompositeData, MaskMode, Node, NodeIdx, NodeKind, NodeTree};
 use smallvec::SmallVec;
 use std::collections::HashMap;
 
-/// A slot that names nothing: used where a node has no mesh or no albedo, so
-/// the renderer's dense-table probe misses and the draw is skipped and
-/// counted, exactly as it is for a resource that failed to upload.
+/// Makes the renderer's dense-table probe miss, so the draw is skipped and
+/// counted.
 pub(crate) const NO_SLOT: u32 = u32::MAX;
 
-/// What collecting needs from one posed runtime.
-///
-/// Deliberately narrow: the tree, the frame it evaluated, and where its
-/// resources live in the render cache. Nothing here can pose, tick or upload.
 pub(crate) trait DrawSource {
     fn tree(&self) -> &NodeTree;
     fn node(&self, idx: NodeIdx) -> Option<&Node>;
     fn node_count(&self) -> usize;
-    /// The node's global transform from the last evaluated frame.
     fn transform(&self, idx: NodeIdx) -> glam::Mat4;
-    /// The node's `z_order` summed with every ancestor's — the number this
-    /// module sorts by. The rule lives on `Puppet`, so the CLI's `poses` dump
-    /// and this walk cannot disagree about what is in front of what.
+    /// Summed with every ancestor's; the rule lives on `Puppet` so the CLI and
+    /// renderer agree on draw order.
     fn accumulated_z(&self, idx: NodeIdx) -> f32;
-    /// Bumped whenever the tree's shape changes. The collector caches the
-    /// structural half of its pass-through verdict against it.
     fn structure_revision(&self) -> u64;
-    /// The cache slot holding this node's uploaded mesh, or [`NO_SLOT`].
     fn mesh_slot(&self, idx: NodeIdx) -> u32;
-    /// The cache slot holding this part's albedo, or [`NO_SLOT`]. May name a
-    /// slot that was never uploaded; the renderer skips those.
+    /// May name a slot that was never uploaded; the renderer skips those.
     fn texture_slot(&self, node: &Node) -> u32;
-    /// Whether `slot` names a texture this cache actually holds.
     fn has_texture(&self, slot: u32) -> bool;
 }
 
-// SmallVec inline cap = 2 — typical part has 0 masks; rigs rarely exceed 2.
 pub type MaskSources = SmallVec<[MaskSourceData; 2]>;
 
-/// A mask source, with the render cache's slots for whatever the renderer
-/// has to rasterize.
-///
-/// `mesh_id` / `texture_id` / `node_id` are **render-cache slots, not Ids** —
-/// dense `u32` positions in the cache's own tables, meaningful only against
-/// the cache the drawables were collected from.
 #[derive(Debug, Clone)]
 pub enum MaskSourceData {
     Part {
@@ -118,12 +73,6 @@ pub struct CompositeMaskSourceData {
     pub parts: Vec<CompositeMaskPartData>,
 }
 
-/// One thing to draw, with the render cache's slots for its resources.
-///
-/// `mesh_id` / `texture_id` / `node_id` are **render-cache slots, not Ids**:
-/// dense `u32` positions in the cache's mesh, texture and node tables. The
-/// renderer indexes its GPU state by them and nothing outside a cache and the
-/// list collected from it can interpret them.
 #[derive(Debug, Clone)]
 pub enum DrawableInfo {
     Part {
@@ -169,23 +118,15 @@ impl DrawableInfo {
 #[derive(Debug, Default, Clone)]
 pub struct RenderList {
     pub root_drawables: Vec<DrawableInfo>,
-    /// Keyed by the composite's own slot, the `node_id` of its
-    /// `DrawableInfo::Composite`.
+    /// Keyed by the composite's own `node_id` slot.
     pub composite_children: HashMap<u32, Vec<DrawableInfo>>,
     pub composite_mask_sources: HashMap<u32, CompositeMaskSourceData>,
-    /// Which puppet's deforms these draws read: the slice of the renderer's
-    /// deform atlas that the same puppet's
-    /// [`RenderCache::refresh_puppet`](crate::RenderCache::refresh_puppet)
-    /// uploaded into. Left at [`DeformSet::FIRST`] by `collect_into`, which
-    /// is the only set a cache serving one puppet ever uses.
     pub deform_set: DeformSet,
 }
 
 impl RenderList {
-    /// Upper-bound on the instance count needed for one frame. The
-    /// renderer uses this to size its instance buffer once at frame
-    /// start, avoiding mid-frame growth (which would strand already
-    /// recorded passes on the old buffer).
+    /// Sized once at frame start; growing mid-frame would strand already
+    /// recorded passes on the old buffer.
     pub fn total_instance_count(&self) -> usize {
         fn for_part(mask_sources_len: usize) -> usize {
             mask_sources_len + 1
@@ -219,10 +160,6 @@ impl RenderList {
         n
     }
 
-    /// Upper bound on mask-source draws in one frame. Each mask-source
-    /// draw writes its own part-uniform slot (the source's threshold),
-    /// and a drawable's sources rasterize at most once per frame, so
-    /// the per-frame uniform buffer is sized with this at frame start.
     pub fn total_mask_source_count(&self) -> usize {
         fn for_drawable(d: &DrawableInfo) -> usize {
             match d {
@@ -243,9 +180,8 @@ impl RenderList {
         n
     }
 
-    /// Clears in place: composite-children Vecs keep their buffers so
-    /// the per-frame refill doesn't reallocate them. Consumers treat a
-    /// stale empty entry exactly like a missing one.
+    /// Keeps composite-children buffers; consumers treat a stale empty entry
+    /// like a missing one.
     pub fn clear(&mut self) {
         self.root_drawables.clear();
         for children in self.composite_children.values_mut() {
@@ -255,13 +191,6 @@ impl RenderList {
     }
 }
 
-/// The structural half of the pass-through test — Normal blend, no mask, no
-/// nested Composite descendant, and every descendant Part on Normal blend.
-/// These change only with the tree's shape, which bumps
-/// [`DrawSource::structure_revision`], so the collector caches this per
-/// composite between revisions and only walks the subtree once. See
-/// [`Collector::composite_is_passthrough_group`] for why pass-through groups
-/// flatten at all.
 fn composite_passthrough_static<S: DrawSource + ?Sized>(
     source: &S,
     node_id: NodeIdx,
@@ -282,9 +211,6 @@ fn composite_passthrough_static<S: DrawSource + ?Sized>(
     true
 }
 
-/// The param-driven half of the pass-through test: full opacity and identity
-/// tint/screen-tint. These are bound to params and change per frame, so this
-/// is re-checked every frame rather than cached.
 fn composite_passthrough_dynamic(composite: &CompositeData) -> bool {
     composite.opacity == 1.0
         && composite.tint == glam::Vec3::ONE
@@ -360,26 +286,13 @@ fn collect_mask_sources<S: DrawSource + ?Sized>(
     sources
 }
 
-/// Per-frame scratch plus the cross-frame pass-through memo. One lives in the
-/// render cache; a caller that collects repeatedly reuses it so the memo pays
-/// off.
 #[derive(Debug, Default)]
 pub(crate) struct Collector {
-    // enabled ANDed down the tree — a disabled node hides its whole subtree,
-    // because a disabled ancestor hides its entire subtree.
     enabled_cum: Vec<bool>,
     composite_ancestor: Vec<Option<NodeIdx>>,
-    // Per composite node: does it need its own offscreen slot, or is it a
-    // pass-through group whose Parts flatten into the enclosing composite?
-    // Indexed by NodeIdx; set when the composite is visited (pre-order), read
-    // by its descendants to find the nearest *isolating* composite.
     composite_isolates: Vec<bool>,
-    // Cached structural half of the pass-through predicate, per composite
-    // NodeIdx slot (`None` until that composite is first visited). This half
-    // depends only on the tree shape and static blend/mask state, which
-    // survives across frames — only the param-driven half is re-checked each
-    // frame. Rebuilt wholesale when the source's structure revision or node
-    // count changes.
+    // Structural pass-through verdict per composite; rebuilt when the
+    // structure revision or node count changes.
     static_passthrough: Vec<Option<bool>>,
     static_passthrough_len: usize,
     static_passthrough_revision: u64,
@@ -401,8 +314,6 @@ impl Collector {
         self.composite_isolates.resize(n, false);
         self.composite_isolates.fill(false);
 
-        // Unlike the per-frame buffers above, the structural pass-through
-        // cache persists until the tree's shape changes.
         let revision = source.structure_revision();
         if self.static_passthrough_len != n || self.static_passthrough_revision != revision {
             self.static_passthrough.clear();
@@ -428,9 +339,6 @@ impl Collector {
                 self.enabled_cum[slot] = enabled;
             }
 
-            // Nearest enclosing *isolating* composite: a pass-through group
-            // doesn't isolate, so its descendants attach to whatever
-            // composite encloses the group, not to the group itself.
             let nearest_composite = parent.and_then(|p| {
                 let parent_node = source.node(p)?;
                 let parent_isolates = self
@@ -452,24 +360,14 @@ impl Collector {
                 return;
             }
 
-            // Opacity 0 contributes nothing for every blend mode except
-            // Darken: BlendOperation::Min ignores blend factors, so a
-            // zero-alpha src (rgb = 0 premultiplied) still darkens the
-            // destination. Mask sources are unaffected — they're resolved
-            // straight from the source runtime, and masks are
-            // rasterized without opacity. A culled Composite leaves
-            // its children in composite_children, but nothing renders them
-            // without the Composite drawable.
+            // Opacity 0 culls every blend but Darken: `Min` ignores blend
+            // factors, so a zero-alpha source still darkens.
             let culled = |opacity: f32, blend_mode: BlendMode| {
                 opacity == 0.0 && blend_mode != BlendMode::Darken
             };
 
             match &node.kind {
                 NodeKind::Composite(composite) => {
-                    // A pass-through group nested inside another composite is
-                    // flattened away: its Parts route to `nearest_composite`
-                    // and interleave there by z. A composite at the root, or
-                    // one that genuinely isolates, keeps its own slot.
                     let isolates = nearest_composite.is_none()
                         || !self.composite_is_passthrough_group(source, node_id, composite);
                     if slot < self.composite_isolates.len() {
@@ -498,12 +396,7 @@ impl Collector {
                     };
 
                     // An isolating composite is a drawable of its enclosing
-                    // composite, exactly like a Part: it renders into its own
-                    // slot and that slot blits into the *enclosing* one, so
-                    // the outer's opacity/tint/blend/mask cover it and it
-                    // z-interleaves with the outer's other children. Pushing
-                    // it to `root_drawables` instead would escape all of that
-                    // and sort it against the root's drawables.
+                    // composite, so the outer's opacity/tint/blend/mask cover it.
                     match nearest_composite {
                         Some(c) => render_list
                             .composite_children
@@ -564,23 +457,9 @@ impl Collector {
         }
     }
 
-    /// A pass-through Composite — Normal blend, full opacity, identity
-    /// tint/screen-tint, no mask, no nested Composite, and every descendant
-    /// Part on Normal blend — isolates nothing, so its Parts render straight
-    /// into the enclosing composite, interleaved by cumulative z-order. OVER
-    /// composition is associative, so dropping the group boundary changes
-    /// nothing *within* the group; the intended effect is the cross-group
-    /// interleaving it enables — e.g. an eye group's lashes now sorting
-    /// *behind* the hair bangs that occlude them, instead of the whole group
-    /// painting on top.
-    ///
-    /// Only no-op group boundaries are flattened. An isolating group must keep
-    /// its slot or its blend, opacity, tint, or mask would be silently dropped.
-    ///
-    /// The verdict splits into a cached structural half
-    /// (`composite_passthrough_static`, walked once per composite) and a
-    /// per-frame param-driven half (`composite_passthrough_dynamic`), so the
-    /// hot path never re-walks the subtree.
+    /// Only a composite whose slot would change nothing is flattened, so its
+    /// Parts interleave by z with the enclosing composite's. OVER is
+    /// associative, so dropping a no-op group boundary is exact.
     fn composite_is_passthrough_group<S: DrawSource + ?Sized>(
         &mut self,
         source: &S,

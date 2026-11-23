@@ -1,15 +1,5 @@
-// Dst-in-shader blend modes (Overlay/ColorBurn/LinearBurn) read the
-// destination at the same screen pixel and compute the per-channel
-// blend in the fragment shader, since wgpu's BlendState can't express
-// these formulas with fixed-function blend factors.
-//
-// Pipeline contract: bind group 0 carries the composite (src) texture +
-// sampler (matches blit_bind_group_layout in renderer.rs); bind group 1
-// carries the BlitUniforms uniform with dynamic offset (shared
-// part_uniform_bind_group_layout); bind group 2 carries a snapshot of
-// the framebuffer copied via copy_texture_to_texture immediately before
-// this pass. The pipeline uses Replace blend (no fixed-function blend
-// math) since the shader itself emits the final composited pixel.
+// Blend modes BlendState cannot express: the shader reads a framebuffer
+// snapshot (group 2) and emits the final pixel under Replace blend.
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
@@ -48,12 +38,7 @@ var t_snapshot: texture_2d<f32>;
 @group(2) @binding(1)
 var s_snapshot: sampler;
 
-// Sample the composite + apply tint/screen_tint/opacity exactly like
-// blit.wgsl's fs_main, but return the pre-multiplied RGBA src. Shared
-// by all four dst-in-shader entry points.
-//
-// Composite slot is Rgba8UnormSrgb; sampler returns premultiplied
-// linear values. Operate on the premultiplied sample directly.
+// Returns premultiplied linear src, as blit.wgsl's fs_main computes it.
 fn sample_blit_src(in: VertexOutput) -> vec4<f32> {
     let tex_color = textureSample(composite_texture, composite_sampler, in.tex_coords);
     let pm_rgb = tex_color.rgb;
@@ -69,22 +54,15 @@ fn sample_blit_src(in: VertexOutput) -> vec4<f32> {
     return vec4<f32>(final_rgb, final_a);
 }
 
-// Sample the framebuffer snapshot at this fragment. tex_coords spans
-// [0,1] across the fullscreen quad; the snapshot view uses the
-// surface's sRGB format, so textureSample applies the standard
-// sRGB→linear read transform — the result is in linear space, matching
-// how `src` is sampled from the composite slot.
 fn load_snapshot(in: VertexOutput) -> vec4<f32> {
     return textureSample(t_snapshot, s_snapshot, in.tex_coords);
 }
 
-// KHR_blend_equation_advanced unpremultiplies BOTH operands before the
-// per-mode blend function (Cs' = Cs/As, Cd' = Cd/Ad; 0 when the alpha
-// is 0), then composites with X = Y = Z = 1:
+// KHR_blend_equation_advanced with X = Y = Z = 1, on unpremultiplied
+// operands (0 where alpha is 0):
 //   R = f(Cs', Cd')*As*Ad + Cs'*As*(1-Ad) + Cd'*Ad*(1-As)
-//   A = As*Ad + As*(1-Ad) + Ad*(1-As)  (= As + Ad - As*Ad)
-// R is already premultiplied by A — exactly what the framebuffer
-// stores. With Ad = 0 this degrades to plain src; with As = 0, to dst.
+//   A = As + Ad - As*Ad
+// R is premultiplied by A, as the framebuffer stores.
 fn unpremultiply(c: vec4<f32>) -> vec3<f32> {
     if (c.a < 0.001) {
         return vec3<f32>(0.0);
@@ -110,7 +88,6 @@ fn fs_overlay(in: VertexOutput) -> @location(0) vec4<f32> {
     }
     let s = unpremultiply(src);
     let d = unpremultiply(dst);
-    // Per-channel: d < 0.5 ? 2*s*d : 1 - 2*(1-s)*(1-d)
     let low = 2.0 * s * d;
     let high = vec3<f32>(1.0) - 2.0 * (vec3<f32>(1.0) - s) * (vec3<f32>(1.0) - d);
     let mask = step(vec3<f32>(0.5), d);
@@ -127,7 +104,7 @@ fn fs_color_burn(in: VertexOutput) -> @location(0) vec4<f32> {
     }
     let s = unpremultiply(src);
     let d = unpremultiply(dst);
-    // 1 - min(1, (1 - d) / s); s == 0 collapses d to black.
+    // s == 0 collapses d to black.
     let safe_s = max(s, vec3<f32>(1.0e-4));
     let blend = vec3<f32>(1.0) - (vec3<f32>(1.0) - d) / safe_s;
     return khr_composite(clamp(blend, vec3<f32>(0.0), vec3<f32>(1.0)), s, d, src.a, dst.a);
@@ -142,7 +119,6 @@ fn fs_linear_burn(in: VertexOutput) -> @location(0) vec4<f32> {
     }
     let s = unpremultiply(src);
     let d = unpremultiply(dst);
-    // src + dst - 1; clamped to [0,1].
     let blend = s + d - vec3<f32>(1.0);
     return khr_composite(clamp(blend, vec3<f32>(0.0), vec3<f32>(1.0)), s, d, src.a, dst.a);
 }
