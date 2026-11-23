@@ -27,14 +27,12 @@ a tier-1 runtime target; browser rendering supports WebGPU and WebGL2.
 ## Task-specific references
 
 - For domain terminology, use [CONTEXT.md](CONTEXT.md).
-- For behavior changes, consult the affected module's `//!` documentation or
-  TypeScript module comment. Document new invariants beside the code that
-  enforces them. Keep this file focused on repo-wide constraints rather than
-  duplicating the crate map, module invariants, or command help.
-- For editor UI work, use [packages/editor-ui/DESIGN.md](packages/editor-ui/DESIGN.md).
+- Code is the source of truth for behavior. Read the code and tests rather
+  than trusting prose. Keep this file focused on repo-wide constraints rather
+  than duplicating the crate map, module invariants, or command help.
 - For model-file operations, use `cargo run -p catchlight-cli -- --help`.
   Workspace automation is documented in `crates/xtask/src/main.rs`; for
-  Python session editing, use [python/README.md](python/README.md).
+  Python session editing, read `python/catchlight/`.
 - For dependency or lint changes, the policy and rationale live in
   `Cargo.toml`, `clippy.toml`, and `deny.toml`.
 
@@ -85,6 +83,14 @@ and diff checks.
 - Tests needing the private model at `example_models/reference/` and timing
   measurements are ignored with reasons in their attributes. Run a relevant
   ignored test with `-- --ignored` when its prerequisites are available.
+
+## Documentation
+
+- Write a comment only when the code cannot express it: a non-obvious reason,
+  a platform or GPU workaround, units or a coordinate frame, or an invariant
+  the types do not enforce. Do not restate what the code does.
+- Never write design documents, ADRs, or standalone behavior docs. Package
+  READMEs stay short: what the package is, how to install it, one example.
 
 ## Commits
 

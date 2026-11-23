@@ -10,7 +10,7 @@
   },
   "scripts": {
     "typecheck": "tsc --project tsconfig.json",
-    "prepublishOnly": "node -e \"throw new Error('Publish the tarballs built by npm:pack; see scripts/npm/README.md')\""
+    "prepublishOnly": "node -e \"throw new Error('Publish the tarballs built by npm:pack; see .claude/skills/release/SKILL.md')\""
   },
   "peerDependencies": {
     "@catchlight/core": "workspace:*",

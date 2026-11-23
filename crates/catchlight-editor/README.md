@@ -18,10 +18,7 @@ catchlight-editor node set face --opacity 0.8
 catchlight-editor help                 # every command
 ```
 
-The editor records its address and a per-launch token in a file only you can
-read (`$XDG_RUNTIME_DIR`, `~/.cache` or `%LOCALAPPDATA%` under
-`catchlight-editor/connection.json`), which is how commands find it. Running
-`catchlight-editor` again opens the editor that is already running.
+Running `catchlight-editor` again opens the editor that is already running.
 
 Server-side previews need a GPU adapter; on Linux without one, install Mesa's
 Vulkan drivers for its software renderer. The browser tab renders on its own.

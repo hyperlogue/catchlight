@@ -6,7 +6,7 @@ license.workspace = true
 repository.workspace = true
 description = "2.5D character animation through mesh deformation, with optional wgpu and Bevy integration"
 readme = "README.md"
-keywords = ["animation", "2d", "mesh", "wgpu", "bevy"]
+keywords = ["animation", "2d", "mesh", "wgpu"]
 categories = ["graphics", "game-development"]
 
 [features]

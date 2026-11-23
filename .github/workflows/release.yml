@@ -13,7 +13,7 @@ name: Release
 #
 # Trusted publishing on npm and crates.io names this file and the `release`
 # environment; renaming either breaks publishing until they are re-registered
-# (scripts/npm/README.md).
+# (.claude/skills/release/SKILL.md).
 on:
   push:
     tags: ['v*']

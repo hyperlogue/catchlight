@@ -1,47 +1,14 @@
 # catchlight (Python)
 
 A blocking, dependency-free Python client for `catchlight-editor-server`.
-Generated dataclasses expose every typed command; the server validates model
-invariants and owns revisions, atomic edits, and branching history.
-
-## Installation
-
-Once a release has been published:
 
 ```sh
 python -m pip install catchlight
 ```
 
-The release build targets Linux x86-64 and AArch64 wheels bundling the matching
-`catchlight-editor-server`. Both architecture builds must pass before release;
-this configuration does not mean those wheels have already been published.
-The target baseline is Python 3.11 or later and glibc 2.28 or later
-(`manylinux_2_28`); musl/Alpine, macOS, and Windows are not bundled-server wheel
-targets. The package does not include `catchlight-cli`,
-`catchlight-editor-cli`, or the web editor UI. It never downloads a server
-at runtime.
-
-`launch()` selects a server in this order: an explicit `binary=` argument,
-`CATCHLIGHT_EDITOR_SERVER`, the bundled server, `PATH`, then the source
-checkout's `target/debug` build. An explicit override is your responsibility
-to keep compatible with the client. The bundled executable is internal to
-the package and does not add a command to `PATH`.
-
-Source distributions and editable installs contain the Python client only;
-they do not build Rust automatically. To launch locally from a checkout, run
-`cargo build --locked -p catchlight-editor-server`. For a source installation
-elsewhere, install the matching server separately and use `binary=` or
-`CATCHLIGHT_EDITOR_SERVER`. `catchlight.connect(url, token)` attaches to an
-existing HTTP server and needs no local executable, including on platforms
-without bundled wheels.
-
-Basic model editing and saving require no GPU. Preview rendering requires a
-working system graphics stack: a Vulkan loader and driver (a hardware driver
-or Mesa's lavapipe CPU driver), or a supported EGL/OpenGL backend. Wheels do
-not ship graphics drivers. NixOS requires an appropriate runtime environment
-for ordinary manylinux executables; a wheel does not replace that setup.
-
-## Example
+Linux x86-64 and AArch64 wheels (Python 3.11+, `manylinux_2_28`) bundle the
+matching server. Elsewhere, install the server separately and pass `binary=`
+to `launch()`, or attach to a running one with `catchlight.connect(url, token)`.
 
 ```python
 import catchlight
@@ -55,186 +22,15 @@ with catchlight.launch() as server:
     built.save_to("doll.clm")
 ```
 
-For a complete synthetic cut, assembly, candidate-rendering and guarded replay
-workflow, see the [rig review example](examples/README.md).
+Every protocol command is available as a generated dataclass through
+`client.send`. A larger workflow is in
+[`examples/rig_workflow.py`](https://github.com/hyperlogue/catchlight/blob/main/python/examples/rig_workflow.py).
 
-## Modules
-
-| Module | Responsibility |
-| --- | --- |
-| `protocol_gen.py` | Generated wire types, command classifications, byte contracts |
-| `transport.py` | Unix socket and HTTP request framing |
-| `server.py` | `launch()` owns a backend process; `connect(url, token)` attaches |
-| `client.py` | Typed sends, source factories, guarded edits, exports, history |
-| `builder.py` | Convenience composition for nodes, parameters, and bindings |
-| `layers.py` | Placement files for cut-out image layers |
-
-Rust wire types are authoritative. Run `cargo xtask generate` after changing
-`crates/catchlight-editor-protocol`; never edit `protocol_gen.py` by hand.
-`cargo test -p xtask -- --skip fixtures::` checks generation and classification.
-
-## Sessions and bytes
-
-`client.new(name)` creates an empty session. These factories validate a complete
-source and publish one clean revision-zero session only on success:
-
-```python
-session = client.from_file("doll.clm")
-session = client.from_json(structure, {"face": "face.png"})
-session = client.from_manifest("model.json")
-```
-
-Each factory is one request with its source bytes attached. CLM sources preserve
-binary extensions; JSON carries no binary extension payloads. Imported sessions
-have no save path. `client.open(path)` instead opens a file in the server's store
-and remembers its path. `client.import_json(session, structure, textures,
-parent="root")` installs roots into an existing model as one guarded edit;
-colliding IDs are refused.
-
-`launch()` uses a Unix socket inside a fresh private temporary directory and
-cleans up the owned process on exit. `connect(url, token)` uses a loopback HTTP
-server and never stops it. Attachments travel as temporary files over the socket
-or multipart bodies over HTTP; both expose the same Python calls.
-
-`client.save(session, key)` writes into the server's store and marks the captured
-state saved. `client.save_to(session, path)` writes locally: a store save over
-the socket, or a guarded export over HTTP. Exporting does not mark the server's
-session saved. `client.export_model(session)` returns CLM bytes with the same
-behavior on either transport.
-
-## Revisions, atomic edits, and history
-
-Every successful captured model reply refreshes `client.revision(session)`,
-including reads. The blocking client does not subscribe to browser events.
-Convenience methods use the last captured revision as their guard; an unknown
-session is read once first. Pass `if_rev=` to use a specific revision. A stale
-guard raises `ProtocolError` and is never silently refreshed or retried.
-
-```python
-from catchlight import EditOpNodeSet, EditOpBindingCellsSet
-
-revision = client.revision(session)
-edits = [EditOpNodeSet(node=face, opacity=0.8)]
-trial = client.apply(session, edits, if_rev=revision, validate=True)
-result = client.apply(session, edits, if_rev=revision)
-assert result.changed
-
-candidate = client.fork(session, name="Candidate")
-client.undo(session)
-client.redo(session)
-history = client.history(session)
-client.goto(session, history.root)
-```
-
-`apply` publishes the whole edit list once or publishes nothing. Validation
-returns the same per-operation results without modifying the session. An
-operation failure exposes `ProtocolError.op_index`; bounded requests also expose
-`ProtocolError.limit` with resource, requested, and allowed counts. Content
-no-ops keep the revision and history unchanged.
-
-A fork contains the captured model in a new clean session with independent
-history and no save path. Undo, redo, and goto preserve retained branches and
-publish a fresh live revision when they navigate. History entries expose their
-creation revision, activation aliases, parent, and preferred redo child;
-`pruned` reports when retention has removed earlier states.
-
-## Exact bindings and discovery
-
-Parameters are scalar inputs. Each binding owns its normalized key positions,
-so two bindings driven by the same input can use different grids.
-`Builder.bind` accepts parameter values, inserts positions only on its selected
-binding, and writes exact scalar cells in one atomic edit. Existing cells and
-sibling grids are preserved. `Builder.bind_deform` accepts grid indices and
-per-vertex offsets; `key_positions=` selects a new binding's normalized axes.
-Binding creation and cell writes roll back together if any cell is invalid.
-
-All generated commands remain available through `client.send`:
-
-```python
-from catchlight import BindingList, BindingCellsGet, BindingTarget
-
-bindings = client.send(BindingList(session=session, node=face))
-cells = client.send(BindingCellsGet(
-    session=session, if_rev=client.revision(session), node=face,
-    param=tilt, target=BindingTarget.TY, cells=[(0, 0), (1, 0)],
-    include_derived=True,
-))
-```
-
-Cell values distinguish scalar values from deform offsets. `authored=False`
-means a hole; it differs from an authored identity value. Derived values are
-optional read results, never implicit writes. Deform arrays support bounded
-vertex pages. Node, mesh, geometry, and binding reads are available as
-generated command classes for callers composing their own inspection tools.
-
-A dataclass field left `None` is omitted. Fields typed `T | Clear | None` also
-accept `CLEAR` for explicit JSON null: `NodeSet(..., texture=CLEAR)` removes a
-part's texture while omission preserves it. `ProtocolError.code` distinguishes
-server refusal from a transport failure (`TransportError`).
-
-## Layer placements
-
-A placement describes image files and their hierarchy. `name` and `z` are
-required; a layer without `file` is a group. Parents precede children, and image
-filenames are relative to the placement directory.
-
-```json
-{
-  "catchlight_layers": 1,
-  "layers": [
-    {"name": "Head", "z": 1},
-    {"name": "Face", "file": "face.png", "parent": "Head", "z": 2,
-     "offset": [0, 40], "mesh": {"mode": "grid", "cols": 4, "rows": 3}}
-  ]
-}
-```
-
-```python
-built = catchlight.build_from_layers(client, "layers.json")
-print(built.problems)  # Model lints are reported, not raised.
-built.save_to("doll.clm")
-```
-
-## Tests
+## Development
 
 ```sh
 cargo build -p catchlight-editor-server
-cd python
-uv run pytest -q
+cd python && uv run pytest -q
 ```
 
-Tests launch isolated backends and cover both socket and HTTP transports.
-Use `-m 'not slow'` to skip the real 30-second idle timeout test. Unix-only
-because the launcher's local transport is a Unix socket.
-
-## Building distributions
-
-From the repository root, with Cargo and the Python development dependencies
-available:
-
-```sh
-uv run --project python python python/build_wheel.py --out dist/python
-uv run --project python python python/smoke_wheel.py dist/python/*.whl
-```
-
-The builder checks that the Python and Rust workspace versions match, compiles
-only `catchlight-editor-server` in release mode with the checked-in Cargo lock,
-and bundles it with the Python sources and license/third-party documents.
-The ELF header determines the wheel architecture. The executable remains
-executable after installation. A local `py3-none-linux_*` wheel depends on the
-build environment's runtime libraries; it is not a portable release artifact,
-especially when built inside Nix.
-
-The **Python wheels** GitHub Actions workflow builds natively on both supported
-architectures inside the official `manylinux_2_28` images. It runs `auditwheel
-repair`, which checks the glibc baseline and bundles required non-system linked
-libraries, then installs each repaired wheel in an isolated environment and
-launches its bundled server to create and save a model. The workflow uploads
-artifacts for review and does not publish to PyPI. Rendering drivers loaded
-dynamically remain a system dependency. Both architecture jobs must pass
-before those platform wheels are released.
-
-For a client-only source distribution, run `uv build --sdist python`. Do not
-publish a client-only `py3-none-any` wheel as the bundled-server release.
-`CATCHLIGHT_BUNDLE_SERVER` is the build hook's internal input for a prebuilt
-server; use the builder above to guarantee it comes from the same checkout.
+Licensed under MIT OR Apache-2.0.

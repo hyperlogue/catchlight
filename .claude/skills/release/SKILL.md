@@ -33,13 +33,27 @@ description: Prepare or cut a Catchlight release with changelog review, a shared
    [ci.yml](../../../.github/workflows/ci.yml) locally under `nix develop -c`,
    not only the checks the release touched: a release ships every crate, and
    `cargo deny check` fails on advisories published since the last change.
-   Then the packaging checks in [scripts/npm/README.md](../../../scripts/npm/README.md):
-   `npm:pack` builds WASM with `cargo xtask build-wasm --release` for core's
-   explicit-init loader, and `npm:verify` exercises a production browser
-   consumer of those tarballs. Run `cargo xtask bundle-ui`, then
+   Then the npm packaging checks:
+
+   ```sh
+   cargo xtask build-wasm --release
+   bun install --frozen-lockfile && bun run typecheck && bun test
+   bun run npm:pack && bun run npm:verify && bun run npm:publish  # dry run
+   ```
+
+   Run `cargo xtask bundle-ui`, then
    `bash .github/scripts/publish-crates.sh dry-run` (it requires a clean
-   tree), and the editor app's local packaging steps from the npm guide. Every
-   check passes before tagging. Only CI's macOS and Windows rows stay
+   tree), and package the editor app with this machine's binary:
+
+   ```sh
+   cargo build --release -p catchlight-editor
+   mkdir -p /tmp/bins/x86_64-unknown-linux-gnu
+   cp target/release/catchlight-editor /tmp/bins/x86_64-unknown-linux-gnu/
+   node scripts/npm/editor-app.mjs /tmp/bins --verify
+   ```
+
+   Never bypass the source packages' `prepublishOnly` guard. Every check
+   passes before tagging. Only CI's macOS and Windows rows stay
    unverified here; step 7 covers them.
 6. Create an annotated `vX.Y.Z` tag on the last commit, with subject
    `Catchlight vX.Y.Z`. Both registries use this one tag. Leave pushing and
@@ -57,10 +71,11 @@ description: Prepare or cut a Catchlight release with changelog review, a shared
    changelog section as its body), then npm, then crates.io. Releases are immutable once published; recover an incomplete one
    with a patch release. A crate or npm package publishing
    for the first time cannot use trusted publishing yet; publish it once locally
-   per the npm guide, then register it. While any `@catchlight/editor` version
+   (`npm login`, then `node scripts/npm/publish.mjs --publish`), then register
+   it as a trusted publisher for `hyperlogue/catchlight`, workflow
+   `release.yml`, environment `release`. While any `@catchlight/editor` version
    below 0.2.0 is not deprecated, deprecate those versions with a pointer to
-   `@catchlight/editor-ui`, within the user's authorization. For local npm
-   publishing or first publication, follow the linked npm release guide. Rust
+   `@catchlight/editor-ui`, within the user's authorization. Rust
    uploads use `.github/scripts/publish-crates.sh publish` with a token
    supplied through `CARGO_REGISTRY_TOKEN`; never put credentials in
    repository files.

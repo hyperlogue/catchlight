@@ -2,7 +2,11 @@
 
 The client chooses topology, correspondence and acceptance poses. Catchlight
 preserves authored fields and owns revision guards, transactions and rendering.
-Run from the repository as documented in the adjacent README.
+Run from the repository root with a fresh output directory:
+
+    nix develop -c cargo build -p catchlight-editor-server -p catchlight-cli
+    nix develop -c env PYTHONPATH=python python python/examples/rig_workflow.py \
+      --cli target/debug/catchlight-cli --out /tmp/catchlight-rig-review
 """
 
 from __future__ import annotations

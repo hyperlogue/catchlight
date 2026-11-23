@@ -10,7 +10,7 @@
   },
   "scripts": {
     "typecheck": "tsc --project tsconfig.json",
-    "prepublishOnly": "node -e \"throw new Error('Publish the tarballs built by npm:pack; see scripts/npm/README.md')\""
+    "prepublishOnly": "node -e \"throw new Error('Publish the tarballs built by npm:pack; see .claude/skills/release/SKILL.md')\""
   },
   "description": "Web-platform editor sessions, storage, and rendering glue for Catchlight",
   "license": "MIT OR Apache-2.0",
