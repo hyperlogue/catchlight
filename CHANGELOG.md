@@ -1,5 +1,79 @@
 # Changelog
 
+## Unreleased
+
+Breaking for Rust callers of `catchlight-core`; the next release is 0.3.0.
+
+### New
+
+- **Building a puppet is fast, and the second one is nearly free.** A mesh
+  group finds the triangle under a vertex through bins instead of a per-texel
+  grid, which makes `Puppet::new` about 40 times faster on a 100-part model
+  and drops tens of megabytes per puppet. A model keeps its bake, so further
+  puppets of the same model, and `Puppet::clone`, copy only a frame.
+- **Fewer deform uploads.** Spines, mesh groups and welds no longer mark a
+  deform changed when they rewrite the offsets it already held, so moving one
+  parameter re-uploads the parts it moves rather than nearly all of them.
+- **Sections a build does not recognise survive a save.** Opening a `.clm`
+  written by a newer build and saving it keeps the sections this build cannot
+  read, byte for byte. `formats` documents how the format may change.
+- **Load limits cover the whole file.** A `.clm` structure section is held to
+  `LoadLimits::structure_bytes` (64 MiB) before it is parsed. Spine joints,
+  weld pairs, keyframes and extension values each have a limit, a JSON
+  extension is capped at 1 MiB, and textures are held to 8192 texels a side
+  and `decoded_texture_bytes` in total before any is decoded
+  (`PrepareOptions::max_decoded_texture_bytes` in `catchlight-wgpu`).
+
+### Fixed
+
+- **A stepped key shows at its own position.** A `Stepped` binding or
+  animation lane resting exactly on a key showed the previous key's value. It
+  now shows that key's, on both axes. Poses that sit on a stepped key render
+  differently.
+- **Files the runtime could not evaluate are refused.** Reading a `.clm` now
+  rejects two bindings under one key, a node that masks itself, and a
+  non-finite param default, node transform or z-order. Edits refuse the same
+  values, and a mesh refit that returns the wrong number of offsets is
+  refused where it is made.
+- **Addons install and uninstall cleanly.** Installing an addon holds its
+  welds to the rule every other weld meets, and uninstalling removes the
+  installed nodes together with anything added beneath them since.
+  `duplicate_subtree` copies the welds inside the subtree.
+- **A `.clm` loads up to its size limit.** Texture payloads were charged
+  twice, so a file loaded only under about half of `encoded_bytes`.
+- **Saving cannot write a file that will not open.** A section over the
+  reader's size cap is an error at save instead of a truncated length.
+- **A texture at the device's size limit uploads.** A fully opaque texture
+  came back from preparation 32 texels larger each way and was refused.
+- **JSON extensions keep their values.** A NaN or infinity in a JSON
+  extension was read back as `null`; it is now a decode error.
+
+### Removed
+
+- **`update_node_kind` edits a kind's own fields only.** Swapping the kind, or
+  changing a mesh, albedo, mask list, slot list or spine through it, returns
+  `ModelError::KindEdit`. Use `set_node_mesh`, `set_part_albedo`, `mask_add`,
+  `slot_delete`, `set_spine_joints` and `set_spine_targets`.
+- **Error enums and `LoadLimits` are `#[non_exhaustive]`.** `ModelError`,
+  `InstallError`, `ClmLoadError`, `ClmError`, `ContainerError`,
+  `TextureError`, `IdError`, `DeformShapeError`, `GeometryError`,
+  `NodeTreeError` and `LoadResource` need a wildcard arm, and `LoadLimits`
+  is built from `LoadLimits::default()`. Several gained variants;
+  `InstallError` wraps `ModelError` and is no longer `Clone` or `PartialEq`.
+- **`prepare_textures` takes a size limit and a budget**, and `container::write`
+  returns a `Result`. `TexturePrepCache`, `PrepareOptions::memoize_textures`
+  and `alpha_bleed_inplace` are gone.
+- **`Puppet::refold_with_node_edits`, `NodeEdits` and
+  `Puppet::contribute_param_value` are gone**, as are `DeformSource::Test`,
+  the unused `DeformShapeError` matrix variants and the
+  `mesh_group_bitmap_cells` load limit.
+- **The crate root lists its exports.** `downsample_box_filter`,
+  `checked_affine_inverse`, `validate_id`, `validate_extension_key` and the
+  `charge_*` functions are reached through their modules
+  (`catchlight_core::components::checked_affine_inverse`).
+- **`Model::extract` of a whole tree returns an empty fragment**, and
+  `catchlight-cli requirements` reports a mask source as kind `drawable`.
+
 ## [0.2.2] - 2026-11-22
 
 ### New
