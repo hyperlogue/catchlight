@@ -252,7 +252,8 @@ fn two_puppets_of_one_model_share_one_cache_and_both_reach_the_target() {
         "two puppets of one model draw the same set of parts",
     );
     assert_ne!(
-        left_list.deform_set(), right_list.deform_set(),
+        left_list.deform_set(),
+        right_list.deform_set(),
         "each puppet uploads its frame into its own slice of the atlas",
     );
 
