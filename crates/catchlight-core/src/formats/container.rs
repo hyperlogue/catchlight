@@ -32,6 +32,8 @@ fn check_section_count(count: usize) -> Result<u32, ContainerError> {
 #[derive(Debug, Error, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ContainerError {
+    /// Reading a model checked into this repository, this usually means a
+    /// checkout without `git lfs pull` left Git LFS pointer text in its place.
     #[error("unexpected magic bytes")]
     BadMagic,
     #[error("file shorter than the container header/section table")]
