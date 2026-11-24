@@ -206,8 +206,8 @@ value. Bindings read a param's current value.
 _Avoid_: parameter, axis
 
 **Binding**:
-A param's control over one property of one node — its target — or two
-params' joint control over it. Each binding owns its key positions along each
+One param driving one property of one node — its target — or two params
+driving it jointly. Each binding owns its key positions along each
 driving param and its interpolation mode; their combinations form the grid
 whose cells the current values interpolate between. Several bindings on one
 target combine: positions, rotations, scales and z order add; opacity and
@@ -339,7 +339,8 @@ _Avoid_: draw list, scene
 **Animation**:
 A named, timed sequence of param values with a length in frames: an optional
 lead-in played once, then the **loop region** between it and an optional
-lead-out, repeated.
+lead-out, repeated. A model keeps its animations in the official
+`catchlight.animations` extension, and no two share a name.
 
 **Lane**:
 One animation's track over a single param, with its own interpolation mode.
@@ -368,10 +369,10 @@ The model an addon is authored against and installed into.
 _Avoid_: base (alone — say base value or base model), host
 
 **Addon**:
-A fragment — a subtree with its bindings, welds, textures and animations —
-authored against a base model and installed into it. It names what it needs
-from the base by Id, carries no params and no extensions, and never changes
-the base's params. Each binding and weld it carries touches a node it
+A fragment — a subtree with its bindings, welds, textures and official
+extensions, its animations among them — authored against a base model and
+installed into it. It names what it needs from the base by Id, carries no
+params and no vendor extensions, and never changes the base's params. Each binding and weld it carries touches a node it
 provides. Two addons that provide the same Id are alternatives: only one can
 be installed at a time.
 
@@ -403,11 +404,40 @@ the subtree, the bindings on it, the welds touching it and the textures it
 draws. Animations stay behind.
 
 **Extension**:
-A vendor's annotation on a whole model, filed under a key the vendor owns
-and carried without ever being read: its value is JSON or opaque bytes. The
-key is vendor first, then a dot — `acme.camera` — and `catchlight.` is the
-format's own. An addon carries none.
+An annotation on a whole model, filed under a key that is its owner first,
+then a dot — `acme.camera`. Its value is JSON or opaque bytes. A **vendor
+extension** is carried without ever being read. An **official extension** is
+one under `catchlight.`: catchlight defines its shape, and an extension
+module keeps it consistent with the model.
 _Avoid_: metadata, custom data, plugin
+
+**Extension module**:
+The code that understands one official extension, kept outside the core and
+registered with it. The core knows no extension by name: it announces model
+events to every registered module, and each module keeps its own extension
+consistent with the model.
+_Avoid_: plugin
+
+**Model event**:
+A change the core announces to extension modules: an Id changed, a param or
+node deleted, an addon installed, uninstalled or extracted.
+_Avoid_: hook (that's the module's handler for one)
+
+**Humanoid**:
+The official `catchlight.humanoid` extension, which makes a human-like model
+drivable by any app that speaks the standard controls, Stage among them, by
+mapping each control the model supports onto one of its params.
+_Avoid_: avatar, character config
+
+**Control**:
+One input of the humanoid standard — head yaw, left eye open, mouth open and
+the rest of a fixed list. A control always runs -1..1, with 0 as its neutral.
+_Avoid_: param (that's the model's own), control parameter
+
+**Control mapping**:
+A control's link to one param: the param values the control's -1, 0 and +1
+land on, linear between them. The 0 stop need not be the param's default.
+_Avoid_: binding (that's a param driving a node)
 
 ### Editing
 
