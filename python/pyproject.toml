@@ -33,3 +33,8 @@ markers = [
   # `-m "not slow"` when a tight loop matters more than the proof.
   "slow: takes tens of seconds",
 ]
+
+[tool.uv]
+# Skip releases from the last 7 days so a compromised upload has time to be
+# caught and yanked before we resolve it.
+exclude-newer = "7 days"

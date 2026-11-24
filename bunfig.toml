@@ -1,0 +1,4 @@
+[install]
+# Seconds. Skip versions published in the last 7 days so a compromised
+# release has time to be caught and yanked before we resolve it.
+minimumReleaseAge = 604800
