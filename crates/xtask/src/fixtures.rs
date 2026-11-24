@@ -25,6 +25,7 @@ type Build = fn() -> (ClmStructure, Vec<ClmTexture>);
 const FIXTURES: &[(&str, Build)] = &[
     ("composite_blit_uniforms", composite_blit_uniforms),
     ("mip_checker", mip_checker),
+    ("part_uniforms", part_uniforms),
     ("strand_response", strand_response),
     ("two_param_grid", two_param_grid),
     ("welded_seam", welded_seam),
@@ -430,6 +431,58 @@ fn composite_blit_uniforms() -> (ClmStructure, Vec<ClmTexture>) {
         cell_quad("front", 2, CELL_FRONT_OFFSET),
     );
 
+    let doc = ClmStructure {
+        nodes,
+        ..ClmStructure::default()
+    };
+    (
+        doc,
+        textures(vec![
+            gradient_texture(),
+            solid_texture([235, 140, 60]),
+            flat_texture([60, 130, 220, 128]),
+        ]),
+    )
+}
+
+/// The same cells as `composite_blit_uniforms`, on the parts themselves: each
+/// takes one `basic.wgsl` uniform off the identity.
+fn part_uniforms() -> (ClmStructure, Vec<ClmTexture>) {
+    let mut nodes = Vec::new();
+    let root = push(&mut nodes, None, group_node("root"));
+    push(
+        &mut nodes,
+        Some(root),
+        ClmNode {
+            name: "backdrop".into(),
+            z_order: -10.0,
+            ..part_node(quad_part(0, 256.0))
+        },
+    );
+    for c in BLIT_CELLS {
+        for (name, albedo, offset, z_order) in
+            [("back", 1, 0.0, 0.0), ("front", 2, CELL_FRONT_OFFSET, 1.0)]
+        {
+            push(
+                &mut nodes,
+                Some(root),
+                ClmNode {
+                    name: format!("{}_{name}", c.name).as_str().into(),
+                    z_order,
+                    transform: ClmTransform {
+                        translation: [c.x + offset, -offset, 0.0],
+                        ..identity_transform()
+                    },
+                    ..part_node(ClmPart {
+                        opacity: c.opacity,
+                        tint: c.tint,
+                        screen_tint: c.screen_tint,
+                        ..quad_part(albedo, CELL_HALF)
+                    })
+                },
+            );
+        }
+    }
     let doc = ClmStructure {
         nodes,
         ..ClmStructure::default()

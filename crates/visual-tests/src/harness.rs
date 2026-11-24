@@ -193,12 +193,8 @@ impl HarnessInner {
                 .submit();
         }
 
-        let pixels = pollster::block_on(read_texture_to_rgba(
-            &self.device,
-            &self.queue,
-            &target,
-        ))
-        .map_err(|error| anyhow!("read {}: {error}", config.name))?;
+        let pixels = pollster::block_on(read_texture_to_rgba(&self.device, &self.queue, &target))
+            .map_err(|error| anyhow!("read {}: {error}", config.name))?;
         Ok((pixels, width, height))
     }
 }

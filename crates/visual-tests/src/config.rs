@@ -159,6 +159,15 @@ pub fn default_models(repo_root: &Path) -> Vec<ModelSpec> {
             default_zoom: 1.0,
             texture_halvings: 0,
         },
+        // The only model whose parts carry a tint and a screen tint.
+        ModelSpec {
+            stem: "part_uniforms".into(),
+            path: repro.join("part_uniforms.clm"),
+            width: 512,
+            height: 512,
+            default_zoom: 1.0,
+            texture_halvings: 0,
+        },
         // The only configs that sample mips. Zoom 0.25 maps the quads' 512
         // texels to 128 and 64 pixels (4x and 8x minification).
         ModelSpec {
