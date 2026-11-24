@@ -2,6 +2,9 @@
 // `Rgba8UnormSrgb` sampler decodes to premultiplied linear and output is
 // premultiplied for `(One, 1-SrcAlpha)` blending.
 
+// Above 0.5 where the sampler cannot clamp to a transparent border.
+override UV_DISCARD: f32;
+
 struct Camera {
     view_proj: mat4x4<f32>,
 }

@@ -260,20 +260,18 @@ impl Pipelines {
         surface_format: wgpu::TextureFormat,
         has_stencil: bool,
     ) -> Self {
-        // Prepended rather than a pipeline override: wgpu 27's WebGPU backend
-        // breaks pipeline creation with non-default PipelineCompilationOptions.
         // Without CLAMP_TO_BORDER, out-of-range UVs are discarded so ClampToEdge
         // edge samples don't paint ghost slivers.
         let has_clamp_to_border = device
             .features()
             .contains(wgpu::Features::ADDRESS_MODE_CLAMP_TO_BORDER);
-        let uv_val = if has_clamp_to_border { 0.0f32 } else { 1.0 };
-        let prefix = format!("const UV_DISCARD: f32 = {};\n", uv_val);
-        let basic_wgsl = format!("{}{}", prefix, include_str!("../shaders/basic.wgsl"));
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Basic Shader"),
-            source: wgpu::ShaderSource::Wgsl(basic_wgsl.into()),
-        });
+        let uv_discard = [("UV_DISCARD", if has_clamp_to_border { 0.0 } else { 1.0 })];
+        let shader = Shader::new(
+            device,
+            "Basic Shader",
+            include_str!("../shaders/basic.wgsl"),
+            &uv_discard,
+        );
 
         let camera_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -363,10 +361,12 @@ impl Pipelines {
             )
         });
 
-        let blit_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Blit Shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/blit.wgsl").into()),
-        });
+        let blit_shader = Shader::new(
+            device,
+            "Blit Shader",
+            include_str!("../shaders/blit.wgsl"),
+            &[],
+        );
 
         let blit_bind_group_layout = sampled_texture_layout(device, "blit_bind_group_layout");
 
@@ -425,12 +425,12 @@ impl Pipelines {
                 ],
             });
 
-        let blit_dst_in_shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Blit (dst-in-shader) Shader"),
-            source: wgpu::ShaderSource::Wgsl(
-                include_str!("../shaders/blit_dst_in_shader.wgsl").into(),
-            ),
-        });
+        let blit_dst_in_shader_module = Shader::new(
+            device,
+            "Blit (dst-in-shader) Shader",
+            include_str!("../shaders/blit_dst_in_shader.wgsl"),
+            &[],
+        );
 
         let blit_dst_in_shader_pipelines = ShaderBlend::ALL.map(|blend| {
             make_render_pipeline(
@@ -538,12 +538,12 @@ impl Pipelines {
                 )
             });
 
-            let stencil_fill_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("Stencil Fill Shader"),
-                source: wgpu::ShaderSource::Wgsl(
-                    include_str!("../shaders/stencil_fill.wgsl").into(),
-                ),
-            });
+            let stencil_fill_shader = Shader::new(
+                device,
+                "Stencil Fill Shader",
+                include_str!("../shaders/stencil_fill.wgsl"),
+                &[],
+            );
             let stencil_fill_layout =
                 device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                     label: Some("Stencil Fill Pipeline Layout"),
@@ -808,15 +808,45 @@ impl Pipelines {
     }
 }
 
+/// A shader module and the override values its pipelines compile with.
+struct Shader<'a> {
+    module: wgpu::ShaderModule,
+    constants: &'a [(&'a str, f64)],
+}
+
+impl<'a> Shader<'a> {
+    fn new(
+        device: &wgpu::Device,
+        label: &str,
+        source: &str,
+        constants: &'a [(&'a str, f64)],
+    ) -> Self {
+        Self {
+            module: device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some(label),
+                source: wgpu::ShaderSource::Wgsl(source.into()),
+            }),
+            constants,
+        }
+    }
+
+    fn options(&self) -> wgpu::PipelineCompilationOptions<'_> {
+        wgpu::PipelineCompilationOptions {
+            constants: self.constants,
+            ..Default::default()
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
-pub(super) fn make_render_pipeline(
+fn make_render_pipeline(
     device: &wgpu::Device,
     label: &str,
     layout: &wgpu::PipelineLayout,
-    vertex_module: &wgpu::ShaderModule,
+    vertex: &Shader,
     vertex_entry: &str,
     vertex_buffers: &[wgpu::VertexBufferLayout],
-    fragment_module: &wgpu::ShaderModule,
+    fragment: &Shader,
     fragment_entry: &str,
     format: wgpu::TextureFormat,
     blend: wgpu::BlendState,
@@ -827,20 +857,20 @@ pub(super) fn make_render_pipeline(
         label: Some(label),
         layout: Some(layout),
         vertex: wgpu::VertexState {
-            module: vertex_module,
+            module: &vertex.module,
             entry_point: Some(vertex_entry),
             buffers: vertex_buffers,
-            compilation_options: Default::default(),
+            compilation_options: vertex.options(),
         },
         fragment: Some(wgpu::FragmentState {
-            module: fragment_module,
+            module: &fragment.module,
             entry_point: Some(fragment_entry),
             targets: &[Some(wgpu::ColorTargetState {
                 format,
                 blend: Some(blend),
                 write_mask,
             })],
-            compilation_options: Default::default(),
+            compilation_options: fragment.options(),
         }),
         primitive: wgpu::PrimitiveState {
             topology: wgpu::PrimitiveTopology::TriangleList,
