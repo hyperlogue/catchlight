@@ -23,19 +23,26 @@ the skeleton to copy.
 ## Steps
 
 1. **Timeline.** Sample every animated param at the film's fps for the whole
-   film. Done when each track has one value per film frame.
+   film. Seed any randomness (blinks, idle motion) from stable ids such as a
+   segment's name, so a revision changes only the frames it meant to and
+   `check_cut.py --against` stays readable. Done when each track has one value
+   per film frame.
 2. **Shots.** Build specs with `shots.shot` and store them with `shots.write`,
    one directory per quality. `catchlight-cli bounds` gives framing rects and
    part ids; `catchlight-cli render --schema spec` documents every field a
    pass may carry (parts, masks, camera keys, overlays, geometry, traces).
    Done when `catchlight-cli render <model> --spec <file> --validate` accepts
-   every spec.
+   every spec at both qualities: a final spec carries four times the preview's
+   frames at twice the scale, so it can exceed a budget the preview passes.
 3. **Render.** `scripts/render.py <model> <spec-dir> <out-dir> [--pack]`.
    Done when every line reads `ok`; a `FAIL` line carries the CLI's last
    message and the full log is `<out-dir>/<name>.log`.
 4. **Compose.** Write `frame(i)` over `passes.Shots` and encode it with
    `compose.encode`. Check stills of every scene at preview before encoding a
-   whole film. Done when the master exists and step 5 passes.
+   whole film. A half-scale preview hides texture faults: for each close-up,
+   also render a few final-scale stills of the mouth and eyes, open and
+   closed, before the cut is approved. Done when the master exists and step 5
+   passes.
 5. **Check.** `scripts/check_cut.py <cut> --frames N --seconds S`, adding
    `--audio` after `compose.mux` and `--against <previous cut>` on a revision.
    Then watch the cut, or extract frames and look at them, at every scene
@@ -73,7 +80,12 @@ the skeleton to copy.
 
 ## Budgets
 
+- The CLI caps each spec's pixels and geometry triangles, and `--validate`
+  names the one exceeded. Triangles count every listed part on every frame,
+  so give a `geometry` pass only the parts the shot draws from it.
 - Final passes take roughly ten times the preview's disk. Check free space
   before a final render; a full disk truncates files silently.
 - `render.py` replaces each shot's output directory as it starts. Keep the
   previous cut's delivery file until the new one passes step 5.
+- Review hosts and social platforms cap upload size. Keep the master and
+  re-encode a smaller copy for them; run `check_cut.py` on both.
