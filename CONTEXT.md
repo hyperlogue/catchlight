@@ -408,7 +408,11 @@ An annotation on a whole model, filed under a key that is its owner first,
 then a dot — `acme.camera`. Its value is JSON or opaque bytes. A **vendor
 extension** is carried without ever being read. An **official extension** is
 one under `catchlight.`: catchlight defines its shape, and an extension
-module keeps it consistent with the model.
+module keeps it consistent with the model. Each official extension carries
+its own **schema** version, and its module **migrates** older schemas
+forward. An official extension the build cannot read — no module for it, a
+newer schema, or data that fails to decode — is carried unchanged, like a
+vendor extension.
 _Avoid_: metadata, custom data, plugin
 
 **Extension module**:
