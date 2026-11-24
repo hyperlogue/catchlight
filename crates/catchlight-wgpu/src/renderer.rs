@@ -1089,6 +1089,28 @@ impl FramebufferSnapshotPool {
     }
 }
 
+/// The labels one target's passes carry in a GPU capture.
+struct PassLabels {
+    draw: &'static str,
+    mask_write: &'static str,
+    masked_draw: &'static str,
+    fallback_clear: &'static str,
+}
+
+const ROOT_PASSES: PassLabels = PassLabels {
+    draw: "Render Pass",
+    mask_write: "Mask Write Pass",
+    masked_draw: "Masked Part Render Pass",
+    fallback_clear: "render_list fallback clear",
+};
+
+const COMPOSITE_PASSES: PassLabels = PassLabels {
+    draw: "Composite Children Pass",
+    mask_write: "Composite Mask Write Pass",
+    masked_draw: "Composite Masked Part Render Pass",
+    fallback_clear: "Composite Fallback Clear Pass",
+};
+
 /// `texture` is only needed by the dst-in-shader blit's snapshot; `None`
 /// sends that blit down the Normal-OVER fallback.
 #[derive(Clone, Copy)]
@@ -3922,7 +3944,7 @@ impl WgpuRenderer {
 
     /// Frame-level state belongs to [`Self::record_frame`], so this may run
     /// several times per frame.
-    #[allow(clippy::too_many_arguments, clippy::expect_used)]
+    #[allow(clippy::too_many_arguments)]
     fn record_list(
         &mut self,
         render_list: &crate::collect::RenderList,
@@ -3945,12 +3967,12 @@ impl WgpuRenderer {
         composites.ensure_size(width, height);
         composites.reset();
         self.composite_bounds.clear();
-        let mut snapshots_opt = if dst_in_shader_active {
+        let mut snapshots = if dst_in_shader_active {
             snapshots
         } else {
             None
         };
-        if let Some(s) = snapshots_opt.as_mut() {
+        if let Some(s) = snapshots.as_mut() {
             s.ensure_size(width, height);
             s.reset();
         }
@@ -4006,245 +4028,22 @@ impl WgpuRenderer {
             Some(children.as_slice())
         })();
 
-        let has_stencil = self.shared.has_stencil();
-
-        // Alpha path: clear up front unless the first drawable is an unmasked
-        // part batch (the only LoadOp::Clear consumer) or flattening applies;
-        // snapshots would otherwise read uninitialized memory on frame 0. A None
-        // clear color preserves the caller's content (bevy).
-        let needs_explicit_clear = !has_stencil
-            && flatten_children.is_none()
-            && clear_color.is_some()
-            && render_list
-                .root_drawables
-                .iter()
-                .find(|d| {
-                    self.drawable_screen_bounds(d, render_list, width, height)
-                        != ScreenBounds::Empty
-                })
-                .is_some_and(|d| match d {
-                    DrawableInfo::Composite { .. } => true,
-                    DrawableInfo::Part {
-                        blend_mode,
-                        mask_sources,
-                        ..
-                    } => {
-                        !mask_sources.is_empty()
-                            || (dst_in_shader_active && is_dst_in_shader(*blend_mode))
-                    }
-                });
-        if needs_explicit_clear {
-            #[allow(clippy::expect_used)]
-            let color = clear_color.expect("needs_explicit_clear implies clear_color is Some");
-            self.explicit_clear_pass(encoder, view, color, "render_list initial clear");
-        }
-
-        let mut has_rendered_first = needs_explicit_clear;
-        let mut main_pass_state =
-            StencilPassState::new(view, &stencil.view, clear_color, "Render Pass", None);
-        let mut sink = if has_stencil {
-            PartSink::Stencil(&mut main_pass_state)
-        } else {
-            PartSink::Alpha {
+        self.render_to_target(
+            encoder,
+            stencil,
+            CompositeTarget {
                 view,
-                stencil,
-                has_rendered: &mut has_rendered_first,
-                clear_color,
-                mask_write_label: "Mask Write Pass",
-                masked_draw_label: "Masked Part Render Pass",
-            }
-        };
-
-        // If every child filtered out, the fallback below still clears.
-        if let Some(children) = flatten_children {
-            self.render_children_run(encoder, &mut sink, children, width, height);
-            self.end_sink_pass(encoder, &mut sink);
-            if !has_stencil && !has_rendered_first {
-                if let Some(color) = clear_color {
-                    self.explicit_clear_pass(
-                        encoder,
-                        view,
-                        color,
-                        "render_list flatten fallback clear",
-                    );
-                }
-            }
-            span.record("drawn_parts", self.current_stats.drawn_parts);
-            return;
-        }
-
-        // Dst-in-shader parts, composites, and snapshots can't share a peer's
-        // pass, so they flush pending runs first to preserve z-order.
-        let mut pending_parts: Vec<PreparedPartDraw> = Vec::new();
-        // Mutually exclusive with `pending_parts`, preserving z-order.
-        let mut pending_masked: Vec<PreparedMaskedPartDraw> = Vec::new();
-
-        for drawable in &render_list.root_drawables {
-            let bounds = self.drawable_screen_bounds(drawable, render_list, width, height);
-            if bounds == ScreenBounds::Empty {
-                continue;
-            }
-            match drawable {
-                DrawableInfo::Part {
-                    mesh_id,
-                    texture_id,
-                    transform,
-                    blend_mode,
-                    opacity,
-                    tint,
-                    screen_tint,
-                    ref mask_sources,
-                    mask_threshold,
-                    ..
-                } => {
-                    let _part_span =
-                        tracing::trace_span!("render_part", masked = !mask_sources.is_empty(),)
-                            .entered();
-                    let part_uniform_offset =
-                        self.write_part_uniform(*opacity, *tint, *screen_tint, *mask_threshold);
-
-                    let shader_blend =
-                        ShaderBlend::of(*blend_mode).filter(|_| dst_in_shader_active);
-
-                    if let Some(shader_blend) = shader_blend {
-                        // Barrier: the snapshot must see pending parts.
-                        self.flush_pending_parts(encoder, &mut sink, &mut pending_parts);
-                        self.flush_pending_masked(encoder, &mut sink, &mut pending_masked);
-                        self.end_sink_pass(encoder, &mut sink);
-                        self.spend_pending_alpha_clear(
-                            encoder,
-                            &mut sink,
-                            "Root Parts Clear (barrier)",
-                        );
-                        // One rect bounds the slot render and the snapshot copy+blit; the shader
-                        // returns dst outside the part's content.
-                        let part_scissor = bounds.scissor();
-                        // Release both slots after the blit so the pools don't grow per part.
-                        let composite_mark = composites.mark();
-                        let snapshot_mark = snapshots_opt.as_ref().map(|s| s.mark());
-                        let slot = composites.acquire(&self.shared, &self.device);
-                        self.render_part_to_composite_slot(
-                            encoder,
-                            stencil,
-                            &slot,
-                            *mesh_id,
-                            *texture_id,
-                            *transform,
-                            mask_sources,
-                            part_uniform_offset,
-                            part_scissor,
-                        );
-                        let blit_uniform_offset =
-                            self.write_part_uniform(1.0, glam::Vec3::ONE, glam::Vec3::ZERO, 0.5);
-                        // Safe to unwrap: dst_in_shader_active implies
-                        // both fields are Some; checked above.
-                        let snap_pool = snapshots_opt
-                            .as_mut()
-                            .expect("snapshot pool present when dst_in_shader_active");
-                        let snapshot = snap_pool.acquire(&self.shared, &self.device);
-                        let main_tex = target_color_texture
-                            .expect("target_color_texture present when dst_in_shader_active");
-                        self.blit_composite_dst_in_shader(
-                            encoder,
-                            &slot,
-                            view,
-                            main_tex,
-                            snapshot,
-                            shader_blend,
-                            blit_uniform_offset,
-                            width,
-                            height,
-                            part_scissor,
-                        );
-                        composites.rewind(composite_mark);
-                        if let (Some(pool), Some(mark)) = (snapshots_opt.as_mut(), snapshot_mark) {
-                            pool.rewind(mark);
-                        }
-                        sink.mark_rendered();
-                    } else if !mask_sources.is_empty() {
-                        self.flush_pending_parts(encoder, &mut sink, &mut pending_parts);
-                        if let Some(first) = pending_masked.first() {
-                            if !same_mask_signature(first.mask_sources, mask_sources) {
-                                self.flush_pending_masked(encoder, &mut sink, &mut pending_masked);
-                            }
-                        }
-                        pending_masked.push(PreparedMaskedPartDraw {
-                            draw: PreparedPartDraw {
-                                draw: PartDraw {
-                                    mesh_id: *mesh_id,
-                                    albedo: *texture_id,
-                                    transform: *transform,
-                                    blend_mode: *blend_mode,
-                                },
-                                part_uniform_offset,
-                            },
-                            mask_sources,
-                        });
-                    } else {
-                        // A None clear color preserves existing content (bevy already cleared
-                        // the ViewTarget).
-                        self.flush_pending_masked(encoder, &mut sink, &mut pending_masked);
-                        pending_parts.push(PreparedPartDraw {
-                            draw: PartDraw {
-                                mesh_id: *mesh_id,
-                                albedo: *texture_id,
-                                transform: *transform,
-                                blend_mode: *blend_mode,
-                            },
-                            part_uniform_offset,
-                        });
-                    }
-                }
-                DrawableInfo::Composite {
-                    ref mask_sources, ..
-                } => {
-                    let _comp_span = tracing::trace_span!(
-                        "render_composite",
-                        masked = !mask_sources.is_empty(),
-                    )
-                    .entered();
-                    self.flush_pending_parts(encoder, &mut sink, &mut pending_parts);
-                    self.flush_pending_masked(encoder, &mut sink, &mut pending_masked);
-                    self.end_sink_pass(encoder, &mut sink);
-                    self.spend_pending_alpha_clear(
-                        encoder,
-                        &mut sink,
-                        "Root Composite Clear (barrier)",
-                    );
-
-                    if self.render_composite_drawable(
-                        encoder,
-                        stencil,
-                        CompositeTarget {
-                            view,
-                            texture: target_color_texture,
-                        },
-                        drawable,
-                        render_list,
-                        composites,
-                        snapshots_opt.as_deref_mut(),
-                        dst_in_shader_active,
-                        width,
-                        height,
-                    ) {
-                        sink.mark_rendered();
-                    }
-                }
-            }
-        }
-
-        self.flush_pending_parts(encoder, &mut sink, &mut pending_parts);
-        self.flush_pending_masked(encoder, &mut sink, &mut pending_masked);
-        self.end_sink_pass(encoder, &mut sink);
-
-        // Alpha sink: nothing consumed the clear, so the target still holds the
-        // previous frame.
-        if !has_stencil && !has_rendered_first {
-            if let Some(color) = clear_color {
-                self.explicit_clear_pass(encoder, view, color, "render_list fallback clear");
-            }
-        }
-
+                texture: target_color_texture,
+            },
+            clear_color,
+            &ROOT_PASSES,
+            flatten_children.unwrap_or(&render_list.root_drawables),
+            render_list,
+            composites,
+            snapshots,
+            width,
+            height,
+        );
         span.record("drawn_parts", self.current_stats.drawn_parts);
     }
 
@@ -4382,7 +4181,6 @@ impl WgpuRenderer {
         render_list: &crate::collect::RenderList,
         composites: &mut CompositePool,
         mut snapshots: Option<&mut FramebufferSnapshotPool>,
-        dst_in_shader_active: bool,
         width: u32,
         height: u32,
     ) -> bool {
@@ -4405,6 +4203,8 @@ impl WgpuRenderer {
             Some(c) if !c.is_empty() => c,
             _ => return false,
         };
+        let _span =
+            tracing::trace_span!("render_composite", masked = !mask_sources.is_empty()).entered();
 
         // Computed before the children render so the borrow doesn't collide.
         let bounds = self.drawable_screen_bounds(drawable, render_list, width, height);
@@ -4421,22 +4221,28 @@ impl WgpuRenderer {
         let composite_mark = composites.mark();
         let snapshot_mark = snapshots.as_ref().map(|s| s.mark());
         let slot = composites.acquire(&self.shared, &self.device);
-        self.render_composite_children(
+        // The slot's clear folds into its first drawing pass, or lands on its
+        // own, so the blit never samples stale pool contents.
+        self.render_to_target(
             encoder,
             stencil,
-            &slot,
+            CompositeTarget {
+                view: &slot.view,
+                texture: Some(&slot.texture),
+            },
+            Some(wgpu::Color::TRANSPARENT),
+            &COMPOSITE_PASSES,
             children,
             render_list,
             composites,
             snapshots.as_deref_mut(),
-            dst_in_shader_active,
             width,
             height,
         );
 
         // Without a texture or pool, fall through to the Normal-OVER blit.
         let mut blitted = false;
-        if let Some(shader_blend) = ShaderBlend::of(*blend_mode).filter(|_| dst_in_shader_active) {
+        if let Some(shader_blend) = ShaderBlend::of(*blend_mode) {
             if let (Some(main_tex), Some(snap_pool)) = (target.texture, snapshots.as_deref_mut()) {
                 let mut source = slot.clone();
                 let mut source_uniform_offset = part_uniform_offset;
@@ -4516,49 +4322,36 @@ impl WgpuRenderer {
         true
     }
 
+    /// Draws `drawables` into `target`, spending `clear_color` exactly once even
+    /// when nothing draws. Serves the frame target and every composite slot.
     #[allow(clippy::too_many_arguments)]
-    fn render_composite_children(
+    fn render_to_target(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         stencil: &StencilTarget,
-        target: &CompositeTexture,
-        children: &[crate::collect::DrawableInfo],
+        target: CompositeTarget<'_>,
+        clear_color: Option<wgpu::Color>,
+        labels: &PassLabels,
+        drawables: &[crate::collect::DrawableInfo],
         render_list: &crate::collect::RenderList,
         composites: &mut CompositePool,
         snapshots: Option<&mut FramebufferSnapshotPool>,
-        dst_in_shader_active: bool,
         width: u32,
         height: u32,
     ) {
-        let composite_view = &target.view;
-        let transparent = wgpu::Color {
-            r: 0.0,
-            g: 0.0,
-            b: 0.0,
-            a: 0.0,
-        };
-
-        // The first drawing pass folds in the slot clear; the fallback clear
-        // keeps the blit from sampling stale pool contents.
         if self.shared.has_stencil() {
-            let mut state = StencilPassState::new(
-                composite_view,
-                &stencil.view,
-                Some(transparent),
-                "Composite Children Pass",
-                None,
-            );
+            let mut state =
+                StencilPassState::new(target.view, &stencil.view, clear_color, labels.draw, None);
             let mut sink = PartSink::Stencil(&mut state);
-            self.render_children_with_dst_blends(
+            self.render_drawables(
                 encoder,
                 stencil,
                 &mut sink,
                 target,
-                children,
+                drawables,
                 render_list,
                 composites,
                 snapshots,
-                dst_in_shader_active,
                 width,
                 height,
             );
@@ -4566,98 +4359,89 @@ impl WgpuRenderer {
             return;
         }
 
-        let mut has_rendered_child = false;
+        let mut has_rendered = false;
         let mut sink = PartSink::Alpha {
-            view: composite_view,
+            view: target.view,
             stencil,
-            has_rendered: &mut has_rendered_child,
-            clear_color: Some(transparent),
-            mask_write_label: "Composite Mask Write Pass",
-            masked_draw_label: "Composite Masked Part Render Pass",
+            has_rendered: &mut has_rendered,
+            clear_color,
+            mask_write_label: labels.mask_write,
+            masked_draw_label: labels.masked_draw,
         };
-        self.render_children_with_dst_blends(
+        self.render_drawables(
             encoder,
             stencil,
             &mut sink,
             target,
-            children,
+            drawables,
             render_list,
             composites,
             snapshots,
-            dst_in_shader_active,
             width,
             height,
         );
-
-        if !has_rendered_child {
-            self.explicit_clear_pass(
-                encoder,
-                composite_view,
-                transparent,
-                "Composite Fallback Clear Pass",
-            );
+        if !has_rendered {
+            if let Some(color) = clear_color {
+                self.explicit_clear_pass(encoder, target.view, color, labels.fallback_clear);
+            }
         }
     }
 
-    /// Splits at children that read the composite's own buffer (dst-in-shader
-    /// parts, nested composites); each records its own passes between runs.
+    /// Splits at drawables that read the target's own contents (composites
+    /// and dst-in-shader parts); each records its own passes between part
+    /// runs, which keeps z-order.
     #[allow(clippy::too_many_arguments)]
-    fn render_children_with_dst_blends(
+    fn render_drawables(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         stencil: &StencilTarget,
         sink: &mut PartSink<'_, '_>,
-        target: &CompositeTexture,
-        children: &[crate::collect::DrawableInfo],
+        target: CompositeTarget<'_>,
+        drawables: &[crate::collect::DrawableInfo],
         render_list: &crate::collect::RenderList,
         composites: &mut CompositePool,
         mut snapshots: Option<&mut FramebufferSnapshotPool>,
-        dst_in_shader_active: bool,
         width: u32,
         height: u32,
     ) {
         use crate::collect::DrawableInfo;
 
-        let snapshots_live = snapshots.is_some();
-        let is_barrier = |c: &DrawableInfo| match c {
+        // Without a snapshot pool and a copyable target, dst-in-shader parts
+        // draw OVER inside the part runs.
+        let shader_blends = snapshots.is_some() && target.texture.is_some();
+        let is_barrier = |d: &DrawableInfo| match d {
             DrawableInfo::Composite { .. } => true,
-            DrawableInfo::Part { blend_mode, .. } => {
-                snapshots_live && is_dst_in_shader(*blend_mode)
-            }
+            DrawableInfo::Part { blend_mode, .. } => shader_blends && is_dst_in_shader(*blend_mode),
         };
-        if !children.iter().any(is_barrier) {
-            return self.render_children_run(encoder, sink, children, width, height);
+        if !drawables.iter().any(is_barrier) {
+            return self.render_children_run(encoder, sink, drawables, width, height);
         }
 
         let mut run_start = 0;
-        for (i, child) in children.iter().enumerate() {
-            if !is_barrier(child) {
+        for (i, drawable) in drawables.iter().enumerate() {
+            if !is_barrier(drawable) {
                 continue;
             }
-            let bounds = self.drawable_screen_bounds(child, render_list, width, height);
+            let bounds = self.drawable_screen_bounds(drawable, render_list, width, height);
             if bounds == ScreenBounds::Empty {
                 continue;
             }
 
-            self.render_children_run(encoder, sink, &children[run_start..i], width, height);
+            self.render_children_run(encoder, sink, &drawables[run_start..i], width, height);
             run_start = i + 1;
             self.end_sink_pass(encoder, sink);
-            self.spend_pending_alpha_clear(encoder, sink, "Composite Children Clear (barrier)");
+            self.spend_pending_alpha_clear(encoder, sink, "Clear (barrier)");
 
-            match child {
+            match drawable {
                 DrawableInfo::Composite { .. } => {
                     if self.render_composite_drawable(
                         encoder,
                         stencil,
-                        CompositeTarget {
-                            view: &target.view,
-                            texture: Some(&target.texture),
-                        },
-                        child,
+                        target,
+                        drawable,
                         render_list,
                         composites,
                         snapshots.as_deref_mut(),
-                        dst_in_shader_active,
                         width,
                         height,
                     ) {
@@ -4676,16 +4460,23 @@ impl WgpuRenderer {
                     mask_threshold,
                     ..
                 } => {
-                    // `is_barrier` admits a part only for these modes.
-                    let Some(shader_blend) = ShaderBlend::of(*blend_mode) else {
+                    // `is_barrier` admits a part only when all three exist.
+                    let (Some(shader_blend), Some(target_texture), Some(snap_pool)) = (
+                        ShaderBlend::of(*blend_mode),
+                        target.texture,
+                        snapshots.as_deref_mut(),
+                    ) else {
                         continue;
                     };
                     let part_uniform_offset =
                         self.write_part_uniform(*opacity, *tint, *screen_tint, *mask_threshold);
-                    // Scratch slot and snapshot are re-acquired per child at one cursor;
-                    // encoder order makes overwriting them safe.
-                    let child_scissor = bounds.scissor();
+                    // One rect bounds the slot render and the snapshot copy and
+                    // blit; the shader returns dst outside the part's content.
+                    let scissor = bounds.scissor();
+                    // Both slots are released after the blit so the pools don't
+                    // grow per part; encoder order makes reusing them safe.
                     let composite_mark = composites.mark();
+                    let snapshot_mark = snap_pool.mark();
                     let scratch = composites.acquire(&self.shared, &self.device);
                     self.render_part_to_composite_slot(
                         encoder,
@@ -4696,38 +4487,31 @@ impl WgpuRenderer {
                         *transform,
                         mask_sources,
                         part_uniform_offset,
-                        child_scissor,
+                        scissor,
                     );
                     let blit_uniform_offset =
                         self.write_part_uniform(1.0, glam::Vec3::ONE, glam::Vec3::ZERO, 0.5);
-                    #[allow(clippy::expect_used)]
-                    let snap_pool = snapshots
-                        .as_deref_mut()
-                        .expect("snapshot pool present for a dst-in-shader barrier");
-                    let snapshot_mark = snap_pool.mark();
                     let snapshot = snap_pool.acquire(&self.shared, &self.device);
                     self.blit_composite_dst_in_shader(
                         encoder,
                         &scratch,
-                        &target.view,
-                        &target.texture,
+                        target.view,
+                        target_texture,
                         snapshot,
                         shader_blend,
                         blit_uniform_offset,
                         width,
                         height,
-                        child_scissor,
+                        scissor,
                     );
                     composites.rewind(composite_mark);
-                    if let Some(pool) = snapshots.as_deref_mut() {
-                        pool.rewind(snapshot_mark);
-                    }
+                    snap_pool.rewind(snapshot_mark);
                     sink.mark_rendered();
                 }
             }
         }
 
-        self.render_children_run(encoder, sink, &children[run_start..], width, height)
+        self.render_children_run(encoder, sink, &drawables[run_start..], width, height)
     }
 }
 
