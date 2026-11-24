@@ -31,6 +31,16 @@ fn fixtures() -> Vec<PathBuf> {
     paths
 }
 
+fn read_fixture(path: &Path) -> Vec<u8> {
+    let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    assert!(
+        !bytes.starts_with(b"version https://git-lfs.github.com/spec/v1\n"),
+        "{} is a Git LFS pointer; fetch it with `git lfs pull`",
+        path.display()
+    );
+    bytes
+}
+
 /// Catches a reader that silently re-mints an Id.
 fn identity(model: &Model) -> Vec<String> {
     let mut out = vec![format!("roots={:?}", model.roots())];
@@ -67,7 +77,7 @@ fn identity(model: &Model) -> Vec<String> {
 #[test]
 fn every_committed_fixture_round_trips_byte_for_byte() {
     for path in fixtures() {
-        let bytes = std::fs::read(&path).expect("read fixture");
+        let bytes = read_fixture(&path);
         let model =
             Model::from_clm_bytes(&bytes).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
 
@@ -94,7 +104,7 @@ fn every_committed_fixture_round_trips_byte_for_byte() {
 fn both_readers_and_both_writers_agree_on_every_fixture() {
     for path in fixtures() {
         let name = path.display();
-        let bytes = std::fs::read(&path).expect("read fixture");
+        let bytes = read_fixture(&path);
 
         let file = clm::decode(&bytes).unwrap_or_else(|e| panic!("{name}: {e}"));
         assert_eq!(
@@ -122,7 +132,7 @@ fn both_readers_and_both_writers_agree_on_every_fixture() {
 
 #[test]
 fn the_welded_fixture_keeps_its_vertex_pairs() {
-    let bytes = std::fs::read(models_dir().join("welded_seam.clm")).expect("welded_seam.clm");
+    let bytes = read_fixture(&models_dir().join("welded_seam.clm"));
     let model = Model::from_clm_bytes(&bytes).unwrap();
 
     let [weld] = model.welds() else {

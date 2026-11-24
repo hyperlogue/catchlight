@@ -2,8 +2,9 @@
 
 use std::path::{Path, PathBuf};
 
-use catchlight_core::formats::clm::{self, ClmFile, ClmStructure};
-use catchlight_core::{Model, ModelFormat};
+use catchlight_core::formats::clm::{self, ClmError, ClmFile, ClmStructure};
+use catchlight_core::formats::container::ContainerError;
+use catchlight_core::{Model, ModelError, ModelFormat};
 
 use crate::Error;
 
@@ -12,10 +13,44 @@ pub fn load_model(path: &Path) -> Result<Model, Error> {
     let format = ModelFormat::from_path(path).ok_or_else(|| Error::NotAClm {
         path: path.to_path_buf(),
     })?;
-    catchlight_core::load_model(&bytes, format).map_err(|source| Error::NotAModel {
+    catchlight_core::load_model(&bytes, format).map_err(|source| not_a_model(path, &bytes, source))
+}
+
+/// A checkout without `git lfs pull` leaves pointer text in place of the file,
+/// which the container rejects as bad magic. The spec keys a pointer on this
+/// exact first line.
+fn is_git_lfs_pointer(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"version https://git-lfs.github.com/spec/v1\n")
+}
+
+fn is_bad_magic(error: &ClmError) -> bool {
+    matches!(error, ClmError::Container(ContainerError::BadMagic))
+}
+
+pub(crate) fn not_a_model(path: &Path, bytes: &[u8], source: ModelError) -> Error {
+    match &source {
+        ModelError::Clm(clm) if is_bad_magic(clm) && is_git_lfs_pointer(bytes) => {
+            Error::GitLfsPointer {
+                path: path.to_path_buf(),
+            }
+        }
+        _ => Error::NotAModel {
+            path: path.to_path_buf(),
+            source,
+        },
+    }
+}
+
+pub(crate) fn not_a_clm(path: &Path, bytes: &[u8], source: ClmError) -> Error {
+    if is_bad_magic(&source) && is_git_lfs_pointer(bytes) {
+        return Error::GitLfsPointer {
+            path: path.to_path_buf(),
+        };
+    }
+    Error::Decode {
         path: path.to_path_buf(),
         source,
-    })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,10 +73,7 @@ pub fn shape_of(doc: &ClmStructure) -> Option<Shape> {
 
 pub fn read(path: &Path) -> Result<ClmFile, Error> {
     let bytes = std::fs::read(path).map_err(|e| Error::io(path, e))?;
-    clm::decode(&bytes).map_err(|source| Error::Decode {
-        path: path.to_path_buf(),
-        source,
-    })
+    clm::decode(&bytes).map_err(|source| not_a_clm(path, &bytes, source))
 }
 
 pub fn encode(file: &ClmFile, path: &Path) -> Result<Vec<u8>, Error> {

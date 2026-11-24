@@ -71,10 +71,8 @@ pub fn load(path: &Path, hash_input: bool) -> Result<LoadedModel, Error> {
         limit,
         "use a smaller model",
     )?;
-    let model = catchlight_core::load_model(&bytes, format).map_err(|source| Error::NotAModel {
-        path: path.to_path_buf(),
-        source,
-    })?;
+    let model = catchlight_core::load_model(&bytes, format)
+        .map_err(|source| crate::file::not_a_model(path, &bytes, source))?;
     Ok(LoadedModel {
         model,
         hash: hash_input.then(|| hash(&bytes)),

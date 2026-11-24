@@ -1,6 +1,7 @@
 use crate::config::{Camera, Config, ParamSetting};
 use anyhow::{Context, Result};
-use catchlight_core::{load_model, Model, ModelFormat, ParamId, Pose, Puppet};
+use catchlight_core::formats::{clm::ClmError, container::ContainerError};
+use catchlight_core::{load_model, Model, ModelError, ModelFormat, ParamId, Pose, Puppet};
 use catchlight_wgpu::{
     collect, create_orthographic_camera_at, PrepareOptions, RenderCache, RenderList,
 };
@@ -35,7 +36,14 @@ impl CachedModel {
         let bytes = std::fs::read(path).with_context(|| format!("opening {}", path.display()))?;
         let format = ModelFormat::from_path(path)
             .with_context(|| format!("unrecognized model extension: {}", path.display()))?;
-        let model = load_model(&bytes, format)?;
+        let model = load_model(&bytes, format).map_err(|error| match error {
+            ModelError::Clm(ClmError::Container(ContainerError::BadMagic))
+                if crate::lfs::is_pointer(&bytes) =>
+            {
+                crate::lfs::pointer_error(path)
+            }
+            error => error.into(),
+        })?;
         let param_ids = model
             .param_ids()
             .iter()

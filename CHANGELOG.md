@@ -26,6 +26,9 @@ Breaking for Rust callers of `catchlight-core`; the next release is 0.3.0.
 
 ### Fixed
 
+- **The CLI names a Git LFS pointer.** A checkout without `git lfs pull`
+  leaves pointer text where a `.clm` should be. `catchlight-cli` now says so
+  and how to fetch it, instead of reporting unexpected magic bytes.
 - **A stepped key shows at its own position.** A `Stepped` binding or
   animation lane resting exactly on a key showed the previous key's value. It
   now shows that key's, on both axes. Poses that sit on a stepped key render

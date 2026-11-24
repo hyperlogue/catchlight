@@ -12,6 +12,7 @@
 pub mod config;
 mod diff;
 pub mod harness;
+mod lfs;
 pub mod render;
 
 pub use config::{

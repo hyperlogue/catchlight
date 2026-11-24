@@ -85,14 +85,9 @@ pub fn run(path: &Path) -> Result<Report, Error> {
 }
 
 pub fn inspect(bytes: &[u8], path: &Path) -> Result<Report, Error> {
-    let input = container::read(bytes, &clm::MAGIC).map_err(|source| Error::Decode {
-        path: path.into(),
-        source: source.into(),
-    })?;
-    let model = clm::decode(bytes).map_err(|source| Error::Decode {
-        path: path.into(),
-        source,
-    })?;
+    let input = container::read(bytes, &clm::MAGIC)
+        .map_err(|source| file::not_a_clm(path, bytes, source.into()))?;
+    let model = clm::decode(bytes).map_err(|source| file::not_a_clm(path, bytes, source))?;
     let canonical = file::encode(&model, path)?;
     let mut categories = BTreeMap::<String, usize>::new();
     let mut elements = BTreeMap::new();

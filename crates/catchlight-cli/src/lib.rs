@@ -58,6 +58,11 @@ pub enum Error {
         #[source]
         source: std::io::Error,
     },
+    #[error(
+        "{} is a Git LFS pointer, not the file it names; fetch it with `git lfs pull`",
+        .path.display()
+    )]
+    GitLfsPointer { path: PathBuf },
     #[error("{} is not a .clm file: {source}", .path.display())]
     Decode {
         path: PathBuf,

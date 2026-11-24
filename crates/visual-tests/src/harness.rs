@@ -239,9 +239,15 @@ pub fn run_one(harness: &SharedHarness, config: &Config) -> Result<RunOutcome> {
             baseline.display()
         ));
     }
-    let expected_img = image::open(&baseline)
-        .with_context(|| format!("loading baseline {}", baseline.display()))?
-        .to_rgba8();
+    let expected_img = match image::open(&baseline) {
+        Ok(image) => image.to_rgba8(),
+        Err(_) if crate::lfs::is_pointer_file(&baseline) => {
+            return Err(crate::lfs::pointer_error(&baseline));
+        }
+        Err(error) => {
+            return Err(error).with_context(|| format!("loading baseline {}", baseline.display()))
+        }
+    };
     if expected_img.dimensions() != actual_img.dimensions() {
         let fail_dir = failures_root(&root).join(&config.name);
         std::fs::create_dir_all(&fail_dir)?;

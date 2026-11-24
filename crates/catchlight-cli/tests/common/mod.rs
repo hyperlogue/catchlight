@@ -45,7 +45,13 @@ pub fn copy_fixture(name: &str, dir: &Path) -> PathBuf {
 }
 
 pub fn read(path: &Path) -> Vec<u8> {
-    std::fs::read(path).expect("read")
+    let bytes = std::fs::read(path).expect("read");
+    assert!(
+        !bytes.starts_with(b"version https://git-lfs.github.com/spec/v1\n"),
+        "{} is a Git LFS pointer; fetch it with `git lfs pull`",
+        path.display()
+    );
+    bytes
 }
 
 pub fn decode(path: &Path) -> ClmFile {
