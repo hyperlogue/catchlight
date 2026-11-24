@@ -418,7 +418,10 @@ events to every registered module, and each module keeps its own extension
 consistent with the model. Every entry point catchlight ships registers every
 official module. A module never refuses an edit: what an edit leaves
 dangling is **stale**, and the module decides what to do with it — repair
-it, drop it, or warn.
+it, drop it, or warn. Nor does a module assume its extension matches the
+model it is loaded with — an older build or a foreign tool may have edited
+the model without it — so it checks on load and reports what is stale as
+warnings, never as a failure to load.
 _Avoid_: plugin
 
 **Model event**:
