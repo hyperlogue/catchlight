@@ -62,11 +62,10 @@ change are part of that work and need no separate confirmation. Report any
 checks that remain blocked.
 
 Choose checks for the affected behavior. The exact CI commands and build
-prerequisites live in [.github/workflows/ci.yml](.github/workflows/ci.yml);
-the full Rust test suite (`cargo test --workspace`) is local-only. Start Rust
-tests with the affected crate or test; broaden when the change crosses shared
-boundaries or a failure warrants it. Documentation-only edits need reference
-and diff checks.
+prerequisites live in [.github/workflows/ci.yml](.github/workflows/ci.yml),
+which runs the full Rust test suite on lavapipe. Start Rust tests with the
+affected crate or test; broaden when the change crosses shared boundaries or a
+failure warrants it. Documentation-only edits need reference and diff checks.
 
 - When adding or moving compile-time assets (`include_str!`, `include_bytes!`,
   shaders), check the source filter in [flake.nix](flake.nix) and build the

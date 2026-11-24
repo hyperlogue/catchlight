@@ -37,14 +37,26 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: clippy
         run: nix develop -c cargo clippy --workspace --all-targets --features catchlight-importer/cli -- -D warnings
-      - name: importer binary
-        run: nix develop -c cargo test -p catchlight-importer --features cli --test cli
       - name: runtime entry point and optional integrations
         run: |
           nix develop -c cargo test -p catchlight --doc
           nix develop -c cargo check -p catchlight --all-features
       - name: rustfmt
         run: nix develop -c cargo fmt --all --check
+
+  test:
+    name: cargo test
+    runs-on: ubuntu-latest
+    steps:
+      # Model fixtures and render baselines are LFS objects.
+      - uses: actions/checkout@v7
+        with:
+          lfs: true
+      - uses: DeterminateSystems/nix-installer-action@v22
+      - uses: DeterminateSystems/magic-nix-cache-action@v14
+      - uses: Swatinem/rust-cache@v2
+      # The GPU suites run on the dev shell's lavapipe.
+      - run: nix develop -c cargo test --workspace --features catchlight-importer/cli
 
   wasm:
     name: wasm32 build
@@ -77,9 +89,6 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@v22
       - uses: DeterminateSystems/magic-nix-cache-action@v14
       - uses: Swatinem/rust-cache@v2
-      # Fixture tests are skipped: `cargo test --workspace` owns them.
-      - name: protocol types are current
-        run: nix develop -c cargo test -p xtask -- --skip 'fixtures::'
       - run: nix develop -c cargo xtask build-wasm --release
       - run: nix develop -c bun install --frozen-lockfile
       - run: nix develop -c bun run typecheck
@@ -95,9 +104,6 @@ jobs:
       - run: nix develop -c cargo build -p catchlight-editor
       - name: launcher E2E
         run: nix develop -c bun run --filter catchlight-local-editor e2e
-      - run: nix develop -c cargo test -p visual-tests --lib
-      - name: headless Lan visual regressions
-        run: nix develop -c cargo test -p visual-tests --test regression lan_visual_regressions -- --nocapture
       - name: browser E2E (Lan, both backends and graphics tiers)
         run: nix develop -c bun run --filter catchlight-demo e2e
 
