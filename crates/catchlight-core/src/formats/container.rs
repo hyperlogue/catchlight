@@ -34,6 +34,12 @@ fn check_section_count(count: usize) -> Result<u32, ContainerError> {
 pub enum ContainerError {
     #[error("unexpected magic bytes")]
     BadMagic,
+    /// A checkout without `git lfs pull` leaves this text in place of the file.
+    #[error(
+        "this is a Git LFS pointer, not the file it names; fetch it with `git lfs pull` \
+         (https://git-lfs.com)"
+    )]
+    GitLfsPointer,
     #[error("file shorter than the container header/section table")]
     Truncated,
     #[error("section count {0} exceeds the limit")]
@@ -69,6 +75,14 @@ impl<'a> Container<'a> {
             .find(|s| s.kind == kind)
             .map(|s| s.data)
     }
+}
+
+/// Git LFS writes a short text file until `git lfs pull` replaces it. The
+/// spec keys the pointer on its first line, so a renamed or truncated model
+/// is not mistaken for one.
+fn is_git_lfs_pointer(bytes: &[u8]) -> bool {
+    const MARKER: &[u8] = b"version https://git-lfs.github.com/spec/v1\n";
+    bytes.starts_with(MARKER)
 }
 
 fn le_u16(bytes: &[u8], at: usize) -> Option<u16> {
@@ -198,6 +212,9 @@ pub fn read<'a>(
         return Err(ContainerError::Truncated);
     }
     if &bytes[..8] != expected_magic {
+        if is_git_lfs_pointer(bytes) {
+            return Err(ContainerError::GitLfsPointer);
+        }
         return Err(ContainerError::BadMagic);
     }
     let version = le_u16(bytes, 8).ok_or(ContainerError::Truncated)?;
@@ -394,6 +411,37 @@ mod tests {
         let bytes = write(MAGIC, 1, &[]).unwrap();
         assert_eq!(
             read(&bytes, b"OTHER\0\0\0").err(),
+            Some(ContainerError::BadMagic)
+        );
+    }
+
+    #[test]
+    fn a_git_lfs_pointer_is_named_rather_than_bad_magic() {
+        let pointer = b"\
+version https://git-lfs.github.com/spec/v1
+oid sha256:82d292f59ed7506074685c9d1d00473845dbca9efd0941c5cc91e0fc0904ef6a
+size 11496246
+";
+        assert_eq!(
+            read(pointer, MAGIC).err(),
+            Some(ContainerError::GitLfsPointer)
+        );
+        // The marker has to be the whole first line. A file that merely
+        // mentions it, or a pointer whose newline was rewritten, stays BadMagic.
+        assert_eq!(
+            read(
+                b"version https://git-lfs.github.com/spec/v1\r\noid sha256:ab\n",
+                MAGIC
+            )
+            .err(),
+            Some(ContainerError::BadMagic)
+        );
+        assert_eq!(
+            read(
+                b"notes: version https://git-lfs.github.com/spec/v1\n",
+                MAGIC
+            )
+            .err(),
             Some(ContainerError::BadMagic)
         );
     }
