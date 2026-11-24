@@ -415,7 +415,10 @@ _Avoid_: metadata, custom data, plugin
 The code that understands one official extension, kept outside the core and
 registered with it. The core knows no extension by name: it announces model
 events to every registered module, and each module keeps its own extension
-consistent with the model.
+consistent with the model. Every entry point catchlight ships registers every
+official module. A module never refuses an edit: what an edit leaves
+dangling is **stale**, and the module decides what to do with it — repair
+it, drop it, or warn.
 _Avoid_: plugin
 
 **Model event**:
