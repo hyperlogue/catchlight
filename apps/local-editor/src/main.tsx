@@ -1,6 +1,6 @@
 /** The editor page a local `catchlight-editor` serves; the backend is this origin. */
 import { ConnectedBackend, Editor } from "@catchlight/core";
-import { CatchlightEditor } from "@catchlight/editor-ui";
+import { AgentPrompt, CatchlightEditor } from "@catchlight/editor-ui";
 import "@catchlight/editor-ui/theme.css";
 // wasm-bindgen's bundler target initializes itself on import.
 import * as catchlight from "@catchlight/wasm";
@@ -43,7 +43,16 @@ async function start(): Promise<void> {
   if (!host) throw new Error("index.html has no #editor to mount into");
   createRoot(host).render(
     <StrictMode>
-      <CatchlightEditor editor={editor} />
+      <CatchlightEditor
+        editor={editor}
+        agentConnect={(session) => (
+          <AgentPrompt
+            prompt={`Join catchlight session ${session.id} and work through my review comments: run \`catchlight-editor guide\`, then \`catchlight-editor review watch --session ${session.id}\`.`}
+          >
+            <p>Bring your agent into this session by telling it:</p>
+          </AgentPrompt>
+        )}
+      />
     </StrictMode>,
   );
 }

@@ -51,7 +51,7 @@ import {
 } from "@catchlight/react";
 import type { IconName, SaveOutcome } from "@catchlight/react";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
-import type { CSSProperties } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import { Stage, Environment } from "./stage.js";
 import { CommandPalette, Shortcuts } from "./dialogs.js";
 import { Notification } from "./notification.js";
@@ -64,21 +64,34 @@ export interface CatchlightEditorProps {
   editor: Editor;
   className?: string;
   onOpenStarter?: () => Promise<Session>;
+  /**
+   * How an agent joins `session`, shown in the Review tab while none is
+   * attending: the host knows where its editor runs and which agents it
+   * offers. Without it the tab only says that no agent is connected.
+   */
+  agentConnect?: (session: Session) => ReactNode;
 }
 export function CatchlightEditor({
   editor,
   className,
   onOpenStarter,
+  agentConnect,
 }: CatchlightEditorProps) {
   return (
     <div className={className ? `catchlight ${className}` : "catchlight"}>
       <EditorProvider editor={editor}>
-        <Shell {...(onOpenStarter ? { onOpenStarter } : {})} />
+        <Shell
+          {...(onOpenStarter ? { onOpenStarter } : {})}
+          {...(agentConnect ? { agentConnect } : {})}
+        />
       </EditorProvider>
     </div>
   );
 }
-function Shell({ onOpenStarter }: { onOpenStarter?: () => Promise<Session> }) {
+function Shell({
+  onOpenStarter,
+  agentConnect,
+}: Pick<CatchlightEditorProps, "onOpenStarter" | "agentConnect">) {
   const editor = useEditor();
   const { sessions } = useSessions();
   const [session, setSession] = useState<Session>();
@@ -198,6 +211,7 @@ function Shell({ onOpenStarter }: { onOpenStarter?: () => Promise<Session> }) {
           onError={failed}
           onNotice={setNotice}
           {...(onOpenStarter ? { onOpenStarter } : {})}
+          {...(agentConnect ? { agentConnect } : {})}
         />
         </ReviewProvider>
       </EditingProvider>
@@ -294,6 +308,7 @@ type WorkspaceProps = {
   onError: (e: unknown) => void;
   onNotice: (s: string) => void;
   onOpenStarter?: () => Promise<Session>;
+  agentConnect?: (session: Session) => ReactNode;
   /** Bumped each time review asks to be shown. */
   reviewAsked: number;
 };
@@ -308,6 +323,7 @@ function Workspace({
   onError,
   onNotice,
   onOpenStarter,
+  agentConnect,
 }: WorkspaceProps) {
   const editor = useEditor();
   const { node, select } = useSelection();
@@ -1346,7 +1362,7 @@ function Workspace({
         <div data-catchlight-panel-scroll="">
           {session ? (
             right === "review" ? (
-              <ReviewPanel session={session} />
+              <ReviewPanel session={session} connect={agentConnect?.(session)} />
             ) : mesh ? (
               <MeshInspector />
             ) : editing.mode === "record" ? (

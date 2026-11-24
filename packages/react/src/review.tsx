@@ -34,7 +34,6 @@ import type { ErrorHandler } from "./authoring.js";
 import { Icon, IconButton } from "./controls.js";
 import type { IconName } from "./controls.js";
 import { useEditing } from "./editing.js";
-import { useEditor } from "./editor-context.js";
 import { findNode } from "./node-actions.js";
 import { readPose } from "./pose.js";
 import { useSelection } from "./presence.js";
@@ -360,11 +359,16 @@ function useLabels(session: Session): (target: ReviewTarget) => TargetLabel {
 
 export interface ReviewPanelProps {
   session: Session;
+  /**
+   * The host's way to bring an agent in, shown while none is listening or
+   * working: instructions for the person's own agent, a control that starts a
+   * hosted one, or both. How an agent reaches the editor is the host's to know.
+   */
+  connect?: ReactNode;
 }
 
-export function ReviewPanel({ session }: ReviewPanelProps) {
+export function ReviewPanel({ session, connect }: ReviewPanelProps) {
   const review = useReview();
-  const editor = useEditor();
   const { node, select } = useSelection();
   const editing = useEditing();
   const label = useLabels(session);
@@ -447,7 +451,9 @@ export function ReviewPanel({ session }: ReviewPanelProps) {
           {unsent > 0 ? `Send to agent · ${unsent}` : "Send to agent"}
         </button>
       </header>
-      {phase === "absent" && <ReviewConnect session={session} connected={editor.backendKind() === "connected"} />}
+      {connect && (phase === "absent" || phase === "away") && (
+        <div data-catchlight-review-connect="">{connect}</div>
+      )}
       <div data-catchlight-review-tabs="" role="tablist">
         {(["open", "resolved"] as const).map((status) => (
           <button
@@ -519,19 +525,12 @@ function lastComment(thread: ReviewThread): number {
   return thread.comments[thread.comments.length - 1]?.comment ?? 0;
 }
 
-function ReviewConnect({ session, connected }: { session: Session; connected: boolean }) {
+/** A message for the person to hand their own agent, with a copy button. */
+export function AgentPrompt({ children, prompt }: { children?: ReactNode; prompt: string }) {
   const [copied, setCopied] = useState(false);
-  const prompt = `Join catchlight session ${session.id} and work through my review comments: run \`catchlight-editor guide\`, then \`catchlight-editor review watch --session ${session.id}\`.`;
-  if (!connected)
-    return (
-      <p data-catchlight-review-connect="">
-        This model lives in this tab. To bring an agent in, open it with{" "}
-        <code>catchlight-editor</code> so both of you share the session.
-      </p>
-    );
   return (
-    <div data-catchlight-review-connect="">
-      <p>Bring an agent into this session by telling it:</p>
+    <div data-catchlight-agent-prompt="">
+      {children}
       <code>{prompt}</code>
       <button
         type="button"

@@ -9,3 +9,4 @@ export type { CatchlightEditorProps } from "./CatchlightEditor.js";
 
 /** Hosts must `import "@catchlight/editor-ui/theme.css"`; nothing is styled without it. */
 export const themeStylesheet = "@catchlight/editor-ui/theme.css";
+export { AgentPrompt } from "@catchlight/react";

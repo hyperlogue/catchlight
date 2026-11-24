@@ -2893,7 +2893,11 @@
     color: var(--cl-text);
     overflow-wrap: anywhere;
   }
-  .catchlight div[data-catchlight-review-connect] > code {
+  .catchlight [data-catchlight-review-connect] p {
+    color: inherit;
+    font-size: inherit;
+  }
+  .catchlight [data-catchlight-agent-prompt] > code {
     display: block;
     margin: 8px 0;
     padding: 8px;

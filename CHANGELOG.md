@@ -15,7 +15,9 @@ next release is 0.3.0.
   listening, working and replying. Threads follow renames, flag a target that
   was deleted, and remember the pose they were written at. Python sessions get
   the same calls (`Client.review_*`). Review is session state: it is not saved
-  with the model.
+  with the model. A host says how an agent joins through `CatchlightEditor`'s
+  `agentConnect` prop, so the same editor serves a local process or a hosted
+  one that offers its own agent.
 - **A redesigned editor.** One top bar holds the menus, open models, review
   status and save; the canvas runs edge to edge with its modes and tools
   floating over it; the tree, params and properties are denser, so more of the

@@ -210,6 +210,7 @@ export {
   ReviewStatus,
   ReviewBadge,
   ReviewCommentButton,
+  AgentPrompt,
   useReview,
   sameTarget,
   targetLabel,

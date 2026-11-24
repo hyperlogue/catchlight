@@ -46,7 +46,7 @@ async function review(): Promise<{
           }}
         >
           <NodeTree.Root session={session} />
-          <ReviewPanel session={session} />
+          <ReviewPanel session={session} connect={<p data-connect="">bring an agent</p>} />
           <Watch />
         </ReviewProvider>
       </SelectionProvider>
@@ -148,6 +148,19 @@ describe("the review panel", () => {
     expect(card()?.hasAttribute("data-working")).toBe(false);
     expect(card()?.hasAttribute("data-attention")).toBe(true);
     expect(card()?.querySelector('[data-role="agent"] p')?.textContent).toBe("raised it 12px");
+    await view.unmount();
+  });
+
+  test("the host's way to bring an agent in shows until one is attending", async () => {
+    const { view, session } = await review();
+    expect(view.container.querySelector("[data-connect]")).not.toBeNull();
+
+    await comment(view, "raise the collar");
+    await run(() => session.sendReview({ cmd: "review_submit" }));
+    await run(() => session.sendReview({ cmd: "review_fetch", agent: "claude" }));
+    await settle();
+
+    expect(view.container.querySelector("[data-connect]")).toBeNull();
     await view.unmount();
   });
 

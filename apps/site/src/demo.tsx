@@ -79,7 +79,16 @@ function mount(editor: Editor, mode: "editor" | "face", session: Session | void)
       <div className="demo-shell">
         <nav className="demo-nav"><a href={import.meta.env.BASE_URL}>← All demos</a><span>{mode === "face" ? "Face tracking" : "Editor demo"}</span></nav>
         {mode === "face" ? (session ? <EditorProvider editor={editor}><FaceDemo session={session} /></EditorProvider> : null) :
-          <CatchlightEditor editor={editor} onOpenStarter={() => openStarter(editor, example)} />}
+          <CatchlightEditor
+            editor={editor}
+            onOpenStarter={() => openStarter(editor, example)}
+            agentConnect={() => (
+              <p>
+                This demo keeps the model in this tab. Open it with <code>catchlight-editor</code> to share the
+                session with an agent.
+              </p>
+            )}
+          />}
       </div>
     </StrictMode>,
   );
