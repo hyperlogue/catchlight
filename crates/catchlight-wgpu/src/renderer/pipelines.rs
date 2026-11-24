@@ -1,12 +1,234 @@
 use super::*;
 
+/// Blend modes with a fixed-function state of their own, in slot order.
+/// The dst-in-shader modes draw their source as `Normal`.
+const FIXED_BLENDS: [BlendMode; 12] = [
+    BlendMode::Normal,
+    BlendMode::Multiply,
+    BlendMode::Screen,
+    BlendMode::ClipToLower,
+    BlendMode::SliceFromLower,
+    BlendMode::ColorDodge,
+    BlendMode::LinearDodge,
+    BlendMode::Darken,
+    BlendMode::Lighten,
+    BlendMode::Add,
+    BlendMode::Inverse,
+    BlendMode::Subtract,
+];
+
+fn blend_slot(mode: BlendMode) -> usize {
+    match mode {
+        BlendMode::Normal | BlendMode::Overlay | BlendMode::ColorBurn | BlendMode::LinearBurn => 0,
+        BlendMode::Multiply => 1,
+        BlendMode::Screen => 2,
+        BlendMode::ClipToLower => 3,
+        BlendMode::SliceFromLower => 4,
+        BlendMode::ColorDodge => 5,
+        BlendMode::LinearDodge => 6,
+        BlendMode::Darken => 7,
+        BlendMode::Lighten => 8,
+        BlendMode::Add => 9,
+        BlendMode::Inverse => 10,
+        BlendMode::Subtract => 11,
+    }
+}
+
+/// One pipeline per fixed-function blend state.
+pub(crate) struct BlendPipelines([wgpu::RenderPipeline; FIXED_BLENDS.len()]);
+
+impl BlendPipelines {
+    fn build(make: impl FnMut(BlendMode) -> wgpu::RenderPipeline) -> Self {
+        Self(FIXED_BLENDS.map(make))
+    }
+
+    pub(crate) fn get(&self, mode: BlendMode) -> &wgpu::RenderPipeline {
+        &self.0[blend_slot(mode)]
+    }
+}
+
+/// Blend modes whose math reads the destination color, which no
+/// fixed-function `BlendState` can express.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ShaderBlend {
+    Overlay,
+    ColorBurn,
+    LinearBurn,
+}
+
+impl ShaderBlend {
+    const ALL: [Self; 3] = [Self::Overlay, Self::ColorBurn, Self::LinearBurn];
+
+    pub(crate) fn of(mode: BlendMode) -> Option<Self> {
+        match mode {
+            BlendMode::Overlay => Some(Self::Overlay),
+            BlendMode::ColorBurn => Some(Self::ColorBurn),
+            BlendMode::LinearBurn => Some(Self::LinearBurn),
+            _ => None,
+        }
+    }
+
+    fn fragment_entry(self) -> &'static str {
+        match self {
+            Self::Overlay => "fs_overlay",
+            Self::ColorBurn => "fs_color_burn",
+            Self::LinearBurn => "fs_linear_burn",
+        }
+    }
+}
+
+/// How a mask reaches the content it clips.
+pub(crate) enum MaskPipelines {
+    Stencil(StencilMasks),
+    Sampled(SampledMasks),
+}
+
+/// Sources REPLACE a stencil reference and content tests Equal against it.
+pub(crate) struct StencilMasks {
+    pub(crate) write: wgpu::RenderPipeline,
+    pub(crate) composite_write: wgpu::RenderPipeline,
+    /// Seeds an all-DodgeMask batch so dodge sources can punch 0 out of it.
+    pub(crate) fill: wgpu::RenderPipeline,
+    pub(crate) masked: BlendPipelines,
+    pub(crate) masked_blit: BlendPipelines,
+}
+
+/// For backends without a usable stencil attachment (Chromium swiftshader
+/// WebGL2 fails Depth24PlusStencil8): sources write 1, or 0 for a dodge, into
+/// an offscreen alpha texture that content samples.
+pub(crate) struct SampledMasks {
+    pub(crate) bind_group_layout: wgpu::BindGroupLayout,
+    pub(crate) sampler: wgpu::Sampler,
+    pub(crate) write: wgpu::RenderPipeline,
+    pub(crate) write_dodge: wgpu::RenderPipeline,
+    pub(crate) composite_write: wgpu::RenderPipeline,
+    pub(crate) composite_write_dodge: wgpu::RenderPipeline,
+    pub(crate) masked: BlendPipelines,
+    pub(crate) masked_blit: BlendPipelines,
+}
+
+impl MaskPipelines {
+    pub(crate) fn stencil(&self) -> Option<&StencilMasks> {
+        match self {
+            Self::Stencil(masks) => Some(masks),
+            Self::Sampled(_) => None,
+        }
+    }
+
+    pub(crate) fn sampled(&self) -> Option<&SampledMasks> {
+        match self {
+            Self::Stencil(_) => None,
+            Self::Sampled(masks) => Some(masks),
+        }
+    }
+
+    pub(crate) fn masked(&self) -> &BlendPipelines {
+        match self {
+            Self::Stencil(masks) => &masks.masked,
+            Self::Sampled(masks) => &masks.masked,
+        }
+    }
+
+    pub(crate) fn masked_blit(&self) -> &BlendPipelines {
+        match self {
+            Self::Stencil(masks) => &masks.masked_blit,
+            Self::Sampled(masks) => &masks.masked_blit,
+        }
+    }
+}
+
+/// Shared across every puppet in one world; built once per (device,
+/// surface_format).
+pub struct Pipelines {
+    pub surface_format: wgpu::TextureFormat,
+    pub(crate) parts: BlendPipelines,
+    pub(crate) blits: BlendPipelines,
+    pub(crate) masks: MaskPipelines,
+    pub(crate) composite_mask_part_pipeline: wgpu::RenderPipeline,
+    pub(crate) blit_bind_group_layout: wgpu::BindGroupLayout,
+    pub(crate) blit_sampler: wgpu::Sampler,
+    // Fixed to `Rgba8UnormSrgb`, independent of `surface_format`.
+    pub(crate) mip_pipeline: wgpu::RenderPipeline,
+    pub(crate) mip_bind_group_layout: wgpu::BindGroupLayout,
+    /// Indexed by [`ShaderBlend`].
+    blit_dst_in_shader_pipelines: [wgpu::RenderPipeline; 3],
+    pub(crate) snapshot_bind_group_layout: wgpu::BindGroupLayout,
+    pub(crate) snapshot_sampler: wgpu::Sampler,
+    // Dynamic offset: one camera slot per view in a submit, so views do not
+    // alias under `write_buffer` batching.
+    pub(crate) camera_bind_group_layout: wgpu::BindGroupLayout,
+    pub(crate) camera_stride: u64,
+    pub(crate) texture_bind_group_layout: wgpu::BindGroupLayout,
+    pub(crate) texture_sampler: wgpu::Sampler,
+    pub(crate) part_uniform_bind_group_layout: wgpu::BindGroupLayout,
+    // Rounded up to `min_uniform_buffer_offset_alignment`. Blits share the
+    // wire format.
+    pub(crate) part_uniform_stride: u64,
+    // Native backends drive `first_instance` in hardware; GL/WebGL2 and the
+    // adapter-less constructors re-slice the instance buffer per draw.
+    pub(crate) base_instance: bool,
+}
+
+fn stencil_forced_off() -> bool {
+    std::env::var("CATCHLIGHT_DISABLE_STENCIL")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+fn sampled_texture_layout(device: &wgpu::Device, label: &str) -> wgpu::BindGroupLayout {
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    multisampled: false,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ],
+        label: Some(label),
+    })
+}
+
+/// Depth is never tested or written; only the stencil half is used.
+fn stencil_only(
+    compare: wgpu::CompareFunction,
+    pass_op: wgpu::StencilOperation,
+    write_mask: u32,
+) -> wgpu::DepthStencilState {
+    let face = wgpu::StencilFaceState {
+        compare,
+        fail_op: wgpu::StencilOperation::Keep,
+        depth_fail_op: wgpu::StencilOperation::Keep,
+        pass_op,
+    };
+    wgpu::DepthStencilState {
+        format: wgpu::TextureFormat::Depth24PlusStencil8,
+        depth_write_enabled: Some(false),
+        depth_compare: Some(wgpu::CompareFunction::Always),
+        stencil: wgpu::StencilState {
+            front: face,
+            back: face,
+            read_mask: 0xff,
+            write_mask,
+        },
+        bias: wgpu::DepthBiasState::default(),
+    }
+}
+
 impl Pipelines {
     /// `CATCHLIGHT_DISABLE_STENCIL=1` forces the alpha-discard fallback.
     pub fn new(device: &wgpu::Device, surface_format: wgpu::TextureFormat) -> Self {
-        let forced_off = std::env::var("CATCHLIGHT_DISABLE_STENCIL")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-        Self::new_with_options(device, surface_format, !forced_off)
+        Self::new_with_options(device, surface_format, !stencil_forced_off())
     }
 
     /// GL adapters (WebGL2 included) get the stencil-free fallback;
@@ -16,16 +238,21 @@ impl Pipelines {
         device: &wgpu::Device,
         surface_format: wgpu::TextureFormat,
     ) -> Self {
-        let forced_off = std::env::var("CATCHLIGHT_DISABLE_STENCIL")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
         let non_gl = adapter.get_info().backend != wgpu::Backend::Gl;
-        let has_stencil = !forced_off && non_gl;
+        let has_stencil = !stencil_forced_off() && non_gl;
         let mut pipelines = Self::new_with_options(device, surface_format, has_stencil);
         // wgpu's GL backend only emulates `first_instance` by rebinding per draw,
         // so GL keeps the explicit per-draw slice.
         pipelines.base_instance = non_gl;
         pipelines
+    }
+
+    pub(crate) fn has_stencil(&self) -> bool {
+        matches!(self.masks, MaskPipelines::Stencil(_))
+    }
+
+    pub(crate) fn blit_dst_in_shader(&self, blend: ShaderBlend) -> &wgpu::RenderPipeline {
+        &self.blit_dst_in_shader_pipelines[blend as usize]
     }
 
     pub fn new_with_options(
@@ -70,28 +297,7 @@ impl Pipelines {
             (std::mem::size_of::<CameraUniform>() as u64).div_ceil(align) * align
         };
 
-        let texture_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            multisampled: false,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
-                ],
-                label: Some("texture_bind_group_layout"),
-            });
+        let texture_bind_group_layout = sampled_texture_layout(device, "texture_bind_group_layout");
 
         let part_uniform_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -127,51 +333,21 @@ impl Pipelines {
                 ],
             });
 
-        let mut pipelines = HashMap::new();
-        let blend_modes = [
-            BlendMode::Normal,
-            BlendMode::Multiply,
-            BlendMode::Screen,
-            BlendMode::ClipToLower,
-            BlendMode::SliceFromLower,
-            BlendMode::ColorDodge,
-            BlendMode::LinearDodge,
-            BlendMode::Overlay,
-            BlendMode::ColorBurn,
-            BlendMode::LinearBurn,
-            BlendMode::Darken,
-            BlendMode::Lighten,
-            BlendMode::Add,
-            BlendMode::Inverse,
-            BlendMode::Subtract,
-        ];
-
         // Blit pipelines generate a fullscreen triangle and take `&[]`.
         let part_vertex_buffers = [Vertex::desc(), InstanceRaw::desc(), DeformAttr::desc()];
 
         // wgpu requires pipeline and pass depth-stencil formats to match, so
         // unmasked pipelines in the shared stencil pass carry a no-op stencil state.
-        let noop_stencil_face = wgpu::StencilFaceState {
-            compare: wgpu::CompareFunction::Always,
-            fail_op: wgpu::StencilOperation::Keep,
-            depth_fail_op: wgpu::StencilOperation::Keep,
-            pass_op: wgpu::StencilOperation::Keep,
-        };
-        let part_depth_stencil = has_stencil.then(|| wgpu::DepthStencilState {
-            format: wgpu::TextureFormat::Depth24PlusStencil8,
-            depth_write_enabled: Some(false),
-            depth_compare: Some(wgpu::CompareFunction::Always),
-            stencil: wgpu::StencilState {
-                front: noop_stencil_face,
-                back: noop_stencil_face,
-                read_mask: 0xff,
-                write_mask: 0x00,
-            },
-            bias: wgpu::DepthBiasState::default(),
+        let part_depth_stencil = has_stencil.then(|| {
+            stencil_only(
+                wgpu::CompareFunction::Always,
+                wgpu::StencilOperation::Keep,
+                0x00,
+            )
         });
 
-        for blend_mode in blend_modes {
-            let pipeline = make_render_pipeline(
+        let parts = BlendPipelines::build(|blend_mode| {
+            make_render_pipeline(
                 device,
                 &format!("Render Pipeline {:?}", blend_mode),
                 &render_pipeline_layout,
@@ -184,37 +360,15 @@ impl Pipelines {
                 blend_mode_to_wgpu(blend_mode),
                 wgpu::ColorWrites::ALL,
                 part_depth_stencil.clone(),
-            );
-            pipelines.insert(blend_mode, pipeline);
-        }
+            )
+        });
 
         let blit_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Blit Shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/blit.wgsl").into()),
         });
 
-        let blit_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            multisampled: false,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
-                ],
-                label: Some("blit_bind_group_layout"),
-            });
+        let blit_bind_group_layout = sampled_texture_layout(device, "blit_bind_group_layout");
 
         // Blits share the part-uniform layout and cursor-managed buffer so each
         // blit in a submit reads its own slot.
@@ -227,10 +381,8 @@ impl Pipelines {
             ],
         });
 
-        let mut blit_pipelines = HashMap::new();
-
-        for blend_mode in blend_modes {
-            let blit_pipeline = make_render_pipeline(
+        let blits = BlendPipelines::build(|blend_mode| {
+            make_render_pipeline(
                 device,
                 &format!("Blit Pipeline {:?}", blend_mode),
                 &blit_pipeline_layout,
@@ -243,32 +395,11 @@ impl Pipelines {
                 blend_mode_to_wgpu(blend_mode),
                 wgpu::ColorWrites::ALL,
                 None,
-            );
-            blit_pipelines.insert(blend_mode, blit_pipeline);
-        }
+            )
+        });
 
         let snapshot_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            multisampled: false,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
-                ],
-                label: Some("snapshot_bind_group_layout"),
-            });
+            sampled_texture_layout(device, "snapshot_bind_group_layout");
 
         let snapshot_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("Framebuffer Snapshot Sampler"),
@@ -301,78 +432,22 @@ impl Pipelines {
             ),
         });
 
-        let dst_in_shader_modes: &[(BlendMode, &'static str)] = &[
-            (BlendMode::Overlay, "fs_overlay"),
-            (BlendMode::ColorBurn, "fs_color_burn"),
-            (BlendMode::LinearBurn, "fs_linear_burn"),
-        ];
-
-        let mut blit_dst_in_shader_pipelines = HashMap::new();
-        for (mode, entry) in dst_in_shader_modes {
-            let pipeline = make_render_pipeline(
+        let blit_dst_in_shader_pipelines = ShaderBlend::ALL.map(|blend| {
+            make_render_pipeline(
                 device,
-                &format!("Blit (dst-in-shader) Pipeline {:?}", mode),
+                &format!("Blit (dst-in-shader) Pipeline {:?}", blend),
                 &blit_dst_in_shader_layout,
                 &blit_dst_in_shader_module,
                 "vs_main",
                 &[],
                 &blit_dst_in_shader_module,
-                entry,
+                blend.fragment_entry(),
                 surface_format,
                 wgpu::BlendState::REPLACE,
                 wgpu::ColorWrites::ALL,
                 None,
-            );
-            blit_dst_in_shader_pipelines.insert(*mode, pipeline);
-        }
-
-        // fs_mask discards texels at or below mask_threshold; otherwise masks
-        // would be triangle-shaped rather than alpha-shaped.
-        let stencil_state = wgpu::StencilState {
-            front: wgpu::StencilFaceState {
-                compare: wgpu::CompareFunction::Always,
-                fail_op: wgpu::StencilOperation::Keep,
-                depth_fail_op: wgpu::StencilOperation::Keep,
-                pass_op: wgpu::StencilOperation::Replace,
-            },
-            back: wgpu::StencilFaceState {
-                compare: wgpu::CompareFunction::Always,
-                fail_op: wgpu::StencilOperation::Keep,
-                depth_fail_op: wgpu::StencilOperation::Keep,
-                pass_op: wgpu::StencilOperation::Replace,
-            },
-            read_mask: 0xff,
-            write_mask: 0xff,
-        };
-        let mask_depth_stencil = if has_stencil {
-            Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth24PlusStencil8,
-                depth_write_enabled: Some(false),
-                depth_compare: Some(wgpu::CompareFunction::Always),
-                stencil: stencil_state.clone(),
-                bias: wgpu::DepthBiasState::default(),
-            })
-        } else {
-            None
-        };
-        let mask_write_pipeline = make_render_pipeline(
-            device,
-            "Mask Write Pipeline",
-            &render_pipeline_layout,
-            &shader,
-            "vs_main",
-            &part_vertex_buffers,
-            &shader,
-            "fs_mask",
-            surface_format,
-            blend_mode_to_wgpu(BlendMode::Normal),
-            if has_stencil {
-                wgpu::ColorWrites::empty()
-            } else {
-                wgpu::ColorWrites::ALL
-            },
-            mask_depth_stencil,
-        );
+            )
+        });
 
         let composite_mask_part_pipeline = make_render_pipeline(
             device,
@@ -388,81 +463,50 @@ impl Pipelines {
             wgpu::ColorWrites::ALL,
             None,
         );
-        let composite_mask_write_pipeline = make_render_pipeline(
-            device,
-            "Composite Mask Write Pipeline",
-            &blit_pipeline_layout,
-            &blit_shader,
-            "vs_main",
-            &[],
-            &blit_shader,
-            "fs_composite_mask",
-            surface_format,
-            wgpu::BlendState::REPLACE,
-            if has_stencil {
-                wgpu::ColorWrites::empty()
-            } else {
-                wgpu::ColorWrites::ALL
-            },
-            if has_stencil {
-                Some(wgpu::DepthStencilState {
-                    format: wgpu::TextureFormat::Depth24PlusStencil8,
-                    depth_write_enabled: Some(false),
-                    depth_compare: Some(wgpu::CompareFunction::Always),
-                    stencil: stencil_state.clone(),
-                    bias: wgpu::DepthBiasState::default(),
-                })
-            } else {
-                None
-            },
-        );
-        let composite_mask_alpha_dodge_pipeline = (!has_stencil).then(|| {
-            make_render_pipeline(
+
+        let masks = if has_stencil {
+            // fs_mask discards texels at or below mask_threshold; otherwise masks
+            // would be triangle-shaped rather than alpha-shaped.
+            let replace = stencil_only(
+                wgpu::CompareFunction::Always,
+                wgpu::StencilOperation::Replace,
+                0xff,
+            );
+            let equal = stencil_only(
+                wgpu::CompareFunction::Equal,
+                wgpu::StencilOperation::Keep,
+                0x00,
+            );
+            let write = make_render_pipeline(
                 device,
-                "Composite Mask Alpha Dodge Pipeline",
+                "Mask Write Pipeline",
+                &render_pipeline_layout,
+                &shader,
+                "vs_main",
+                &part_vertex_buffers,
+                &shader,
+                "fs_mask",
+                surface_format,
+                blend_mode_to_wgpu(BlendMode::Normal),
+                wgpu::ColorWrites::empty(),
+                Some(replace.clone()),
+            );
+            let composite_write = make_render_pipeline(
+                device,
+                "Composite Mask Write Pipeline",
                 &blit_pipeline_layout,
                 &blit_shader,
                 "vs_main",
                 &[],
                 &blit_shader,
-                "fs_composite_mask_dodge",
+                "fs_composite_mask",
                 surface_format,
                 wgpu::BlendState::REPLACE,
-                wgpu::ColorWrites::ALL,
-                None,
-            )
-        });
-
-        // Empty on the alpha path, which uses masked_sampled_pipelines.
-        let mut masked_pipelines = HashMap::new();
-        let mut masked_blit_pipelines = HashMap::new();
-        let mut stencil_fill_pipeline = None;
-        if has_stencil {
-            // Identical for every blend mode, so build it once.
-            let masked_stencil = wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth24PlusStencil8,
-                depth_write_enabled: Some(false),
-                depth_compare: Some(wgpu::CompareFunction::Always),
-                stencil: wgpu::StencilState {
-                    front: wgpu::StencilFaceState {
-                        compare: wgpu::CompareFunction::Equal,
-                        fail_op: wgpu::StencilOperation::Keep,
-                        depth_fail_op: wgpu::StencilOperation::Keep,
-                        pass_op: wgpu::StencilOperation::Keep,
-                    },
-                    back: wgpu::StencilFaceState {
-                        compare: wgpu::CompareFunction::Equal,
-                        fail_op: wgpu::StencilOperation::Keep,
-                        depth_fail_op: wgpu::StencilOperation::Keep,
-                        pass_op: wgpu::StencilOperation::Keep,
-                    },
-                    read_mask: 0xff,
-                    write_mask: 0x00,
-                },
-                bias: wgpu::DepthBiasState::default(),
-            };
-            for blend_mode in blend_modes {
-                let pipeline = make_render_pipeline(
+                wgpu::ColorWrites::empty(),
+                Some(replace.clone()),
+            );
+            let masked = BlendPipelines::build(|blend_mode| {
+                make_render_pipeline(
                     device,
                     &format!("Masked Render Pipeline {:?}", blend_mode),
                     &render_pipeline_layout,
@@ -474,13 +518,11 @@ impl Pipelines {
                     surface_format,
                     blend_mode_to_wgpu(blend_mode),
                     wgpu::ColorWrites::ALL,
-                    Some(masked_stencil.clone()),
-                );
-                masked_pipelines.insert(blend_mode, pipeline);
-            }
-
-            for blend_mode in blend_modes {
-                let pipeline = make_render_pipeline(
+                    Some(equal.clone()),
+                )
+            });
+            let masked_blit = BlendPipelines::build(|blend_mode| {
+                make_render_pipeline(
                     device,
                     &format!("Masked Blit Pipeline {:?}", blend_mode),
                     &blit_pipeline_layout,
@@ -492,10 +534,9 @@ impl Pipelines {
                     surface_format,
                     blend_mode_to_wgpu(blend_mode),
                     wgpu::ColorWrites::ALL,
-                    Some(masked_stencil.clone()),
-                );
-                masked_blit_pipelines.insert(blend_mode, pipeline);
-            }
+                    Some(equal.clone()),
+                )
+            });
 
             let stencil_fill_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("Stencil Fill Shader"),
@@ -509,7 +550,7 @@ impl Pipelines {
                     immediate_size: 0,
                     bind_group_layouts: &[],
                 });
-            stencil_fill_pipeline = Some(make_render_pipeline(
+            let fill = make_render_pipeline(
                 device,
                 "Stencil Fill Pipeline",
                 &stencil_fill_layout,
@@ -521,15 +562,137 @@ impl Pipelines {
                 surface_format,
                 wgpu::BlendState::REPLACE,
                 wgpu::ColorWrites::empty(),
-                Some(wgpu::DepthStencilState {
-                    format: wgpu::TextureFormat::Depth24PlusStencil8,
-                    depth_write_enabled: Some(false),
-                    depth_compare: Some(wgpu::CompareFunction::Always),
-                    stencil: stencil_state.clone(),
-                    bias: wgpu::DepthBiasState::default(),
-                }),
-            ));
-        }
+                Some(replace),
+            );
+            MaskPipelines::Stencil(StencilMasks {
+                write,
+                composite_write,
+                fill,
+                masked,
+                masked_blit,
+            })
+        } else {
+            let bind_group_layout = sampled_texture_layout(device, "mask_bind_group_layout");
+
+            let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("Mask Alpha Sampler"),
+                address_mode_u: wgpu::AddressMode::ClampToEdge,
+                address_mode_v: wgpu::AddressMode::ClampToEdge,
+                address_mode_w: wgpu::AddressMode::ClampToEdge,
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
+                mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+                ..Default::default()
+            });
+
+            let masked_part_layout =
+                device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("Masked (Sampled) Pipeline Layout"),
+                    immediate_size: 0,
+                    bind_group_layouts: &[
+                        Some(&camera_bind_group_layout),
+                        Some(&texture_bind_group_layout),
+                        Some(&part_uniform_bind_group_layout),
+                        Some(&bind_group_layout),
+                    ],
+                });
+
+            // Group 0 composite, group 1 blit uniforms, group 2 mask.
+            let masked_blit_layout =
+                device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("Masked Blit (Sampled) Pipeline Layout"),
+                    immediate_size: 0,
+                    bind_group_layouts: &[
+                        Some(&blit_bind_group_layout),
+                        Some(&part_uniform_bind_group_layout),
+                        Some(&bind_group_layout),
+                    ],
+                });
+
+            // REPLACE mirrors the stencil path's op; only alpha is read.
+            let part_write = |label: &str, fragment_entry: &str| {
+                make_render_pipeline(
+                    device,
+                    label,
+                    &render_pipeline_layout,
+                    &shader,
+                    "vs_main",
+                    &part_vertex_buffers,
+                    &shader,
+                    fragment_entry,
+                    surface_format,
+                    wgpu::BlendState::REPLACE,
+                    wgpu::ColorWrites::ALL,
+                    None,
+                )
+            };
+            let composite_write = |label: &str, fragment_entry: &str| {
+                make_render_pipeline(
+                    device,
+                    label,
+                    &blit_pipeline_layout,
+                    &blit_shader,
+                    "vs_main",
+                    &[],
+                    &blit_shader,
+                    fragment_entry,
+                    surface_format,
+                    wgpu::BlendState::REPLACE,
+                    wgpu::ColorWrites::ALL,
+                    None,
+                )
+            };
+
+            let masked = BlendPipelines::build(|blend_mode| {
+                make_render_pipeline(
+                    device,
+                    &format!("Masked (Sampled) Pipeline {:?}", blend_mode),
+                    &masked_part_layout,
+                    &shader,
+                    "vs_main",
+                    &part_vertex_buffers,
+                    &shader,
+                    "fs_masked_sampled",
+                    surface_format,
+                    blend_mode_to_wgpu(blend_mode),
+                    wgpu::ColorWrites::ALL,
+                    None,
+                )
+            });
+            let masked_blit = BlendPipelines::build(|blend_mode| {
+                make_render_pipeline(
+                    device,
+                    &format!("Masked Blit (Sampled) Pipeline {:?}", blend_mode),
+                    &masked_blit_layout,
+                    &blit_shader,
+                    "vs_main",
+                    &[],
+                    &blit_shader,
+                    "fs_masked_sampled",
+                    surface_format,
+                    blend_mode_to_wgpu(blend_mode),
+                    wgpu::ColorWrites::ALL,
+                    None,
+                )
+            });
+
+            MaskPipelines::Sampled(SampledMasks {
+                write: part_write("Mask Alpha Write Pipeline", "fs_mask_alpha"),
+                write_dodge: part_write("Mask Alpha Dodge Write Pipeline", "fs_mask_alpha_dodge"),
+                composite_write: composite_write(
+                    "Composite Mask Write Pipeline",
+                    "fs_composite_mask",
+                ),
+                composite_write_dodge: composite_write(
+                    "Composite Mask Alpha Dodge Pipeline",
+                    "fs_composite_mask_dodge",
+                ),
+                masked,
+                masked_blit,
+                bind_group_layout,
+                sampler,
+            })
+        };
 
         let blit_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("Blit Sampler"),
@@ -620,164 +783,12 @@ impl Pipelines {
             ..Default::default()
         });
 
-        // WebGL fallback: only compiled when has_stencil == false.
-        let (
-            mask_bind_group_layout,
-            mask_sampler,
-            mask_alpha_pipeline,
-            mask_alpha_dodge_pipeline,
-            masked_sampled_pipelines,
-            masked_sampled_blit_pipelines,
-        ) = if has_stencil {
-            (None, None, None, None, HashMap::new(), HashMap::new())
-        } else {
-            let mask_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            multisampled: false,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
-                ],
-                label: Some("mask_bind_group_layout"),
-            });
-
-            let mask_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-                label: Some("Mask Alpha Sampler"),
-                address_mode_u: wgpu::AddressMode::ClampToEdge,
-                address_mode_v: wgpu::AddressMode::ClampToEdge,
-                address_mode_w: wgpu::AddressMode::ClampToEdge,
-                mag_filter: wgpu::FilterMode::Linear,
-                min_filter: wgpu::FilterMode::Linear,
-                mipmap_filter: wgpu::MipmapFilterMode::Nearest,
-                ..Default::default()
-            });
-
-            let masked_part_layout =
-                device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                    label: Some("Masked (Sampled) Pipeline Layout"),
-                    immediate_size: 0,
-                    bind_group_layouts: &[
-                        Some(&camera_bind_group_layout),
-                        Some(&texture_bind_group_layout),
-                        Some(&part_uniform_bind_group_layout),
-                        Some(&mask_layout),
-                    ],
-                });
-
-            // Group 0 composite, group 1 blit uniforms, group 2 mask.
-            let masked_blit_layout =
-                device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                    label: Some("Masked Blit (Sampled) Pipeline Layout"),
-                    immediate_size: 0,
-                    bind_group_layouts: &[
-                        Some(&blit_bind_group_layout),
-                        Some(&part_uniform_bind_group_layout),
-                        Some(&mask_layout),
-                    ],
-                });
-
-            // REPLACE mirrors the stencil path's op; only alpha is read.
-            let mask_alpha_pipeline = make_render_pipeline(
-                device,
-                "Mask Alpha Write Pipeline",
-                &render_pipeline_layout,
-                &shader,
-                "vs_main",
-                &part_vertex_buffers,
-                &shader,
-                "fs_mask_alpha",
-                surface_format,
-                wgpu::BlendState::REPLACE,
-                wgpu::ColorWrites::ALL,
-                None,
-            );
-
-            let mask_alpha_dodge_pipeline = make_render_pipeline(
-                device,
-                "Mask Alpha Dodge Write Pipeline",
-                &render_pipeline_layout,
-                &shader,
-                "vs_main",
-                &part_vertex_buffers,
-                &shader,
-                "fs_mask_alpha_dodge",
-                surface_format,
-                wgpu::BlendState::REPLACE,
-                wgpu::ColorWrites::ALL,
-                None,
-            );
-
-            let mut masked_sampled_pipelines = HashMap::new();
-            for blend_mode in blend_modes {
-                let pipeline = make_render_pipeline(
-                    device,
-                    &format!("Masked (Sampled) Pipeline {:?}", blend_mode),
-                    &masked_part_layout,
-                    &shader,
-                    "vs_main",
-                    &part_vertex_buffers,
-                    &shader,
-                    "fs_masked_sampled",
-                    surface_format,
-                    blend_mode_to_wgpu(blend_mode),
-                    wgpu::ColorWrites::ALL,
-                    None,
-                );
-                masked_sampled_pipelines.insert(blend_mode, pipeline);
-            }
-
-            let mut masked_sampled_blit_pipelines = HashMap::new();
-            for blend_mode in blend_modes {
-                let pipeline = make_render_pipeline(
-                    device,
-                    &format!("Masked Blit (Sampled) Pipeline {:?}", blend_mode),
-                    &masked_blit_layout,
-                    &blit_shader,
-                    "vs_main",
-                    &[],
-                    &blit_shader,
-                    "fs_masked_sampled",
-                    surface_format,
-                    blend_mode_to_wgpu(blend_mode),
-                    wgpu::ColorWrites::ALL,
-                    None,
-                );
-                masked_sampled_blit_pipelines.insert(blend_mode, pipeline);
-            }
-
-            (
-                Some(mask_layout),
-                Some(mask_sampler),
-                Some(mask_alpha_pipeline),
-                Some(mask_alpha_dodge_pipeline),
-                masked_sampled_pipelines,
-                masked_sampled_blit_pipelines,
-            )
-        };
-
         Self {
             surface_format,
-            pipelines,
-            mask_write_pipeline,
+            parts,
+            blits,
+            masks,
             composite_mask_part_pipeline,
-            composite_mask_write_pipeline,
-            composite_mask_alpha_dodge_pipeline,
-            masked_pipelines,
-            blit_pipelines,
-            masked_blit_pipelines,
-            stencil_fill_pipeline,
             blit_bind_group_layout,
             blit_sampler,
             mip_pipeline,
@@ -793,13 +804,18 @@ impl Pipelines {
             part_uniform_stride,
             // `new_autodetect` overrides this from the adapter.
             base_instance: false,
-            has_stencil,
-            mask_bind_group_layout,
-            mask_sampler,
-            mask_alpha_pipeline,
-            mask_alpha_dodge_pipeline,
-            masked_sampled_pipelines,
-            masked_sampled_blit_pipelines,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_fixed_blend_owns_its_slot() {
+        for (slot, mode) in FIXED_BLENDS.into_iter().enumerate() {
+            assert_eq!(blend_slot(mode), slot, "{mode:?}");
         }
     }
 }

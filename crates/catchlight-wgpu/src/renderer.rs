@@ -12,15 +12,11 @@ mod arena;
 mod pipelines;
 
 use arena::FrameArena;
+pub use pipelines::Pipelines;
+use pipelines::{MaskPipelines, ShaderBlend};
 
 #[derive(Debug, Error)]
 pub enum RendererError {
-    #[error("blit pipeline missing for blend mode {0:?}")]
-    MissingBlitPipeline(BlendMode),
-
-    #[error("masked pipeline missing for blend mode {0:?}")]
-    MissingMaskedPipeline(BlendMode),
-
     #[error("mesh {mesh_id}: vertices.len() ({vertices}) != uvs.len() ({uvs})")]
     MeshVertexUvMismatch {
         mesh_id: u32,
@@ -283,17 +279,11 @@ fn blend_mode_to_wgpu(mode: BlendMode) -> wgpu::BlendState {
     }
 }
 
-/// Blend modes whose math reads the destination color, which no
-/// fixed-function BlendState can express.
 fn is_dst_in_shader(mode: BlendMode) -> bool {
-    matches!(
-        mode,
-        BlendMode::Overlay | BlendMode::ColorBurn | BlendMode::LinearBurn,
-    )
+    ShaderBlend::of(mode).is_some()
 }
 
-/// The dst-in-shader trio shares Normal's OVER pipeline to avoid spurious
-/// pipeline swaps.
+/// The dst-in-shader trio draws its source through Normal's OVER pipeline.
 fn canonical_part_blend(mode: BlendMode) -> BlendMode {
     if is_dst_in_shader(mode) {
         BlendMode::Normal
@@ -1213,59 +1203,6 @@ impl Default for PartUniform {
     }
 }
 
-/// Shared across every puppet in one world; built once per (device,
-/// surface_format).
-pub struct Pipelines {
-    pub surface_format: wgpu::TextureFormat,
-    pub(crate) pipelines: HashMap<BlendMode, wgpu::RenderPipeline>,
-    pub(crate) mask_write_pipeline: wgpu::RenderPipeline,
-    pub(crate) composite_mask_part_pipeline: wgpu::RenderPipeline,
-    pub(crate) composite_mask_write_pipeline: wgpu::RenderPipeline,
-    pub(crate) composite_mask_alpha_dodge_pipeline: Option<wgpu::RenderPipeline>,
-    pub(crate) masked_pipelines: HashMap<BlendMode, wgpu::RenderPipeline>,
-    pub(crate) blit_pipelines: HashMap<BlendMode, wgpu::RenderPipeline>,
-    // Equal-test stencil variants for blits drawn inside the mask pass. Empty
-    // when has_stencil == false.
-    pub(crate) masked_blit_pipelines: HashMap<BlendMode, wgpu::RenderPipeline>,
-    // Seeds an all-DodgeMask batch so dodge sources can punch 0 out of it.
-    // None when has_stencil == false.
-    pub(crate) stencil_fill_pipeline: Option<wgpu::RenderPipeline>,
-    pub(crate) blit_bind_group_layout: wgpu::BindGroupLayout,
-    pub(crate) blit_sampler: wgpu::Sampler,
-    // Fixed to `Rgba8UnormSrgb`, independent of `surface_format`.
-    pub(crate) mip_pipeline: wgpu::RenderPipeline,
-    pub(crate) mip_bind_group_layout: wgpu::BindGroupLayout,
-    pub(crate) blit_dst_in_shader_pipelines: HashMap<BlendMode, wgpu::RenderPipeline>,
-    pub(crate) snapshot_bind_group_layout: wgpu::BindGroupLayout,
-    pub(crate) snapshot_sampler: wgpu::Sampler,
-    // Dynamic offset: one camera slot per view in a submit, so views do not
-    // alias under `write_buffer` batching.
-    pub(crate) camera_bind_group_layout: wgpu::BindGroupLayout,
-    pub(crate) camera_stride: u64,
-    pub(crate) texture_bind_group_layout: wgpu::BindGroupLayout,
-    pub(crate) texture_sampler: wgpu::Sampler,
-    pub(crate) part_uniform_bind_group_layout: wgpu::BindGroupLayout,
-    // Rounded up to `min_uniform_buffer_offset_alignment`. Blits share the
-    // wire format.
-    pub(crate) part_uniform_stride: u64,
-    // Native backends drive `first_instance` in hardware; GL/WebGL2 and the
-    // adapter-less constructors re-slice the instance buffer per draw.
-    pub(crate) base_instance: bool,
-    // False where the backend lacks a usable stencil attachment (Chromium
-    // swiftshader WebGL2 fails Depth24PlusStencil8); masks then sample an
-    // offscreen alpha texture.
-    pub(crate) has_stencil: bool,
-    // Only populated when has_stencil == false.
-    pub(crate) mask_bind_group_layout: Option<wgpu::BindGroupLayout>,
-    pub(crate) mask_sampler: Option<wgpu::Sampler>,
-    pub(crate) mask_alpha_pipeline: Option<wgpu::RenderPipeline>,
-    // Writes alpha 0 where the source rasterizes, mirroring the stencil
-    // path's REPLACE-with-0.
-    pub(crate) mask_alpha_dodge_pipeline: Option<wgpu::RenderPipeline>,
-    pub(crate) masked_sampled_pipelines: HashMap<BlendMode, wgpu::RenderPipeline>,
-    pub(crate) masked_sampled_blit_pipelines: HashMap<BlendMode, wgpu::RenderPipeline>,
-}
-
 /// Views past the last are refused rather than wrapping onto a slot an
 /// already-recorded command buffer still reads.
 #[doc(hidden)]
@@ -1460,7 +1397,7 @@ pub struct WgpuRenderer {
 pub struct StencilTarget {
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
-    // None when has_stencil == true.
+    /// `Some` exactly on the sampled-mask path.
     pub mask_bind_group: Option<wgpu::BindGroup>,
 }
 
@@ -1489,10 +1426,9 @@ impl StencilTarget {
         }
     }
 
-    // Invariant: Pipelines::new_with_options(has_stencil=false) always builds mask_bind_group_layout + mask_sampler.
-    #[allow(clippy::expect_used)]
     fn new_mask_alpha(
-        pipelines: &Pipelines,
+        masks: &pipelines::SampledMasks,
+        format: wgpu::TextureFormat,
         device: &wgpu::Device,
         width: u32,
         height: u32,
@@ -1507,35 +1443,25 @@ impl StencilTarget {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: pipelines.surface_format,
+            format,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let mask_bind_group = {
-            let layout = pipelines
-                .mask_bind_group_layout
-                .as_ref()
-                .expect("mask_bind_group_layout must be built when has_stencil == false");
-            let sampler = pipelines
-                .mask_sampler
-                .as_ref()
-                .expect("mask_sampler must be built when has_stencil == false");
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
-                layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(sampler),
-                    },
-                ],
-                label: Some("Mask Alpha bind group"),
-            })
-        };
+        let mask_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &masks.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&masks.sampler),
+                },
+            ],
+            label: Some("Mask Alpha bind group"),
+        });
         Self {
             texture,
             view,
@@ -1549,11 +1475,21 @@ impl StencilTarget {
         width: u32,
         height: u32,
     ) -> Self {
-        if pipelines.has_stencil {
-            Self::new(device, width, height)
-        } else {
-            Self::new_mask_alpha(pipelines, device, width, height)
+        match &pipelines.masks {
+            MaskPipelines::Stencil(_) => Self::new(device, width, height),
+            MaskPipelines::Sampled(masks) => {
+                Self::new_mask_alpha(masks, pipelines.surface_format, device, width, height)
+            }
         }
+    }
+
+    /// A target built by [`Self::new_for_pipelines`] for sampled-mask pipelines
+    /// always carries the bind group.
+    #[allow(clippy::expect_used)]
+    fn sampled_mask(&self) -> &wgpu::BindGroup {
+        self.mask_bind_group
+            .as_ref()
+            .expect("a stencil-backed target was passed to sampled-mask pipelines")
     }
 
     pub fn ensure_size_for_pipelines(
@@ -2552,9 +2488,8 @@ impl WgpuRenderer {
         }
     }
 
-    /// Alpha-mask fallback. Each source's instance must already be at
+    /// Sampled-mask path. Each source's instance must already be at
     /// `base_offset + i * size_of::<InstanceRaw>()`.
-    #[allow(clippy::expect_used)]
     fn write_mask_sources(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -2635,6 +2570,9 @@ impl WgpuRenderer {
 
         self.bind_pass_instances(&mut render_pass);
 
+        let Some(masks) = self.shared.masks.sampled() else {
+            return;
+        };
         let mut current_part_dodge: Option<bool> = None;
         let mut part_index = 0usize;
         for (i, mask_source) in mask_sources.iter().enumerate() {
@@ -2656,14 +2594,9 @@ impl WgpuRenderer {
                     let dodge = *mode == catchlight_core::MaskMode::DodgeMask;
                     if current_part_dodge != Some(dodge) {
                         let pipeline = if dodge {
-                            self.shared.mask_alpha_dodge_pipeline.as_ref().expect(
-                                "mask_alpha_dodge_pipeline must exist when has_stencil == false",
-                            )
+                            &masks.write_dodge
                         } else {
-                            self.shared
-                                .mask_alpha_pipeline
-                                .as_ref()
-                                .expect("mask_alpha_pipeline must exist when has_stencil == false")
+                            &masks.write
                         };
                         render_pass.set_pipeline(pipeline);
                         render_pass.set_bind_group(
@@ -2691,12 +2624,9 @@ impl WgpuRenderer {
                     };
                     let dodge = *mode == catchlight_core::MaskMode::DodgeMask;
                     let pipeline = if dodge {
-                        self.shared
-                            .composite_mask_alpha_dodge_pipeline
-                            .as_ref()
-                            .expect("composite dodge pipeline exists on alpha-mask path")
+                        &masks.composite_write_dodge
                     } else {
-                        &self.shared.composite_mask_write_pipeline
+                        &masks.composite_write
                     };
                     render_pass.set_pipeline(pipeline);
                     render_pass.set_bind_group(0, &source.texture.blit_bind_group, &[]);
@@ -2716,9 +2646,6 @@ impl WgpuRenderer {
     /// Stencil path: regular sources REPLACE `ref_value`, dodge sources punch
     /// 0, and an all-DodgeMask batch first fills the viewport with `ref_value`.
     /// The caller must have bound the camera at group 0.
-    // Invariant: only called on the stencil path, where
-    // stencil_fill_pipeline is always built.
-    #[allow(clippy::expect_used)]
     fn record_mask_sources_stencil(
         &mut self,
         render_pass: &mut wgpu::RenderPass<'_>,
@@ -2764,15 +2691,14 @@ impl WgpuRenderer {
             })
             .collect();
 
+        let Some(masks) = self.shared.masks.stencil() else {
+            return;
+        };
         let any_regular_mask = mask_sources
             .iter()
             .any(|m| m.mode() == catchlight_core::MaskMode::Mask);
         if !any_regular_mask {
-            let fill = self
-                .shared
-                .stencil_fill_pipeline
-                .as_ref()
-                .expect("stencil_fill_pipeline must exist when has_stencil == true");
+            let fill = &masks.fill;
             render_pass.set_pipeline(fill);
             render_pass.set_stencil_reference(ref_value);
             self.current_stats.pipeline_swaps += 1;
@@ -2800,7 +2726,7 @@ impl WgpuRenderer {
                         continue;
                     };
                     if !part_pipeline_bound {
-                        render_pass.set_pipeline(&self.shared.mask_write_pipeline);
+                        render_pass.set_pipeline(&masks.write);
                         render_pass.set_bind_group(
                             0,
                             &self.camera_bind_group,
@@ -2836,7 +2762,7 @@ impl WgpuRenderer {
                     let Some(source) = self.composite_mask_textures.get(node_id).cloned() else {
                         continue;
                     };
-                    render_pass.set_pipeline(&self.shared.composite_mask_write_pipeline);
+                    render_pass.set_pipeline(&masks.composite_write);
                     render_pass.set_stencil_reference(
                         if *mode == catchlight_core::MaskMode::DodgeMask {
                             0
@@ -2917,10 +2843,8 @@ impl WgpuRenderer {
         Some((valid, base_offset, parts_base))
     }
 
-    // Invariant: `valid` only holds indices whose mesh / texture were
-    // verified resident by prepare_masked_part_draws; part_bind_group
-    // is populated by record_list.
-    #[allow(clippy::unwrap_used, clippy::expect_used)]
+    /// Every index in `valid` was verified resident by
+    /// `prepare_masked_part_draws`.
     fn record_masked_part_draws(
         &mut self,
         render_pass: &mut wgpu::RenderPass<'_>,
@@ -2928,10 +2852,8 @@ impl WgpuRenderer {
         valid: &[usize],
         parts_base: u64,
         bound_texture: &mut Option<u32>,
-    ) -> RendererResult<()> {
+    ) {
         let stride = INSTANCE_STRIDE;
-        let has_stencil = self.shared.has_stencil;
-
         let mut current_blend_mode: Option<BlendMode> = None;
         let mut current_mesh: Option<u32> = None;
         let mut pipeline_swaps = 0u32;
@@ -2943,30 +2865,20 @@ impl WgpuRenderer {
             let part = &d.draw.draw;
             let blend = canonical_part_blend(part.blend_mode);
             if current_blend_mode != Some(blend) {
-                let pipeline = if has_stencil {
-                    self.shared
-                        .masked_pipelines
-                        .get(&blend)
-                        .or_else(|| self.shared.masked_pipelines.get(&BlendMode::Normal))
-                        .ok_or(RendererError::MissingMaskedPipeline(blend))?
-                } else {
-                    self.shared
-                        .masked_sampled_pipelines
-                        .get(&blend)
-                        .or_else(|| self.shared.masked_sampled_pipelines.get(&BlendMode::Normal))
-                        .ok_or(RendererError::MissingMaskedPipeline(blend))?
-                };
+                let pipeline = self.shared.masks.masked().get(blend);
                 render_pass.set_pipeline(pipeline);
                 current_blend_mode = Some(blend);
                 pipeline_swaps += 1;
             }
 
-            let mesh = self.mesh_buffers.get(part.mesh_id as usize).unwrap();
+            let (Some(mesh), Some(part_bg)) = (
+                self.mesh_buffers.get(part.mesh_id as usize),
+                self.part_bind_group(part.albedo),
+            ) else {
+                continue;
+            };
             let key = part.albedo;
             if *bound_texture != Some(key) {
-                let part_bg = self
-                    .part_bind_group(part.albedo)
-                    .expect("part bind group must exist — record_list ensures it");
                 render_pass.set_bind_group(1, part_bg, &[]);
                 *bound_texture = Some(key);
                 texture_binds += 1;
@@ -2988,13 +2900,12 @@ impl WgpuRenderer {
 
         self.current_stats.pipeline_swaps += pipeline_swaps;
         self.current_stats.texture_binds += texture_binds;
-        Ok(())
     }
 
     // Alpha path: a same-signature masked run is one mask-alpha write pass
     // plus one sampled masked-draw pass. `clear_target` folds a composite-slot
     // clear into the masked-draw pass. Returns whether that pass was emitted.
-    #[allow(clippy::too_many_arguments, clippy::expect_used)]
+    #[allow(clippy::too_many_arguments)]
     fn render_masked_prepared_parts_to(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -3006,9 +2917,9 @@ impl WgpuRenderer {
         mask_write_label: &str,
         masked_draw_label: &str,
         scissor: Option<ScreenRect>,
-    ) -> RendererResult<bool> {
+    ) -> bool {
         let Some((valid, base_offset, parts_base)) = self.prepare_masked_part_draws(draws) else {
-            return Ok(false);
+            return false;
         };
         let mask_sources = draws[0].mask_sources;
 
@@ -3052,24 +2963,17 @@ impl WgpuRenderer {
         );
 
         render_pass.set_bind_group(0, &self.camera_bind_group, &[self.camera_offset]);
-        render_pass.set_bind_group(
-            3,
-            stencil
-                .mask_bind_group
-                .as_ref()
-                .expect("mask_bind_group must exist when has_stencil == false"),
-            &[],
-        );
+        render_pass.set_bind_group(3, stencil.sampled_mask(), &[]);
         // Only the content draw is scissored; it samples the mask only inside the
         // rect.
         if let Some(r) = scissor {
             render_pass.set_scissor_rect(r.x, r.y, r.width, r.height);
         }
-        self.record_masked_part_draws(&mut render_pass, draws, &valid, parts_base, &mut None)?;
+        self.record_masked_part_draws(&mut render_pass, draws, &valid, parts_base, &mut None);
         drop(render_pass);
 
         self.draw_filter_scratch = valid;
-        Ok(true)
+        true
     }
 
     /// The caller must hand the indices back to `draw_filter_scratch`.
@@ -3118,10 +3022,7 @@ impl WgpuRenderer {
         Some((filtered, base_offset))
     }
 
-    // Invariant: `filtered` only holds indices whose mesh / texture
-    // were verified resident by prepare_part_draws; the Normal blend
-    // mode pipeline is always compiled.
-    #[allow(clippy::unwrap_used, clippy::expect_used)]
+    /// Every index in `filtered` was verified resident by `prepare_part_draws`.
     fn record_unmasked_part_draws(
         &mut self,
         render_pass: &mut wgpu::RenderPass<'_>,
@@ -3143,24 +3044,20 @@ impl WgpuRenderer {
             let d = &p.draw;
             let blend = canonical_part_blend(d.blend_mode);
             if current_blend_mode != Some(blend) {
-                let pipeline = self
-                    .shared
-                    .pipelines
-                    .get(&blend)
-                    .or_else(|| self.shared.pipelines.get(&BlendMode::Normal))
-                    .expect("Normal blend mode pipeline must exist");
-                render_pass.set_pipeline(pipeline);
+                render_pass.set_pipeline(self.shared.parts.get(blend));
                 current_blend_mode = Some(blend);
                 pipeline_swaps += 1;
             }
 
-            let mesh_buffer = self.mesh_buffers.get(d.mesh_id as usize).unwrap();
+            let (Some(mesh_buffer), Some(bind_group)) = (
+                self.mesh_buffers.get(d.mesh_id as usize),
+                self.part_bind_group(d.albedo),
+            ) else {
+                continue;
+            };
             let off = base_offset + i as u64 * stride;
             let key = d.albedo;
             if *bound_texture != Some(key) {
-                let bind_group = self
-                    .part_bind_group(d.albedo)
-                    .expect("part bind group must exist — record_list ensures it");
                 render_pass.set_bind_group(1, bind_group, &[]);
                 *bound_texture = Some(key);
                 texture_binds += 1;
@@ -3190,9 +3087,9 @@ impl WgpuRenderer {
         clear: bool,
         clear_color: Option<wgpu::Color>,
         scissor: Option<ScreenRect>,
-    ) -> RendererResult<bool> {
+    ) -> bool {
         let Some((filtered, base_offset)) = self.prepare_part_draws(drawables) else {
-            return Ok(false);
+            return false;
         };
 
         let load_op = if clear {
@@ -3241,7 +3138,7 @@ impl WgpuRenderer {
         drop(render_pass);
 
         self.draw_filter_scratch = filtered;
-        Ok(true)
+        true
     }
 
     /// Stencil is cleared at open and discarded at the end: nothing reads it
@@ -3305,9 +3202,9 @@ impl WgpuRenderer {
         encoder: &mut wgpu::CommandEncoder,
         sink: &mut PartSink<'_, '_>,
         pending: &mut Vec<PreparedPartDraw>,
-    ) -> RendererResult<()> {
+    ) {
         if pending.is_empty() {
-            return Ok(());
+            return;
         }
         match sink {
             PartSink::Stencil(s) => {
@@ -3333,12 +3230,11 @@ impl WgpuRenderer {
             } => {
                 let clear = !**has_rendered && clear_color.is_some();
                 let drew =
-                    self.render_prepared_parts(encoder, view, pending, clear, *clear_color, None)?;
+                    self.render_prepared_parts(encoder, view, pending, clear, *clear_color, None);
                 **has_rendered |= drew;
             }
         }
         pending.clear();
-        Ok(())
     }
 
     fn flush_pending_masked(
@@ -3346,9 +3242,9 @@ impl WgpuRenderer {
         encoder: &mut wgpu::CommandEncoder,
         sink: &mut PartSink<'_, '_>,
         pending: &mut Vec<PreparedMaskedPartDraw<'_>>,
-    ) -> RendererResult<()> {
+    ) {
         if pending.is_empty() {
-            return Ok(());
+            return;
         }
         match sink {
             PartSink::Stencil(s) => {
@@ -3381,7 +3277,7 @@ impl WgpuRenderer {
                             &valid,
                             parts_base,
                             &mut s.bound_texture,
-                        )?;
+                        );
                     }
                     self.draw_filter_scratch = valid;
                 }
@@ -3405,22 +3301,11 @@ impl WgpuRenderer {
                     mask_write_label,
                     masked_draw_label,
                     None,
-                )?;
+                );
                 **has_rendered |= drew;
             }
         }
         pending.clear();
-        Ok(())
-    }
-
-    // Invariant: Pipelines::new always compiles the Normal blend mode blit pipeline.
-    #[allow(clippy::expect_used)]
-    fn blit_pipeline_for(&self, blend_mode: BlendMode) -> &wgpu::RenderPipeline {
-        self.shared
-            .blit_pipelines
-            .get(&blend_mode)
-            .or_else(|| self.shared.blit_pipelines.get(&BlendMode::Normal))
-            .expect("Normal blend mode blit pipeline must exist")
     }
 
     /// Takes `&self` so the `&self` blit helpers count too.
@@ -3468,9 +3353,9 @@ impl WgpuRenderer {
         self.current_stats.deform_bytes_uploaded = self.pending_deform_bytes;
     }
 
-    /// Alpha path only; the stencil path folds the mask write and blit into
-    /// one pass (`blit_composite_with_masks`).
-    #[allow(clippy::expect_used, clippy::too_many_arguments)]
+    /// Sampled-mask path only; the stencil path folds the mask write and blit
+    /// into one pass (`blit_composite_with_masks`).
+    #[allow(clippy::too_many_arguments)]
     fn blit_composite_masked(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -3501,27 +3386,10 @@ impl WgpuRenderer {
             },
         );
 
-        let pipeline = self
-            .shared
-            .masked_sampled_blit_pipelines
-            .get(&blend_mode)
-            .or_else(|| {
-                self.shared
-                    .masked_sampled_blit_pipelines
-                    .get(&BlendMode::Normal)
-            })
-            .expect("Normal blend mode masked_sampled_blit_pipeline must exist");
-        render_pass.set_pipeline(pipeline);
+        render_pass.set_pipeline(self.shared.masks.masked_blit().get(blend_mode));
         render_pass.set_bind_group(0, &composite_texture.blit_bind_group, &[]);
         render_pass.set_bind_group(1, &self.part_uniform_bind_group, &[part_uniform_offset]);
-        render_pass.set_bind_group(
-            2,
-            stencil
-                .mask_bind_group
-                .as_ref()
-                .expect("mask_bind_group must exist when has_stencil == false"),
-            &[],
-        );
+        render_pass.set_bind_group(2, stencil.sampled_mask(), &[]);
         if let Some(r) = scissor {
             render_pass.set_scissor_rect(r.x, r.y, r.width, r.height);
         }
@@ -3558,7 +3426,7 @@ impl WgpuRenderer {
             },
         );
 
-        render_pass.set_pipeline(self.blit_pipeline_for(blend_mode));
+        render_pass.set_pipeline(self.shared.blits.get(blend_mode));
         render_pass.set_bind_group(0, &composite_texture.blit_bind_group, &[]);
         render_pass.set_bind_group(1, &self.part_uniform_bind_group, &[part_uniform_offset]);
         if let Some(r) = scissor {
@@ -3568,9 +3436,7 @@ impl WgpuRenderer {
         render_pass.draw(0..3, 0..1);
     }
 
-    // Invariant: blend_mode is a dst-in-shader mode; lookup falls back to the
-    // Overlay pipeline for an unwired future variant.
-    #[allow(clippy::too_many_arguments, clippy::expect_used)]
+    #[allow(clippy::too_many_arguments)]
     fn blit_composite_dst_in_shader(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -3578,12 +3444,12 @@ impl WgpuRenderer {
         target_view: &wgpu::TextureView,
         target_color_texture: &wgpu::Texture,
         snapshot: &SnapshotTexture,
-        blend_mode: BlendMode,
+        blend: ShaderBlend,
         part_uniform_offset: u32,
         width: u32,
         height: u32,
         scissor: Option<ScreenRect>,
-    ) -> RendererResult<()> {
+    ) {
         // The copy runs in encoder order (unlike write_buffer), so it sees every
         // prior pass. A scissored copy suffices: the snapshot is sampled 1:1 and
         // dst-in-shader modes return dst where src alpha is 0.
@@ -3625,11 +3491,7 @@ impl WgpuRenderer {
             copy_extent,
         );
 
-        let pipeline = self
-            .shared
-            .blit_dst_in_shader_pipelines
-            .get(&blend_mode)
-            .ok_or(RendererError::MissingBlitPipeline(blend_mode))?;
+        let pipeline = self.shared.blit_dst_in_shader(blend);
 
         let mut render_pass = self.counted_begin_pass(
             encoder,
@@ -3659,7 +3521,6 @@ impl WgpuRenderer {
         }
         self.frame_draw_calls.fetch_add(1, Ordering::Relaxed);
         render_pass.draw(0..3, 0..1);
-        Ok(())
     }
 
     /// Gives the dst-in-shader blit a src texture independent of the framebuffer.
@@ -3675,7 +3536,7 @@ impl WgpuRenderer {
         mask_sources: &[crate::collect::MaskSourceData],
         part_uniform_offset: u32,
         scissor: Option<ScreenRect>,
-    ) -> RendererResult<()> {
+    ) {
         let transparent = wgpu::Color {
             r: 0.0,
             g: 0.0,
@@ -3692,7 +3553,7 @@ impl WgpuRenderer {
             part_uniform_offset,
         };
 
-        if self.shared.has_stencil {
+        if self.shared.has_stencil() {
             let mut state = StencilPassState::new(
                 &slot.view,
                 &stencil.view,
@@ -3702,19 +3563,19 @@ impl WgpuRenderer {
             );
             let mut sink = PartSink::Stencil(&mut state);
             if mask_sources.is_empty() {
-                self.flush_pending_parts(encoder, &mut sink, &mut vec![draw])?;
+                self.flush_pending_parts(encoder, &mut sink, &mut vec![draw]);
             } else {
                 self.flush_pending_masked(
                     encoder,
                     &mut sink,
                     &mut vec![PreparedMaskedPartDraw { draw, mask_sources }],
-                )?;
+                );
             }
             // If the draw filtered out, this emits the still-pending
             // transparent clear so the blit can't sample stale pool
             // contents.
             self.end_sink_pass(encoder, &mut sink);
-            return Ok(());
+            return;
         }
 
         let drew = if mask_sources.is_empty() {
@@ -3725,7 +3586,7 @@ impl WgpuRenderer {
                 true,
                 Some(transparent),
                 scissor,
-            )?
+            )
         } else {
             self.render_masked_prepared_parts_to(
                 encoder,
@@ -3737,7 +3598,7 @@ impl WgpuRenderer {
                 "Composite Slot Mask Write (dst-in-shader)",
                 "Composite Slot Masked Part (dst-in-shader)",
                 scissor,
-            )?
+            )
         };
 
         if !drew {
@@ -3748,10 +3609,9 @@ impl WgpuRenderer {
                 "Composite Slot Fallback Clear (dst-in-shader)",
             );
         }
-        Ok(())
     }
 
-    #[allow(clippy::too_many_arguments, clippy::expect_used)]
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn blit_composite_with_masks(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -3792,7 +3652,7 @@ impl WgpuRenderer {
         self.write_instances(base_offset, &instance_data);
         self.instance_scratch = instance_data;
 
-        if !self.shared.has_stencil {
+        if !self.shared.has_stencil() {
             self.write_mask_sources(
                 encoder,
                 "Composite Blit Mask Write Pass",
@@ -3847,13 +3707,7 @@ impl WgpuRenderer {
         }
         self.record_mask_sources_stencil(&mut render_pass, mask_sources, base_offset, 1, &mut None);
 
-        let pipeline = self
-            .shared
-            .masked_blit_pipelines
-            .get(&blend_mode)
-            .or_else(|| self.shared.masked_blit_pipelines.get(&BlendMode::Normal))
-            .expect("Normal blend mode masked blit pipeline must exist");
-        render_pass.set_pipeline(pipeline);
+        render_pass.set_pipeline(self.shared.masks.masked_blit().get(blend_mode));
         render_pass.set_stencil_reference(1);
         render_pass.set_bind_group(0, &composite.blit_bind_group, &[]);
         render_pass.set_bind_group(1, &self.part_uniform_bind_group, &[part_uniform_offset]);
@@ -3911,7 +3765,7 @@ impl WgpuRenderer {
         }
         let slot = submission.views;
         submission.views += 1;
-        self.record_frame(
+        Ok(self.record_frame(
             slot,
             lists,
             encoder,
@@ -3923,7 +3777,7 @@ impl WgpuRenderer {
             width,
             height,
             clear_color,
-        )
+        ))
     }
 
     /// Lists record back to back under one camera slot. A later view of the
@@ -3931,7 +3785,7 @@ impl WgpuRenderer {
     /// buffers. Only the first list may consume `clear_color`. Without `target_color_texture` (which
     /// must carry `COPY_SRC`) and `snapshots`, dst-in-shader modes fall back to
     /// Normal-OVER.
-    #[allow(clippy::too_many_arguments, clippy::expect_used)]
+    #[allow(clippy::too_many_arguments)]
     fn record_frame(
         &mut self,
         camera_slot: u32,
@@ -3945,7 +3799,7 @@ impl WgpuRenderer {
         width: u32,
         height: u32,
         clear_color: Option<wgpu::Color>,
-    ) -> RendererResult<RenderStats> {
+    ) -> RenderStats {
         use crate::collect::DrawableInfo;
 
         let span = tracing::trace_span!(
@@ -4027,11 +3881,10 @@ impl WgpuRenderer {
             + dst_in_shader_extra;
         self.begin_frame_uniforms(uniform_slot_count as u32, continues);
 
-        let mut result = Ok(());
         for (i, list) in lists.iter().enumerate() {
             self.deform_recording_set = list.deform_set;
             self.deform_recording_base = self.deform_base(list.deform_set);
-            result = self.record_list(
+            self.record_list(
                 list,
                 encoder,
                 view,
@@ -4051,9 +3904,6 @@ impl WgpuRenderer {
                 .current_stats
                 .composite_slots_used
                 .max(composites.stats().0 as u32);
-            if result.is_err() {
-                break;
-            }
         }
         self.deform_recording_set = DeformSet::FIRST;
         self.deform_recording_base = 0;
@@ -4067,7 +3917,7 @@ impl WgpuRenderer {
         self.pending_deform_bytes = 0;
         span.record("drawn_parts", self.current_stats.drawn_parts);
         self.frame_sizing_closed = false;
-        result.map(|()| self.current_stats)
+        self.current_stats
     }
 
     /// Frame-level state belongs to [`Self::record_frame`], so this may run
@@ -4086,7 +3936,7 @@ impl WgpuRenderer {
         height: u32,
         clear_color: Option<wgpu::Color>,
         dst_in_shader_active: bool,
-    ) -> RendererResult<()> {
+    ) {
         use crate::collect::DrawableInfo;
 
         let span = tracing::trace_span!("render_list", drawn_parts = tracing::field::Empty);
@@ -4156,7 +4006,7 @@ impl WgpuRenderer {
             Some(children.as_slice())
         })();
 
-        let has_stencil = self.shared.has_stencil;
+        let has_stencil = self.shared.has_stencil();
 
         // Alpha path: clear up front unless the first drawable is an unmasked
         // part batch (the only LoadOp::Clear consumer) or flattening applies;
@@ -4207,7 +4057,7 @@ impl WgpuRenderer {
 
         // If every child filtered out, the fallback below still clears.
         if let Some(children) = flatten_children {
-            self.render_children_run(encoder, &mut sink, children, width, height)?;
+            self.render_children_run(encoder, &mut sink, children, width, height);
             self.end_sink_pass(encoder, &mut sink);
             if !has_stencil && !has_rendered_first {
                 if let Some(color) = clear_color {
@@ -4220,7 +4070,7 @@ impl WgpuRenderer {
                 }
             }
             span.record("drawn_parts", self.current_stats.drawn_parts);
-            return Ok(());
+            return;
         }
 
         // Dst-in-shader parts, composites, and snapshots can't share a peer's
@@ -4253,12 +4103,13 @@ impl WgpuRenderer {
                     let part_uniform_offset =
                         self.write_part_uniform(*opacity, *tint, *screen_tint, *mask_threshold);
 
-                    let route_dst_in_shader = dst_in_shader_active && is_dst_in_shader(*blend_mode);
+                    let shader_blend =
+                        ShaderBlend::of(*blend_mode).filter(|_| dst_in_shader_active);
 
-                    if route_dst_in_shader {
+                    if let Some(shader_blend) = shader_blend {
                         // Barrier: the snapshot must see pending parts.
-                        self.flush_pending_parts(encoder, &mut sink, &mut pending_parts)?;
-                        self.flush_pending_masked(encoder, &mut sink, &mut pending_masked)?;
+                        self.flush_pending_parts(encoder, &mut sink, &mut pending_parts);
+                        self.flush_pending_masked(encoder, &mut sink, &mut pending_masked);
                         self.end_sink_pass(encoder, &mut sink);
                         self.spend_pending_alpha_clear(
                             encoder,
@@ -4282,7 +4133,7 @@ impl WgpuRenderer {
                             mask_sources,
                             part_uniform_offset,
                             part_scissor,
-                        )?;
+                        );
                         let blit_uniform_offset =
                             self.write_part_uniform(1.0, glam::Vec3::ONE, glam::Vec3::ZERO, 0.5);
                         // Safe to unwrap: dst_in_shader_active implies
@@ -4299,22 +4150,22 @@ impl WgpuRenderer {
                             view,
                             main_tex,
                             snapshot,
-                            *blend_mode,
+                            shader_blend,
                             blit_uniform_offset,
                             width,
                             height,
                             part_scissor,
-                        )?;
+                        );
                         composites.rewind(composite_mark);
                         if let (Some(pool), Some(mark)) = (snapshots_opt.as_mut(), snapshot_mark) {
                             pool.rewind(mark);
                         }
                         sink.mark_rendered();
                     } else if !mask_sources.is_empty() {
-                        self.flush_pending_parts(encoder, &mut sink, &mut pending_parts)?;
+                        self.flush_pending_parts(encoder, &mut sink, &mut pending_parts);
                         if let Some(first) = pending_masked.first() {
                             if !same_mask_signature(first.mask_sources, mask_sources) {
-                                self.flush_pending_masked(encoder, &mut sink, &mut pending_masked)?;
+                                self.flush_pending_masked(encoder, &mut sink, &mut pending_masked);
                             }
                         }
                         pending_masked.push(PreparedMaskedPartDraw {
@@ -4332,7 +4183,7 @@ impl WgpuRenderer {
                     } else {
                         // A None clear color preserves existing content (bevy already cleared
                         // the ViewTarget).
-                        self.flush_pending_masked(encoder, &mut sink, &mut pending_masked)?;
+                        self.flush_pending_masked(encoder, &mut sink, &mut pending_masked);
                         pending_parts.push(PreparedPartDraw {
                             draw: PartDraw {
                                 mesh_id: *mesh_id,
@@ -4352,8 +4203,8 @@ impl WgpuRenderer {
                         masked = !mask_sources.is_empty(),
                     )
                     .entered();
-                    self.flush_pending_parts(encoder, &mut sink, &mut pending_parts)?;
-                    self.flush_pending_masked(encoder, &mut sink, &mut pending_masked)?;
+                    self.flush_pending_parts(encoder, &mut sink, &mut pending_parts);
+                    self.flush_pending_masked(encoder, &mut sink, &mut pending_masked);
                     self.end_sink_pass(encoder, &mut sink);
                     self.spend_pending_alpha_clear(
                         encoder,
@@ -4375,15 +4226,15 @@ impl WgpuRenderer {
                         dst_in_shader_active,
                         width,
                         height,
-                    )? {
+                    ) {
                         sink.mark_rendered();
                     }
                 }
             }
         }
 
-        self.flush_pending_parts(encoder, &mut sink, &mut pending_parts)?;
-        self.flush_pending_masked(encoder, &mut sink, &mut pending_masked)?;
+        self.flush_pending_parts(encoder, &mut sink, &mut pending_parts);
+        self.flush_pending_masked(encoder, &mut sink, &mut pending_masked);
         self.end_sink_pass(encoder, &mut sink);
 
         // Alpha sink: nothing consumed the clear, so the target still holds the
@@ -4395,7 +4246,6 @@ impl WgpuRenderer {
         }
 
         span.record("drawn_parts", self.current_stats.drawn_parts);
-        Ok(())
     }
 
     /// Must run while the encoder is open and before it is submitted; pair
@@ -4432,7 +4282,7 @@ impl WgpuRenderer {
         children: &[crate::collect::DrawableInfo],
         width: u32,
         height: u32,
-    ) -> RendererResult<()> {
+    ) {
         use crate::collect::DrawableInfo;
 
         let mut pending_parts: Vec<PreparedPartDraw> = Vec::new();
@@ -4460,7 +4310,7 @@ impl WgpuRenderer {
                 self.write_part_uniform(*opacity, *tint, *screen_tint, *mask_threshold);
 
             if mask_sources.is_empty() {
-                self.flush_pending_masked(encoder, sink, &mut pending_masked)?;
+                self.flush_pending_masked(encoder, sink, &mut pending_masked);
                 pending_parts.push(PreparedPartDraw {
                     draw: PartDraw {
                         mesh_id: *mesh_id,
@@ -4471,10 +4321,10 @@ impl WgpuRenderer {
                     part_uniform_offset,
                 });
             } else {
-                self.flush_pending_parts(encoder, sink, &mut pending_parts)?;
+                self.flush_pending_parts(encoder, sink, &mut pending_parts);
                 if let Some(first) = pending_masked.first() {
                     if !same_mask_signature(first.mask_sources, mask_sources) {
-                        self.flush_pending_masked(encoder, sink, &mut pending_masked)?;
+                        self.flush_pending_masked(encoder, sink, &mut pending_masked);
                     }
                 }
                 pending_masked.push(PreparedMaskedPartDraw {
@@ -4492,9 +4342,8 @@ impl WgpuRenderer {
             }
         }
 
-        self.flush_pending_parts(encoder, sink, &mut pending_parts)?;
-        self.flush_pending_masked(encoder, sink, &mut pending_masked)?;
-        Ok(())
+        self.flush_pending_parts(encoder, sink, &mut pending_parts);
+        self.flush_pending_masked(encoder, sink, &mut pending_masked);
     }
 
     /// Alpha sink only: a pending clear must land before a barrier reads the
@@ -4536,7 +4385,7 @@ impl WgpuRenderer {
         dst_in_shader_active: bool,
         width: u32,
         height: u32,
-    ) -> RendererResult<bool> {
+    ) -> bool {
         use crate::collect::DrawableInfo;
 
         let DrawableInfo::Composite {
@@ -4550,17 +4399,17 @@ impl WgpuRenderer {
             ..
         } = drawable
         else {
-            return Ok(false);
+            return false;
         };
         let children = match render_list.composite_children.get(node_id) {
             Some(c) if !c.is_empty() => c,
-            _ => return Ok(false),
+            _ => return false,
         };
 
         // Computed before the children render so the borrow doesn't collide.
         let bounds = self.drawable_screen_bounds(drawable, render_list, width, height);
         if bounds == ScreenBounds::Empty {
-            return Ok(false);
+            return false;
         }
         let union = bounds.scissor();
 
@@ -4583,11 +4432,11 @@ impl WgpuRenderer {
             dst_in_shader_active,
             width,
             height,
-        )?;
+        );
 
         // Without a texture or pool, fall through to the Normal-OVER blit.
         let mut blitted = false;
-        if dst_in_shader_active && is_dst_in_shader(*blend_mode) {
+        if let Some(shader_blend) = ShaderBlend::of(*blend_mode).filter(|_| dst_in_shader_active) {
             if let (Some(main_tex), Some(snap_pool)) = (target.texture, snapshots.as_deref_mut()) {
                 let mut source = slot.clone();
                 let mut source_uniform_offset = part_uniform_offset;
@@ -4620,12 +4469,12 @@ impl WgpuRenderer {
                     target.view,
                     main_tex,
                     snapshot,
-                    *blend_mode,
+                    shader_blend,
                     source_uniform_offset,
                     width,
                     height,
                     union,
-                )?;
+                );
                 blitted = true;
             }
         }
@@ -4664,7 +4513,7 @@ impl WgpuRenderer {
             pool.rewind(mark);
         }
         self.current_stats.drawn_composites += 1;
-        Ok(true)
+        true
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -4680,7 +4529,7 @@ impl WgpuRenderer {
         dst_in_shader_active: bool,
         width: u32,
         height: u32,
-    ) -> RendererResult<()> {
+    ) {
         let composite_view = &target.view;
         let transparent = wgpu::Color {
             r: 0.0,
@@ -4691,7 +4540,7 @@ impl WgpuRenderer {
 
         // The first drawing pass folds in the slot clear; the fallback clear
         // keeps the blit from sampling stale pool contents.
-        if self.shared.has_stencil {
+        if self.shared.has_stencil() {
             let mut state = StencilPassState::new(
                 composite_view,
                 &stencil.view,
@@ -4712,9 +4561,9 @@ impl WgpuRenderer {
                 dst_in_shader_active,
                 width,
                 height,
-            )?;
+            );
             self.end_sink_pass(encoder, &mut sink);
-            return Ok(());
+            return;
         }
 
         let mut has_rendered_child = false;
@@ -4738,7 +4587,7 @@ impl WgpuRenderer {
             dst_in_shader_active,
             width,
             height,
-        )?;
+        );
 
         if !has_rendered_child {
             self.explicit_clear_pass(
@@ -4748,8 +4597,6 @@ impl WgpuRenderer {
                 "Composite Fallback Clear Pass",
             );
         }
-
-        Ok(())
     }
 
     /// Splits at children that read the composite's own buffer (dst-in-shader
@@ -4768,7 +4615,7 @@ impl WgpuRenderer {
         dst_in_shader_active: bool,
         width: u32,
         height: u32,
-    ) -> RendererResult<()> {
+    ) {
         use crate::collect::DrawableInfo;
 
         let snapshots_live = snapshots.is_some();
@@ -4792,7 +4639,7 @@ impl WgpuRenderer {
                 continue;
             }
 
-            self.render_children_run(encoder, sink, &children[run_start..i], width, height)?;
+            self.render_children_run(encoder, sink, &children[run_start..i], width, height);
             run_start = i + 1;
             self.end_sink_pass(encoder, sink);
             self.spend_pending_alpha_clear(encoder, sink, "Composite Children Clear (barrier)");
@@ -4813,7 +4660,7 @@ impl WgpuRenderer {
                         dst_in_shader_active,
                         width,
                         height,
-                    )? {
+                    ) {
                         sink.mark_rendered();
                     }
                 }
@@ -4829,6 +4676,10 @@ impl WgpuRenderer {
                     mask_threshold,
                     ..
                 } => {
+                    // `is_barrier` admits a part only for these modes.
+                    let Some(shader_blend) = ShaderBlend::of(*blend_mode) else {
+                        continue;
+                    };
                     let part_uniform_offset =
                         self.write_part_uniform(*opacity, *tint, *screen_tint, *mask_threshold);
                     // Scratch slot and snapshot are re-acquired per child at one cursor;
@@ -4846,7 +4697,7 @@ impl WgpuRenderer {
                         mask_sources,
                         part_uniform_offset,
                         child_scissor,
-                    )?;
+                    );
                     let blit_uniform_offset =
                         self.write_part_uniform(1.0, glam::Vec3::ONE, glam::Vec3::ZERO, 0.5);
                     #[allow(clippy::expect_used)]
@@ -4861,12 +4712,12 @@ impl WgpuRenderer {
                         &target.view,
                         &target.texture,
                         snapshot,
-                        *blend_mode,
+                        shader_blend,
                         blit_uniform_offset,
                         width,
                         height,
                         child_scissor,
-                    )?;
+                    );
                     composites.rewind(composite_mark);
                     if let Some(pool) = snapshots.as_deref_mut() {
                         pool.rewind(snapshot_mark);
@@ -4945,7 +4796,7 @@ impl<'r> Frame<'r> {
             width,
             height,
             clear_color,
-        )?;
+        );
         Ok(Recorded {
             renderer: self.renderer,
             encoder: Some(self.encoder),
