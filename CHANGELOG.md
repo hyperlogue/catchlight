@@ -97,6 +97,8 @@ next release is 0.3.0.
   `composite_mask_source()`. `upload_mesh`, `upload_texture`, `Texture`,
   `MeshBuffer`, `PartUniform`, `generate_mips` and the crate's modules are
   private; `RenderCache` is the way in, and the crate root lists its exports.
+- **`create_headless_context_ext` is gone.** Nothing called it; build a
+  device with timestamp queries directly to use the GPU profiler.
 
 ## [0.2.2] - 2026-11-22
 

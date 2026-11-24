@@ -114,9 +114,9 @@ async fn request_device(
         .await?)
 }
 
-async fn headless_adapter(backends: wgpu::Backends) -> RendererResult<wgpu::Adapter> {
+async fn headless_adapter() -> RendererResult<wgpu::Adapter> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-        backends,
+        backends: wgpu::Backends::PRIMARY,
         flags: Default::default(),
         memory_budget_thresholds: Default::default(),
         backend_options: Default::default(),
@@ -211,24 +211,8 @@ pub fn configure_surface(
 /// `Backends::PRIMARY`, not `all()`: the workspace-unified `webgl` feature
 /// enables GL, which panics initializing EGL headless.
 pub async fn create_headless_context() -> RendererResult<(wgpu::Device, wgpu::Queue)> {
-    let adapter = headless_adapter(wgpu::Backends::PRIMARY).await?;
+    let adapter = headless_adapter().await?;
     request_device(&adapter, wgpu::Features::ADDRESS_MODE_CLAMP_TO_BORDER).await
-}
-
-/// Benchmarking variant. The profiler uses encoder-scope queries, which
-/// `wgpu_profiler` opens only under `TIMESTAMP_QUERY_INSIDE_ENCODERS`.
-pub async fn create_headless_context_ext(
-    backends: wgpu::Backends,
-) -> RendererResult<(wgpu::Adapter, wgpu::Device, wgpu::Queue)> {
-    let adapter = headless_adapter(backends).await?;
-    let (device, queue) = request_device(
-        &adapter,
-        wgpu::Features::ADDRESS_MODE_CLAMP_TO_BORDER
-            | wgpu::Features::TIMESTAMP_QUERY
-            | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS,
-    )
-    .await?;
-    Ok((adapter, device, queue))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
