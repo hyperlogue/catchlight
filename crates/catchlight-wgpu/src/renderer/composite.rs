@@ -22,14 +22,6 @@ pub(super) const COMPOSITE_PASSES: PassLabels = PassLabels {
     fallback_clear: "Composite Fallback Clear Pass",
 };
 
-/// `texture` is only needed by the dst-in-shader blit's snapshot; `None`
-/// sends that blit down the Normal-OVER fallback.
-#[derive(Clone, Copy)]
-pub(super) struct CompositeTarget<'a> {
-    pub(super) view: &'a wgpu::TextureView,
-    pub(super) texture: Option<&'a wgpu::Texture>,
-}
-
 impl WgpuRenderer {
     /// Sampled-mask path only; the stencil path folds the mask write and blit
     /// into one pass (`blit_composite_with_masks`).
@@ -44,6 +36,10 @@ impl WgpuRenderer {
         part_uniform_offset: u32,
         scissor: Option<ScreenRect>,
     ) {
+        // `FrameTargets::prepare` builds the target to match the pipelines.
+        let Some(mask) = stencil.sampled.as_ref() else {
+            return;
+        };
         let mut render_pass = self.counted_begin_pass(
             encoder,
             &wgpu::RenderPassDescriptor {
@@ -67,7 +63,7 @@ impl WgpuRenderer {
         render_pass.set_pipeline(self.shared.masks.masked_blit().get(blend_mode));
         render_pass.set_bind_group(0, &composite_texture.blit_bind_group, &[]);
         render_pass.set_bind_group(1, &self.part_uniform_bind_group, &[part_uniform_offset]);
-        render_pass.set_bind_group(2, stencil.sampled_mask(), &[]);
+        render_pass.set_bind_group(2, mask, &[]);
         if let Some(r) = scissor {
             render_pass.set_scissor_rect(r.x, r.y, r.width, r.height);
         }
@@ -400,14 +396,13 @@ impl WgpuRenderer {
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         stencil: &StencilTarget,
-        target: CompositeTarget<'_>,
+        target: RenderTarget<'_>,
         drawable: &crate::collect::DrawableInfo,
         render_list: &crate::collect::RenderList,
         composites: &mut CompositePool,
         mut snapshots: Option<&mut FramebufferSnapshotPool>,
-        width: u32,
-        height: u32,
     ) -> bool {
+        let (width, height) = (target.width, target.height);
         use crate::collect::DrawableInfo;
 
         let DrawableInfo::Composite {
@@ -423,10 +418,10 @@ impl WgpuRenderer {
         else {
             return false;
         };
-        let children = match render_list.composite_children.get(node_id) {
-            Some(c) if !c.is_empty() => c,
-            _ => return false,
-        };
+        let children = render_list.composite_children(*node_id);
+        if children.is_empty() {
+            return false;
+        }
         let _span =
             tracing::trace_span!("render_composite", masked = !mask_sources.is_empty()).entered();
 
@@ -450,9 +445,11 @@ impl WgpuRenderer {
         self.render_to_target(
             encoder,
             stencil,
-            CompositeTarget {
+            RenderTarget {
                 view: &slot.view,
                 texture: Some(&slot.texture),
+                width,
+                height,
             },
             Some(wgpu::Color::TRANSPARENT),
             &COMPOSITE_PASSES,
@@ -460,8 +457,6 @@ impl WgpuRenderer {
             render_list,
             composites,
             snapshots.as_deref_mut(),
-            width,
-            height,
         );
 
         // Without a texture or pool, fall through to the Normal-OVER blit.
@@ -553,15 +548,13 @@ impl WgpuRenderer {
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         stencil: &StencilTarget,
-        target: CompositeTarget<'_>,
+        target: RenderTarget<'_>,
         clear_color: Option<wgpu::Color>,
         labels: &PassLabels,
         drawables: &[crate::collect::DrawableInfo],
         render_list: &crate::collect::RenderList,
         composites: &mut CompositePool,
         snapshots: Option<&mut FramebufferSnapshotPool>,
-        width: u32,
-        height: u32,
     ) {
         if self.shared.has_stencil() {
             let mut state =
@@ -576,8 +569,6 @@ impl WgpuRenderer {
                 render_list,
                 composites,
                 snapshots,
-                width,
-                height,
             );
             self.end_sink_pass(encoder, &mut sink);
             return;
@@ -601,8 +592,6 @@ impl WgpuRenderer {
             render_list,
             composites,
             snapshots,
-            width,
-            height,
         );
         if !has_rendered {
             if let Some(color) = clear_color {
@@ -620,14 +609,13 @@ impl WgpuRenderer {
         encoder: &mut wgpu::CommandEncoder,
         stencil: &StencilTarget,
         sink: &mut PartSink<'_, '_>,
-        target: CompositeTarget<'_>,
+        target: RenderTarget<'_>,
         drawables: &[crate::collect::DrawableInfo],
         render_list: &crate::collect::RenderList,
         composites: &mut CompositePool,
         mut snapshots: Option<&mut FramebufferSnapshotPool>,
-        width: u32,
-        height: u32,
     ) {
+        let (width, height) = (target.width, target.height);
         use crate::collect::DrawableInfo;
 
         // Without a snapshot pool and a copyable target, dst-in-shader parts
@@ -666,8 +654,6 @@ impl WgpuRenderer {
                         render_list,
                         composites,
                         snapshots.as_deref_mut(),
-                        width,
-                        height,
                     ) {
                         sink.mark_rendered();
                     }

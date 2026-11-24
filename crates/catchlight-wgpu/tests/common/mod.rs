@@ -30,7 +30,7 @@ pub fn shared_context() -> (wgpu::Device, wgpu::Queue) {
 pub fn render_context(width: u32, height: u32) -> RenderContext {
     let (device, queue) = shared_context();
     let renderer = WgpuRenderer::new(device, queue, wgpu::TextureFormat::Rgba8UnormSrgb);
-    RenderContext::with_renderer(renderer, width, height).expect("headless render target")
+    RenderContext::with_renderer(renderer, width, height)
 }
 
 /// Straight alpha, as an editor writes.
@@ -183,4 +183,23 @@ impl Scene {
             .expect("refresh the render cache");
         catchlight_wgpu::collect(&self.cache, &self.puppet)
     }
+}
+
+/// Shift every part's vertices through the puppet's scratch deform, bypassing
+/// params.
+pub fn apply_uniform_scratch_deform(puppet: &mut Puppet, shift: catchlight_core::Vec2) {
+    let parts: Vec<(catchlight_core::NodeIdx, usize)> = puppet
+        .iter()
+        .filter_map(|(id, node)| match &node.kind {
+            catchlight_core::NodeKind::Part(p) => Some((id, p.mesh.vertices.len())),
+            _ => None,
+        })
+        .collect();
+    for (id, count) in parts {
+        if count == 0 {
+            continue;
+        }
+        puppet.set_scratch_deform(id, &vec![shift; count]);
+    }
+    puppet.combine_deforms();
 }

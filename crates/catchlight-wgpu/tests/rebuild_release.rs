@@ -30,7 +30,7 @@ const CLEAR: Option<wgpu::Color> = Some(wgpu::Color {
 async fn context() -> RenderContext {
     let (device, queue) = common::shared_context();
     let renderer = WgpuRenderer::new(device, queue, wgpu::TextureFormat::Rgba8UnormSrgb);
-    RenderContext::with_renderer(renderer, W, H).expect("render context")
+    RenderContext::with_renderer(renderer, W, H)
 }
 
 fn camera() -> glam::Mat4 {
@@ -105,7 +105,7 @@ fn a_rebuild_releases_the_slots_the_smaller_model_no_longer_names() {
         puppet.tick(&model, 0.0);
         cache.refresh(&mut ctx.renderer, &model, &puppet).unwrap();
         let list = catchlight_wgpu::collect(&cache, &puppet);
-        assert_eq!(ctx.render(&list, CLEAR).expect("render").drawn_parts, 3);
+        assert_eq!(ctx.render(&list, CLEAR).drawn_parts, 3);
         let pixels = ctx.read_rgba().expect("read back");
         for (x, expected) in [(-0.6, RED), (0.0, GREEN), (0.6, BLUE)] {
             let (px, py) = column_centre(x);
@@ -139,7 +139,7 @@ fn a_rebuild_releases_the_slots_the_smaller_model_no_longer_names() {
         );
 
         let list = catchlight_wgpu::collect(&cache, &puppet);
-        assert_eq!(ctx.render(&list, CLEAR).expect("render").drawn_parts, 2);
+        assert_eq!(ctx.render(&list, CLEAR).drawn_parts, 2);
         let pixels = ctx.read_rgba().expect("read back");
         for (x, expected) in [(-0.6, RED), (0.0, WHITE), (0.6, BLUE)] {
             let (px, py) = column_centre(x);
@@ -147,10 +147,10 @@ fn a_rebuild_releases_the_slots_the_smaller_model_no_longer_names() {
         }
 
         // Surviving meshes have new atlas offsets; deforms must still land.
-        catchlight_wgpu::apply_uniform_scratch_deform(&mut puppet, Vec2::new(0.1, 0.0));
+        common::apply_uniform_scratch_deform(&mut puppet, Vec2::new(0.1, 0.0));
         cache.refresh(&mut ctx.renderer, &model, &puppet).unwrap();
         let list = catchlight_wgpu::collect(&cache, &puppet);
-        let stats = ctx.render(&list, CLEAR).expect("render");
+        let stats = ctx.render(&list, CLEAR);
         assert!(
             stats.deform_bytes_uploaded > 0,
             "a deform pushed after a rebuild must reach the atlas",
@@ -172,7 +172,7 @@ fn a_rebuild_keeps_the_textures_it_names_again() {
         puppet.tick(&model, 0.0);
         cache.refresh(&mut ctx.renderer, &model, &puppet).unwrap();
         let list = catchlight_wgpu::collect(&cache, &puppet);
-        ctx.render(&list, CLEAR).expect("render");
+        ctx.render(&list, CLEAR);
 
         // A texture upload is the only submit outside a frame.
         assert_eq!(ctx.renderer.frame_stats().queue_submits, 0);
@@ -190,7 +190,7 @@ fn a_rebuild_keeps_the_textures_it_names_again() {
         );
 
         let list = catchlight_wgpu::collect(&cache, &puppet);
-        assert_eq!(ctx.render(&list, CLEAR).expect("render").drawn_parts, 2);
+        assert_eq!(ctx.render(&list, CLEAR).drawn_parts, 2);
         let pixels = ctx.read_rgba().expect("read back");
         for (x, expected) in [(-0.6, RED), (0.0, GREEN), (0.6, WHITE)] {
             let (px, py) = column_centre(x);
@@ -211,7 +211,7 @@ fn a_rebuild_keeps_the_textures_it_names_again() {
         );
 
         let list = catchlight_wgpu::collect(&cache, &puppet);
-        assert_eq!(ctx.render(&list, CLEAR).expect("render").drawn_parts, 1);
+        assert_eq!(ctx.render(&list, CLEAR).drawn_parts, 1);
         let pixels = ctx.read_rgba().expect("read back");
         for (x, expected) in [(-0.6, WHITE), (0.0, GREEN), (0.6, WHITE)] {
             let (px, py) = column_centre(x);
@@ -234,7 +234,7 @@ fn a_failed_rebuild_leaves_the_previous_build_resident() {
         puppet.tick(&model, 0.0);
         cache.refresh(&mut ctx.renderer, &model, &puppet).unwrap();
         let list = catchlight_wgpu::collect(&cache, &puppet);
-        assert_eq!(ctx.render(&list, CLEAR).expect("render").drawn_parts, 3);
+        assert_eq!(ctx.render(&list, CLEAR).drawn_parts, 3);
 
         let mut hex = SeededHex::new(7);
         let root = model.root().expect("a complete model").clone();
@@ -280,11 +280,7 @@ fn a_failed_rebuild_leaves_the_previous_build_resident() {
             puppet.tick(&model, 0.0);
             cache.refresh(&mut ctx.renderer, &model, &puppet).unwrap();
             let list = catchlight_wgpu::collect(&cache, &puppet);
-            assert_eq!(
-                ctx.render(&list, CLEAR).expect("render").drawn_parts,
-                3,
-                "{why}"
-            );
+            assert_eq!(ctx.render(&list, CLEAR).drawn_parts, 3, "{why}");
             let pixels = ctx.read_rgba().expect("read back");
             for (x, expected) in [(-0.6, RED), (0.0, GREEN), (0.6, BLUE)] {
                 let (px, py) = column_centre(x);

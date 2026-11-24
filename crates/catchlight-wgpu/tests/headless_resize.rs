@@ -39,7 +39,7 @@ fn one_quad_model() -> Model {
 fn rendering_at_a_second_size_returns_a_buffer_for_that_size() {
     let (device, queue) = common::shared_context();
     let renderer = WgpuRenderer::new(device, queue, wgpu::TextureFormat::Rgba8Unorm);
-    let mut ctx = RenderContext::with_renderer(renderer, 64, 64).expect("render context");
+    let mut ctx = RenderContext::with_renderer(renderer, 64, 64);
 
     let model = one_quad_model();
     let mut cache = RenderCache::prepare(&mut ctx.renderer, &model, PrepareOptions::default())
@@ -60,7 +60,7 @@ fn rendering_at_a_second_size_returns_a_buffer_for_that_size() {
             (width as usize) * (height as usize) * 4,
             "readback is tightly packed RGBA8 at {width}x{height}"
         );
-        assert_eq!((ctx.width, ctx.height), (width, height));
+        assert_eq!((ctx.width(), ctx.height()), (width, height));
     }
 }
 
@@ -69,8 +69,8 @@ fn rendering_at_a_second_size_returns_a_buffer_for_that_size() {
 fn a_zero_size_is_clamped_to_one_pixel() {
     let (device, queue) = common::shared_context();
     let renderer = WgpuRenderer::new(device, queue, wgpu::TextureFormat::Rgba8Unorm);
-    let mut ctx = RenderContext::with_renderer(renderer, 0, 0).expect("render context");
-    assert_eq!((ctx.width, ctx.height), (1, 1));
+    let mut ctx = RenderContext::with_renderer(renderer, 0, 0);
+    assert_eq!((ctx.width(), ctx.height()), (1, 1));
     ctx.resize(8, 0);
-    assert_eq!((ctx.width, ctx.height), (8, 1));
+    assert_eq!((ctx.width(), ctx.height()), (8, 1));
 }

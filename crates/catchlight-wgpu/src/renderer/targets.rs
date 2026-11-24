@@ -1,8 +1,8 @@
 use super::*;
 
 #[derive(Clone)]
-pub struct CompositeTexture {
-    pub view: wgpu::TextureView,
+pub(crate) struct CompositeTexture {
+    pub(super) view: wgpu::TextureView,
     // A dst-in-shader child blends against this composite's contents, and
     // the snapshot copy needs the texture handle (COPY_SRC), not a view.
     pub(super) texture: wgpu::Texture,
@@ -101,11 +101,17 @@ impl SnapshotTexture {
 }
 
 /// Allocates nothing until a dst-in-shader part shows up.
-pub struct FramebufferSnapshotPool {
+pub(crate) struct FramebufferSnapshotPool {
     pub(super) slots: Vec<SnapshotTexture>,
     pub(super) cursor: usize,
     pub(super) width: u32,
     pub(super) height: u32,
+}
+
+impl Default for FramebufferSnapshotPool {
+    fn default() -> Self {
+        Self::new(1, 1)
+    }
 }
 
 impl FramebufferSnapshotPool {
@@ -162,13 +168,19 @@ impl FramebufferSnapshotPool {
 
 /// Viewport-sized offscreen textures reused across composites; `reset()` at
 /// the start of every frame.
-pub struct CompositePool {
+pub(crate) struct CompositePool {
     pub(super) slots: Vec<CompositeTexture>,
     pub(super) cursor: usize,
     // Rewinds pull `cursor` back, so it cannot say how many slots a frame needed.
     pub(super) peak: usize,
     pub(super) width: u32,
     pub(super) height: u32,
+}
+
+impl Default for CompositePool {
+    fn default() -> Self {
+        Self::new(1, 1)
+    }
 }
 
 impl CompositePool {
@@ -234,115 +246,151 @@ impl CompositePool {
 /// Viewport-sized mask target shared across every puppet in a frame:
 /// `Depth24PlusStencil8` on the stencil path, otherwise a sampled color
 /// mask texture (WebGL fallback).
-pub struct StencilTarget {
-    pub texture: wgpu::Texture,
-    pub view: wgpu::TextureView,
+pub(crate) struct StencilTarget {
+    pub(super) texture: wgpu::Texture,
+    pub(super) view: wgpu::TextureView,
     /// `Some` exactly on the sampled-mask path.
-    pub mask_bind_group: Option<wgpu::BindGroup>,
+    pub(super) sampled: Option<wgpu::BindGroup>,
 }
 
 impl StencilTarget {
-    /// Stencil-backed only; `new_for_pipelines` picks by backend.
-    pub fn new(device: &wgpu::Device, width: u32, height: u32) -> Self {
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Stencil Texture"),
-            size: wgpu::Extent3d {
-                width: width.max(1),
-                height: height.max(1),
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Depth24PlusStencil8,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            view_formats: &[],
-        });
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        Self {
-            texture,
-            view,
-            mask_bind_group: None,
-        }
-    }
-
-    pub(super) fn new_mask_alpha(
-        masks: &pipelines::SampledMasks,
-        format: wgpu::TextureFormat,
-        device: &wgpu::Device,
-        width: u32,
-        height: u32,
-    ) -> Self {
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Mask Alpha Texture"),
-            size: wgpu::Extent3d {
-                width: width.max(1),
-                height: height.max(1),
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let mask_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &masks.bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&masks.sampler),
-                },
-            ],
-            label: Some("Mask Alpha bind group"),
-        });
-        Self {
-            texture,
-            view,
-            mask_bind_group: Some(mask_bind_group),
-        }
-    }
-
-    pub fn new_for_pipelines(
-        pipelines: &Pipelines,
-        device: &wgpu::Device,
-        width: u32,
-        height: u32,
-    ) -> Self {
+    fn new(pipelines: &Pipelines, device: &wgpu::Device, width: u32, height: u32) -> Self {
+        let size = wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        };
         match &pipelines.masks {
-            MaskPipelines::Stencil(_) => Self::new(device, width, height),
+            MaskPipelines::Stencil(_) => {
+                let texture = device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("Stencil Texture"),
+                    size,
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Depth24PlusStencil8,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                    view_formats: &[],
+                });
+                let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+                Self {
+                    texture,
+                    view,
+                    sampled: None,
+                }
+            }
             MaskPipelines::Sampled(masks) => {
-                Self::new_mask_alpha(masks, pipelines.surface_format, device, width, height)
+                let texture = device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("Mask Alpha Texture"),
+                    size,
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: pipelines.surface_format,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                        | wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                });
+                let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+                let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    layout: &masks.bind_group_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(&view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(&masks.sampler),
+                        },
+                    ],
+                    label: Some("Mask Alpha bind group"),
+                });
+                Self {
+                    texture,
+                    view,
+                    sampled: Some(bind_group),
+                }
             }
         }
     }
 
-    /// A target built by [`Self::new_for_pipelines`] for sampled-mask pipelines
-    /// always carries the bind group.
-    #[allow(clippy::expect_used)]
-    pub(super) fn sampled_mask(&self) -> &wgpu::BindGroup {
-        self.mask_bind_group
-            .as_ref()
-            .expect("a stencil-backed target was passed to sampled-mask pipelines")
+    fn fits(&self, pipelines: &Pipelines, width: u32, height: u32) -> bool {
+        self.texture.width() == width
+            && self.texture.height() == height
+            && self.sampled.is_some() != pipelines.has_stencil()
+    }
+}
+
+/// What a frame draws into.
+#[derive(Clone, Copy)]
+pub struct RenderTarget<'a> {
+    pub view: &'a wgpu::TextureView,
+    /// The texture behind `view`; it must carry `COPY_SRC`. `Overlay`,
+    /// `ColorBurn` and `LinearBurn` read the destination through a copy of it
+    /// and fall back to Normal-OVER without it.
+    pub texture: Option<&'a wgpu::Texture>,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// The viewport-sized scratch one view draws through: its mask target,
+/// composite slots and framebuffer snapshots.
+///
+/// Keep one per view and hand it to every frame of that view. It allocates on
+/// first use and rebuilds itself when the frame's size or pipelines change.
+/// Views of one device may share one when they never record into the same
+/// submit at different sizes.
+#[derive(Default)]
+pub struct FrameTargets {
+    mask: Option<StencilTarget>,
+    composites: CompositePool,
+    snapshots: FramebufferSnapshotPool,
+    /// Composite slots and snapshots are textures of this format.
+    format: Option<wgpu::TextureFormat>,
+}
+
+impl FrameTargets {
+    pub fn new() -> Self {
+        Self::default()
     }
 
-    pub fn ensure_size_for_pipelines(
+    pub(super) fn prepare(
         &mut self,
         pipelines: &Pipelines,
         device: &wgpu::Device,
         width: u32,
         height: u32,
+    ) -> (
+        &StencilTarget,
+        &mut CompositePool,
+        &mut FramebufferSnapshotPool,
     ) {
-        let w = width.max(1);
-        let h = height.max(1);
-        if self.texture.width() != w || self.texture.height() != h {
-            *self = Self::new_for_pipelines(pipelines, device, w, h);
+        let (width, height) = (width.max(1), height.max(1));
+        if self.format != Some(pipelines.surface_format) {
+            *self = Self {
+                format: Some(pipelines.surface_format),
+                ..Self::default()
+            };
         }
+        self.composites.ensure_size(width, height);
+        self.snapshots.ensure_size(width, height);
+        if !self
+            .mask
+            .as_ref()
+            .is_some_and(|mask| mask.fits(pipelines, width, height))
+        {
+            self.mask = None;
+        }
+        let mask = self
+            .mask
+            .get_or_insert_with(|| StencilTarget::new(pipelines, device, width, height));
+        (mask, &mut self.composites, &mut self.snapshots)
+    }
+
+    /// Composite slots allocated so far; they are reused across frames.
+    #[doc(hidden)]
+    pub fn composite_slots(&self) -> usize {
+        self.composites.stats().1
     }
 }

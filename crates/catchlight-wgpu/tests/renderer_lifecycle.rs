@@ -8,9 +8,8 @@ mod common;
 
 use catchlight_core::{Mesh, Model};
 use catchlight_wgpu::{
-    create_orthographic_camera, CompositePool, FrameStats, FramebufferSnapshotPool, Pipelines,
-    RenderList, RenderStats, RendererError, StencilTarget, Submission, WgpuRenderer,
-    CAMERA_RING_SLOTS,
+    create_orthographic_camera, FrameStats, FrameTargets, Pipelines, RenderList, RenderStats,
+    RenderTarget, RendererError, Submission, WgpuRenderer, CAMERA_RING_SLOTS,
 };
 use common::Scene;
 use std::path::PathBuf;
@@ -32,8 +31,6 @@ struct Stage {
     shared: Arc<Pipelines>,
     target: wgpu::Texture,
     view: wgpu::TextureView,
-    stencil: StencilTarget,
-    snapshots: FramebufferSnapshotPool,
     /// Counted by hand: the renderer's submits plus the test's own.
     submits: u32,
 }
@@ -58,16 +55,22 @@ impl Stage {
         });
         let view = target.create_view(&wgpu::TextureViewDescriptor::default());
         let shared = Arc::new(Pipelines::new(&device, format));
-        let stencil = StencilTarget::new_for_pipelines(&shared, &device, W, H);
         Self {
             device,
             queue,
             shared,
             target,
             view,
-            stencil,
-            snapshots: FramebufferSnapshotPool::new(W, H),
             submits: 0,
+        }
+    }
+
+    fn target(&self) -> RenderTarget<'_> {
+        RenderTarget {
+            view: &self.view,
+            texture: Some(&self.target),
+            width: W,
+            height: H,
         }
     }
 
@@ -91,7 +94,7 @@ impl Stage {
         submission: &mut Submission,
         encoder: &mut wgpu::CommandEncoder,
         render_list: &RenderList,
-        composites: &mut CompositePool,
+        composites: &mut FrameTargets,
         clear: Option<wgpu::Color>,
     ) -> (RenderStats, FrameStats) {
         let stats = self
@@ -113,20 +116,15 @@ impl Stage {
         submission: &mut Submission,
         encoder: &mut wgpu::CommandEncoder,
         render_list: &RenderList,
-        composites: &mut CompositePool,
+        composites: &mut FrameTargets,
         clear: Option<wgpu::Color>,
     ) -> Result<RenderStats, RendererError> {
         renderer.render_into(
             submission,
             &[render_list],
             encoder,
-            &self.view,
-            &self.stencil,
+            self.target(),
             composites,
-            Some(&self.target),
-            Some(&mut self.snapshots),
-            W,
-            H,
             clear,
         )
     }
@@ -135,23 +133,12 @@ impl Stage {
         &mut self,
         renderer: &mut WgpuRenderer,
         scene: &mut Scene,
-        composites: &mut CompositePool,
+        composites: &mut FrameTargets,
     ) -> (RenderStats, FrameStats) {
         let render_list = scene.frame(renderer, 0.0);
         let done = renderer
             .frame()
-            .render_ext(
-                &[&render_list],
-                &self.view,
-                &self.stencil,
-                composites,
-                Some(&self.target),
-                Some(&mut self.snapshots),
-                W,
-                H,
-                Some(CLEAR),
-            )
-            .expect("render");
+            .render(&[&render_list], self.target(), composites, Some(CLEAR));
         let stats = done.stats();
         done.submit();
         self.submits += 1;
@@ -163,8 +150,6 @@ impl Stage {
             &self.device,
             &self.queue,
             &self.target,
-            W,
-            H,
         ))
         .expect("readback")
     }
@@ -222,7 +207,7 @@ fn load_test_model(stem: &str) -> Model {
 #[test]
 fn one_submit_per_frame_regardless_of_part_count() {
     let mut stage = Stage::new();
-    let mut pool = CompositePool::new(W, H);
+    let mut pool = FrameTargets::new();
 
     // `write_buffer` batches at submit start, so each per-frame buffer must
     // take exactly one queue write however many sites feed it.
@@ -290,7 +275,7 @@ fn one_submit_per_frame_regardless_of_part_count() {
 #[test]
 fn no_buffer_grows_mid_frame_when_the_frame_fits() {
     let mut stage = Stage::new();
-    let mut pool = CompositePool::new(W, H);
+    let mut pool = FrameTargets::new();
     let mut renderer = stage.renderer();
     let mut scene = stage.admit(&mut renderer, grid_model(8));
 
@@ -311,7 +296,7 @@ fn no_buffer_grows_mid_frame_when_the_frame_outgrows_capacity() {
     let parts = INITIAL_INSTANCE_SLOTS.max(INITIAL_PART_UNIFORM_SLOTS) + 88;
 
     let mut stage = Stage::new();
-    let mut pool = CompositePool::new(W, H);
+    let mut pool = FrameTargets::new();
     let mut renderer = stage.renderer();
     let mut scene = stage.admit(&mut renderer, grid_model(parts));
 
@@ -369,7 +354,7 @@ fn no_buffer_grows_mid_frame_when_the_frame_outgrows_capacity() {
 #[test]
 fn every_reserved_slot_is_written_exactly_once() {
     let mut stage = Stage::new();
-    let mut pool = CompositePool::new(W, H);
+    let mut pool = FrameTargets::new();
 
     for parts in [3usize, 7, 33] {
         let mut renderer = stage.renderer();
@@ -423,11 +408,11 @@ fn shared_composite_pool_costs_the_deepest_puppet_not_the_sum() {
 
     let mut alone = Vec::new();
     for stem in stems.iter() {
-        let mut pool = CompositePool::new(W, H);
+        let mut pool = FrameTargets::new();
         let mut renderer = stage.renderer();
         let mut scene = stage.admit(&mut renderer, load_test_model(stem));
-        let (_, fs) = stage.frame(&mut renderer, &mut scene, &mut pool);
-        let (peak, capacity, _, _) = pool.stats();
+        let (stats, fs) = stage.frame(&mut renderer, &mut scene, &mut pool);
+        let (peak, capacity) = (stats.composite_slots_used as usize, pool.composite_slots());
         assert_eq!(fs.late_buffer_reallocs, 0);
         println!("{stem}: composite pool peak={peak} capacity={capacity}");
         alone.push((*stem, peak, capacity));
@@ -444,7 +429,7 @@ fn shared_composite_pool_costs_the_deepest_puppet_not_the_sum() {
         "at least two models must need slots, else sharing is untested: {alone:?}",
     );
 
-    let mut pool = CompositePool::new(W, H);
+    let mut pool = FrameTargets::new();
     let mut scenes: Vec<(WgpuRenderer, Scene)> = stems
         .iter()
         .map(|stem| {
@@ -491,7 +476,7 @@ fn shared_composite_pool_costs_the_deepest_puppet_not_the_sum() {
     stage.queue.submit(std::iter::once(encoder.finish()));
     stage.submits += 1;
 
-    let (_, shared_capacity, _, _) = pool.stats();
+    let shared_capacity = pool.composite_slots();
     println!(
         "shared pool over {} puppets: capacity={shared_capacity} (deepest alone={deepest}, \
          sum of alone={sum})",
@@ -511,7 +496,7 @@ fn shared_composite_pool_costs_the_deepest_puppet_not_the_sum() {
 #[test]
 fn every_owned_frame_binds_camera_slot_zero() {
     let mut stage = Stage::new();
-    let mut pool = CompositePool::new(W, H);
+    let mut pool = FrameTargets::new();
     let mut renderer = stage.renderer();
     let mut scene = stage.admit(&mut renderer, grid_model(6));
 
@@ -555,7 +540,7 @@ fn every_owned_frame_binds_camera_slot_zero() {
 #[test]
 fn two_views_in_one_submission_bind_distinct_camera_slots() {
     let mut stage = Stage::new();
-    let mut pool = CompositePool::new(W, H);
+    let mut pool = FrameTargets::new();
     let mut renderer = stage.renderer();
     let mut scene = stage.admit(&mut renderer, grid_model(6));
     let list = scene.frame(&mut renderer, 0.0);
@@ -605,7 +590,7 @@ fn two_views_in_one_submission_bind_distinct_camera_slots() {
 #[test]
 fn two_views_in_one_submission_keep_their_own_draw_data() {
     let mut stage = Stage::new();
-    let mut pool = CompositePool::new(W, H);
+    let mut pool = FrameTargets::new();
     let mut renderer = stage.renderer();
     let mut scene = stage.admit(&mut renderer, grid_model(6));
     let list = scene.frame(&mut renderer, 0.0);
@@ -651,13 +636,13 @@ fn two_views_in_one_submission_keep_their_own_draw_data() {
                     &mut submission,
                     &[&list],
                     &mut encoder,
-                    &other_view,
-                    &stage.stencil,
+                    RenderTarget {
+                        view: &other_view,
+                        texture: Some(&other),
+                        width: W,
+                        height: H,
+                    },
                     &mut pool,
-                    Some(&other),
-                    Some(&mut stage.snapshots),
-                    W,
-                    H,
                     Some(CLEAR),
                 )
                 .expect("render the second view");
@@ -679,7 +664,7 @@ fn two_views_in_one_submission_keep_their_own_draw_data() {
 #[test]
 fn a_submission_past_the_ring_is_refused_and_records_nothing() {
     let mut stage = Stage::new();
-    let mut pool = CompositePool::new(W, H);
+    let mut pool = FrameTargets::new();
     let mut renderer = stage.renderer();
     let mut scene = stage.admit(&mut renderer, grid_model(4));
     let list = scene.frame(&mut renderer, 0.0);
@@ -736,7 +721,7 @@ fn a_submission_past_the_ring_is_refused_and_records_nothing() {
 #[test]
 fn a_submission_from_another_renderer_is_refused() {
     let mut stage = Stage::new();
-    let mut pool = CompositePool::new(W, H);
+    let mut pool = FrameTargets::new();
     let mut a = stage.renderer();
     let mut b = stage.renderer();
     let mut scene = stage.admit(&mut a, grid_model(4));
@@ -764,7 +749,7 @@ fn a_submission_from_another_renderer_is_refused() {
 #[test]
 fn a_dropped_frame_never_reaches_the_queue() {
     let mut stage = Stage::new();
-    let mut pool = CompositePool::new(W, H);
+    let mut pool = FrameTargets::new();
     let mut renderer = stage.renderer();
     let mut scene = stage.admit(&mut renderer, grid_model(6));
 
@@ -775,25 +760,17 @@ fn a_dropped_frame_never_reaches_the_queue() {
     // The binding silences `#[must_use]`; the drop is the point.
     let list = scene.frame(&mut renderer, 0.0);
     {
-        let _dropped = renderer
-            .frame()
-            .render_ext(
-                &[&list],
-                &stage.view,
-                &stage.stencil,
-                &mut pool,
-                Some(&stage.target),
-                Some(&mut stage.snapshots),
-                W,
-                H,
-                Some(wgpu::Color {
-                    r: 1.0,
-                    g: 0.0,
-                    b: 0.0,
-                    a: 1.0,
-                }),
-            )
-            .expect("render");
+        let _dropped = renderer.frame().render(
+            &[&list],
+            stage.target(),
+            &mut pool,
+            Some(wgpu::Color {
+                r: 1.0,
+                g: 0.0,
+                b: 0.0,
+                a: 1.0,
+            }),
+        );
     }
 
     assert_eq!(

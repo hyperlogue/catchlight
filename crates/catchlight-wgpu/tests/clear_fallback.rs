@@ -3,7 +3,7 @@
 //! With `Some(clear_color)`, `render_list` clears even when nothing draws.
 
 use catchlight_wgpu::{
-    create_headless_context, CompositePool, RenderList, StencilTarget, WgpuRenderer,
+    create_headless_context, FrameTargets, RenderList, RenderTarget, WgpuRenderer,
 };
 
 const W: u32 = 4;
@@ -33,14 +33,22 @@ fn empty_render_list_still_clears_the_target() {
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let mut renderer = WgpuRenderer::new(device, queue, format);
-        let stencil = StencilTarget::new_for_pipelines(&renderer.shared, &renderer.device, W, H);
-        let mut composites = CompositePool::new(W, H);
+        let mut targets = FrameTargets::new();
 
         let mut paint = |renderer: &mut WgpuRenderer, list: &RenderList, color: wgpu::Color| {
             renderer
                 .frame()
-                .render(&[list], &view, &stencil, &mut composites, W, H, Some(color))
-                .expect("render")
+                .render(
+                    &[list],
+                    RenderTarget {
+                        view: &view,
+                        texture: None,
+                        width: W,
+                        height: H,
+                    },
+                    &mut targets,
+                    Some(color),
+                )
                 .submit();
         };
         let empty = RenderList::default();
@@ -65,7 +73,7 @@ fn empty_render_list_still_clears_the_target() {
             },
         );
 
-        catchlight_wgpu::read_texture_to_rgba(&renderer.device, &renderer.queue, &texture, W, H)
+        catchlight_wgpu::read_texture_to_rgba(&renderer.device, &renderer.queue, &texture)
             .await
             .expect("readback")
     });

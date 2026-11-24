@@ -25,15 +25,21 @@
 //! # }
 //! ```
 
-pub mod collect;
-pub mod headless;
-pub mod render_cache;
-pub mod renderer;
+mod collect;
+mod headless;
+mod render_cache;
+mod renderer;
 
-pub use collect::*;
-pub use headless::{apply_uniform_scratch_deform, Framing, RenderContext};
+pub use collect::{
+    CompositeMaskPartData, CompositeMaskSourceData, DrawableInfo, MaskSourceData, MaskSources,
+    RenderList,
+};
+pub use headless::{Framing, RenderContext};
 pub use render_cache::{collect, CacheStats, PrepareOptions, RenderCache};
-pub use renderer::*;
+pub use renderer::{
+    DeformSet, Frame, FrameStats, FrameTargets, Pipelines, Recorded, RenderStats, RenderTarget,
+    RendererError, RendererResult, Submission, WgpuRenderer, CAMERA_RING_SLOTS,
+};
 
 pub fn create_orthographic_camera(camera_height: f32, aspect: f32) -> glam::Mat4 {
     create_orthographic_camera_at(camera_height, aspect, glam::Vec2::ZERO)
@@ -90,6 +96,43 @@ impl SurfaceContext {
     }
 }
 
+/// `optional` features are requested only where the adapter has them.
+async fn request_device(
+    adapter: &wgpu::Adapter,
+    optional: wgpu::Features,
+) -> RendererResult<(wgpu::Device, wgpu::Queue)> {
+    Ok(adapter
+        .request_device(&wgpu::DeviceDescriptor {
+            label: None,
+            required_features: adapter.features() & optional,
+            // Mobile Safari reports no compute limits, so `Limits::default()` fails.
+            required_limits: adapter.limits(),
+            memory_hints: Default::default(),
+            trace: wgpu::Trace::Off,
+            experimental_features: wgpu::ExperimentalFeatures::default(),
+        })
+        .await?)
+}
+
+async fn headless_adapter(backends: wgpu::Backends) -> RendererResult<wgpu::Adapter> {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        backends,
+        flags: Default::default(),
+        memory_budget_thresholds: Default::default(),
+        backend_options: Default::default(),
+        display: None,
+    });
+    // `HighPerformance` makes a hardware adapter win over lavapipe when both
+    // are present.
+    Ok(instance
+        .request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+        })
+        .await?)
+}
+
 /// Renders through an sRGB view: shaders work in linear space, so a
 /// non-sRGB target would skip the gamma encode on present.
 pub async fn create_surface_context(
@@ -97,7 +140,7 @@ pub async fn create_surface_context(
     surface: wgpu::Surface<'static>,
     width: u32,
     height: u32,
-) -> Result<(wgpu::Device, wgpu::Queue, SurfaceContext), Box<dyn std::error::Error>> {
+) -> RendererResult<(wgpu::Device, wgpu::Queue, SurfaceContext)> {
     let adapter = instance
         .request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::default(),
@@ -105,22 +148,8 @@ pub async fn create_surface_context(
             force_fallback_adapter: false,
         })
         .await?;
-
-    let optional_features = wgpu::Features::ADDRESS_MODE_CLAMP_TO_BORDER;
-    let required_features = adapter.features() & optional_features;
-    // Mobile Safari reports no compute limits, so `Limits::default()` fails.
-    let required_limits = adapter.limits();
-    let (device, queue) = adapter
-        .request_device(&wgpu::DeviceDescriptor {
-            label: None,
-            required_features,
-            required_limits,
-            memory_hints: Default::default(),
-            trace: wgpu::Trace::Off,
-            experimental_features: wgpu::ExperimentalFeatures::default(),
-        })
-        .await?;
-
+    let (device, queue) =
+        request_device(&adapter, wgpu::Features::ADDRESS_MODE_CLAMP_TO_BORDER).await?;
     let context = configure_surface(&adapter, &device, surface, width, height);
     Ok((device, queue, context))
 }
@@ -180,159 +209,61 @@ pub fn configure_surface(
 }
 
 /// `Backends::PRIMARY`, not `all()`: the workspace-unified `webgl` feature
-/// enables GL, which panics initializing EGL headless. `HighPerformance` makes
-/// a hardware adapter win over lavapipe when both are present.
-pub async fn create_headless_context(
-) -> Result<(wgpu::Device, wgpu::Queue), Box<dyn std::error::Error>> {
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-        backends: wgpu::Backends::PRIMARY,
-        flags: Default::default(),
-        memory_budget_thresholds: Default::default(),
-        backend_options: Default::default(),
-        display: None,
-    });
-
-    let adapter = instance
-        .request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            compatible_surface: None,
-            force_fallback_adapter: false,
-        })
-        .await?;
-
-    let optional_features = wgpu::Features::ADDRESS_MODE_CLAMP_TO_BORDER;
-    let required_features = adapter.features() & optional_features;
-    let required_limits = adapter.limits();
-    let (device, queue) = adapter
-        .request_device(&wgpu::DeviceDescriptor {
-            label: None,
-            required_features,
-            required_limits,
-            memory_hints: Default::default(),
-            trace: wgpu::Trace::Off,
-            experimental_features: wgpu::ExperimentalFeatures::default(),
-        })
-        .await?;
-
-    Ok((device, queue))
+/// enables GL, which panics initializing EGL headless.
+pub async fn create_headless_context() -> RendererResult<(wgpu::Device, wgpu::Queue)> {
+    let adapter = headless_adapter(wgpu::Backends::PRIMARY).await?;
+    request_device(&adapter, wgpu::Features::ADDRESS_MODE_CLAMP_TO_BORDER).await
 }
 
 /// Benchmarking variant. The profiler uses encoder-scope queries, which
 /// `wgpu_profiler` opens only under `TIMESTAMP_QUERY_INSIDE_ENCODERS`.
 pub async fn create_headless_context_ext(
     backends: wgpu::Backends,
-) -> Result<(wgpu::Adapter, wgpu::Device, wgpu::Queue), Box<dyn std::error::Error>> {
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-        backends,
-        flags: Default::default(),
-        memory_budget_thresholds: Default::default(),
-        backend_options: Default::default(),
-        display: None,
-    });
-    let adapter = instance
-        .request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            compatible_surface: None,
-            force_fallback_adapter: false,
-        })
-        .await?;
-
-    let optional_features = wgpu::Features::ADDRESS_MODE_CLAMP_TO_BORDER
-        | wgpu::Features::TIMESTAMP_QUERY
-        | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
-    let required_features = adapter.features() & optional_features;
-    let required_limits = adapter.limits();
-    let (device, queue) = adapter
-        .request_device(&wgpu::DeviceDescriptor {
-            label: None,
-            required_features,
-            required_limits,
-            memory_hints: Default::default(),
-            trace: wgpu::Trace::Off,
-            experimental_features: wgpu::ExperimentalFeatures::default(),
-        })
-        .await?;
-
+) -> RendererResult<(wgpu::Adapter, wgpu::Device, wgpu::Queue)> {
+    let adapter = headless_adapter(backends).await?;
+    let (device, queue) = request_device(
+        &adapter,
+        wgpu::Features::ADDRESS_MODE_CLAMP_TO_BORDER
+            | wgpu::Features::TIMESTAMP_QUERY
+            | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS,
+    )
+    .await?;
     Ok((adapter, device, queue))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ReadbackLayout {
-    unpadded_bytes_per_row: u32,
+    unpadded_bytes_per_row: usize,
     padded_bytes_per_row: u32,
     buffer_size: u64,
-    pixel_capacity: usize,
 }
 
-fn readback_layout(width: u32, height: u32) -> std::io::Result<ReadbackLayout> {
+/// `None` for an empty texture or one whose rows overflow the copy layout or
+/// the address space.
+fn readback_layout(width: u32, height: u32) -> Option<ReadbackLayout> {
     if width == 0 || height == 0 {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "readback dimensions must be non-zero",
-        ));
+        return None;
     }
-
-    let unpadded_bytes_per_row = width.checked_mul(4).ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "readback row size exceeds u32",
-        )
-    })?;
-    let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-    let padded_bytes_per_row = unpadded_bytes_per_row
-        .div_ceil(align)
-        .checked_mul(align)
-        .ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "aligned readback row size exceeds u32",
-            )
-        })?;
-    let buffer_size = u64::from(padded_bytes_per_row)
-        .checked_mul(u64::from(height))
-        .ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "readback buffer size exceeds u64",
-            )
-        })?;
-    usize::try_from(buffer_size).map_err(|_| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "readback buffer does not fit address space",
-        )
-    })?;
-    let pixel_bytes = u64::from(unpadded_bytes_per_row)
-        .checked_mul(u64::from(height))
-        .ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "readback pixel size exceeds u64",
-            )
-        })?;
-    let pixel_capacity = usize::try_from(pixel_bytes).map_err(|_| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "readback pixels do not fit address space",
-        )
-    })?;
-
-    Ok(ReadbackLayout {
-        unpadded_bytes_per_row,
-        padded_bytes_per_row,
+    let unpadded = width.checked_mul(4)?;
+    let padded = unpadded.checked_next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)?;
+    let buffer_size = u64::from(padded) * u64::from(height);
+    usize::try_from(buffer_size).ok()?;
+    Some(ReadbackLayout {
+        unpadded_bytes_per_row: usize::try_from(unpadded).ok()?,
+        padded_bytes_per_row: padded,
         buffer_size,
-        pixel_capacity,
     })
 }
 
+/// Mip 0 of an RGBA8 `texture` carrying `COPY_SRC`, tightly packed.
 pub async fn read_texture_to_rgba(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     texture: &wgpu::Texture,
-    width: u32,
-    height: u32,
-) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    let layout = readback_layout(width, height)?;
+) -> RendererResult<Vec<u8>> {
+    let (width, height) = (texture.width(), texture.height());
+    let layout =
+        readback_layout(width, height).ok_or(RendererError::ReadbackSize { width, height })?;
     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("Readback Buffer"),
         size: layout.buffer_size,
@@ -343,7 +274,6 @@ pub async fn read_texture_to_rgba(
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: Some("Readback Encoder"),
     });
-
     encoder.copy_texture_to_buffer(
         wgpu::TexelCopyTextureInfo {
             texture,
@@ -365,7 +295,6 @@ pub async fn read_texture_to_rgba(
             depth_or_array_layers: 1,
         },
     );
-
     let submission = queue.submit(std::iter::once(encoder.finish()));
 
     let buffer_slice = buffer.slice(..);
@@ -380,33 +309,18 @@ pub async fn read_texture_to_rgba(
     })?;
     #[cfg(target_arch = "wasm32")]
     let _ = submission;
-    receiver.await??;
+    receiver
+        .await
+        .map_err(|_| RendererError::ReadbackAbandoned)??;
 
     let data = buffer_slice.get_mapped_range();
-    let mut pixels: Vec<u8> = Vec::with_capacity(layout.pixel_capacity);
-    let row_len = usize::try_from(layout.unpadded_bytes_per_row)?;
-
-    for row in 0..height {
-        let start = usize::try_from(u64::from(row) * u64::from(layout.padded_bytes_per_row))?;
-        let end = start.checked_add(row_len).ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "mapped readback row exceeds address space",
-            )
-        })?;
-        if end > data.len() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "mapped readback buffer is shorter than requested",
-            )
-            .into());
-        }
-        pixels.extend_from_slice(&data[start..end]);
-    }
-
+    let pixels = data
+        .chunks(layout.padded_bytes_per_row as usize)
+        .flat_map(|row| &row[..layout.unpadded_bytes_per_row])
+        .copied()
+        .collect();
     drop(data);
     buffer.unmap();
-
     Ok(pixels)
 }
 
@@ -420,11 +334,10 @@ mod tests {
         assert_eq!(layout.unpadded_bytes_per_row, 12);
         assert_eq!(layout.padded_bytes_per_row, 256);
         assert_eq!(layout.buffer_size, 512);
-        assert_eq!(layout.pixel_capacity, 24);
 
-        assert!(readback_layout(0, 1).is_err());
-        assert!(readback_layout(1, 0).is_err());
-        assert!(readback_layout(u32::MAX, 1).is_err());
-        assert!(readback_layout(u32::MAX / 4, 1).is_err());
+        assert!(readback_layout(0, 1).is_none());
+        assert!(readback_layout(1, 0).is_none());
+        assert!(readback_layout(u32::MAX, 1).is_none());
+        assert!(readback_layout(u32::MAX / 4, 1).is_none());
     }
 }

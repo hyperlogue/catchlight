@@ -6,8 +6,8 @@ use bevy::render::renderer::{RenderAdapter, RenderDevice, RenderQueue};
 use bevy::render::view::ViewTarget;
 use catchlight_core::Model;
 use catchlight_wgpu::{
-    CompositePool, DeformSet, FrameStats, FramebufferSnapshotPool, Pipelines, PrepareOptions,
-    RenderCache, RenderList, StencilTarget, Submission, WgpuRenderer,
+    DeformSet, FrameStats, FrameTargets, Pipelines, PrepareOptions, RenderCache, RenderList,
+    Submission, WgpuRenderer,
 };
 
 use crate::extract::{ExtractedCatchlightCamera, ExtractedPuppet};
@@ -88,35 +88,9 @@ impl CatchlightRenderState {
 
 pub(crate) struct FormatResources {
     pub pipelines: Arc<Pipelines>,
-    targets: HashMap<Entity, ViewResources>,
-}
-
-pub(crate) struct ViewResources {
-    pub stencil: StencilTarget,
-    pub composites: CompositePool,
-    pub snapshots: FramebufferSnapshotPool,
-}
-
-impl FormatResources {
-    pub(crate) fn targets_for_view(
-        &mut self,
-        view: Entity,
-        device: &wgpu::Device,
-        width: u32,
-        height: u32,
-    ) -> &mut ViewResources {
-        let targets = self.targets.entry(view).or_insert_with(|| ViewResources {
-            stencil: StencilTarget::new_for_pipelines(&self.pipelines, device, width, height),
-            composites: CompositePool::new(width, height),
-            snapshots: FramebufferSnapshotPool::new(width, height),
-        });
-        targets
-            .stencil
-            .ensure_size_for_pipelines(&self.pipelines, device, width, height);
-        targets.composites.ensure_size(width, height);
-        targets.snapshots.ensure_size(width, height);
-        targets
-    }
+    /// Per view: two cameras of different sizes would otherwise rebuild one
+    /// set of targets on every frame.
+    pub targets: HashMap<Entity, FrameTargets>,
 }
 
 /// Keyed by `Arc` pointer identity, not `AssetId`: an id survives a hot
@@ -364,46 +338,7 @@ pub(crate) fn prepare_puppets(
 
 #[cfg(test)]
 mod tests {
-    use super::{unique_formats, FormatResources};
-    use bevy::prelude::*;
-    use std::{collections::HashMap, sync::Arc};
-
-    #[test]
-    fn different_sized_views_keep_their_targets_between_frames() {
-        let (device, _queue) = bevy::tasks::block_on(catchlight_wgpu::create_headless_context())
-            .expect("headless device");
-        let pipelines = Arc::new(catchlight_wgpu::Pipelines::new(
-            &device,
-            wgpu::TextureFormat::Rgba8UnormSrgb,
-        ));
-        let mut resources = FormatResources {
-            pipelines: pipelines.clone(),
-            targets: HashMap::new(),
-        };
-        let mut world = World::new();
-        let a = world.spawn_empty().id();
-        let b = world.spawn_empty().id();
-        let mut targets = |entity, width, height| {
-            let targets = resources.targets_for_view(entity, &device, width, height);
-            targets.composites.reset();
-            (
-                targets.stencil.texture.clone(),
-                targets.composites.acquire(&pipelines, &device).view,
-            )
-        };
-        let first_a = targets(a, 64, 64);
-        let first_b = targets(b, 128, 96);
-        for _ in 0..3 {
-            assert_eq!(targets(a, 64, 64), first_a);
-            assert_eq!(targets(b, 128, 96), first_b);
-        }
-        assert_ne!(
-            targets(a, 80, 60),
-            first_a,
-            "a resized view replaces its targets"
-        );
-        assert_eq!(targets(b, 128, 96), first_b, "the other view stays warm");
-    }
+    use super::unique_formats;
 
     #[test]
     fn keeps_every_distinct_marked_view_format() {

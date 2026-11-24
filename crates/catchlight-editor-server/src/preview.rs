@@ -17,14 +17,13 @@ pub(super) struct PreviewRenderer {
 }
 
 impl PreviewRenderer {
-    /// Expensive (device + ~18 pipelines); create once and reuse.
+    /// Expensive (a device and every pipeline); create once and reuse.
     pub(super) fn new() -> Result<Self> {
         let (device, queue) =
             pollster::block_on(create_headless_context()).map_err(|e| anyhow!("gpu init: {e}"))?;
         let renderer = WgpuRenderer::new(device, queue, wgpu::TextureFormat::Rgba8UnormSrgb);
         // Resized on first preview; this size only has to be legal.
-        let ctx = RenderContext::with_renderer(renderer, 1, 1)
-            .map_err(|e| anyhow!("render context: {e}"))?;
+        let ctx = RenderContext::with_renderer(renderer, 1, 1);
         Ok(Self { ctx, cache: None })
     }
 

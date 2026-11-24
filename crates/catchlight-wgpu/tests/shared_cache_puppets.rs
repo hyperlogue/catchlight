@@ -5,11 +5,12 @@
 //! Asserts on pixels, since the failure is invisible in counters.
 
 mod common;
+use common::apply_uniform_scratch_deform;
 
 use catchlight_core::{Mesh, Model, Puppet, Vec2};
 use catchlight_wgpu::{
-    apply_uniform_scratch_deform, create_orthographic_camera, DeformSet, PrepareOptions,
-    RenderCache, RenderContext, RenderList, WgpuRenderer,
+    create_orthographic_camera, DeformSet, PrepareOptions, RenderCache, RenderContext, RenderList,
+    WgpuRenderer,
 };
 
 const W: u32 = 128;
@@ -42,7 +43,7 @@ fn one_quad_model() -> Model {
 fn ctx() -> RenderContext {
     let (device, queue) = common::shared_context();
     let renderer = WgpuRenderer::new(device, queue, wgpu::TextureFormat::Rgba8Unorm);
-    let mut ctx = RenderContext::with_renderer(renderer, W, H).expect("render context");
+    let mut ctx = RenderContext::with_renderer(renderer, W, H);
     ctx.renderer
         .update_camera(create_orthographic_camera(CAMERA_HEIGHT, 1.0));
     ctx
@@ -99,7 +100,7 @@ fn two_puppets_of_one_model_share_a_cache_and_keep_their_own_deforms() {
     cache
         .refresh_puppet(&mut ctx.renderer, &model, &left, left_set, &mut left_list)
         .unwrap();
-    ctx.render(&left_list, Some(CLEAR)).unwrap();
+    ctx.render(&left_list, Some(CLEAR));
     let left_alone = drawn_span(&ctx.read_rgba().unwrap()).expect("the left puppet drew");
 
     cache
@@ -111,7 +112,7 @@ fn two_puppets_of_one_model_share_a_cache_and_keep_their_own_deforms() {
             &mut right_list,
         )
         .unwrap();
-    ctx.render(&right_list, Some(CLEAR)).unwrap();
+    ctx.render(&right_list, Some(CLEAR));
     let right_alone = drawn_span(&ctx.read_rgba().unwrap()).expect("the right puppet drew");
 
     assert!(
@@ -131,9 +132,7 @@ fn two_puppets_of_one_model_share_a_cache_and_keep_their_own_deforms() {
             &mut right_list,
         )
         .unwrap();
-    let stats = ctx
-        .render_many(&[&left_list, &right_list], Some(CLEAR))
-        .unwrap();
+    let stats = ctx.render_many(&[&left_list, &right_list], Some(CLEAR));
     assert_eq!(stats.drawn_parts, 2, "both puppets drew");
 
     let both = ctx.read_rgba().unwrap();
@@ -147,7 +146,7 @@ fn two_puppets_of_one_model_share_a_cache_and_keep_their_own_deforms() {
     assert!(
         drawn_pixels(&both)
             > drawn_pixels(&{
-                ctx.render(&left_list, Some(CLEAR)).unwrap();
+                ctx.render(&left_list, Some(CLEAR));
                 ctx.read_rgba().unwrap()
             }),
         "two puppets cover more than one",
@@ -172,7 +171,7 @@ fn a_released_deform_set_is_reused_and_starts_clean() {
             &mut list,
         )
         .unwrap();
-    ctx.render(&list, Some(CLEAR)).unwrap();
+    ctx.render(&list, Some(CLEAR));
     let shifted = drawn_span(&ctx.read_rgba().unwrap()).expect("drew");
 
     ctx.renderer.release_deform_set(first);
@@ -186,7 +185,7 @@ fn a_released_deform_set_is_reused_and_starts_clean() {
     cache
         .refresh_puppet(&mut ctx.renderer, &model, &plain, second, &mut list)
         .unwrap();
-    ctx.render(&list, Some(CLEAR)).unwrap();
+    ctx.render(&list, Some(CLEAR));
     let plain_span = drawn_span(&ctx.read_rgba().unwrap()).expect("drew");
     assert!(
         plain_span.0 < shifted.0,
@@ -221,7 +220,7 @@ fn one_frame_of_many_puppets_takes_one_write_per_frame_buffer() {
         lists.push(list);
     }
     let borrowed: Vec<&RenderList> = lists.iter().collect();
-    let stats = ctx.render_many(&borrowed, Some(CLEAR)).unwrap();
+    let stats = ctx.render_many(&borrowed, Some(CLEAR));
     let frame = ctx.renderer.frame_stats();
 
     assert_eq!(stats.drawn_parts, 8);

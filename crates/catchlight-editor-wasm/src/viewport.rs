@@ -17,7 +17,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
 use catchlight_wgpu::{
-    configure_surface, create_orthographic_camera_at, CompositePool, RenderList, StencilTarget,
+    configure_surface, create_orthographic_camera_at, FrameTargets, RenderList, RenderTarget,
     SurfaceContext,
 };
 use wasm_bindgen::prelude::*;
@@ -394,8 +394,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 struct Inner {
     replica: Rc<RefCell<ReplicaInner>>,
     target: Target,
-    stencil: StencilTarget,
-    composites: CompositePool,
+    targets: FrameTargets,
     list: RenderList,
     camera: Camera,
     size: (u32, u32),
@@ -586,37 +585,22 @@ impl Inner {
             .render
             .as_mut()
             .ok_or("this viewport's replica lost its renderer")?;
-        self.stencil.ensure_size_for_pipelines(
-            &render.renderer.shared,
-            &render.renderer.device,
-            rendered.0,
-            rendered.1,
-        );
-        self.composites.ensure_size(rendered.0, rendered.1);
 
         // The device the capture below copies with: the frame holds the
         // renderer for as long as it owns the encoder.
         let device = render.renderer.device.clone();
         render.renderer.update_camera(view_proj);
-        let recorded = render.renderer.frame().render(
+        let mut done = render.renderer.frame().render(
             &[&self.list],
-            target_view,
-            &self.stencil,
-            &mut self.composites,
-            rendered.0,
-            rendered.1,
+            RenderTarget {
+                view: target_view,
+                texture: None,
+                width: rendered.0,
+                height: rendered.1,
+            },
+            &mut self.targets,
             Some(CLEAR),
         );
-        let mut done = match recorded {
-            Ok(done) => done,
-            Err(e) => {
-                // The texture was acquired, so it is presented either way:
-                // a surface holding a frame nobody presents stalls the
-                // swapchain, and the tab stops drawing entirely.
-                frame.present();
-                return Err(e.to_string());
-            }
-        };
         // The borrowed surface, written in the same submission as the frame
         // that fills it, so what is presented is this frame and not the last.
         if let Target::Extra(extra) = &self.target {
@@ -888,7 +872,7 @@ impl Viewport {
     ) -> Result<Viewport, JsValue> {
         let size = (canvas.width().max(1), canvas.height().max(1));
 
-        let (target, frames, rendered) = match &gpu.gl {
+        let (target, frames) = match &gpu.gl {
             // WebGL2, on the device's own canvas. The surface was configured
             // when the device was acquired, to whatever this canvas measured
             // then; a viewport built on it later may find it another size, and
@@ -902,7 +886,6 @@ impl Viewport {
                         stage: stage.clone(),
                         main: true,
                     },
-                    size,
                 )
             }
             // WebGL2, on any other canvas: no surface is possible, so render to a texture
@@ -910,14 +893,12 @@ impl Viewport {
             Some(stage) => {
                 let extra = Extra::new(stage.clone(), &gpu.device, &canvas, size)
                     .map_err(|e| JsValue::from_str(&e))?;
-                let rendered = extra.rendered;
                 (
                     Target::Extra(extra),
                     Frames::Tier {
                         stage: stage.clone(),
                         main: false,
                     },
-                    rendered,
                 )
             }
             None => {
@@ -941,7 +922,6 @@ impl Viewport {
                         tick: Rc::new(RefCell::new(None)),
                         pending: Rc::new(Cell::new(None)),
                     },
-                    size,
                 )
             }
         };
@@ -954,30 +934,17 @@ impl Viewport {
         };
 
         let shared = replica.inner();
-        let (stencil, composites) = {
-            let mut inner = shared
-                .try_borrow_mut()
-                .map_err(|_| JsValue::from_str("this replica is busy drawing another canvas"))?;
-            let render = inner
-                .ensure_renderer(gpu, render_format)
-                .map_err(|e| JsValue::from_str(&e))?;
-            (
-                StencilTarget::new_for_pipelines(
-                    &render.renderer.shared,
-                    &render.renderer.device,
-                    rendered.0,
-                    rendered.1,
-                ),
-                CompositePool::new(rendered.0, rendered.1),
-            )
-        };
+        shared
+            .try_borrow_mut()
+            .map_err(|_| JsValue::from_str("this replica is busy drawing another canvas"))?
+            .ensure_renderer(gpu, render_format)
+            .map_err(|e| JsValue::from_str(&e))?;
 
         Ok(Self {
             inner: Rc::new(RefCell::new(Inner {
                 replica: shared,
                 target,
-                stencil,
-                composites,
+                targets: FrameTargets::new(),
                 list: RenderList::default(),
                 // Until `set_camera`, frame the origin at a height that suits a rig.
                 camera: Camera {

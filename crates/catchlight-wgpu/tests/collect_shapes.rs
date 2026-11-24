@@ -63,9 +63,9 @@ fn composites(drawables: &[DrawableInfo]) -> Vec<u32> {
 }
 
 fn all_composites(list: &RenderList) -> Vec<u32> {
-    composites(&list.root_drawables)
+    composites(list.root_drawables())
         .into_iter()
-        .chain(list.composite_children.values().flat_map(|c| composites(c)))
+        .chain(list.composites().flat_map(|(_, c)| composites(c)))
         .collect()
 }
 
@@ -116,7 +116,7 @@ fn a_part_mask_source_is_collected_with_its_mode() {
 
     let comp_slot = node_slot(&scene, &comp);
     let mask_sources = list
-        .root_drawables
+        .root_drawables()
         .iter()
         .find_map(|d| match d {
             DrawableInfo::Composite {
@@ -169,8 +169,7 @@ fn a_composite_mask_source_keeps_its_descendant_parts() {
 
     let (scene, list) = framed(model);
     let data = list
-        .composite_mask_sources
-        .get(&node_slot(&scene, &source))
+        .composite_mask_source(node_slot(&scene, &source))
         .expect("the composite mask source is collected under its node slot");
 
     assert_eq!(data.opacity, opacity, "the composite's own opacity");
@@ -198,14 +197,11 @@ fn passthrough_nested_composite_flattens_into_enclosing() {
     let (scene, list) = framed(build.model);
 
     assert_eq!(
-        composites(&list.root_drawables),
+        composites(list.root_drawables()),
         vec![node_slot(&scene, &outer)],
         "only the outer composite emits a drawable; inner is flattened away",
     );
-    let kids = list
-        .composite_children
-        .get(&node_slot(&scene, &outer))
-        .expect("outer composite children");
+    let kids = list.composite_children(node_slot(&scene, &outer));
     assert_eq!(
         parts(kids),
         vec![mesh_slot(&scene, &behind), mesh_slot(&scene, &front)],
@@ -224,7 +220,7 @@ fn drawable_order_is_low_to_high_and_stable_for_equal_z() {
     let (scene, list) = framed(build.model);
 
     assert_eq!(
-        parts(&list.root_drawables),
+        parts(list.root_drawables()),
         vec![
             mesh_slot(&scene, &behind),
             mesh_slot(&scene, &first_front),
@@ -247,23 +243,18 @@ fn isolating_nested_composite_is_not_flattened() {
 
     let (outer_slot, inner_slot) = (node_slot(&scene, &outer), node_slot(&scene, &inner));
     assert_eq!(
-        composites(&list.root_drawables),
+        composites(list.root_drawables()),
         vec![outer_slot],
         "only the outer composite is a root drawable",
     );
-    let outer_kids = list
-        .composite_children
-        .get(&outer_slot)
-        .expect("outer composite children");
+    let outer_kids = list.composite_children(outer_slot);
     assert_eq!(
         composites(outer_kids),
         vec![inner_slot],
         "the isolating nested composite is a child drawable of the outer",
     );
     assert!(
-        list.composite_children
-            .get(&inner_slot)
-            .is_some_and(|kids| kids.len() == 1),
+        list.composite_children(inner_slot).len() == 1,
         "the inner composite keeps its own child list",
     );
 }
@@ -285,7 +276,7 @@ fn opacity_zero_drawables_are_culled_except_darken() {
     });
     let (scene, list) = framed(build.model);
 
-    let drawn = parts(&list.root_drawables);
+    let drawn = parts(list.root_drawables());
     assert_eq!(drawn.len(), 2);
     assert!(drawn.contains(&mesh_slot(&scene, &darken)));
     assert!(drawn.contains(&mesh_slot(&scene, &visible)));
@@ -327,14 +318,13 @@ fn invisible_composite_children_do_not_prepare_masks_but_can_supply_them() {
             .mask_add(&invisible, &unused_source, MaskMode::Mask)
             .unwrap();
 
-        let mut ctx =
-            catchlight_wgpu::RenderContext::with_renderer(renderer().await, 64, 64).unwrap();
+        let mut ctx = catchlight_wgpu::RenderContext::with_renderer(renderer().await, 64, 64);
         let mut scene = Scene::new(&mut ctx.renderer, build.model);
         let list = scene.frame(&mut ctx.renderer, 0.0);
-        assert!(list.root_drawables.is_empty());
-        assert!(list.composite_children.values().all(Vec::is_empty));
-        assert!(list.composite_mask_sources.is_empty());
-        let stats = ctx.render(&list, Some(wgpu::Color::TRANSPARENT)).unwrap();
+        assert!(list.root_drawables().is_empty());
+        assert_eq!(list.composites().count(), 0);
+        assert_eq!(list.composite_mask_sources().count(), 0);
+        let stats = ctx.render(&list, Some(wgpu::Color::TRANSPARENT));
         assert_eq!(stats.total_draw_calls, 0);
         assert_eq!(stats.composite_slots_used, 0);
 
@@ -355,12 +345,12 @@ fn invisible_composite_children_do_not_prepare_masks_but_can_supply_them() {
             .mask_add(&receiver, &source, MaskMode::Mask)
             .unwrap();
         let list = scene.frame(&mut ctx.renderer, 0.0);
-        assert_eq!(list.root_drawables.len(), 1);
-        assert_eq!(list.composite_mask_sources.len(), 1);
+        assert_eq!(list.root_drawables().len(), 1);
+        assert_eq!(list.composite_mask_sources().count(), 1);
         assert!(list
-            .composite_mask_sources
-            .contains_key(&node_slot(&scene, &source)));
-        ctx.render(&list, Some(wgpu::Color::TRANSPARENT)).unwrap();
+            .composite_mask_source(node_slot(&scene, &source))
+            .is_some());
+        ctx.render(&list, Some(wgpu::Color::TRANSPARENT));
         assert!(ctx
             .read_rgba()
             .unwrap()
@@ -378,8 +368,8 @@ fn invisible_composite_children_do_not_prepare_masks_but_can_supply_them() {
             })
             .unwrap();
         let list = scene.frame(&mut ctx.renderer, 0.0);
-        assert!(composites(&list.root_drawables).contains(&node_slot(&scene, &hidden)));
-        assert_eq!(list.composite_mask_sources.len(), 2);
+        assert!(composites(list.root_drawables()).contains(&node_slot(&scene, &hidden)));
+        assert_eq!(list.composite_mask_sources().count(), 2);
     });
 }
 
@@ -520,12 +510,12 @@ fn collect_and_collect_into_produce_the_same_list() {
         scene.cache.collect_into(&scene.puppet, &mut reused);
 
         assert_eq!(
-            composites(&allocated.root_drawables),
-            composites(&reused.root_drawables),
+            composites(allocated.root_drawables()),
+            composites(reused.root_drawables()),
         );
         assert_eq!(
-            parts(&allocated.root_drawables),
-            parts(&reused.root_drawables)
+            parts(allocated.root_drawables()),
+            parts(reused.root_drawables())
         );
         assert_eq!(
             allocated.total_instance_count(),

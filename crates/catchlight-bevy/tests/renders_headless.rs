@@ -243,16 +243,16 @@ fn two_puppets_of_one_model_share_one_cache_and_both_reach_the_target() {
         .collected_drawables(render_entity(&app, right))
         .expect("the right puppet collected a render list");
     assert!(
-        !left_list.root_drawables.is_empty(),
+        !left_list.root_drawables().is_empty(),
         "the fixture draws something",
     );
     assert_eq!(
-        left_list.root_drawables.len(),
-        right_list.root_drawables.len(),
+        left_list.root_drawables().len(),
+        right_list.root_drawables().len(),
         "two puppets of one model draw the same set of parts",
     );
     assert_ne!(
-        left_list.deform_set, right_list.deform_set,
+        left_list.deform_set(), right_list.deform_set(),
         "each puppet uploads its frame into its own slice of the atlas",
     );
 
@@ -268,7 +268,7 @@ fn two_puppets_of_one_model_share_one_cache_and_both_reach_the_target() {
         "and staged them under one cursor, flushed once: {stats:?}",
     );
 
-    let x_of = |list: &catchlight_wgpu::RenderList| match &list.root_drawables[0] {
+    let x_of = |list: &catchlight_wgpu::RenderList| match &list.root_drawables()[0] {
         catchlight_wgpu::DrawableInfo::Part { transform, .. } => transform.to_cols_array()[12],
         other => panic!("expected a part, got {other:?}"),
     };

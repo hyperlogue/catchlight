@@ -1,11 +1,11 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 mod common;
+use common::apply_uniform_scratch_deform;
 
 use catchlight_core::{Model, Puppet, Vec2};
 use catchlight_wgpu::{
-    apply_uniform_scratch_deform, DeformSet, PrepareOptions, RenderCache, RenderContext,
-    RenderList, RenderStats,
+    DeformSet, PrepareOptions, RenderCache, RenderContext, RenderList, RenderStats,
 };
 
 fn render_poses(
@@ -32,9 +32,7 @@ fn render_poses(
         lists.push(list);
     }
     let lists: Vec<_> = lists.iter().collect();
-    let stats = ctx
-        .render_many(&lists, Some(wgpu::Color::TRANSPARENT))
-        .unwrap();
+    let stats = ctx.render_many(&lists, Some(wgpu::Color::TRANSPARENT));
     (ctx.read_rgba().unwrap(), stats)
 }
 

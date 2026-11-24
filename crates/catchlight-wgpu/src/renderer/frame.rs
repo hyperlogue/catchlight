@@ -45,64 +45,21 @@ pub struct Frame<'r> {
 }
 
 impl<'r> Frame<'r> {
-    /// See [`Self::render_ext`] for the dst-in-shader blend modes.
-    #[allow(clippy::too_many_arguments)]
     pub fn render(
-        self,
-        lists: &[&crate::collect::RenderList],
-        view: &wgpu::TextureView,
-        stencil: &StencilTarget,
-        composites: &mut CompositePool,
-        width: u32,
-        height: u32,
-        clear_color: Option<wgpu::Color>,
-    ) -> RendererResult<Recorded<'r>> {
-        self.render_ext(
-            lists,
-            view,
-            stencil,
-            composites,
-            None,
-            None,
-            width,
-            height,
-            clear_color,
-        )
-    }
-
-    /// Without the target texture and snapshot pool, `Overlay`, `ColorBurn`
-    /// and `LinearBurn` fall back to Normal-OVER.
-    #[allow(clippy::too_many_arguments)]
-    pub fn render_ext(
         mut self,
         lists: &[&crate::collect::RenderList],
-        view: &wgpu::TextureView,
-        stencil: &StencilTarget,
-        composites: &mut CompositePool,
-        target_color_texture: Option<&wgpu::Texture>,
-        snapshots: Option<&mut FramebufferSnapshotPool>,
-        width: u32,
-        height: u32,
+        target: RenderTarget<'_>,
+        targets: &mut FrameTargets,
         clear_color: Option<wgpu::Color>,
-    ) -> RendererResult<Recorded<'r>> {
-        let stats = self.renderer.record_frame(
-            0,
-            lists,
-            &mut self.encoder,
-            view,
-            stencil,
-            composites,
-            target_color_texture,
-            snapshots,
-            width,
-            height,
-            clear_color,
-        );
-        Ok(Recorded {
+    ) -> Recorded<'r> {
+        let stats =
+            self.renderer
+                .record_frame(0, lists, &mut self.encoder, target, targets, clear_color);
+        Recorded {
             renderer: self.renderer,
             encoder: Some(self.encoder),
             stats,
-        })
+        }
     }
 }
 
@@ -188,19 +145,13 @@ impl WgpuRenderer {
     /// Record into a caller-owned encoder (catchlight-bevy's render graph).
     /// Errors without recording when `submission` came from another renderer or
     /// has already issued [`CAMERA_RING_SLOTS`] views.
-    #[allow(clippy::too_many_arguments)]
     pub fn render_into(
         &mut self,
         submission: &mut Submission,
         lists: &[&crate::collect::RenderList],
         encoder: &mut wgpu::CommandEncoder,
-        view: &wgpu::TextureView,
-        stencil: &StencilTarget,
-        composites: &mut CompositePool,
-        target_color_texture: Option<&wgpu::Texture>,
-        snapshots: Option<&mut FramebufferSnapshotPool>,
-        width: u32,
-        height: u32,
+        target: RenderTarget<'_>,
+        targets: &mut FrameTargets,
         clear_color: Option<wgpu::Color>,
     ) -> RendererResult<RenderStats> {
         if submission.renderer != self.id {
@@ -213,42 +164,25 @@ impl WgpuRenderer {
         }
         let slot = submission.views;
         submission.views += 1;
-        Ok(self.record_frame(
-            slot,
-            lists,
-            encoder,
-            view,
-            stencil,
-            composites,
-            target_color_texture,
-            snapshots,
-            width,
-            height,
-            clear_color,
-        ))
+        Ok(self.record_frame(slot, lists, encoder, target, targets, clear_color))
     }
 
     /// Lists record back to back under one camera slot. A later view of the
     /// same submit takes the next `camera_slot` and continues the frame
-    /// buffers. Only the first list may consume `clear_color`. Without `target_color_texture` (which
-    /// must carry `COPY_SRC`) and `snapshots`, dst-in-shader modes fall back to
-    /// Normal-OVER.
-    #[allow(clippy::too_many_arguments)]
+    /// buffers. Only the first list may consume `clear_color`.
     pub(super) fn record_frame(
         &mut self,
         camera_slot: u32,
         lists: &[&crate::collect::RenderList],
         encoder: &mut wgpu::CommandEncoder,
-        view: &wgpu::TextureView,
-        stencil: &StencilTarget,
-        composites: &mut CompositePool,
-        target_color_texture: Option<&wgpu::Texture>,
-        mut snapshots: Option<&mut FramebufferSnapshotPool>,
-        width: u32,
-        height: u32,
+        target: RenderTarget<'_>,
+        targets: &mut FrameTargets,
         clear_color: Option<wgpu::Color>,
     ) -> RenderStats {
         use crate::collect::DrawableInfo;
+
+        let (stencil, composites, snapshots) =
+            targets.prepare(&self.shared, &self.device, target.width, target.height);
 
         let span = tracing::trace_span!(
             "render_lists",
@@ -271,24 +205,16 @@ impl WgpuRenderer {
             .map(|p| p.begin_query("render_list", encoder));
 
         // Keeps frames without shader-math modes on the plain render path.
-        let drawables = || {
-            lists.iter().flat_map(|list| {
-                list.root_drawables
-                    .iter()
-                    .chain(list.composite_children.values().flatten())
-            })
-        };
+        let drawables = || lists.iter().flat_map(|list| list.drawables());
         let dst_in_shader_present = drawables().any(|d| is_dst_in_shader(d.blend_mode()));
-        let dst_in_shader_active =
-            dst_in_shader_present && target_color_texture.is_some() && snapshots.is_some();
+        let dst_in_shader_active = dst_in_shader_present && target.texture.is_some();
         if dst_in_shader_present && !dst_in_shader_active {
             // Once per process: the plain render path hits this every frame.
             static FALLBACK_WARNED: std::sync::Once = std::sync::Once::new();
             FALLBACK_WARNED.call_once(|| {
                 tracing::warn!(
-                    "dst-in-shader blend mode present but the caller supplied no \
-                     target_color_texture + snapshot pool; falling back to the \
-                     Normal-OVER approximation",
+                    "dst-in-shader blend mode present but the render target carries no \
+                     texture to copy; falling back to the Normal-OVER approximation",
                 );
             });
         }
@@ -315,15 +241,7 @@ impl WgpuRenderer {
         let uniform_slot_count = lists
             .iter()
             .map(|list| {
-                let child_parts: usize = list.composite_children.values().map(|v| v.len()).sum();
-                list.root_drawables.len()
-                    + child_parts
-                    + list.total_mask_source_count()
-                    + list
-                        .composite_mask_sources
-                        .values()
-                        .map(|source| source.parts.len())
-                        .sum::<usize>()
+                list.drawables().count() + list.total_mask_source_count() + list.mask_source_parts()
             })
             .sum::<usize>()
             + dst_in_shader_extra;
@@ -335,17 +253,13 @@ impl WgpuRenderer {
             self.record_list(
                 list,
                 encoder,
-                view,
+                target,
                 stencil,
                 composites,
-                target_color_texture,
-                snapshots.as_deref_mut(),
-                width,
-                height,
+                dst_in_shader_active.then_some(&mut *snapshots),
                 // The clear belongs to the frame, not to a puppet: a later
                 // list clearing would wipe the ones already recorded.
                 if i == 0 { clear_color } else { None },
-                dst_in_shader_active,
             );
             // Each list resets the pool, so the frame's peak is the deepest list's.
             self.current_stats.composite_slots_used = self
@@ -370,36 +284,28 @@ impl WgpuRenderer {
 
     /// Frame-level state belongs to [`Self::record_frame`], so this may run
     /// several times per frame.
+    /// `snapshots` is `None` when no dst-in-shader blend will read the target.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn record_list(
         &mut self,
         render_list: &crate::collect::RenderList,
         encoder: &mut wgpu::CommandEncoder,
-        view: &wgpu::TextureView,
+        target: RenderTarget<'_>,
         stencil: &StencilTarget,
         composites: &mut CompositePool,
-        target_color_texture: Option<&wgpu::Texture>,
-        snapshots: Option<&mut FramebufferSnapshotPool>,
-        width: u32,
-        height: u32,
+        mut snapshots: Option<&mut FramebufferSnapshotPool>,
         clear_color: Option<wgpu::Color>,
-        dst_in_shader_active: bool,
     ) {
         use crate::collect::DrawableInfo;
 
         let span = tracing::trace_span!("render_list", drawn_parts = tracing::field::Empty);
         let _entered = span.enter();
 
-        composites.ensure_size(width, height);
+        let (width, height) = (target.width, target.height);
+        let dst_in_shader_active = snapshots.is_some();
         composites.reset();
         self.composite_bounds.clear();
-        let mut snapshots = if dst_in_shader_active {
-            snapshots
-        } else {
-            None
-        };
         if let Some(s) = snapshots.as_mut() {
-            s.ensure_size(width, height);
             s.reset();
         }
         self.prepare_composite_mask_textures(encoder, render_list, composites, width, height);
@@ -432,7 +338,7 @@ impl WgpuRenderer {
             {
                 return None;
             }
-            let children = render_list.composite_children.get(node_id)?;
+            let children = render_list.composite_children(*node_id);
             if children.is_empty() {
                 return None;
             }
@@ -451,24 +357,19 @@ impl WgpuRenderer {
                     return None;
                 }
             }
-            Some(children.as_slice())
+            Some(children)
         })();
 
         self.render_to_target(
             encoder,
             stencil,
-            CompositeTarget {
-                view,
-                texture: target_color_texture,
-            },
+            target,
             clear_color,
             &ROOT_PASSES,
             flatten_children.unwrap_or(&render_list.root_drawables),
             render_list,
             composites,
             snapshots,
-            width,
-            height,
         );
         span.record("drawn_parts", self.current_stats.drawn_parts);
     }

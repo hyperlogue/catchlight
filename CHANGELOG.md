@@ -2,7 +2,8 @@
 
 ## Unreleased
 
-Breaking for Rust callers of `catchlight-core`; the next release is 0.3.0.
+Breaking for Rust callers of `catchlight-core` and `catchlight-wgpu`; the
+next release is 0.3.0.
 
 ### New
 
@@ -50,6 +51,9 @@ Breaking for Rust callers of `catchlight-core`; the next release is 0.3.0.
   came back from preparation 32 texels larger each way and was refused.
 - **JSON extensions keep their values.** A NaN or infinity in a JSON
   extension was read back as `null`; it is now a decode error.
+- **Several views in one submit keep their own draws.** A second view
+  recorded into the same `Submission` overwrote the first view's per-part
+  data, so both views drew the last one's transforms, opacity and tint.
 
 ### Removed
 
@@ -76,6 +80,23 @@ Breaking for Rust callers of `catchlight-core`; the next release is 0.3.0.
   (`catchlight_core::components::checked_affine_inverse`).
 - **`Model::extract` of a whole tree returns an empty fragment**, and
   `catchlight-cli requirements` reports a mask source as kind `drawable`.
+- **`catchlight-wgpu` renders through `RenderTarget` and `FrameTargets`.**
+  `Frame::render` and `WgpuRenderer::render_into` take a `RenderTarget`
+  (view, optional texture, size) and a `FrameTargets` that sizes its own mask
+  and composite targets. `Frame::render` no longer returns a `Result`, and
+  naming the target's texture enables the Overlay, Color Burn and Linear Burn
+  blends. `render_ext`, `StencilTarget`, `CompositePool` and
+  `FramebufferSnapshotPool` are gone.
+- **`catchlight-wgpu` has one error type.** Every entry point returns
+  `RendererError`, which now wraps texture, load-limit, adapter, device and
+  readback failures; `RendererError::TexturePrep` is gone.
+  `RenderContext::with_renderer`, `render` and `render_many` are infallible,
+  and `read_texture_to_rgba` takes its size from the texture.
+- **`catchlight-wgpu` hides its internals.** `RenderList` is read through
+  `root_drawables()`, `composite_children()`, `composites()` and
+  `composite_mask_source()`. `upload_mesh`, `upload_texture`, `Texture`,
+  `MeshBuffer`, `PartUniform`, `generate_mips` and the crate's modules are
+  private; `RenderCache` is the way in, and the crate root lists its exports.
 
 ## [0.2.2] - 2026-11-22
 

@@ -656,11 +656,11 @@ pub(crate) mod browser {
                      one editor holds one Gpu and every viewport shares it"
                     .to_string());
             }
-            if render.renderer.shared.surface_format != format {
+            if render.renderer.pipelines().surface_format != format {
                 return Err(format!(
                     "this replica's renderer draws {:?} and the canvas wants {format:?}; \
                      one tab shares one device and one swapchain format",
-                    render.renderer.shared.surface_format,
+                    render.renderer.pipelines().surface_format,
                 ));
             }
             Ok(render)

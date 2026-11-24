@@ -1,3 +1,9 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+mod offscreen_culling;
+mod upload_mesh;
+mod upload_texture;
+
 use super::{
     blend_mode_to_wgpu, blend_transparent_src_is_identity, camera_slot_offset, pixels_to_scissor,
     project_aabb_to_pixels, renders_as_over, same_mask_signature, Aabb2, ScreenRect,
@@ -311,8 +317,8 @@ fn project_aabb_to_scissor_is_conservative_and_y_flipped() {
 
 #[test]
 fn nested_composites_keep_tight_bounds_without_clipping_darken() {
-    use crate::{DrawableInfo, RenderContext, RenderList};
-    let mut ctx = pollster::block_on(RenderContext::new(100, 100)).expect("headless context");
+    use crate::{DrawableInfo, RenderList};
+    let mut ctx = render_context(100, 100);
     ctx.renderer
         .upload_mesh(0, &catchlight_core::Mesh::quad(1.0, 1.0))
         .expect("mesh");
@@ -350,29 +356,27 @@ fn nested_composites_keep_tight_bounds_without_clipping_darken() {
     };
     let mut list = RenderList::default();
     list.root_drawables.push(composite(1));
-    list.composite_children
-        .insert(1, vec![composite(2), composite(3)]);
-    list.composite_children.insert(2, vec![part(0)]);
-    list.composite_children.insert(3, Vec::new());
-    ctx.render(&list, Some(wgpu::Color::WHITE)).expect("render");
+    list.set_children(1, vec![composite(2), composite(3)]);
+    list.set_children(2, vec![part(0)]);
+    list.set_children(3, Vec::new());
+    ctx.render(&list, Some(wgpu::Color::WHITE));
     assert_eq!(
-        ctx.renderer.composite_bounds.get(&1),
+        ctx.renderer.composite_bounds.get(1),
         Some(&Some([25.0, 25.0, 75.0, 75.0]))
     );
 
     ctx.renderer
         .update_camera(glam::Mat4::from_translation(glam::vec3(0.25, 0.0, 0.0)));
-    ctx.render(&list, Some(wgpu::Color::WHITE))
-        .expect("moved camera");
+    ctx.render(&list, Some(wgpu::Color::WHITE));
     assert_eq!(
-        ctx.renderer.composite_bounds.get(&1),
+        ctx.renderer.composite_bounds.get(1),
         Some(&Some([37.5, 25.0, 87.5, 75.0]))
     );
 
     if let DrawableInfo::Composite { blend_mode, .. } = &mut list.root_drawables[0] {
         *blend_mode = BlendMode::Darken;
     }
-    ctx.render(&list, Some(wgpu::Color::WHITE)).expect("darken");
+    ctx.render(&list, Some(wgpu::Color::WHITE));
     let pixels = ctx.read_rgba().expect("pixels");
     assert_eq!(
         &pixels[..4],
@@ -382,12 +386,11 @@ fn nested_composites_keep_tight_bounds_without_clipping_darken() {
     assert_eq!(&pixels[(50 * 100 + 50) * 4..][..4], &[255; 4]);
 
     list.composite_children
-        .get_mut(&2)
+        .get_mut(2)
         .expect("children")
         .push(part(99));
-    ctx.render(&list, Some(wgpu::Color::WHITE))
-        .expect("unknown bounds");
-    assert_eq!(ctx.renderer.composite_bounds.get(&1), Some(&None));
+    ctx.render(&list, Some(wgpu::Color::WHITE));
+    assert_eq!(ctx.renderer.composite_bounds.get(1), Some(&None));
 }
 
 #[test]
@@ -400,4 +403,21 @@ fn composite_pool_stats_track_size_and_reset() {
     pool.ensure_size(1, 1);
     let (_, _, w, h) = pool.stats();
     assert_eq!((w, h), (1, 1));
+}
+
+/// One device for the whole unit-test binary, never destroyed: NVIDIA's Vulkan
+/// driver can hang in `vkDestroyDevice` while other threads are inside it.
+fn shared_context() -> (wgpu::Device, wgpu::Queue) {
+    static CONTEXT: std::sync::OnceLock<(wgpu::Device, wgpu::Queue)> = std::sync::OnceLock::new();
+    CONTEXT
+        .get_or_init(|| {
+            pollster::block_on(crate::create_headless_context()).expect("a headless adapter")
+        })
+        .clone()
+}
+
+fn render_context(width: u32, height: u32) -> crate::RenderContext {
+    let (device, queue) = shared_context();
+    let renderer = crate::WgpuRenderer::new(device, queue, wgpu::TextureFormat::Rgba8UnormSrgb);
+    crate::RenderContext::with_renderer(renderer, width, height)
 }

@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use bevy::render::{
     camera::ExtractedCamera,
-    renderer::{RenderContext, RenderDevice, ViewQuery},
+    renderer::{RenderContext, ViewQuery},
     view::{ExtractedView, ViewTarget},
 };
 
@@ -22,7 +22,6 @@ pub(crate) fn catchlight_2d_pass(
     mut render_context: RenderContext,
 ) {
     let (view_entity, camera, view, target, _marked) = view.into_inner();
-    let device = world.resource::<RenderDevice>();
     let state_res = world.resource::<CatchlightRenderState>();
     let mut guard = state_res.inner.lock().unwrap();
 
@@ -61,7 +60,7 @@ pub(crate) fn catchlight_2d_pass(
         }
         return;
     };
-    let res = res.targets_for_view(view_entity, device.wgpu_device(), w, h);
+    let targets = res.targets.entry(view_entity).or_default();
     *size = (w, h);
 
     let encoder = render_context.command_encoder();
@@ -122,13 +121,13 @@ pub(crate) fn catchlight_2d_pass(
             submission,
             &lists,
             encoder,
-            color_view,
-            &res.stencil,
-            &mut res.composites,
-            Some(color_texture),
-            Some(&mut res.snapshots),
-            w,
-            h,
+            catchlight_wgpu::RenderTarget {
+                view: color_view,
+                texture: Some(color_texture),
+                width: w,
+                height: h,
+            },
+            targets,
             None,
         ) {
             tracing::error!("catchlight render error: {e}");

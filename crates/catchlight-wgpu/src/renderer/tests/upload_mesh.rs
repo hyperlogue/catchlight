@@ -1,18 +1,14 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-
+use crate::{RendererError, WgpuRenderer};
 use catchlight_core::{DecodedTexture, Mesh, MeshIndices, Vec2};
-use catchlight_wgpu::{RendererError, WgpuRenderer};
 
-mod common;
-
-async fn make_renderer() -> WgpuRenderer {
-    let (device, queue) = common::shared_context();
+fn make_renderer() -> WgpuRenderer {
+    let (device, queue) = super::shared_context();
     WgpuRenderer::new(device, queue, wgpu::TextureFormat::Rgba8Unorm)
 }
 
 #[test]
 fn upload_mesh_rejects_vertex_uv_length_mismatch() {
-    let mut r = pollster::block_on(make_renderer());
+    let mut r = make_renderer();
     let mesh = Mesh::new(
         vec![Vec2::ZERO, Vec2::new(1.0, 0.0), Vec2::new(0.0, 1.0)],
         vec![Vec2::ZERO, Vec2::ZERO], // one short
@@ -33,7 +29,7 @@ fn upload_mesh_rejects_vertex_uv_length_mismatch() {
 // may fail the upload.
 #[test]
 fn upload_mesh_tolerates_non_triangle_index_count() {
-    let mut r = pollster::block_on(make_renderer());
+    let mut r = make_renderer();
     let mesh = Mesh::new(
         vec![Vec2::ZERO, Vec2::new(1.0, 0.0), Vec2::new(0.0, 1.0)],
         vec![Vec2::ZERO; 3],
@@ -46,7 +42,7 @@ fn upload_mesh_tolerates_non_triangle_index_count() {
 
 #[test]
 fn upload_mesh_tolerates_empty_uvs() {
-    let mut r = pollster::block_on(make_renderer());
+    let mut r = make_renderer();
     let mesh = Mesh::new(
         vec![Vec2::ZERO, Vec2::new(1.0, 0.0), Vec2::new(0.0, 1.0)],
         vec![], // uvs are optional in the format
@@ -59,7 +55,7 @@ fn upload_mesh_tolerates_empty_uvs() {
 
 #[test]
 fn upload_mesh_rejects_out_of_bounds_index() {
-    let mut r = pollster::block_on(make_renderer());
+    let mut r = make_renderer();
     let mesh = Mesh::new(
         vec![Vec2::ZERO, Vec2::new(1.0, 0.0), Vec2::new(0.0, 1.0)],
         vec![Vec2::ZERO; 3],
@@ -78,7 +74,7 @@ fn upload_mesh_rejects_out_of_bounds_index() {
 
 #[test]
 fn upload_texture_rejects_zero_dimensions() {
-    let mut r = pollster::block_on(make_renderer());
+    let mut r = make_renderer();
     let texture = DecodedTexture {
         width: 0,
         height: 1,
@@ -97,7 +93,7 @@ fn upload_texture_rejects_zero_dimensions() {
 
 #[test]
 fn upload_texture_rejects_device_limit_overflow() {
-    let mut r = pollster::block_on(make_renderer());
+    let mut r = make_renderer();
     let limit = r.device.limits().max_texture_dimension_2d;
     let oversized = limit.checked_add(1).expect("finite GPU dimension limit");
     let texture = DecodedTexture {
@@ -118,7 +114,7 @@ fn upload_texture_rejects_device_limit_overflow() {
 
 #[test]
 fn upload_texture_rejects_rgba_length_mismatch() {
-    let mut r = pollster::block_on(make_renderer());
+    let mut r = make_renderer();
     let texture = DecodedTexture {
         width: 2,
         height: 2,

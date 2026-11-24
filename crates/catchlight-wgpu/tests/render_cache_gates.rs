@@ -28,7 +28,7 @@ fn one_quad_model() -> (Model, SeededHex) {
 async fn context() -> RenderContext {
     let (device, queue) = common::shared_context();
     let renderer = WgpuRenderer::new(device, queue, wgpu::TextureFormat::Rgba8UnormSrgb);
-    RenderContext::with_renderer(renderer, W, H).expect("render context")
+    RenderContext::with_renderer(renderer, W, H)
 }
 
 fn camera() -> glam::Mat4 {
@@ -49,8 +49,8 @@ fn a_model_edit_between_frames_rebuilds_the_cache() {
         puppet.tick(&model, 0.0);
         cache.refresh(&mut ctx.renderer, &model, &puppet).unwrap();
         let before = catchlight_wgpu::collect(&cache, &puppet);
-        assert_eq!(before.root_drawables.len(), 1);
-        let stats = ctx.render(&before, CLEAR).expect("render");
+        assert_eq!(before.root_drawables().len(), 1);
+        let stats = ctx.render(&before, CLEAR);
         assert_eq!(stats.drawn_parts, 1);
 
         let mut model = model;
@@ -71,8 +71,8 @@ fn a_model_edit_between_frames_rebuilds_the_cache() {
         );
         assert_eq!(cache.mesh_count(), 2, "the added part's mesh must upload");
         let after = catchlight_wgpu::collect(&cache, &puppet);
-        assert_eq!(after.root_drawables.len(), 2);
-        let stats = ctx.render(&after, CLEAR).expect("render");
+        assert_eq!(after.root_drawables().len(), 2);
+        let stats = ctx.render(&after, CLEAR);
         assert_eq!(stats.drawn_parts, 2);
     });
 }
@@ -100,14 +100,14 @@ fn a_frame_whose_deforms_did_not_move_uploads_nothing() {
 
         cache.refresh(&mut ctx.renderer, &model, &puppet).unwrap();
         let list = catchlight_wgpu::collect(&cache, &puppet);
-        let moved = ctx.render(&list, CLEAR).expect("render");
+        let moved = ctx.render(&list, CLEAR);
         assert!(
             moved.deform_bytes_uploaded > 0,
             "a deform that moved must reach the atlas",
         );
 
         cache.refresh(&mut ctx.renderer, &model, &puppet).unwrap();
-        let still = ctx.render(&list, CLEAR).expect("render");
+        let still = ctx.render(&list, CLEAR);
         assert_eq!(
             still.deform_bytes_uploaded, 0,
             "an unchanged deform must not be re-uploaded",
@@ -134,7 +134,7 @@ fn mesh_groups_keep_their_deforms_off_the_gpu() {
             .puppet
             .set_scratch_deform(group, &[Vec2::new(0.2, 0.0); 4]));
         let list = scene.frame(&mut ctx.renderer, 0.0);
-        let stats = ctx.render(&list, CLEAR).unwrap();
+        let stats = ctx.render(&list, CLEAR);
         assert_eq!(stats.deform_bytes_uploaded, 0);
         assert_eq!(stats.total_draw_calls, 0);
     });

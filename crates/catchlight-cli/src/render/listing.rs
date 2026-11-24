@@ -6,11 +6,11 @@ pub(super) fn listing(render_list: &RenderList) -> String {
     let _ = writeln!(
         out,
         "Render list: {} root drawables, {} composites with children",
-        render_list.root_drawables.len(),
-        render_list.composite_children.len()
+        render_list.root_drawables().len(),
+        render_list.composites().count()
     );
     let _ = writeln!(out, "\n=== ROOT DRAWABLES (sorted by z-order) ===");
-    for (idx, drawable) in render_list.root_drawables.iter().enumerate() {
+    for (idx, drawable) in render_list.root_drawables().iter().enumerate() {
         match drawable {
             DrawableInfo::Part { .. } => part_line(&mut out, idx, drawable),
             DrawableInfo::Composite {
@@ -28,7 +28,7 @@ pub(super) fn listing(render_list: &RenderList) -> String {
             }
         }
     }
-    for (composite_node_id, children) in &render_list.composite_children {
+    for (composite_node_id, children) in render_list.composites() {
         let _ = writeln!(out, "\n=== COMPOSITE {composite_node_id} CHILDREN ===");
         for (idx, child) in children.iter().enumerate() {
             part_line(&mut out, idx, child);

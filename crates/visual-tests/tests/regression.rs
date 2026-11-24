@@ -13,7 +13,7 @@ fn lan_visual_regressions_fringe_coverage() {
     let (device, queue) = visual_tests::shared_context().expect("headless device");
     let renderer =
         catchlight_wgpu::WgpuRenderer::new(device, queue, wgpu::TextureFormat::Rgba8UnormSrgb);
-    let mut ctx = RenderContext::with_renderer(renderer, 55, 135).expect("renderer");
+    let mut ctx = RenderContext::with_renderer(renderer, 55, 135);
     for roll in [0.0, -2.0, 2.0] {
         let config = Config {
             name: format!("lan_fringe_coverage_{roll}"),

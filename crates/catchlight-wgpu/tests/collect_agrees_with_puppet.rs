@@ -72,7 +72,7 @@ fn a_drawables_z_and_opacity_are_the_puppets() {
     );
 
     let drawn: Vec<(f32, f32)> = list
-        .root_drawables
+        .root_drawables()
         .iter()
         .map(|drawable| match drawable {
             DrawableInfo::Part {
@@ -144,11 +144,7 @@ fn a_composite_does_not_fold_its_opacity_into_its_children() {
         Some(1.0),
         "the composite's own opacity"
     );
-    let children = list
-        .composite_children
-        .get(&composite_idx.0)
-        .expect("the composite keeps its children");
-    let [DrawableInfo::Part { opacity, .. }] = &children[..] else {
+    let [DrawableInfo::Part { opacity, .. }] = list.composite_children(composite_idx.0) else {
         panic!("one part under the composite");
     };
     assert_eq!(

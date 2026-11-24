@@ -219,6 +219,10 @@ impl WgpuRenderer {
         masked_draw_label: &str,
         scissor: Option<ScreenRect>,
     ) -> bool {
+        // `FrameTargets::prepare` builds the target to match the pipelines.
+        let Some(mask) = stencil.sampled.as_ref() else {
+            return false;
+        };
         let Some((valid, base_offset, parts_base)) = self.prepare_masked_part_draws(draws) else {
             return false;
         };
@@ -264,7 +268,7 @@ impl WgpuRenderer {
         );
 
         render_pass.set_bind_group(0, &self.camera_bind_group, &[self.camera_offset]);
-        render_pass.set_bind_group(3, stencil.sampled_mask(), &[]);
+        render_pass.set_bind_group(3, mask, &[]);
         // Only the content draw is scissored; it samples the mask only inside the
         // rect.
         if let Some(r) = scissor {

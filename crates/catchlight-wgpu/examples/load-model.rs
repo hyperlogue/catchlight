@@ -190,8 +190,7 @@ struct App {
     window: Option<Arc<Window>>,
     renderer: Option<WgpuRenderer>,
     surface: Option<SurfaceContext>,
-    stencil: Option<catchlight_wgpu::StencilTarget>,
-    composites: Option<catchlight_wgpu::CompositePool>,
+    targets: catchlight_wgpu::FrameTargets,
     model: Model,
     puppet: Puppet,
     cache: Option<RenderCache>,
@@ -429,50 +428,33 @@ impl ApplicationHandler for App {
                         a: 1.0,
                     });
                     let (w, h) = (surface_ctx.config.width, surface_ctx.config.height);
-                    let stencil = self.stencil.get_or_insert_with(|| {
-                        catchlight_wgpu::StencilTarget::new_for_pipelines(
-                            &renderer.shared,
-                            &renderer.device,
-                            w,
-                            h,
-                        )
-                    });
-                    stencil.ensure_size_for_pipelines(&renderer.shared, &renderer.device, w, h);
-                    let composites = self
-                        .composites
-                        .get_or_insert_with(|| catchlight_wgpu::CompositePool::new(w, h));
-
                     let (device, queue) = (renderer.device.clone(), renderer.queue.clone());
-                    match renderer.frame().render(
+                    let mut done = renderer.frame().render(
                         &[&render_list],
-                        &view,
-                        stencil,
-                        composites,
-                        w,
-                        h,
+                        catchlight_wgpu::RenderTarget {
+                            view: &view,
+                            texture: None,
+                            width: w,
+                            height: h,
+                        },
+                        &mut self.targets,
                         clear_color,
-                    ) {
-                        Ok(mut done) => {
-                            if let (Some(control), Some(output)) =
-                                (self.control.as_mut(), control_output)
-                            {
-                                let screen_descriptor = egui_wgpu::ScreenDescriptor {
-                                    size_in_pixels: [w, h],
-                                    pixels_per_point: output.pixels_per_point,
-                                };
-                                control.paint(
-                                    &device,
-                                    &queue,
-                                    done.encoder(),
-                                    &view,
-                                    &screen_descriptor,
-                                    output,
-                                );
-                            }
-                            done.submit();
-                        }
-                        Err(e) => eprintln!("Render error: {}", e),
+                    );
+                    if let (Some(control), Some(output)) = (self.control.as_mut(), control_output) {
+                        let screen_descriptor = egui_wgpu::ScreenDescriptor {
+                            size_in_pixels: [w, h],
+                            pixels_per_point: output.pixels_per_point,
+                        };
+                        control.paint(
+                            &device,
+                            &queue,
+                            done.encoder(),
+                            &view,
+                            &screen_descriptor,
+                            output,
+                        );
                     }
+                    done.submit();
 
                     frame.present();
                     window.request_redraw();
@@ -596,8 +578,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         window: None,
         renderer: None,
         surface: None,
-        stencil: None,
-        composites: None,
+        targets: catchlight_wgpu::FrameTargets::new(),
         model,
         puppet,
         cache: None,

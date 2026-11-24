@@ -63,7 +63,11 @@ impl WgpuRenderer {
     ) {
         use crate::collect::{DrawableInfo, MaskSourceData};
         self.composite_mask_textures.clear();
-        if render_list.composite_mask_sources.is_empty() {
+        if render_list
+            .composite_mask_sources
+            .iter()
+            .all(Option::is_none)
+        {
             return;
         }
         let mut source_ids = Vec::new();
@@ -81,9 +85,7 @@ impl WgpuRenderer {
                     mask_sources,
                     ..
                 } => {
-                    if let Some(children) = render_list.composite_children.get(node_id) {
-                        pending.extend(children);
-                    }
+                    pending.extend(render_list.composite_children(*node_id));
                     mask_sources
                 }
             };
@@ -96,7 +98,7 @@ impl WgpuRenderer {
         source_ids.dedup();
 
         for node_id in source_ids {
-            let Some(source) = render_list.composite_mask_sources.get(&node_id) else {
+            let Some(source) = render_list.composite_mask_source(node_id) else {
                 continue;
             };
             let slot = composites.acquire(&self.shared, &self.device);
@@ -165,7 +167,7 @@ impl WgpuRenderer {
             }
             drop(pass);
             self.composite_mask_textures.insert(
-                node_id,
+                node_id as usize,
                 PreparedCompositeMask {
                     texture: slot,
                     opacity: source.opacity,
@@ -214,7 +216,7 @@ impl WgpuRenderer {
                 MaskSourceData::Composite { node_id, .. } => {
                     let (opacity, threshold) = self
                         .composite_mask_textures
-                        .get(node_id)
+                        .get(*node_id as usize)
                         .map(|source| (source.opacity, source.mask_threshold))
                         .unwrap_or((0.0, 1.0));
                     self.write_part_uniform(opacity, glam::Vec3::ONE, glam::Vec3::ZERO, threshold)
@@ -306,7 +308,8 @@ impl WgpuRenderer {
                     self.emit_part_draw(&mut render_pass, mask_mesh.num_indices, off);
                 }
                 MaskSourceData::Composite { node_id, mode } => {
-                    let Some(source) = self.composite_mask_textures.get(node_id).cloned() else {
+                    let Some(source) = self.composite_mask_textures.get(*node_id as usize).cloned()
+                    else {
                         continue;
                     };
                     let dodge = *mode == catchlight_core::MaskMode::DodgeMask;
@@ -370,7 +373,7 @@ impl WgpuRenderer {
                 MaskSourceData::Composite { node_id, .. } => {
                     let (opacity, threshold) = self
                         .composite_mask_textures
-                        .get(node_id)
+                        .get(*node_id as usize)
                         .map(|source| (source.opacity, source.mask_threshold))
                         .unwrap_or((0.0, 1.0));
                     self.write_part_uniform(opacity, glam::Vec3::ONE, glam::Vec3::ZERO, threshold)
@@ -446,7 +449,8 @@ impl WgpuRenderer {
                     self.emit_part_draw(render_pass, mask_mesh.num_indices, off);
                 }
                 MaskSourceData::Composite { node_id, mode } => {
-                    let Some(source) = self.composite_mask_textures.get(node_id).cloned() else {
+                    let Some(source) = self.composite_mask_textures.get(*node_id as usize).cloned()
+                    else {
                         continue;
                     };
                     render_pass.set_pipeline(&masks.composite_write);

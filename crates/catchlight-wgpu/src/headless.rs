@@ -4,11 +4,9 @@
 //! linear (`catchlight_core::texture::unpremultiply_linear_from_srgb_inplace`)
 //! before writing straight-alpha output.
 
-use catchlight_core::{NodeKind, Puppet, Vec2};
-
 use crate::{
-    create_headless_context, create_orthographic_camera_at, read_texture_to_rgba, CompositePool,
-    FramebufferSnapshotPool, RenderList, RenderStats, StencilTarget, WgpuRenderer,
+    create_headless_context, create_orthographic_camera_at, read_texture_to_rgba, FrameTargets,
+    RenderList, RenderStats, RenderTarget, RendererResult, WgpuRenderer,
 };
 
 /// `height` is in world units; width follows the target's aspect. Distinct
@@ -30,80 +28,52 @@ impl Framing {
 
 pub struct RenderContext {
     pub renderer: WgpuRenderer,
-    pub stencil: StencilTarget,
-    pub composites: CompositePool,
-    pub snapshots: FramebufferSnapshotPool,
-    pub target: wgpu::Texture,
-    pub view: wgpu::TextureView,
-    pub width: u32,
-    pub height: u32,
+    targets: FrameTargets,
+    target: wgpu::Texture,
+    view: wgpu::TextureView,
 }
 
 impl RenderContext {
-    pub async fn new(width: u32, height: u32) -> Result<Self, Box<dyn std::error::Error>> {
-        let (device, queue) = create_headless_context()
-            .await
-            .map_err(|e| format!("create_headless_context: {e}"))?;
+    pub async fn new(width: u32, height: u32) -> RendererResult<Self> {
+        let (device, queue) = create_headless_context().await?;
         let renderer = WgpuRenderer::new(device, queue, wgpu::TextureFormat::Rgba8UnormSrgb);
-        Self::with_renderer(renderer, width, height)
+        Ok(Self::with_renderer(renderer, width, height))
     }
 
-    pub fn with_renderer(
-        renderer: WgpuRenderer,
-        width: u32,
-        height: u32,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
-        let width = width.max(1);
-        let height = height.max(1);
-        let target = create_target(
-            &renderer.device,
-            renderer.shared.surface_format,
-            width,
-            height,
-        );
+    /// Zero is clamped to one.
+    pub fn with_renderer(renderer: WgpuRenderer, width: u32, height: u32) -> Self {
+        let target = create_target(&renderer, width, height);
         let view = target.create_view(&wgpu::TextureViewDescriptor::default());
-        let stencil =
-            StencilTarget::new_for_pipelines(&renderer.shared, &renderer.device, width, height);
-        let composites = CompositePool::new(width, height);
-        let snapshots = FramebufferSnapshotPool::new(width, height);
-        Ok(Self {
+        Self {
             renderer,
-            stencil,
-            composites,
-            snapshots,
+            targets: FrameTargets::new(),
             target,
             view,
-            width,
-            height,
-        })
+        }
+    }
+
+    pub fn width(&self) -> u32 {
+        self.target.width()
+    }
+
+    pub fn height(&self) -> u32 {
+        self.target.height()
+    }
+
+    /// The texture [`Self::render`] draws into.
+    pub fn target(&self) -> &wgpu::Texture {
+        &self.target
     }
 
     /// A no-op when the size already matches. Zero is clamped to one.
     pub fn resize(&mut self, width: u32, height: u32) {
-        let width = width.max(1);
-        let height = height.max(1);
-        if self.width == width && self.height == height {
+        if self.width() == width.max(1) && self.height() == height.max(1) {
             return;
         }
-        self.target = create_target(
-            &self.renderer.device,
-            self.renderer.shared.surface_format,
-            width,
-            height,
-        );
+        self.target = create_target(&self.renderer, width, height);
         self.view = self
             .target
             .create_view(&wgpu::TextureViewDescriptor::default());
-        self.stencil = StencilTarget::new_for_pipelines(
-            &self.renderer.shared,
-            &self.renderer.device,
-            width,
-            height,
-        );
-        self.composites = CompositePool::new(width, height);
-        self.snapshots = FramebufferSnapshotPool::new(width, height);
-        self.width = width;
-        self.height = height;
     }
 
     /// Returns tightly packed premultiplied RGBA8.
@@ -114,23 +84,19 @@ impl RenderContext {
         width: u32,
         height: u32,
         clear: Option<wgpu::Color>,
-    ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    ) -> RendererResult<Vec<u8>> {
         self.resize(width, height);
-        let aspect = self.width as f32 / self.height as f32;
+        let aspect = self.width() as f32 / self.height() as f32;
         self.renderer.update_camera(create_orthographic_camera_at(
             camera.height,
             aspect,
             camera.center,
         ));
-        self.render(render_list, clear)?;
+        self.render(render_list, clear);
         self.read_rgba()
     }
 
-    pub fn render(
-        &mut self,
-        render_list: &RenderList,
-        clear: Option<wgpu::Color>,
-    ) -> Result<RenderStats, Box<dyn std::error::Error>> {
+    pub fn render(&mut self, render_list: &RenderList, clear: Option<wgpu::Color>) -> RenderStats {
         self.render_many(std::slice::from_ref(&render_list), clear)
     }
 
@@ -138,72 +104,44 @@ impl RenderContext {
         &mut self,
         render_lists: &[&RenderList],
         clear: Option<wgpu::Color>,
-    ) -> Result<RenderStats, Box<dyn std::error::Error>> {
-        let done = self.renderer.frame().render_ext(
-            render_lists,
-            &self.view,
-            &self.stencil,
-            &mut self.composites,
-            Some(&self.target),
-            Some(&mut self.snapshots),
-            self.width,
-            self.height,
-            clear,
-        )?;
+    ) -> RenderStats {
+        let target = RenderTarget {
+            view: &self.view,
+            texture: Some(&self.target),
+            width: self.target.width(),
+            height: self.target.height(),
+        };
+        let done = self
+            .renderer
+            .frame()
+            .render(render_lists, target, &mut self.targets, clear);
         let stats = done.stats();
         done.submit();
-        Ok(stats)
+        stats
     }
 
-    pub fn read_rgba(&self) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    pub fn read_rgba(&self) -> RendererResult<Vec<u8>> {
         pollster::block_on(read_texture_to_rgba(
             &self.renderer.device,
             &self.renderer.queue,
             &self.target,
-            self.width,
-            self.height,
         ))
-        .map_err(|e| format!("read_texture_to_rgba: {e}").into())
     }
 }
 
-fn create_target(
-    device: &wgpu::Device,
-    format: wgpu::TextureFormat,
-    width: u32,
-    height: u32,
-) -> wgpu::Texture {
-    device.create_texture(&wgpu::TextureDescriptor {
+fn create_target(renderer: &WgpuRenderer, width: u32, height: u32) -> wgpu::Texture {
+    renderer.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("headless-render-target"),
         size: wgpu::Extent3d {
-            width,
-            height,
+            width: width.max(1),
+            height: height.max(1),
             depth_or_array_layers: 1,
         },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format,
+        format: renderer.pipelines().surface_format,
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
         view_formats: &[],
     })
-}
-
-/// Shift every part's vertices through the puppet's scratch deform, bypassing
-/// params.
-pub fn apply_uniform_scratch_deform(puppet: &mut Puppet, shift: Vec2) {
-    let parts: Vec<(catchlight_core::NodeIdx, usize)> = puppet
-        .iter()
-        .filter_map(|(id, node)| match &node.kind {
-            NodeKind::Part(p) => Some((id, p.mesh.vertices.len())),
-            _ => None,
-        })
-        .collect();
-    for (id, count) in parts {
-        if count == 0 {
-            continue;
-        }
-        puppet.set_scratch_deform(id, &vec![shift; count]);
-    }
-    puppet.combine_deforms();
 }

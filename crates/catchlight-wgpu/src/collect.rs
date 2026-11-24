@@ -8,7 +8,6 @@
 use crate::renderer::DeformSet;
 use catchlight_core::{BlendMode, CompositeData, MaskMode, Node, NodeIdx, NodeKind, NodeTree};
 use smallvec::SmallVec;
-use std::collections::HashMap;
 
 /// Makes the renderer's dense-table probe miss, so the draw is skipped and
 /// counted.
@@ -117,77 +116,124 @@ impl DrawableInfo {
 
 #[derive(Debug, Default, Clone)]
 pub struct RenderList {
-    pub root_drawables: Vec<DrawableInfo>,
-    /// Keyed by the composite's own `node_id` slot.
-    pub composite_children: HashMap<u32, Vec<DrawableInfo>>,
-    pub composite_mask_sources: HashMap<u32, CompositeMaskSourceData>,
-    pub deform_set: DeformSet,
+    pub(crate) root_drawables: Vec<DrawableInfo>,
+    /// Indexed by the composite's own `node_id` slot; empty for any other node.
+    pub(crate) composite_children: Vec<Vec<DrawableInfo>>,
+    /// Indexed by the mask-source composite's `node_id` slot.
+    pub(crate) composite_mask_sources: Vec<Option<CompositeMaskSourceData>>,
+    pub(crate) deform_set: DeformSet,
 }
 
 impl RenderList {
+    /// Back to front.
+    pub fn root_drawables(&self) -> &[DrawableInfo] {
+        &self.root_drawables
+    }
+
+    /// Back to front; empty unless `node_id` is a composite that draws children.
+    pub fn composite_children(&self, node_id: u32) -> &[DrawableInfo] {
+        self.composite_children
+            .get(node_id as usize)
+            .map_or(&[], Vec::as_slice)
+    }
+
+    /// Every composite that draws children, with its `node_id` slot.
+    pub fn composites(&self) -> impl Iterator<Item = (u32, &[DrawableInfo])> {
+        self.composite_children
+            .iter()
+            .enumerate()
+            .filter(|(_, children)| !children.is_empty())
+            .map(|(slot, children)| (slot as u32, children.as_slice()))
+    }
+
+    /// Every composite some drawable uses as a mask, with its `node_id` slot.
+    pub fn composite_mask_sources(&self) -> impl Iterator<Item = (u32, &CompositeMaskSourceData)> {
+        self.composite_mask_sources
+            .iter()
+            .enumerate()
+            .filter_map(|(slot, source)| Some((slot as u32, source.as_ref()?)))
+    }
+
+    pub fn composite_mask_source(&self, node_id: u32) -> Option<&CompositeMaskSourceData> {
+        self.composite_mask_sources.get(node_id as usize)?.as_ref()
+    }
+
+    pub fn deform_set(&self) -> DeformSet {
+        self.deform_set
+    }
+
+    pub(crate) fn drawables(&self) -> impl Iterator<Item = &DrawableInfo> {
+        self.root_drawables
+            .iter()
+            .chain(self.composite_children.iter().flatten())
+    }
+
+    pub(crate) fn mask_source_parts(&self) -> usize {
+        self.composite_mask_sources
+            .iter()
+            .flatten()
+            .map(|source| source.parts.len())
+            .sum()
+    }
+
     /// Sized once at frame start; growing mid-frame would strand already
     /// recorded passes on the old buffer.
     pub fn total_instance_count(&self) -> usize {
-        fn for_part(mask_sources_len: usize) -> usize {
-            mask_sources_len + 1
-        }
-
-        fn for_drawable(d: &DrawableInfo) -> usize {
-            match d {
-                DrawableInfo::Part { mask_sources, .. } => {
-                    for_part(mask_sources.iter().filter(|m| m.is_part()).count())
-                }
-                DrawableInfo::Composite { mask_sources, .. } => {
-                    mask_sources.iter().filter(|m| m.is_part()).count()
-                }
-            }
-        }
-
-        let mut n = 0;
-        for d in &self.root_drawables {
-            n += for_drawable(d);
-        }
-        for children in self.composite_children.values() {
-            for c in children {
-                n += for_drawable(c);
-            }
-        }
-        n += self
-            .composite_mask_sources
-            .values()
-            .map(|source| source.parts.len())
-            .sum::<usize>();
-        n
+        let mask_parts = |sources: &MaskSources| sources.iter().filter(|m| m.is_part()).count();
+        self.drawables()
+            .map(|d| match d {
+                DrawableInfo::Part { mask_sources, .. } => mask_parts(mask_sources) + 1,
+                DrawableInfo::Composite { mask_sources, .. } => mask_parts(mask_sources),
+            })
+            .sum::<usize>()
+            + self.mask_source_parts()
     }
 
-    pub fn total_mask_source_count(&self) -> usize {
-        fn for_drawable(d: &DrawableInfo) -> usize {
-            match d {
-                DrawableInfo::Part { mask_sources, .. } => mask_sources.len(),
-                DrawableInfo::Composite { mask_sources, .. } => mask_sources.len(),
-            }
-        }
-
-        let mut n = 0;
-        for d in &self.root_drawables {
-            n += for_drawable(d);
-        }
-        for children in self.composite_children.values() {
-            for c in children {
-                n += for_drawable(c);
-            }
-        }
-        n
+    pub(crate) fn total_mask_source_count(&self) -> usize {
+        self.drawables()
+            .map(|d| match d {
+                DrawableInfo::Part { mask_sources, .. }
+                | DrawableInfo::Composite { mask_sources, .. } => mask_sources.len(),
+            })
+            .sum()
     }
 
-    /// Keeps composite-children buffers; consumers treat a stale empty entry
-    /// like a missing one.
-    pub fn clear(&mut self) {
+    /// Keeps every buffer for the next collection.
+    pub(crate) fn clear(&mut self) {
         self.root_drawables.clear();
-        for children in self.composite_children.values_mut() {
+        for children in &mut self.composite_children {
             children.clear();
         }
         self.composite_mask_sources.clear();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_children(&mut self, node_id: u32, children: Vec<DrawableInfo>) {
+        let slot = node_id as usize;
+        if self.composite_children.len() <= slot {
+            self.composite_children.resize_with(slot + 1, Vec::new);
+        }
+        self.composite_children[slot] = children;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_mask_source(&mut self, node_id: u32, source: CompositeMaskSourceData) {
+        let slot = node_id as usize;
+        if self.composite_mask_sources.len() <= slot {
+            self.composite_mask_sources.resize_with(slot + 1, || None);
+        }
+        self.composite_mask_sources[slot] = Some(source);
+    }
+
+    fn push(&mut self, composite: Option<NodeIdx>, info: DrawableInfo) {
+        match composite {
+            Some(c) => {
+                if let Some(children) = self.composite_children.get_mut(c.0 as usize) {
+                    children.push(info);
+                }
+            }
+            None => self.root_drawables.push(info),
+        }
     }
 }
 
@@ -220,7 +266,7 @@ fn composite_passthrough_dynamic(composite: &CompositeData) -> bool {
 fn collect_mask_sources<S: DrawSource + ?Sized>(
     node_id: NodeIdx,
     source: &S,
-    composite_sources: &mut HashMap<u32, CompositeMaskSourceData>,
+    composite_sources: &mut [Option<CompositeMaskSourceData>],
 ) -> MaskSources {
     let Some(node) = source.node(node_id) else {
         return MaskSources::new();
@@ -247,7 +293,10 @@ fn collect_mask_sources<S: DrawSource + ?Sized>(
                 mask_threshold: part.mask_threshold,
             }),
             NodeKind::Composite(composite) => {
-                composite_sources.entry(mask_node_id.0).or_insert_with(|| {
+                let Some(slot) = composite_sources.get_mut(mask_node_id.0 as usize) else {
+                    continue;
+                };
+                slot.get_or_insert_with(|| {
                     let mut parts = Vec::new();
                     let mut stack = source.tree().get_children(mask_node_id);
                     while let Some(descendant) = stack.pop() {
@@ -307,6 +356,8 @@ impl Collector {
         render_list.clear();
 
         let n = source.node_count();
+        render_list.composite_children.resize_with(n, Vec::new);
+        render_list.composite_mask_sources.resize_with(n, || None);
         self.enabled_cum.resize(n, true);
         self.enabled_cum.fill(true);
         self.composite_ancestor.resize(n, None);
@@ -402,14 +453,7 @@ impl Collector {
 
                     // An isolating composite is a drawable of its enclosing
                     // composite, so the outer's opacity/tint/blend/mask cover it.
-                    match nearest_composite {
-                        Some(c) => render_list
-                            .composite_children
-                            .entry(c.0)
-                            .or_default()
-                            .push(info),
-                        None => render_list.root_drawables.push(info),
-                    }
+                    render_list.push(nearest_composite, info);
                 }
                 NodeKind::Part(part) => {
                     let texture_id = source.texture_slot(node);
@@ -438,14 +482,7 @@ impl Collector {
                         mask_threshold: part.mask_threshold,
                     };
 
-                    match nearest_composite {
-                        Some(c) => render_list
-                            .composite_children
-                            .entry(c.0)
-                            .or_default()
-                            .push(info),
-                        None => render_list.root_drawables.push(info),
-                    }
+                    render_list.push(nearest_composite, info);
                 }
                 NodeKind::MeshGroup(_)
                 | NodeKind::MotionResponse
@@ -457,7 +494,7 @@ impl Collector {
         render_list
             .root_drawables
             .sort_by(|a, b| a.z_order().total_cmp(&b.z_order()));
-        for children in render_list.composite_children.values_mut() {
+        for children in &mut render_list.composite_children {
             children.sort_by(|a, b| a.z_order().total_cmp(&b.z_order()));
         }
     }

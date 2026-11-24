@@ -147,10 +147,9 @@ pub fn render_one_to_rgba(
         config.ticks_after_pose,
         glam::Mat4::IDENTITY,
     )?;
-    let camera = camera_matrix(ctx.width, ctx.height, &config.camera);
+    let camera = camera_matrix(ctx.width(), ctx.height(), &config.camera);
     ctx.renderer.update_camera(camera);
-    ctx.render(&render_list, Some(CLEAR_COLOR))
-        .map_err(|error| anyhow::anyhow!("render visual test: {error}"))?;
+    ctx.render(&render_list, Some(CLEAR_COLOR));
     ctx.read_rgba()
         .map_err(|error| anyhow::anyhow!("read visual test: {error}"))
 }

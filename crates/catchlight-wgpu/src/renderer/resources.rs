@@ -1,17 +1,16 @@
 use super::*;
 
-pub struct Texture {
-    pub texture: wgpu::Texture,
-    pub view: wgpu::TextureView,
-    pub bind_group: wgpu::BindGroup,
+pub(crate) struct Texture {
+    pub(super) texture: wgpu::Texture,
+    pub(super) bind_group: wgpu::BindGroup,
 }
 
 /// Bytes are premultiplied linear encoded as sRGB; the sampler's decode hands
 /// shaders premultiplied linear, so CPU-side tints are converted to linear.
-pub const PUPPET_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
+pub(super) const PUPPET_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
 /// Fill mips 1.. by successively halving the level above on the GPU.
-pub fn generate_mips(
+pub(super) fn generate_mips(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     texture: &wgpu::Texture,
@@ -70,7 +69,7 @@ pub fn generate_mips(
 }
 
 impl Texture {
-    pub fn from_decoded_rgba8(
+    pub(super) fn from_decoded_rgba8(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         rgba: &[u8],
@@ -144,7 +143,6 @@ impl Texture {
 
         Ok(Self {
             texture,
-            view,
             bind_group,
         })
     }
@@ -182,19 +180,21 @@ pub(super) fn validate_rgba8_texture(
         .ok_or(RendererError::TextureByteLengthOverflow { width, height })
 }
 
-pub struct MeshBuffer {
-    pub vertex_buffer: wgpu::Buffer,
-    pub index_buffer: wgpu::Buffer,
-    pub deform_offset: u64,
-    pub deform_size: u64,
-    pub vert_count: u32,
-    pub num_indices: u32,
-    pub index_format: wgpu::IndexFormat,
+pub(crate) struct MeshBuffer {
+    pub(super) vertex_buffer: wgpu::Buffer,
+    pub(super) index_buffer: wgpu::Buffer,
+    pub(super) deform_offset: u64,
+    pub(super) deform_size: u64,
+    pub(super) vert_count: u32,
+    pub(super) num_indices: u32,
+    pub(super) index_format: wgpu::IndexFormat,
     /// AABB over `pos - origin`. None for an empty mesh.
     pub(super) local_bounds: Option<Aabb2>,
 }
 
 impl WgpuRenderer {
+    /// Drops every mesh, as a rebuild that keeps none does.
+    #[doc(hidden)]
     pub fn clear_meshes(&mut self) {
         self.mesh_buffers.clear();
         self.reset_deform_buffer_layout();
@@ -277,7 +277,7 @@ impl WgpuRenderer {
 
     /// Missing uvs become zeros and a trailing partial triangle is ignored,
     /// matching the importer. An out-of-range index is an error.
-    pub fn upload_mesh(
+    pub(crate) fn upload_mesh(
         &mut self,
         mesh_id: u32,
         mesh: &catchlight_core::Mesh,
@@ -384,7 +384,11 @@ impl WgpuRenderer {
         self.textures.get(albedo as usize).map(|t| &t.bind_group)
     }
 
-    pub fn upload_texture(&mut self, texture_id: u32, tex: &DecodedTexture) -> RendererResult<()> {
+    pub(crate) fn upload_texture(
+        &mut self,
+        texture_id: u32,
+        tex: &DecodedTexture,
+    ) -> RendererResult<()> {
         let texture = Texture::from_decoded_rgba8(
             &self.device,
             &self.queue,

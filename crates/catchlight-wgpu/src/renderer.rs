@@ -3,7 +3,6 @@
 
 use catchlight_core::{BlendMode, DecodedTexture};
 use smallvec::SmallVec;
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use thiserror::Error;
 use wgpu::util::DeviceExt;
@@ -26,17 +25,22 @@ mod wire;
 use blend::*;
 use bounds::*;
 use composite::*;
-pub use deform::*;
-pub use frame::*;
+use deform::*;
+use frame::*;
 use masks::*;
 use parts::*;
-pub use resources::*;
-pub use targets::*;
-pub use wire::*;
+use resources::*;
+use targets::*;
+use wire::*;
 
 use arena::FrameArena;
 pub use pipelines::Pipelines;
 use pipelines::{MaskPipelines, ShaderBlend};
+pub use {
+    deform::DeformSet,
+    frame::{Frame, Recorded, Submission, CAMERA_RING_SLOTS},
+    targets::{FrameTargets, RenderTarget},
+};
 
 #[derive(Debug, Error)]
 pub enum RendererError {
@@ -80,7 +84,28 @@ pub enum RendererError {
     ForeignSubmission,
 
     #[error("preparing a model's textures: {0}")]
-    TexturePrep(String),
+    Texture(#[from] catchlight_core::TextureError),
+
+    #[error("preparing a model's textures: {0}")]
+    LoadLimit(#[from] catchlight_core::LoadLimitError),
+
+    #[error("no usable GPU adapter: {0}")]
+    Adapter(#[from] wgpu::RequestAdapterError),
+
+    #[error("requesting the GPU device: {0}")]
+    Device(#[from] wgpu::RequestDeviceError),
+
+    #[error("a {width}x{height} texture cannot be read back")]
+    ReadbackSize { width: u32, height: u32 },
+
+    #[error("mapping the readback buffer: {0}")]
+    ReadbackMap(#[from] wgpu::BufferAsyncError),
+
+    #[error("the device dropped the readback before it completed")]
+    ReadbackAbandoned,
+
+    #[error("waiting for the GPU: {0}")]
+    Poll(#[from] wgpu::PollError),
 }
 
 pub type RendererResult<T> = Result<T, RendererError>;
@@ -202,7 +227,7 @@ static NEXT_RENDERER_ID: AtomicU64 = AtomicU64::new(0);
 pub struct WgpuRenderer {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
-    pub shared: std::sync::Arc<Pipelines>,
+    pub(crate) shared: std::sync::Arc<Pipelines>,
     id: u64,
     part_uniforms: FrameArena,
     part_uniform_bind_group: wgpu::BindGroup,
@@ -244,8 +269,8 @@ pub struct WgpuRenderer {
     camera_view_proj: glam::Mat4,
     draw_filter_scratch: Vec<usize>,
     instance_scratch: Vec<InstanceRaw>,
-    composite_mask_textures: HashMap<u32, PreparedCompositeMask>,
-    composite_bounds: HashMap<u32, Option<[f32; 4]>>,
+    composite_mask_textures: DenseMap<PreparedCompositeMask>,
+    composite_bounds: DenseMap<Option<[f32; 4]>>,
 }
 
 impl WgpuRenderer {
@@ -379,9 +404,13 @@ impl WgpuRenderer {
             camera_view_proj: glam::Mat4::IDENTITY,
             draw_filter_scratch: Vec::new(),
             instance_scratch: Vec::new(),
-            composite_mask_textures: HashMap::new(),
-            composite_bounds: HashMap::new(),
+            composite_mask_textures: DenseMap::new(),
+            composite_bounds: DenseMap::new(),
         }
+    }
+
+    pub fn pipelines(&self) -> &std::sync::Arc<Pipelines> {
+        &self.shared
     }
 
     /// Reset at each frame entry; read it after the render call returns.

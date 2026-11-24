@@ -140,14 +140,14 @@ pub(super) fn srgb_to_linear_vec3(c: glam::Vec3) -> glam::Vec3 {
 // Matches `struct PartUniforms` in basic.wgsl. `tint.w` is std140 padding.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct PartUniform {
-    pub opacity: [f32; 4],
-    pub tint: [f32; 4],
-    pub screen_tint_and_threshold: [f32; 4],
+pub(super) struct PartUniform {
+    pub(super) opacity: [f32; 4],
+    pub(super) tint: [f32; 4],
+    pub(super) screen_tint_and_threshold: [f32; 4],
 }
 
 impl PartUniform {
-    pub fn new(
+    pub(super) fn new(
         opacity: f32,
         tint: glam::Vec3,
         screen_tint: glam::Vec3,

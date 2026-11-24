@@ -3,9 +3,8 @@
 mod common;
 
 use catchlight_core::{Model, Vec2};
-use catchlight_wgpu::{
-    apply_uniform_scratch_deform, collect, create_orthographic_camera, RenderContext, WgpuRenderer,
-};
+use catchlight_wgpu::{collect, create_orthographic_camera, RenderContext, WgpuRenderer};
+use common::apply_uniform_scratch_deform;
 use common::Scene;
 use std::path::{Path, PathBuf};
 
@@ -21,7 +20,7 @@ async fn render_with_test_deform(path: &Path, shift: Vec2) -> Vec<u8> {
 
     let (device, queue) = common::shared_context();
     let renderer = WgpuRenderer::new(device, queue, wgpu::TextureFormat::Rgba8Unorm);
-    let mut ctx = RenderContext::with_renderer(renderer, W, H).expect("render context");
+    let mut ctx = RenderContext::with_renderer(renderer, W, H);
     let mut scene = Scene::new(&mut ctx.renderer, model);
     ctx.renderer
         .update_camera(create_orthographic_camera(2200.0, W as f32 / H as f32));
@@ -44,8 +43,7 @@ async fn render_with_test_deform(path: &Path, shift: Vec2) -> Vec<u8> {
             b: 1.0,
             a: 1.0,
         }),
-    )
-    .expect("render");
+    );
 
     ctx.read_rgba().expect("readback")
 }

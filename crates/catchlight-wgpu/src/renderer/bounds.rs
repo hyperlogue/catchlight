@@ -163,11 +163,7 @@ impl WgpuRenderer {
                 blend_mode,
                 ..
             } => {
-                if !render_list
-                    .composite_children
-                    .get(node_id)
-                    .is_some_and(|c| !c.is_empty())
-                {
+                if render_list.composite_children(*node_id).is_empty() {
                     return ScreenBounds::Empty;
                 }
                 let bounds = self.composite_pixel_aabb(*node_id, render_list, width, height);
@@ -190,22 +186,18 @@ impl WgpuRenderer {
         height: u32,
     ) -> Option<[f32; 4]> {
         use crate::collect::DrawableInfo;
-        if let Some(bounds) = self.composite_bounds.get(&node_id) {
+        if let Some(bounds) = self.composite_bounds.get(node_id as usize) {
             return *bounds;
         }
         let bounds = (|| {
             let mut acc: Option<[f32; 4]> = None;
-            for child in render_list.composite_children.get(&node_id)? {
+            for child in render_list.composite_children(node_id) {
                 let aabb = match child {
                     DrawableInfo::Part {
                         mesh_id, transform, ..
                     } => self.part_pixel_aabb(*mesh_id, *transform, width, height)?,
                     DrawableInfo::Composite { node_id, .. } => {
-                        if !render_list
-                            .composite_children
-                            .get(node_id)
-                            .is_some_and(|c| !c.is_empty())
-                        {
+                        if render_list.composite_children(*node_id).is_empty() {
                             continue;
                         }
                         self.composite_pixel_aabb(*node_id, render_list, width, height)?
@@ -223,7 +215,7 @@ impl WgpuRenderer {
             }
             acc
         })();
-        self.composite_bounds.insert(node_id, bounds);
+        self.composite_bounds.insert(node_id as usize, bounds);
         bounds
     }
 }

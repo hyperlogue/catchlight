@@ -22,7 +22,7 @@ use catchlight_core::{
 };
 
 use crate::collect::{Collector, DrawSource, RenderList, NO_SLOT};
-use crate::renderer::{DeformSet, RendererError, RendererResult, WgpuRenderer};
+use crate::renderer::{DeformSet, RendererResult, WgpuRenderer};
 
 /// A slot in the renderer's mesh table — dense, handed out as meshes upload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -277,7 +277,7 @@ impl RenderCache {
             crate::DrawableInfo::Composite { .. } => true,
         };
         render_list.root_drawables.retain(retain);
-        for children in render_list.composite_children.values_mut() {
+        for children in &mut render_list.composite_children {
             children.retain(retain);
         }
     }
@@ -326,14 +326,11 @@ impl RenderCache {
         let mut limits = LoadLimits::default();
         limits.decoded_texture_bytes = self.options.max_decoded_texture_bytes;
         let mut budget = LoadBudget::new(limits);
-        let over = |error: &dyn std::fmt::Display| RendererError::TexturePrep(error.to_string());
         for (slot, (id, texture)) in wanted.iter().enumerate() {
             match previous.get(*id) {
                 Some(up) if up.holds(texture) => {
                     let [width, height] = up.source_size;
-                    budget
-                        .check_texture_dimensions(width, height)
-                        .map_err(|error| over(&error))?;
+                    budget.check_texture_dimensions(width, height)?;
                     moved.push((up.slot, slot as u32));
                     kept.push(Some(UploadedTexture {
                         slot: slot as u32,
@@ -356,8 +353,7 @@ impl RenderCache {
             self.options.texture_halvings,
             renderer.max_texture_dimension(),
             &mut budget,
-        )
-        .map_err(|error| over(&error))?;
+        )?;
         for prep in prepped.iter() {
             renderer.validate_texture_upload(&prep.texture)?;
         }

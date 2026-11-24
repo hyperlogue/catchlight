@@ -8,9 +8,7 @@
 mod common;
 
 use catchlight_core::{BlendMode, Model, ModelComposite, ModelNodeKind};
-use catchlight_wgpu::{
-    collect, FramebufferSnapshotPool, PrepareOptions, RenderCache, WgpuRenderer,
-};
+use catchlight_wgpu::{collect, PrepareOptions, RenderCache, WgpuRenderer};
 
 const W: u32 = 8;
 const H: u32 = 8;
@@ -73,10 +71,7 @@ async fn render_model(model: Model, bg_rgba_u8: [u8; 4]) -> Vec<u8> {
     renderer.update_camera(view_proj);
 
     let render_list = scene.frame(&mut renderer, 0.0);
-    let stencil =
-        catchlight_wgpu::StencilTarget::new_for_pipelines(&renderer.shared, &renderer.device, W, H);
-    let mut composites = catchlight_wgpu::CompositePool::new(W, H);
-    let mut snapshots = FramebufferSnapshotPool::new(W, H);
+    let mut targets = catchlight_wgpu::FrameTargets::new();
 
     // Clear colors are linear floats, sRGB-encoded on store.
     let clear = wgpu::Color {
@@ -87,21 +82,20 @@ async fn render_model(model: Model, bg_rgba_u8: [u8; 4]) -> Vec<u8> {
     };
     renderer
         .frame()
-        .render_ext(
+        .render(
             &[&render_list],
-            &view,
-            &stencil,
-            &mut composites,
-            Some(&texture),
-            Some(&mut snapshots),
-            W,
-            H,
+            catchlight_wgpu::RenderTarget {
+                view: &view,
+                texture: Some(&texture),
+                width: W,
+                height: H,
+            },
+            &mut targets,
             Some(clear),
         )
-        .expect("render")
         .submit();
 
-    catchlight_wgpu::read_texture_to_rgba(&renderer.device, &renderer.queue, &texture, W, H)
+    catchlight_wgpu::read_texture_to_rgba(&renderer.device, &renderer.queue, &texture)
         .await
         .expect("readback")
 }
@@ -322,22 +316,18 @@ fn overlay_with_normal_fallback_differs_from_overlay_with_snapshot() {
             .refresh(&mut renderer, &model, &puppet)
             .expect("refresh the render cache");
         let render_list = collect(&cache, &puppet);
-        let stencil = catchlight_wgpu::StencilTarget::new_for_pipelines(
-            &renderer.shared,
-            &renderer.device,
-            W,
-            H,
-        );
-        let mut composites = catchlight_wgpu::CompositePool::new(W, H);
+        let mut targets = catchlight_wgpu::FrameTargets::new();
         renderer
             .frame()
             .render(
                 &[&render_list],
-                &view,
-                &stencil,
-                &mut composites,
-                W,
-                H,
+                catchlight_wgpu::RenderTarget {
+                    view: &view,
+                    texture: None,
+                    width: W,
+                    height: H,
+                },
+                &mut targets,
                 Some(wgpu::Color {
                     r: bg[0] as f64 / 255.0,
                     g: bg[1] as f64 / 255.0,
@@ -345,17 +335,11 @@ fn overlay_with_normal_fallback_differs_from_overlay_with_snapshot() {
                     a: bg[3] as f64 / 255.0,
                 }),
             )
-            .unwrap()
             .submit();
-        let buf = catchlight_wgpu::read_texture_to_rgba(
-            &renderer.device,
-            &renderer.queue,
-            &texture,
-            W,
-            H,
-        )
-        .await
-        .expect("readback");
+        let buf =
+            catchlight_wgpu::read_texture_to_rgba(&renderer.device, &renderer.queue, &texture)
+                .await
+                .expect("readback");
         center_pixel(&buf)
     });
 

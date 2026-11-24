@@ -6,8 +6,8 @@ use crate::render::{
 use crate::{baseline_path, baselines_root, failures_root, repo_root};
 use anyhow::{anyhow, Context, Result};
 use catchlight_wgpu::{
-    create_headless_context, read_texture_to_rgba, CompositePool, FramebufferSnapshotPool,
-    Pipelines, StencilTarget, WgpuRenderer,
+    create_headless_context, read_texture_to_rgba, FrameTargets, Pipelines, RenderTarget,
+    WgpuRenderer,
 };
 use image::RgbaImage;
 use std::collections::HashMap;
@@ -118,8 +118,7 @@ impl HarnessInner {
                 self.queue.clone(),
                 self.pipelines.clone(),
             );
-            let ctx = RenderContext::with_renderer(renderer, spec.width, spec.height)
-                .map_err(|error| anyhow!("create render context: {error}"))?;
+            let ctx = RenderContext::with_renderer(renderer, spec.width, spec.height);
             self.contexts
                 .insert(slot_key.to_string(), ContextSlot { spec, ctx, cached });
         }
@@ -152,10 +151,7 @@ impl HarnessInner {
             (spec.width, spec.height)
         };
 
-        let stencil =
-            StencilTarget::new_for_pipelines(&self.pipelines, &self.device, width, height);
-        let mut composites = CompositePool::new(width, height);
-        let mut snapshots = FramebufferSnapshotPool::new(width, height);
+        let mut targets = FrameTargets::new();
         let target = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("multi-puppet-frame-target"),
             size: wgpu::Extent3d {
@@ -183,18 +179,17 @@ impl HarnessInner {
             slot.ctx
                 .renderer
                 .frame()
-                .render_ext(
+                .render(
                     &[&render_list],
-                    &view,
-                    &stencil,
-                    &mut composites,
-                    Some(&target),
-                    Some(&mut snapshots),
-                    width,
-                    height,
+                    RenderTarget {
+                        view: &view,
+                        texture: Some(&target),
+                        width,
+                        height,
+                    },
+                    &mut targets,
                     (i == 0).then_some(CLEAR_COLOR),
                 )
-                .map_err(|error| anyhow!("render {} puppet {i}: {error}", config.name))?
                 .submit();
         }
 
@@ -202,8 +197,6 @@ impl HarnessInner {
             &self.device,
             &self.queue,
             &target,
-            width,
-            height,
         ))
         .map_err(|error| anyhow!("read {}: {error}", config.name))?;
         Ok((pixels, width, height))
