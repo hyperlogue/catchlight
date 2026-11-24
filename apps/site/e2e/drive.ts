@@ -6,7 +6,8 @@
  *   TIER=webgpu|webgl2|none  which tier this run is for; webgpu by default
  *   OPEN_FILE=<path.clm>  opens a model through the file input
  *   AGENT_CMD=<shell>     (connected only) an edit over the Unix socket that must reach the tab
- *   AGENT_CWD=<dir>       where that command runs; this process's directory otherwise
+ *   REVIEW_CLI=<shell>    (connected only) the CLI's `review` prefix; a watch must receive a comment sent from the tab
+ *   AGENT_CWD=<dir>       where those commands run; this process's directory otherwise
  *   SHOTS=<dir>           where canvas screenshots land
  *   CHROMIUM_ARGS=<args>  replaces the flag set `TIER` would choose
  * ```
@@ -393,6 +394,46 @@ async function draws(): Promise<void> {
         "|",
         statusAfter?.slice(0, 60),
       );
+    });
+  }
+  if (server && process.env.REVIEW_CLI) {
+    await step("a review comment reaches a watching agent, and its reply reaches the tab", async () => {
+      const cli = (args: string) =>
+        Bun.spawn(["bash", "-lc", `${process.env.REVIEW_CLI} ${args}`], {
+          cwd: process.env.AGENT_CWD ?? process.cwd(),
+          stdout: "pipe",
+          stderr: "pipe",
+        });
+      const watching = cli("watch --timeout 30");
+      await page
+        .locator('[data-catchlight-review-status][data-phase="listening"]')
+        .waitFor({ timeout: 10000 });
+      await page.locator("[data-catchlight-node-label]").nth(1).click();
+      await page.keyboard.press("c");
+      await page.locator("[data-catchlight-review-composer] textarea").fill("e2e: make it bounce");
+      await page.keyboard.press("Control+Enter");
+      await page
+        .locator('[data-catchlight-review-comment][data-delivery="unsent"]')
+        .waitFor({ timeout: 10000 });
+      await page.locator("[data-catchlight-review-header] [data-catchlight-review-send]").click();
+      const out = await new Response(watching.stdout).text();
+      const err = await new Response(watching.stderr).text();
+      if ((await watching.exited) !== 0) throw new Error(`review watch failed: ${err.trim() || out.trim()}`);
+      const thread = /thread (\d+)/.exec(out)?.[1];
+      if (!thread || !out.includes("e2e: make it bounce"))
+        throw new Error(`review watch did not print the comment: ${out.trim()}`);
+      await page.locator("[data-catchlight-review-thread][data-working]").waitFor({ timeout: 10000 });
+      const reply = cli(`reply ${thread} -m "e2e: bounced"`);
+      if ((await reply.exited) !== 0)
+        throw new Error(`review reply failed: ${(await new Response(reply.stderr).text()).trim()}`);
+      await page
+        .locator('[data-catchlight-review-comment][data-role="agent"]', { hasText: "e2e: bounced" })
+        .waitFor({ timeout: 10000 });
+      await page.locator("[data-catchlight-review-resolve]").click();
+      await page.locator("[data-catchlight-review-thread]").waitFor({ state: "detached", timeout: 10000 });
+      await page.screenshot({ path: `${shots}/${tag}-review.png` });
+      await page.locator('[data-catchlight-panel="right"] [data-catchlight-panel-tabs] > button').first().click();
+      await page.keyboard.press("Escape");
     });
   }
   if (process.env.OPEN_FILE) {

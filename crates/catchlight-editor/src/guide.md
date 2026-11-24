@@ -87,7 +87,39 @@ Never retry a refused edit blindly.
   confirm first: it overwrites their file. `export <path>` writes a snapshot
   without touching it.
 
-## 6. Report
+## 6. Review threads
+
+The user can comment on a node, param, texture, slot or the whole model in
+their tab, then send those comments to you. Wait for them with:
+
+```sh
+catchlight-editor review watch                  # run it in the background
+```
+
+It shows you as listening in their tab and returns when they send: it prints
+each thread with its Id, what it is about, the pose the user was looking at,
+and the conversation so far, the new comments marked `(new)`. `--timeout
+<seconds>` makes it give up with exit code 3. Then, for every thread it printed:
+
+1. Read the target (`node info <id>`, `preview --param …` at the thread's
+   pose) and make the change, or decide what to ask.
+2. Answer on the thread, saying what you changed in the user's terms:
+
+   ```sh
+   catchlight-editor review reply <thread> -m "Raised the ear's z order above the hair."
+   ```
+
+3. Run `review watch` again.
+
+Reply to every thread you were given, even when the answer is a question or
+"not done, because …": the thread shows as yours until you do. Never resolve
+a thread; the user does that when they are satisfied. `review list` shows the
+open threads at any time, and `review open --node <id> -m "…"` (or `--param`,
+`--texture`, `--slot <node> <slot>`, `--model`) starts one of your own when you
+need to ask about something. Set `CATCHLIGHT_AGENT` (or pass `--agent`) to the
+name the user should see on your comments.
+
+## 7. Report
 
 Tell the user what you changed in their terms (which parts, params or
 motions), mention anything `check` still reports, and offer a `preview` image

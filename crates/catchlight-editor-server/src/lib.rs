@@ -12,6 +12,7 @@ mod limits;
 #[cfg(not(target_arch = "wasm32"))]
 mod preview;
 mod query;
+mod review;
 mod storage;
 #[cfg(unix)]
 mod transport;
@@ -122,6 +123,10 @@ pub enum EditorError {
     Install(#[from] InstallError),
     #[error("no extension {0:?}")]
     NoExtension(String),
+    #[error("no review thread {}", .0.0)]
+    NoThread(ThreadId),
+    #[error("no comment {0} on that thread")]
+    NoComment(u64),
 }
 
 impl EditorError {
@@ -186,6 +191,8 @@ impl EditorError {
             Self::Preview(_) => ErrorCode::Preview,
             Self::NativeOnly => ErrorCode::NativeOnly,
             Self::NoExtension(_) => ErrorCode::NoExtension,
+            Self::NoThread(_) => ErrorCode::NoThread,
+            Self::NoComment(_) => ErrorCode::NoComment,
             // Install's refusals answer with the codes the equivalent edit gets.
             Self::Install(e) => match e {
                 InstallError::Collision { .. } => ErrorCode::DuplicateId,
@@ -262,6 +269,7 @@ struct Session {
     pending_preview_pose: Option<Pose>,
     snapshot: Option<Arc<DocSnapshot>>,
     presence: Option<Presence>,
+    review: review::ReviewState,
 }
 
 impl Session {
@@ -280,6 +288,7 @@ impl Session {
             pending_preview_pose: None,
             snapshot: None,
             presence: None,
+            review: review::ReviewState::default(),
         }
     }
 
@@ -728,11 +737,12 @@ impl Editor {
         f: impl FnOnce(&mut Session) -> Result<R, EditorError>,
     ) -> Result<Captured<R>, EditorError> {
         let handle = self.session(id)?;
-        let (result, moved) = {
+        let (result, moved, reviewed) = {
             let mut session = lock(&handle);
             session.ensure_open(id)?;
             let before = session.rev;
             let snapshot = session.model.clone();
+            let missing = session.review.missing(&session.model);
             let result = f(&mut session).and_then(|value| {
                 if snapshot.authored_eq(&session.model)? {
                     session.model = snapshot.clone();
@@ -753,10 +763,15 @@ impl Editor {
                 session.rev = before;
             }
             let moved = (session.rev != before).then_some(session.rev);
-            (result, moved)
+            let reviewed =
+                session.review.take_touched() || missing != session.review.missing(&session.model);
+            (result, moved, reviewed)
         };
         if let Some(rev) = moved {
             self.notify_model_changed(id, rev);
+        }
+        if reviewed {
+            self.notify(Event::ReviewChanged { session: id });
         }
         result
     }
@@ -768,11 +783,12 @@ impl Editor {
         action: HistoryNavigation,
     ) -> Result<Captured<ResponseBody>, EditorError> {
         let handle = self.session(id)?;
-        let (captured, changed) = {
+        let (captured, changed, reviewed) = {
             let mut session = lock(&handle);
             session.ensure_open(id)?;
             session.check_revision(Some(if_rev))?;
             let next = session.next_revision()?;
+            let missing = session.review.missing(&session.model);
             let restored = session.history.navigate(action, next)?;
             let changed = restored.is_some();
             if let Some(restored) = restored {
@@ -783,10 +799,19 @@ impl Editor {
                 }
                 session.snapshot = None;
             }
-            (Captured::at(ResponseBody::Empty, session.rev), changed)
+            let Session { review, model, .. } = &mut *session;
+            let reviewed = review.follow_model(model) || missing != review.missing(model);
+            (
+                Captured::at(ResponseBody::Empty, session.rev),
+                changed,
+                reviewed,
+            )
         };
         if changed {
             self.notify_model_changed(id, captured.rev.unwrap_or(if_rev));
+        }
+        if reviewed {
+            self.notify(Event::ReviewChanged { session: id });
         }
         Ok(captured)
     }
@@ -1108,12 +1133,15 @@ impl Editor {
                 })
             }),
             Command::RenameId { session, rename } => self.edit_session_captured(session, |s| {
-                match rename {
-                    Rename::Node { from, to } => s.model.rename_node_id(&from, to)?,
-                    Rename::Param { from, to } => s.model.rename_param_id(&from, to)?,
-                    Rename::Texture { from, to } => s.model.rename_tex_id(&from, to)?,
-                    Rename::Slot { node, from, to } => s.model.rename_slot(&node, &from, to)?,
+                match &rename {
+                    Rename::Node { from, to } => s.model.rename_node_id(from, to.clone())?,
+                    Rename::Param { from, to } => s.model.rename_param_id(from, to.clone())?,
+                    Rename::Texture { from, to } => s.model.rename_tex_id(from, to.clone())?,
+                    Rename::Slot { node, from, to } => {
+                        s.model.rename_slot(node, from, to.clone())?
+                    }
                 }
+                s.review.rename(&rename);
                 Ok(ResponseBody::Empty)
             }),
             Command::MaskAdd {
@@ -1492,6 +1520,15 @@ impl Editor {
                     Ok(ResponseBody::Empty)
                 })
             }
+            command @ (Command::ReviewGet { .. }
+            | Command::ReviewThreadAdd { .. }
+            | Command::ReviewThreadSet { .. }
+            | Command::ReviewThreadDelete { .. }
+            | Command::ReviewCommentAdd { .. }
+            | Command::ReviewCommentDelete { .. }
+            | Command::ReviewSubmit { .. }
+            | Command::ReviewPoll { .. }
+            | Command::ReviewFetch { .. }) => self.review(command),
             Command::PresenceGet { session } => self.with_session_captured(session, |s| {
                 Ok(ResponseBody::Presence {
                     presence: s.presence.clone(),

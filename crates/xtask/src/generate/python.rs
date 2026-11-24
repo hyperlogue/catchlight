@@ -790,6 +790,7 @@ fn command_kind(tag: &str) -> Result<&'static str> {
     Ok(match kind {
         proto::CommandKind::Edit => "EDIT",
         proto::CommandKind::Presence => "PRESENCE",
+        proto::CommandKind::Review => "REVIEW",
         proto::CommandKind::ReplicaQuery => "REPLICA_QUERY",
         proto::CommandKind::ServerQuery => "SERVER_QUERY",
     })

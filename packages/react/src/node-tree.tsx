@@ -16,6 +16,7 @@ import { useTree } from "./replica.js";
 import { useSelection } from "./selection.js";
 import { Icon } from "./controls.js";
 import { kindIcons, kindLabels } from "./authoring.js";
+import { ReviewBadge } from "./review.js";
 
 export const NODE_KINDS: readonly NodeKindArg[] = ["group", "part", "composite", "mesh_group"];
 
@@ -253,6 +254,7 @@ export function NodeTreeItem({ session, node, isRoot, onError, ...rest }: NodeTr
             {node.name}
           </button>
         )}
+        <ReviewBadge target={{ kind: "node", node: node.id }} label={node.name} />
       </div>
       {children.length > 0 && expanded && (
         <ul role="group">

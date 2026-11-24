@@ -1,4 +1,5 @@
 import { useBindings } from "./bindings.js";
+import { ReviewBadge, ReviewCommentButton } from "./review.js";
 import type { BindingParams, NodeId, ParamId, ParamInfo, Session } from "@catchlight/core";
 import { useEffect, useState } from "react";
 import { useNodeInfo, useParams } from "./replica.js";
@@ -117,6 +118,8 @@ function ParamCard({
           <Icon name="key" width="13" height="13" />
           {param.name}
         </button>
+        <ReviewBadge target={{ kind: "param", param: param.id }} label={param.name} />
+        <ReviewCommentButton target={{ kind: "param", param: param.id }} label={param.name} />
         <IconButton icon="settings" label={`Edit ${param.name}`} onClick={onSettings} />
       </div>
       <div data-catchlight-param-value-row="">

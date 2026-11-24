@@ -57,6 +57,26 @@ from .protocol_gen import (
     ResponseBodyEditResults,
     ResponseBodyEditHistory,
     ResponseBodyTexture,
+    ResponseBodyReview,
+    ResponseBodyReviewFetched,
+    ResponseBodyReviewPending,
+    ResponseBodyReviewThread,
+    Review,
+    ReviewAuthor,
+    ReviewAuthorAgent,
+    ReviewAuthorHuman,
+    ReviewCommentAdd,
+    ReviewFetch,
+    ReviewGet,
+    ReviewPoll,
+    ReviewSubmit,
+    ReviewTarget,
+    ReviewTargetModel,
+    ReviewThread,
+    ReviewThreadAdd,
+    ReviewThreadSet,
+    ThreadId,
+    ThreadStatus,
     Save,
     SessionClose,
     SessionId,
@@ -425,6 +445,97 @@ class Client:
         if not isinstance(body, ResponseBodyExtensions):
             raise ProtocolError(ErrorCode.BAD_REQUEST, f"extensions answered {body!r}")
         return body.extensions
+
+    # -- review
+
+    def review(self, session: SessionId) -> Review:
+        """Every thread, and whether an agent is on the session."""
+        body = self.send(ReviewGet(session=session))
+        if not isinstance(body, ResponseBodyReview):
+            raise ProtocolError(ErrorCode.BAD_REQUEST, f"review_get answered {body!r}")
+        return body.review
+
+    def review_open(
+        self,
+        session: SessionId,
+        body: str,
+        *,
+        target: ReviewTarget | None = None,
+        agent: str | None = "agent",
+        pose: Sequence[ParamPose] = (),
+    ) -> ReviewThread:
+        """Start a thread, on the whole model unless `target` names something.
+
+        `agent=None` writes as the person, whose comments wait for `review_send`.
+        """
+        return _thread(
+            self.send(
+                ReviewThreadAdd(
+                    session=session,
+                    target=target if target is not None else ReviewTargetModel(),
+                    author=_author(agent),
+                    body=body,
+                    pose=list(pose),
+                )
+            )
+        )
+
+    def review_reply(
+        self,
+        session: SessionId,
+        thread: ThreadId,
+        body: str,
+        *,
+        agent: str | None = "agent",
+    ) -> ReviewThread:
+        """An agent's reply ends its work on the thread."""
+        return _thread(
+            self.send(
+                ReviewCommentAdd(
+                    session=session, thread=thread, author=_author(agent), body=body
+                )
+            )
+        )
+
+    def review_send(self, session: SessionId) -> None:
+        """Hand the person's unsent comments to the agent."""
+        self.send(ReviewSubmit(session=session))
+
+    def review_poll(self, session: SessionId, *, agent: str = "agent") -> int:
+        """How many threads wait to be fetched; also the listening heartbeat."""
+        body = self.send(ReviewPoll(session=session, agent=agent))
+        if not isinstance(body, ResponseBodyReviewPending):
+            raise ProtocolError(ErrorCode.BAD_REQUEST, f"review_poll answered {body!r}")
+        return body.pending
+
+    def review_fetch(self, session: SessionId, *, agent: str = "agent") -> list[ReviewThread]:
+        """Take the threads sent to the agent.
+
+        The comments this call delivers still read `sent` in what it returns.
+        """
+        body = self.send(ReviewFetch(session=session, agent=agent))
+        if not isinstance(body, ResponseBodyReviewFetched):
+            raise ProtocolError(ErrorCode.BAD_REQUEST, f"review_fetch answered {body!r}")
+        return body.threads
+
+    def resolve(
+        self, session: SessionId, thread: ThreadId, *, resolved: bool = True
+    ) -> ReviewThread:
+        """The person's call; an agent leaves threads open."""
+        status = ThreadStatus.RESOLVED if resolved else ThreadStatus.OPEN
+        return _thread(
+            self.send(ReviewThreadSet(session=session, thread=thread, status=status))
+        )
+
+
+def _author(agent: str | None) -> ReviewAuthor:
+    return ReviewAuthorHuman() if agent is None else ReviewAuthorAgent(name=agent)
+
+
+def _thread(body: ResponseBody) -> ReviewThread:
+    if not isinstance(body, ResponseBodyReviewThread):
+        raise ProtocolError(ErrorCode.BAD_REQUEST, f"expected a review thread, got {body!r}")
+    return body.thread
 
 
 def _structure_attachments(

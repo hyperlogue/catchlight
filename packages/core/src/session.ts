@@ -17,6 +17,8 @@ import type {
   PresenceCommand,
   ReplicaQueryCommand,
   ResponseBody,
+  Review,
+  ReviewCommand,
   ServerQueryCommand,
   SessionId,
   TexInfo,
@@ -44,12 +46,14 @@ type OnSession<T> = DistributiveOmit<
 
 export type SessionEditCommand = OnSession<EditCommand>;
 export type SessionPresenceCommand = OnSession<PresenceCommand>;
+export type SessionReviewCommand = OnSession<ReviewCommand>;
 export type SessionReplicaQueryCommand = OnSession<ReplicaQueryCommand>;
 export type SessionServerQueryCommand = OnSession<ServerQueryCommand>;
 
 export type SessionCommand =
   | SessionEditCommand
   | SessionPresenceCommand
+  | SessionReviewCommand
   | SessionReplicaQueryCommand
   | SessionServerQueryCommand;
 
@@ -61,6 +65,14 @@ export interface ScratchTransform {
   zOrder?: number;
   opacity?: number;
 }
+
+/**
+ * How often the review is re-read while an agent is listening. A lapsed
+ * heartbeat raises no event, so only a re-read can notice the agent left.
+ */
+export const REVIEW_LISTENING_POLL_MS = 4000;
+
+const NO_REVIEW: Review = { threads: [] };
 
 /** How long a `send` waits for its `model_changed` frame before re-feeding. */
 export const CATCH_UP_TIMEOUT_MS = 4000;
@@ -87,6 +99,10 @@ export class Session {
   #failure: ProtocolError | undefined;
   #offEvents: Unsubscribe;
   #nextQueryId = 1;
+  #review: Review = NO_REVIEW;
+  #reviewListeners = new Set<() => void>();
+  #reviewRead = 0;
+  #reviewTimer: ReturnType<typeof setTimeout> | undefined;
   #closed = false;
   #freed = false;
   #timeout: number;
@@ -130,6 +146,52 @@ export class Session {
   async sendPresence(command: SessionPresenceCommand): Promise<ResponseBody> {
     const reply = await this.#backend.send(this.#address(command));
     return reply.body;
+  }
+
+  /** Moves no revision; the review follows from its `review_changed` event. */
+  async sendReview(command: SessionReviewCommand): Promise<ResponseBody> {
+    const reply = await this.#backend.send(this.#address(command));
+    // Not every transport pushes events back to the sender before the reply.
+    await this.refreshReview();
+    return reply.body;
+  }
+
+  /** Empty until the first subscriber's read lands. */
+  getReview = (): Review => this.#review;
+
+  subscribeReview = (listener: () => void): Unsubscribe => {
+    const first = this.#reviewListeners.size === 0;
+    this.#reviewListeners.add(listener);
+    if (first) void this.refreshReview().catch(() => undefined);
+    return () => {
+      this.#reviewListeners.delete(listener);
+      if (this.#reviewListeners.size === 0) this.#stopReviewTimer();
+    };
+  };
+
+  async refreshReview(): Promise<void> {
+    if (this.#closed) return;
+    const read = ++this.#reviewRead;
+    const body = await this.queryServer({ cmd: "review_get" });
+    // A slower, older read must not overwrite a newer one.
+    if (this.#closed || read !== this.#reviewRead) return;
+    const next = expectResult(body, "review").review;
+    this.#stopReviewTimer();
+    if (next.agent?.listening && this.#reviewListeners.size > 0) {
+      this.#reviewTimer = setTimeout(() => {
+        this.#reviewTimer = undefined;
+        void this.refreshReview().catch(() => undefined);
+      }, REVIEW_LISTENING_POLL_MS);
+    }
+    if (JSON.stringify(next) === JSON.stringify(this.#review)) return;
+    this.#review = next;
+    for (const listener of [...this.#reviewListeners]) listener();
+  }
+
+  #stopReviewTimer(): void {
+    if (this.#reviewTimer === undefined) return;
+    clearTimeout(this.#reviewTimer);
+    this.#reviewTimer = undefined;
   }
 
   query(command: SessionReplicaQueryCommand): ResponseBody {
@@ -431,6 +493,8 @@ export class Session {
     this.#listeners.clear();
     this.#redraw.clear();
     this.#errors.clear();
+    this.#reviewListeners.clear();
+    this.#stopReviewTimer();
     this.#free();
   }
 
@@ -446,6 +510,13 @@ export class Session {
   }
 
   #observe(event: Event): void {
+    if (event.event === "review_changed") {
+      if (event.session === this.id && this.#reviewListeners.size > 0)
+        void this.refreshReview().catch((cause: unknown) => {
+          if (!this.#closed) this.#report(asProtocolError(cause));
+        });
+      return;
+    }
     if (event.event !== "model_changed" || event.session !== this.id) return;
     // An unawaited feed failure still rejects waiters, unless closed.
     void this.catchUp(event.rev).catch((cause: unknown) => {

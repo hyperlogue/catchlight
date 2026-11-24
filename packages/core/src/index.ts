@@ -17,6 +17,7 @@ export type {
   SessionEditCommand,
   SessionPresenceCommand,
   SessionReplicaQueryCommand,
+  SessionReviewCommand,
   SessionServerQueryCommand,
 } from "./session.js";
 export { FeedQueue, ProtocolError } from "./backend.js";

@@ -71,6 +71,7 @@ def test_every_command_is_reachable_through_its_kind() -> None:
         alias = {
             CommandKind.EDIT: protocol_gen.EditCommand,
             CommandKind.PRESENCE: protocol_gen.PresenceCommand,
+            CommandKind.REVIEW: protocol_gen.ReviewCommand,
             CommandKind.REPLICA_QUERY: protocol_gen.ReplicaQueryCommand,
             CommandKind.SERVER_QUERY: protocol_gen.ServerQueryCommand,
         }[kind]

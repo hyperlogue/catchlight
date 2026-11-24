@@ -10,6 +10,8 @@ import type {
   NodeInfo,
   ParamInfo,
   Presence,
+  Review,
+  ReviewThread,
   ResponseBody,
   SessionInfo,
   TexInfo,
@@ -102,11 +104,14 @@ export class FakeEditor implements WasmEditor {
   /** Commands to refuse instead of running, keyed by `cmd`. */
   refuse = new Map<string, { code: string; message: string }>();
   presence = new Map<number, Presence>();
+  /** Tests set `agent` directly; no fake command moves it but a fetch. */
+  reviews = new Map<number, Review>();
   freed = false;
 
   #events: string[] = [];
   #nextSession = 1;
   #nextNode = 1;
+  #nextReviewId = 1;
 
   handleWith(
     requestJson: string,
@@ -334,6 +339,24 @@ export class FakeEditor implements WasmEditor {
         const presence = this.presence.get(request.session) ?? null;
         return this.#ok(id, { result: "presence", presence }, doc.rev);
       }
+      case "review_get":
+      case "review_thread_add":
+      case "review_thread_set":
+      case "review_thread_delete":
+      case "review_comment_add":
+      case "review_comment_delete":
+      case "review_submit":
+      case "review_poll":
+      case "review_fetch": {
+        const doc = this.docs.get(request.session);
+        if (!doc) return this.#noSession(id, request.session);
+        const body = this.#review(request, doc.rev);
+        if (!body)
+          return JSON.stringify({ reply: "err", id, code: "no_thread", message: "no such thread" });
+        if (request.cmd !== "review_get" && request.cmd !== "review_poll")
+          this.#emit({ event: "review_changed", session: request.session });
+        return this.#ok(id, body, doc.rev);
+      }
       default: {
         const session =
           "session" in request ? (request.session as number) : undefined;
@@ -390,6 +413,93 @@ export class FakeEditor implements WasmEditor {
     this.docs.set(session, doc);
     this.#emit({ event: "sessions_changed" });
     return this.#ok(id, { result: "session", session }, doc.rev);
+  }
+
+  #review(
+    request: Extract<Request, { cmd: `review_${string}` }>,
+    rev: number,
+  ): ResponseBody | undefined {
+    let review = this.reviews.get(request.session);
+    if (!review) this.reviews.set(request.session, (review = { threads: [] }));
+    const find = (thread: number): ReviewThread | undefined =>
+      review.threads.find((t) => t.thread === thread);
+    const sent = (t: ReviewThread): boolean =>
+      t.status === "open" && t.comments.some((c) => c.delivery === "sent");
+    switch (request.cmd) {
+      case "review_get":
+        return { result: "review", review: structuredClone(review) };
+      case "review_thread_add": {
+        const thread: ReviewThread = {
+          thread: this.#nextReviewId++,
+          target: request.target,
+          target_missing: false,
+          status: "open",
+          pose: request.pose ?? [],
+          comments: [{
+            comment: this.#nextReviewId++,
+            author: request.author,
+            body: request.body,
+            delivery: request.author.role === "human" ? "unsent" : "delivered",
+            rev,
+          }],
+        };
+        review.threads.push(thread);
+        return { result: "review_thread", thread: structuredClone(thread) };
+      }
+      case "review_comment_add": {
+        const thread = find(request.thread);
+        if (!thread) return undefined;
+        thread.comments.push({
+          comment: this.#nextReviewId++,
+          author: request.author,
+          body: request.body,
+          delivery: request.author.role === "human" ? "unsent" : "delivered",
+          rev,
+        });
+        if (request.author.role === "agent") delete thread.working;
+        else thread.status = "open";
+        return { result: "review_thread", thread: structuredClone(thread) };
+      }
+      case "review_thread_set": {
+        const thread = find(request.thread);
+        if (!thread) return undefined;
+        thread.status = request.status;
+        if (request.status === "resolved") delete thread.working;
+        return { result: "review_thread", thread: structuredClone(thread) };
+      }
+      case "review_thread_delete": {
+        if (!find(request.thread)) return undefined;
+        review.threads = review.threads.filter((t) => t.thread !== request.thread);
+        return { result: "empty" };
+      }
+      case "review_comment_delete": {
+        const thread = find(request.thread);
+        if (!thread) return undefined;
+        thread.comments = thread.comments.filter((c) => c.comment !== request.comment);
+        if (thread.comments.length === 0)
+          review.threads = review.threads.filter((t) => t !== thread);
+        return { result: "empty" };
+      }
+      case "review_submit": {
+        for (const thread of review.threads)
+          if (thread.status === "open")
+            for (const comment of thread.comments)
+              if (comment.delivery === "unsent") comment.delivery = "sent";
+        return { result: "empty" };
+      }
+      case "review_poll":
+        return { result: "review_pending", pending: review.threads.filter(sent).length };
+      case "review_fetch": {
+        const taken = review.threads.filter(sent);
+        for (const thread of taken) {
+          thread.working = request.agent;
+          for (const comment of thread.comments)
+            if (comment.delivery === "sent") comment.delivery = "delivered";
+        }
+        review.agent = { name: request.agent, listening: false };
+        return { result: "review_fetched", threads: structuredClone(taken) };
+      }
+    }
   }
 
   #noSession(id: number, session: number): string {

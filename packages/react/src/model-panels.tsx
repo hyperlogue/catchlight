@@ -1,4 +1,5 @@
 import type { Session, NodeInfo, SlotPair } from "@catchlight/core";
+import { ReviewBadge, ReviewCommentButton } from "./review.js";
 import { useState } from "react";
 import {
   useCommand,
@@ -119,6 +120,11 @@ export function SlotsPanel({
         {slots.map((slot) => (
           <div key={slot.id} data-catchlight-slot="">
             <span title={slot.id}>{slot.id}</span>
+            <ReviewBadge target={{ kind: "slot", node: info.id, slot: slot.id }} label={slot.id} />
+            <ReviewCommentButton
+              target={{ kind: "slot", node: info.id, slot: slot.id }}
+              label={`slot ${slot.id}`}
+            />
             <NumberField
               label={`${slot.id} vertex`}
               value={slot.vertex ?? 0}

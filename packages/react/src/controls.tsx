@@ -42,6 +42,9 @@ const paths = {
   grid: "M3 3h18v18H3ZM3 9h18M3 15h18M9 3v18M15 3v18",
   panel: "M3 4h18v16H3ZM9 4v16",
   arrow: "M5 12h14m-5-5 5 5-5 5",
+  comment: "M4 5h16v11h-9l-5 4v-4H4Z",
+  send: "M4 12 21 4l-6 17-3-7Zm8 2 4-5",
+  spark: "M12 3l2 6 6 3-6 3-2 6-2-6-6-3 6-3Z",
 } as const;
 export type IconName = keyof typeof paths;
 export function Icon({ name, ...props }: { name: IconName } & ComponentProps<"svg">) {

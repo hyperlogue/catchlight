@@ -16,6 +16,12 @@ pub use catchlight_core::id::{ExtensionKey, NodeId, ParamId, SlotId, TexId};
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct SessionId(pub u64);
 
+/// A review thread's identity within its session; never reused.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[serde(transparent)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ThreadId(pub u64);
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Request {
@@ -548,6 +554,61 @@ pub enum Command {
         session: SessionId,
         key: ExtensionKey,
     },
+
+    /// The session's review: every thread, and whether an agent is on it.
+    ReviewGet {
+        session: SessionId,
+    },
+    /// Open a thread on `target` with its first comment. `pose` is what the
+    /// author was looking at.
+    ReviewThreadAdd {
+        session: SessionId,
+        target: ReviewTarget,
+        author: ReviewAuthor,
+        body: String,
+        #[serde(default)]
+        pose: Vec<ParamPose>,
+    },
+    ReviewThreadSet {
+        session: SessionId,
+        thread: ThreadId,
+        status: ThreadStatus,
+    },
+    ReviewThreadDelete {
+        session: SessionId,
+        thread: ThreadId,
+    },
+    /// Reply on a thread. An agent's reply ends its work on the thread.
+    ReviewCommentAdd {
+        session: SessionId,
+        thread: ThreadId,
+        author: ReviewAuthor,
+        body: String,
+    },
+    /// Removing a thread's only comment removes the thread.
+    ReviewCommentDelete {
+        session: SessionId,
+        thread: ThreadId,
+        comment: u64,
+    },
+    /// Hand every unsent human comment on an open thread to the agent.
+    ReviewSubmit {
+        session: SessionId,
+    },
+    /// An agent's heartbeat while it waits for comments: keeps it shown as
+    /// listening and answers how many threads have been handed to it.
+    ReviewPoll {
+        session: SessionId,
+        agent: String,
+    },
+    /// Take the threads handed to the agent: their sent comments become
+    /// delivered and `agent` is recorded as working on each. The reply shows
+    /// them as handed over, the taken comments still `sent`, so the taker can
+    /// tell which are new.
+    ReviewFetch {
+        session: SessionId,
+        agent: String,
+    },
 }
 
 /// What applying a [`Command`] does to the model it addresses.
@@ -557,6 +618,8 @@ pub enum CommandKind {
     Edit,
     /// Publishes shared view state (pose, camera, selection); changes no model.
     Presence,
+    /// Changes the session's review threads; changes no model.
+    Review,
     /// A pure function of the model, so a replica answers it locally.
     ReplicaQuery,
     /// Needs the editor's sessions, store or renderer. `export_manifest` is here
@@ -635,6 +698,15 @@ pub const COMMAND_KINDS: &[(&str, CommandKind)] = &[
     ("extension_delete", CommandKind::Edit),
     ("extension_list", CommandKind::ReplicaQuery),
     ("extension_get", CommandKind::ServerQuery),
+    ("review_get", CommandKind::ServerQuery),
+    ("review_thread_add", CommandKind::Review),
+    ("review_thread_set", CommandKind::Review),
+    ("review_thread_delete", CommandKind::Review),
+    ("review_comment_add", CommandKind::Review),
+    ("review_comment_delete", CommandKind::Review),
+    ("review_submit", CommandKind::Review),
+    ("review_poll", CommandKind::Review),
+    ("review_fetch", CommandKind::Review),
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -797,6 +869,15 @@ impl Command {
             Command::ExtensionDelete { .. } => "extension_delete",
             Command::Extensions { .. } => "extension_list",
             Command::ExtensionGet { .. } => "extension_get",
+            Command::ReviewGet { .. } => "review_get",
+            Command::ReviewThreadAdd { .. } => "review_thread_add",
+            Command::ReviewThreadSet { .. } => "review_thread_set",
+            Command::ReviewThreadDelete { .. } => "review_thread_delete",
+            Command::ReviewCommentAdd { .. } => "review_comment_add",
+            Command::ReviewCommentDelete { .. } => "review_comment_delete",
+            Command::ReviewSubmit { .. } => "review_submit",
+            Command::ReviewPoll { .. } => "review_poll",
+            Command::ReviewFetch { .. } => "review_fetch",
         }
     }
 
@@ -900,7 +981,16 @@ impl Command {
             | Command::ExtensionSet { session, .. }
             | Command::ExtensionDelete { session, .. }
             | Command::Extensions { session }
-            | Command::ExtensionGet { session, .. } => Some(*session),
+            | Command::ExtensionGet { session, .. }
+            | Command::ReviewGet { session }
+            | Command::ReviewThreadAdd { session, .. }
+            | Command::ReviewThreadSet { session, .. }
+            | Command::ReviewThreadDelete { session, .. }
+            | Command::ReviewCommentAdd { session, .. }
+            | Command::ReviewCommentDelete { session, .. }
+            | Command::ReviewSubmit { session }
+            | Command::ReviewPoll { session, .. }
+            | Command::ReviewFetch { session, .. } => Some(*session),
         }
     }
 }
@@ -1900,6 +1990,8 @@ pub enum ErrorCode {
     /// them; send it over one that can.
     BulkOverHttp,
     NoExtension,
+    NoThread,
+    NoComment,
     /// `catchlight.` is the format's own prefix: a reader accepts a key under
     /// it, and nothing outside the format may author one.
     ReservedExtension,
@@ -2036,6 +2128,21 @@ pub enum ResponseBody {
         key: ExtensionKey,
         value: ExtensionValueInfo,
     },
+    Review {
+        review: Review,
+    },
+    /// The thread a [`Command::ReviewThreadAdd`] opened.
+    ReviewThread {
+        thread: ReviewThread,
+    },
+    /// How many threads hold comments handed to the agent and not yet taken.
+    ReviewPending {
+        pending: u32,
+    },
+    /// The threads a [`Command::ReviewFetch`] took, whole, oldest first.
+    ReviewFetched {
+        threads: Vec<ReviewThread>,
+    },
 }
 
 /// A retained authored state, identified by its creation revision.
@@ -2071,6 +2178,100 @@ pub struct Presence {
     pub camera: Option<Camera>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selection: Option<NodeId>,
+}
+
+/// What a review thread is about. Anything with an Id can be one; `model` is
+/// a remark on the whole character.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub enum ReviewTarget {
+    Model,
+    Node { node: NodeId },
+    Param { param: ParamId },
+    Texture { texture: TexId },
+    Slot { node: NodeId, slot: SlotId },
+}
+
+/// Who wrote a comment. Declared by the client, not verified: every client of
+/// a local editor is already trusted with the model.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(tag = "role", rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub enum ReviewAuthor {
+    Human,
+    Agent { name: String },
+}
+
+/// How far a human comment has travelled toward the agent. An agent's own
+/// comment is always `delivered`.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub enum ReviewDelivery {
+    /// Written, and held until the human sends the review.
+    Unsent,
+    /// Handed over; no agent has taken it yet.
+    Sent,
+    Delivered,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub enum ThreadStatus {
+    Open,
+    Resolved,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ReviewComment {
+    /// Unique within the session, across threads.
+    pub comment: u64,
+    pub author: ReviewAuthor,
+    pub body: String,
+    pub delivery: ReviewDelivery,
+    /// The session revision the author was looking at.
+    pub rev: u64,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ReviewThread {
+    pub thread: ThreadId,
+    pub target: ReviewTarget,
+    /// The model no longer holds what the thread is about.
+    pub target_missing: bool,
+    pub status: ThreadStatus,
+    /// The pose the thread was opened at.
+    pub pose: Vec<ParamPose>,
+    /// Never empty; the first is the opening comment.
+    pub comments: Vec<ReviewComment>,
+    /// The agent that took the thread and has not replied since.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working: Option<String>,
+}
+
+/// An agent that polled or fetched this session's review.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ReviewAgent {
+    pub name: String,
+    /// It polled recently enough to be waiting for comments now.
+    pub listening: bool,
+}
+
+/// A session's review threads: shared, kept off the model path like
+/// [`Presence`] — never an edit, never undone, never saved.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct Review {
+    /// Oldest first.
+    pub threads: Vec<ReviewThread>,
+    /// The agent last heard from, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<ReviewAgent>,
 }
 
 /// What [`Command::ExtensionSet`] sets: inline JSON, or bytes attached as
@@ -2126,6 +2327,8 @@ pub enum Event {
     ModelChanged { session: SessionId, rev: u64 },
     /// The set of open sessions changed; re-read [`Command::SessionList`].
     SessionsChanged,
+    /// The session's review changed; re-read [`Command::ReviewGet`].
+    ReviewChanged { session: SessionId },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

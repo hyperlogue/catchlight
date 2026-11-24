@@ -13,8 +13,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use catchlight_editor_protocol::{
-    Command, ErrorCode, ExtensionSet, NodeId, NodeKindArg, Reply, Request, ResponseBody, SessionId,
-    SessionInfo, TextureEncoding,
+    Command, ErrorCode, ExtensionSet, NodeId, NodeKindArg, Reply, Request, ResponseBody,
+    ReviewAuthor, ReviewTarget, SessionId, SessionInfo, TextureEncoding,
 };
 use catchlight_editor_server::{bind_http, Editor, HttpOptions, Storage};
 use tungstenite::client::IntoClientRequest;
@@ -576,6 +576,42 @@ fn a_post_over_the_request_cap_is_413() {
     assert_eq!(response.status, 413);
     assert_eq!(response.header("connection"), Some("close"));
     assert_eq!(String::from_utf8_lossy(&response.body), "body too large");
+}
+
+/// An agent's CLI posts; the tab it is talking to listens on a socket.
+#[test]
+fn a_comment_made_over_post_reaches_a_websocket_subscriber() {
+    let server = start();
+    let mut watcher = connect(server.addr, TOKEN, None).unwrap();
+    let (session, _) = new_session(&mut watcher, 1);
+
+    let reply = posted(&post(
+        server.addr,
+        &Request {
+            id: 2,
+            command: Command::ReviewThreadAdd {
+                session,
+                target: ReviewTarget::Model,
+                author: ReviewAuthor::Agent {
+                    name: "claude".into(),
+                },
+                body: "which ear?".into(),
+                pose: Vec::new(),
+            },
+        },
+    ));
+    assert!(matches!(body_of(reply), ResponseBody::ReviewThread { .. }));
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        assert!(Instant::now() < deadline, "no review_changed arrived");
+        if let Reply::Event(catchlight_editor_protocol::Event::ReviewChanged { session: changed }) =
+            read_frame(&mut watcher)
+        {
+            assert_eq!(changed, session);
+            break;
+        }
+    }
 }
 
 /// The reason `/ws` stays: a POST answers the caller and pushes nothing, while

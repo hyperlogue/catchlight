@@ -204,3 +204,20 @@ export {
   RecordingInspector,
   RecordingKeys,
 } from "./recording-panel.js";
+export {
+  ReviewProvider,
+  ReviewPanel,
+  ReviewStatus,
+  ReviewBadge,
+  ReviewCommentButton,
+  useReview,
+  sameTarget,
+  targetLabel,
+} from "./review.js";
+export type {
+  AgentPhase,
+  ReviewPanelProps,
+  ReviewProviderProps,
+  ReviewState,
+  TargetLabel,
+} from "./review.js";

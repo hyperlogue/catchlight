@@ -531,6 +531,56 @@ export type Command =
     "cmd": "extension_get",
     session: SessionId,
     key: ExtensionKey,
+  }
+  | {
+    "cmd": "review_get",
+    session: SessionId,
+  }
+  | {
+    "cmd": "review_thread_add",
+    session: SessionId,
+    target: ReviewTarget,
+    author: ReviewAuthor,
+    body: string,
+    pose: Array<ParamPose>,
+  }
+  | {
+    "cmd": "review_thread_set",
+    session: SessionId,
+    thread: ThreadId,
+    status: ThreadStatus,
+  }
+  | {
+    "cmd": "review_thread_delete",
+    session: SessionId,
+    thread: ThreadId,
+  }
+  | {
+    "cmd": "review_comment_add",
+    session: SessionId,
+    thread: ThreadId,
+    author: ReviewAuthor,
+    body: string,
+  }
+  | {
+    "cmd": "review_comment_delete",
+    session: SessionId,
+    thread: ThreadId,
+    comment: number,
+  }
+  | {
+    "cmd": "review_submit",
+    session: SessionId,
+  }
+  | {
+    "cmd": "review_poll",
+    session: SessionId,
+    agent: string,
+  }
+  | {
+    "cmd": "review_fetch",
+    session: SessionId,
+    agent: string,
   };
 
 export type NodeKindArg =
@@ -1095,6 +1145,125 @@ export type Presence = {
   selection?: NodeId | null,
 };
 
+/**
+ * A review thread's identity within its session; never reused.
+ */
+export type ThreadId = number;
+
+/**
+ * What a review thread is about. Anything with an Id can be one; `model` is
+ * a remark on the whole character.
+ */
+export type ReviewTarget =
+  | {
+    "kind": "model"
+  }
+  | {
+    "kind": "node",
+    node: NodeId,
+  }
+  | {
+    "kind": "param",
+    param: ParamId,
+  }
+  | {
+    "kind": "texture",
+    texture: TexId,
+  }
+  | {
+    "kind": "slot",
+    node: NodeId,
+    slot: SlotId,
+  };
+
+/**
+ * Who wrote a comment. Declared by the client, not verified: every client of
+ * a local editor is already trusted with the model.
+ */
+export type ReviewAuthor =
+  | {
+    "role": "human"
+  }
+  | {
+    "role": "agent",
+    name: string,
+  };
+
+/**
+ * How far a human comment has travelled toward the agent. An agent's own
+ * comment is always `delivered`.
+ */
+export type ReviewDelivery =
+  | "unsent"
+  | "sent"
+  | "delivered";
+
+export type ThreadStatus =
+  | "open"
+  | "resolved";
+
+export type ReviewComment = {
+  /**
+   * Unique within the session, across threads.
+   */
+  comment: number,
+  author: ReviewAuthor,
+  body: string,
+  delivery: ReviewDelivery,
+  /**
+   * The session revision the author was looking at.
+   */
+  rev: number,
+};
+
+export type ReviewThread = {
+  thread: ThreadId,
+  target: ReviewTarget,
+  /**
+   * The model no longer holds what the thread is about.
+   */
+  target_missing: boolean,
+  status: ThreadStatus,
+  /**
+   * The pose the thread was opened at.
+   */
+  pose: Array<ParamPose>,
+  /**
+   * Never empty; the first is the opening comment.
+   */
+  comments: Array<ReviewComment>,
+  /**
+   * The agent that took the thread and has not replied since.
+   */
+  working?: string | null,
+};
+
+/**
+ * An agent that polled or fetched this session's review.
+ */
+export type ReviewAgent = {
+  name: string,
+  /**
+   * It polled recently enough to be waiting for comments now.
+   */
+  listening: boolean,
+};
+
+/**
+ * A session's review threads: shared, kept off the model path like
+ * [`Presence`] — never an edit, never undone, never saved.
+ */
+export type Review = {
+  /**
+   * Oldest first.
+   */
+  threads: Array<ReviewThread>,
+  /**
+   * The agent last heard from, if any.
+   */
+  agent?: ReviewAgent | null,
+};
+
 export type Camera = {
   center: [number, number],
   height: number,
@@ -1204,6 +1373,8 @@ export type ErrorCode =
   | "native_only"
   | "bulk_over_http"
   | "no_extension"
+  | "no_thread"
+  | "no_comment"
   | "reserved_extension";
 
 export type ResponseBody =
@@ -1365,6 +1536,22 @@ export type ResponseBody =
     "result": "extension",
     key: ExtensionKey,
     value: ExtensionValueInfo,
+  }
+  | {
+    "result": "review",
+    review: Review,
+  }
+  | {
+    "result": "review_thread",
+    thread: ReviewThread,
+  }
+  | {
+    "result": "review_pending",
+    pending: number,
+  }
+  | {
+    "result": "review_fetched",
+    threads: Array<ReviewThread>,
   };
 
 export type Event =
@@ -1375,6 +1562,10 @@ export type Event =
   }
   | {
     "event": "sessions_changed"
+  }
+  | {
+    "event": "review_changed",
+    session: SessionId,
   };
 
 export type SessionInfo = {
@@ -1646,6 +1837,23 @@ export type PresenceCommandTag =
 export type PresenceCommand = Extract<Command, { cmd: PresenceCommandTag }>;
 
 /**
+ * A command that changes a session's review threads.
+ *
+ * Like presence it goes to the editor and changes no model: no revision, no
+ * undo entry. Other clients learn of it from `review_changed`.
+ */
+export type ReviewCommandTag =
+  | "review_thread_add"
+  | "review_thread_set"
+  | "review_thread_delete"
+  | "review_comment_add"
+  | "review_comment_delete"
+  | "review_submit"
+  | "review_poll"
+  | "review_fetch";
+export type ReviewCommand = Extract<Command, { cmd: ReviewCommandTag }>;
+
+/**
  * A read that is a pure function of the model.
  *
  * A client holding a replica answers it locally, with no round trip. The
@@ -1682,7 +1890,8 @@ export type ServerQueryCommandTag =
   | "edit_history_get"
   | "presence_get"
   | "preview_render"
-  | "extension_get";
+  | "extension_get"
+  | "review_get";
 export type ServerQueryCommand = Extract<Command, { cmd: ServerQueryCommandTag }>;
 
 /**

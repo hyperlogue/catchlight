@@ -51,6 +51,12 @@ class CommandKind(StrEnum):
     # model: no revision, no undo entry, invisible to a panel.
     PRESENCE = "presence"
 
+    # A command that changes a session's review threads.
+    #
+    # Like presence it goes to the editor and changes no model: no revision, no
+    # undo entry. Other clients learn of it from `review_changed`.
+    REVIEW = "review"
+
     # A read that is a pure function of the model.
     #
     # A client holding a replica answers it locally, with no round trip. The
@@ -1495,6 +1501,168 @@ class ExtensionGet:
         return _wire_fields(self)
 
 
+@dataclass(frozen=True, kw_only=True)
+class ReviewGet:
+    """The session's review: every thread, and whether an agent is on it."""
+
+    TAG_FIELD: ClassVar[str] = "cmd"
+    TAG: ClassVar[str] = "review_get"
+    CMD: ClassVar[str] = TAG
+    KIND: ClassVar[CommandKind] = CommandKind.SERVER_QUERY
+
+    session: SessionId
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReviewThreadAdd:
+    """Open a thread on `target` with its first comment. `pose` is what the
+    author was looking at.
+    """
+
+    TAG_FIELD: ClassVar[str] = "cmd"
+    TAG: ClassVar[str] = "review_thread_add"
+    CMD: ClassVar[str] = TAG
+    KIND: ClassVar[CommandKind] = CommandKind.REVIEW
+
+    session: SessionId
+    target: ReviewTarget
+    author: ReviewAuthor
+    body: str
+    pose: list[ParamPose] = field(default_factory=list)
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReviewThreadSet:
+    TAG_FIELD: ClassVar[str] = "cmd"
+    TAG: ClassVar[str] = "review_thread_set"
+    CMD: ClassVar[str] = TAG
+    KIND: ClassVar[CommandKind] = CommandKind.REVIEW
+
+    session: SessionId
+    thread: ThreadId
+    status: ThreadStatus
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReviewThreadDelete:
+    TAG_FIELD: ClassVar[str] = "cmd"
+    TAG: ClassVar[str] = "review_thread_delete"
+    CMD: ClassVar[str] = TAG
+    KIND: ClassVar[CommandKind] = CommandKind.REVIEW
+
+    session: SessionId
+    thread: ThreadId
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReviewCommentAdd:
+    """Reply on a thread. An agent's reply ends its work on the thread."""
+
+    TAG_FIELD: ClassVar[str] = "cmd"
+    TAG: ClassVar[str] = "review_comment_add"
+    CMD: ClassVar[str] = TAG
+    KIND: ClassVar[CommandKind] = CommandKind.REVIEW
+
+    session: SessionId
+    thread: ThreadId
+    author: ReviewAuthor
+    body: str
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReviewCommentDelete:
+    """Removing a thread's only comment removes the thread."""
+
+    TAG_FIELD: ClassVar[str] = "cmd"
+    TAG: ClassVar[str] = "review_comment_delete"
+    CMD: ClassVar[str] = TAG
+    KIND: ClassVar[CommandKind] = CommandKind.REVIEW
+
+    session: SessionId
+    thread: ThreadId
+    comment: int
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReviewSubmit:
+    """Hand every unsent human comment on an open thread to the agent."""
+
+    TAG_FIELD: ClassVar[str] = "cmd"
+    TAG: ClassVar[str] = "review_submit"
+    CMD: ClassVar[str] = TAG
+    KIND: ClassVar[CommandKind] = CommandKind.REVIEW
+
+    session: SessionId
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReviewPoll:
+    """An agent's heartbeat while it waits for comments: keeps it shown as
+    listening and answers how many threads have been handed to it.
+    """
+
+    TAG_FIELD: ClassVar[str] = "cmd"
+    TAG: ClassVar[str] = "review_poll"
+    CMD: ClassVar[str] = TAG
+    KIND: ClassVar[CommandKind] = CommandKind.REVIEW
+
+    session: SessionId
+    agent: str
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReviewFetch:
+    """Take the threads handed to the agent: their sent comments become
+    delivered and `agent` is recorded as working on each. The reply shows
+    them as handed over, the taken comments still `sent`, so the taker can
+    tell which are new.
+    """
+
+    TAG_FIELD: ClassVar[str] = "cmd"
+    TAG: ClassVar[str] = "review_fetch"
+    CMD: ClassVar[str] = TAG
+    KIND: ClassVar[CommandKind] = CommandKind.REVIEW
+
+    session: SessionId
+    agent: str
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
 Command = (
     SessionNew
     | SessionOpen
@@ -1564,6 +1732,15 @@ Command = (
     | ExtensionDelete
     | Extensions
     | ExtensionGet
+    | ReviewGet
+    | ReviewThreadAdd
+    | ReviewThreadSet
+    | ReviewThreadDelete
+    | ReviewCommentAdd
+    | ReviewCommentDelete
+    | ReviewSubmit
+    | ReviewPoll
+    | ReviewFetch
 )
 
 COMMAND_VARIANTS: dict[str, type[Command]] = {
@@ -1635,6 +1812,15 @@ COMMAND_VARIANTS: dict[str, type[Command]] = {
     "extension_delete": ExtensionDelete,
     "extension_list": Extensions,
     "extension_get": ExtensionGet,
+    "review_get": ReviewGet,
+    "review_thread_add": ReviewThreadAdd,
+    "review_thread_set": ReviewThreadSet,
+    "review_thread_delete": ReviewThreadDelete,
+    "review_comment_add": ReviewCommentAdd,
+    "review_comment_delete": ReviewCommentDelete,
+    "review_submit": ReviewSubmit,
+    "review_poll": ReviewPoll,
+    "review_fetch": ReviewFetch,
 }
 
 
@@ -1719,6 +1905,15 @@ COMMAND_KINDS: dict[str, CommandKind] = {
     "extension_delete": CommandKind.EDIT,
     "extension_list": CommandKind.REPLICA_QUERY,
     "extension_get": CommandKind.SERVER_QUERY,
+    "review_get": CommandKind.SERVER_QUERY,
+    "review_thread_add": CommandKind.REVIEW,
+    "review_thread_set": CommandKind.REVIEW,
+    "review_thread_delete": CommandKind.REVIEW,
+    "review_comment_add": CommandKind.REVIEW,
+    "review_comment_delete": CommandKind.REVIEW,
+    "review_submit": CommandKind.REVIEW,
+    "review_poll": CommandKind.REVIEW,
+    "review_fetch": CommandKind.REVIEW,
 }
 
 
@@ -1831,6 +2026,21 @@ EditCommand = (
 # model: no revision, no undo entry, invisible to a panel.
 PresenceCommand = PresenceSet
 
+# A command that changes a session's review threads.
+#
+# Like presence it goes to the editor and changes no model: no revision, no
+# undo entry. Other clients learn of it from `review_changed`.
+ReviewCommand = (
+    ReviewThreadAdd
+    | ReviewThreadSet
+    | ReviewThreadDelete
+    | ReviewCommentAdd
+    | ReviewCommentDelete
+    | ReviewSubmit
+    | ReviewPoll
+    | ReviewFetch
+)
+
 # A read that is a pure function of the model.
 #
 # A client holding a replica answers it locally, with no round trip. The
@@ -1865,6 +2075,7 @@ ServerQueryCommand = (
     | PresenceGet
     | Preview
     | ExtensionGet
+    | ReviewGet
 )
 
 # A command that reads, whoever answers it.
@@ -2796,6 +3007,204 @@ class Presence:
     camera: Camera | None = None
     selection: NodeId | None = None
 
+# A review thread's identity within its session; never reused.
+ThreadId = int
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReviewTargetModel:
+    TAG_FIELD: ClassVar[str] = "kind"
+    TAG: ClassVar[str] = "model"
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReviewTargetNode:
+    TAG_FIELD: ClassVar[str] = "kind"
+    TAG: ClassVar[str] = "node"
+
+    node: NodeId
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReviewTargetParam:
+    TAG_FIELD: ClassVar[str] = "kind"
+    TAG: ClassVar[str] = "param"
+
+    param: ParamId
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReviewTargetTexture:
+    TAG_FIELD: ClassVar[str] = "kind"
+    TAG: ClassVar[str] = "texture"
+
+    texture: TexId
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReviewTargetSlot:
+    TAG_FIELD: ClassVar[str] = "kind"
+    TAG: ClassVar[str] = "slot"
+
+    node: NodeId
+    slot: SlotId
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+# What a review thread is about. Anything with an Id can be one; `model` is
+# a remark on the whole character.
+ReviewTarget = (
+    ReviewTargetModel
+    | ReviewTargetNode
+    | ReviewTargetParam
+    | ReviewTargetTexture
+    | ReviewTargetSlot
+)
+
+REVIEW_TARGET_VARIANTS: dict[str, type[ReviewTarget]] = {
+    "model": ReviewTargetModel,
+    "node": ReviewTargetNode,
+    "param": ReviewTargetParam,
+    "texture": ReviewTargetTexture,
+    "slot": ReviewTargetSlot,
+}
+
+
+def parse_review_target(message: Mapping[str, Any]) -> ReviewTarget:
+    """One JSON object as the ReviewTarget it is, by its "kind" tag."""
+    tag = message.get("kind")
+    found = REVIEW_TARGET_VARIANTS.get(tag) if isinstance(tag, str) else None
+    if found is None:
+        raise ValueError(f"no ReviewTarget carries the kind {tag!r}")
+    return _decode_class(found, message)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReviewAuthorHuman:
+    TAG_FIELD: ClassVar[str] = "role"
+    TAG: ClassVar[str] = "human"
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReviewAuthorAgent:
+    TAG_FIELD: ClassVar[str] = "role"
+    TAG: ClassVar[str] = "agent"
+
+    name: str
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+# Who wrote a comment. Declared by the client, not verified: every client of
+# a local editor is already trusted with the model.
+ReviewAuthor = (
+    ReviewAuthorHuman
+    | ReviewAuthorAgent
+)
+
+REVIEW_AUTHOR_VARIANTS: dict[str, type[ReviewAuthor]] = {
+    "human": ReviewAuthorHuman,
+    "agent": ReviewAuthorAgent,
+}
+
+
+def parse_review_author(message: Mapping[str, Any]) -> ReviewAuthor:
+    """One JSON object as the ReviewAuthor it is, by its "role" tag."""
+    tag = message.get("role")
+    found = REVIEW_AUTHOR_VARIANTS.get(tag) if isinstance(tag, str) else None
+    if found is None:
+        raise ValueError(f"no ReviewAuthor carries the role {tag!r}")
+    return _decode_class(found, message)
+
+
+class ReviewDelivery(StrEnum):
+    """How far a human comment has travelled toward the agent. An agent's own
+    comment is always `delivered`.
+    """
+
+    # Written, and held until the human sends the review.
+    UNSENT = "unsent"
+    # Handed over; no agent has taken it yet.
+    SENT = "sent"
+    DELIVERED = "delivered"
+
+
+class ThreadStatus(StrEnum):
+    OPEN = "open"
+    RESOLVED = "resolved"
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReviewComment:
+    # Unique within the session, across threads.
+    comment: int
+    author: ReviewAuthor
+    body: str
+    delivery: ReviewDelivery
+    # The session revision the author was looking at.
+    rev: int
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReviewThread:
+    thread: ThreadId
+    target: ReviewTarget
+    # The model no longer holds what the thread is about.
+    target_missing: bool
+    status: ThreadStatus
+    # The pose the thread was opened at.
+    pose: list[ParamPose]
+    # Never empty; the first is the opening comment.
+    comments: list[ReviewComment]
+    # The agent that took the thread and has not replied since.
+    working: str | None = None
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReviewAgent:
+    """An agent that polled or fetched this session's review."""
+
+    name: str
+    # It polled recently enough to be waiting for comments now.
+    listening: bool
+
+
+@dataclass(frozen=True, kw_only=True)
+class Review:
+    """A session's review threads: shared, kept off the model path like
+    [`Presence`] — never an edit, never undone, never saved.
+    """
+
+    # Oldest first.
+    threads: list[ReviewThread]
+    # The agent last heard from, if any.
+    agent: ReviewAgent | None = None
+
 
 @dataclass(frozen=True, kw_only=True)
 class Camera:
@@ -3025,6 +3434,8 @@ class ErrorCode(StrEnum):
     # them; send it over one that can.
     BULK_OVER_HTTP = "bulk_over_http"
     NO_EXTENSION = "no_extension"
+    NO_THREAD = "no_thread"
+    NO_COMMENT = "no_comment"
     # `catchlight.` is the format's own prefix: a reader accepts a key under
     # it, and nothing outside the format may author one.
     RESERVED_EXTENSION = "reserved_extension"
@@ -3434,6 +3845,60 @@ class ResponseBodyExtension:
         return _wire_fields(self)
 
 
+@dataclass(frozen=True, kw_only=True)
+class ResponseBodyReview:
+    TAG_FIELD: ClassVar[str] = "result"
+    TAG: ClassVar[str] = "review"
+
+    review: Review
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ResponseBodyReviewThread:
+    """The thread a [`Command::ReviewThreadAdd`] opened."""
+
+    TAG_FIELD: ClassVar[str] = "result"
+    TAG: ClassVar[str] = "review_thread"
+
+    thread: ReviewThread
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ResponseBodyReviewPending:
+    """How many threads hold comments handed to the agent and not yet taken."""
+
+    TAG_FIELD: ClassVar[str] = "result"
+    TAG: ClassVar[str] = "review_pending"
+
+    pending: int
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ResponseBodyReviewFetched:
+    """The threads a [`Command::ReviewFetch`] took, whole, oldest first."""
+
+    TAG_FIELD: ClassVar[str] = "result"
+    TAG: ClassVar[str] = "review_fetched"
+
+    threads: list[ReviewThread]
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
 ResponseBody = (
     ResponseBodyMeshInfo
     | ResponseBodyModelStructure
@@ -3466,6 +3931,10 @@ ResponseBody = (
     | ResponseBodySpineFit
     | ResponseBodyExtensions
     | ResponseBodyExtension
+    | ResponseBodyReview
+    | ResponseBodyReviewThread
+    | ResponseBodyReviewPending
+    | ResponseBodyReviewFetched
 )
 
 RESPONSE_BODY_VARIANTS: dict[str, type[ResponseBody]] = {
@@ -3500,6 +3969,10 @@ RESPONSE_BODY_VARIANTS: dict[str, type[ResponseBody]] = {
     "spine_fit": ResponseBodySpineFit,
     "extensions": ResponseBodyExtensions,
     "extension": ResponseBodyExtension,
+    "review": ResponseBodyReview,
+    "review_thread": ResponseBodyReviewThread,
+    "review_pending": ResponseBodyReviewPending,
+    "review_fetched": ResponseBodyReviewFetched,
 }
 
 
@@ -3541,14 +4014,30 @@ class EventSessionsChanged:
         return _wire_fields(self)
 
 
+@dataclass(frozen=True, kw_only=True)
+class EventReviewChanged:
+    """The session's review changed; re-read [`Command::ReviewGet`]."""
+
+    TAG_FIELD: ClassVar[str] = "event"
+    TAG: ClassVar[str] = "review_changed"
+
+    session: SessionId
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
 Event = (
     EventModelChanged
     | EventSessionsChanged
+    | EventReviewChanged
 )
 
 EVENT_VARIANTS: dict[str, type[Event]] = {
     "model_changed": EventModelChanged,
     "sessions_changed": EventSessionsChanged,
+    "review_changed": EventReviewChanged,
 }
 
 
@@ -3883,6 +4372,15 @@ __all__ = [
     "ExtensionDelete",
     "Extensions",
     "ExtensionGet",
+    "ReviewGet",
+    "ReviewThreadAdd",
+    "ReviewThreadSet",
+    "ReviewThreadDelete",
+    "ReviewCommentAdd",
+    "ReviewCommentDelete",
+    "ReviewSubmit",
+    "ReviewPoll",
+    "ReviewFetch",
     "Command",
     "COMMAND_VARIANTS",
     "parse_command",
@@ -3890,6 +4388,7 @@ __all__ = [
     "COMMAND_BYTES",
     "EditCommand",
     "PresenceCommand",
+    "ReviewCommand",
     "ReplicaQueryCommand",
     "ServerQueryCommand",
     "QueryCommand",
@@ -3968,6 +4467,26 @@ __all__ = [
     "SlotAddr",
     "SlotPair",
     "Presence",
+    "ThreadId",
+    "ReviewTargetModel",
+    "ReviewTargetNode",
+    "ReviewTargetParam",
+    "ReviewTargetTexture",
+    "ReviewTargetSlot",
+    "ReviewTarget",
+    "REVIEW_TARGET_VARIANTS",
+    "parse_review_target",
+    "ReviewAuthorHuman",
+    "ReviewAuthorAgent",
+    "ReviewAuthor",
+    "REVIEW_AUTHOR_VARIANTS",
+    "parse_review_author",
+    "ReviewDelivery",
+    "ThreadStatus",
+    "ReviewComment",
+    "ReviewThread",
+    "ReviewAgent",
+    "Review",
     "Camera",
     "ExtensionKey",
     "ExtensionSetJson",
@@ -4019,11 +4538,16 @@ __all__ = [
     "ResponseBodySpineFit",
     "ResponseBodyExtensions",
     "ResponseBodyExtension",
+    "ResponseBodyReview",
+    "ResponseBodyReviewThread",
+    "ResponseBodyReviewPending",
+    "ResponseBodyReviewFetched",
     "ResponseBody",
     "RESPONSE_BODY_VARIANTS",
     "parse_response_body",
     "EventModelChanged",
     "EventSessionsChanged",
+    "EventReviewChanged",
     "Event",
     "EVENT_VARIANTS",
     "parse_event",

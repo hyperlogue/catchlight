@@ -538,6 +538,35 @@ _Avoid_: attachment (that's the way in), body
 A session's shared pose, camera and selection, as last published by any
 client. Published, never saved, never undone.
 
+**Review**:
+A session's threads, and the agent attending to them. Shared like presence
+and kept beside the model: never an edit, never undone, never saved, and not
+carried into a fork.
+_Avoid_: chat, annotations
+
+**Thread**:
+One conversation in a review about one target, open or resolved. It keeps the
+pose it was opened at. Only the person resolves a thread; a reply from the
+person reopens it.
+_Avoid_: issue, ticket
+
+**Target**:
+What a thread is about: a node, a param, a texture, a slot, or the model as
+a whole. Named by Id, so a thread follows a rename; a target the model no
+longer holds is **missing** until an undo brings it back.
+_Avoid_: anchor
+
+**Comment**:
+One message on a thread, from the person or from an agent, stamped with the
+revision its author was looking at. A person's comment is **unsent** when
+written, **sent** once they hand the review to the agent, and **delivered**
+when an agent takes it; an agent's comment is delivered as written.
+_Avoid_: note, message
+
+**Listening**:
+An agent is listening while it waits for comments to be sent, and **working**
+on a thread from when it takes the thread until it replies.
+
 **Preview**:
 A rendered image of a session's model at a given pose, through a camera.
 _Avoid_: scratch (that's the live edit)

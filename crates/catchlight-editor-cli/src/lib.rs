@@ -3,6 +3,7 @@
 use std::io::Read;
 
 mod compose;
+mod review;
 mod transport;
 use std::path::PathBuf;
 
@@ -30,6 +31,10 @@ Working with a running editor (a person may be watching the same session):
   4. `edit <file.json>` applies a JSON array of edits as one undo step;
      `request -` sends any protocol command from stdin.
   5. `preview --out view.png` renders the model as it is now; `undo` reverts.
+  6. `review watch`, run in the background, waits for the comments the person
+     sends from the browser and prints them. Change the model, answer each
+     thread with `review reply <thread> -m <text>`, then watch again. Never
+     resolve a thread: that is the person's call.
 Edits appear in the browser as they land. The editor is found through the
 connection file it writes; --server/--token name one explicitly.";
 
@@ -164,6 +169,8 @@ enum Cmd {
         #[command(subcommand)]
         action: PresenceCmd,
     },
+    /// Review threads: comments the person leaves on the model for an agent.
+    Review(review::ReviewArgs),
     /// Render a preview to a PNG.
     Preview {
         /// Where the PNG is written.
@@ -771,6 +778,13 @@ where
         socket: cli.socket.clone(),
         connection_first: discovery == Discovery::ConnectionFirst,
     })?;
+    if let Cmd::Review(args) = &cli.cmd {
+        let code = review::run(&cli, args, &mut transport)?;
+        if code != 0 {
+            std::process::exit(code);
+        }
+        return Ok(());
+    }
     let composed = match compose::execute(&cli, &mut transport)? {
         Some(compose::Output::Reply(reply)) => Some(reply),
         Some(compose::Output::Unfilled { revision, slots }) => {
@@ -1121,6 +1135,7 @@ fn build_command(cli: &Cli) -> Result<Command> {
             }
         }
         Cmd::Undo | Cmd::Redo => unreachable!("composed before building"),
+        Cmd::Review(_) => unreachable!("handled in run"),
         Cmd::Texture { action } => match action {
             TextureCmd::Add { node, path, id } => Command::TextureAdd {
                 session: resolve_session(cli)?,
@@ -1628,6 +1643,12 @@ fn print_body(body: &ResponseBody) {
                     println!("  {s}");
                 }
             }
+        }
+        ResponseBody::Review { .. }
+        | ResponseBody::ReviewThread { .. }
+        | ResponseBody::ReviewPending { .. }
+        | ResponseBody::ReviewFetched { .. } => {
+            print!("{}", review::describe(body, true).unwrap_or_default());
         }
         ResponseBody::SpineFit { node, params } => {
             println!("spine {node}");

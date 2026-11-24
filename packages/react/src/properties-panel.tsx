@@ -1,4 +1,5 @@
 import type { Session } from "@catchlight/core";
+import { ReviewCommentButton } from "./review.js";
 import { useEffect, useRef, useState } from "react";
 import { useSelection } from "./selection.js";
 import { useNodeInfo, useReplica } from "./replica.js";
@@ -25,6 +26,7 @@ export function PropertiesPanel({ session, onError }: { session: Session; onErro
           <strong>{info.name}</strong>
           <small>{kindLabels[info.kind]}</small>
         </div>
+        <ReviewCommentButton target={{ kind: "node", node: info.id }} label={info.name} />
       </div>
       <InspectorRoot session={session} onError={onError} />
       {info.kind === "part" && <ArtworkUpload session={session} node={info.id} onError={onError} />}
