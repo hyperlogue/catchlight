@@ -66,7 +66,7 @@ async fn render_model(model: Model, bg_rgba_u8: [u8; 4]) -> Vec<u8> {
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-    let mut renderer = WgpuRenderer::new(device, queue, format).await;
+    let mut renderer = WgpuRenderer::new(device, queue, format);
     let mut scene = common::Scene::new(&mut renderer, model);
 
     let view_proj = glam::Mat4::orthographic_rh(-1.0, 1.0, 1.0, -1.0, -1000.0, 1000.0);
@@ -310,7 +310,7 @@ fn overlay_with_normal_fallback_differs_from_overlay_with_snapshot() {
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let mut renderer = WgpuRenderer::new(device, queue, format).await;
+        let mut renderer = WgpuRenderer::new(device, queue, format);
         let mut cache = RenderCache::prepare(&mut renderer, &model, PrepareOptions::default())
             .expect("prepare the render cache");
         renderer.update_camera(glam::Mat4::orthographic_rh(

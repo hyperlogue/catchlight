@@ -29,7 +29,7 @@ const CLEAR: Option<wgpu::Color> = Some(wgpu::Color {
 
 async fn context() -> RenderContext {
     let (device, queue) = common::shared_context();
-    let renderer = WgpuRenderer::new(device, queue, wgpu::TextureFormat::Rgba8UnormSrgb).await;
+    let renderer = WgpuRenderer::new(device, queue, wgpu::TextureFormat::Rgba8UnormSrgb);
     RenderContext::with_renderer(renderer, W, H).expect("render context")
 }
 

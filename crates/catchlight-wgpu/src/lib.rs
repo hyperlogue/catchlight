@@ -369,7 +369,7 @@ pub async fn read_texture_to_rgba(
     let submission = queue.submit(std::iter::once(encoder.finish()));
 
     let buffer_slice = buffer.slice(..);
-    let (sender, receiver) = futures::channel::oneshot::channel();
+    let (sender, receiver) = futures_channel::oneshot::channel();
     buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
         let _ = sender.send(result);
     });

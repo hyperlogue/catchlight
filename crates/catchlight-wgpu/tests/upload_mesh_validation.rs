@@ -7,7 +7,7 @@ mod common;
 
 async fn make_renderer() -> WgpuRenderer {
     let (device, queue) = common::shared_context();
-    WgpuRenderer::new(device, queue, wgpu::TextureFormat::Rgba8Unorm).await
+    WgpuRenderer::new(device, queue, wgpu::TextureFormat::Rgba8Unorm)
 }
 
 #[test]

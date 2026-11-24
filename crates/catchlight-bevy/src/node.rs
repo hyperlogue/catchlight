@@ -83,9 +83,9 @@ pub(crate) fn catchlight_2d_pass(
         .collect();
     order.sort_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.2.cmp(&b.2)));
 
-    // One `render_into` per renderer per submit: a second call would reset
-    // the frame cursors under draws already recorded. So z orders only within
-    // a model; models are ordered by their backmost puppet.
+    // One `render_into` per renderer per view: each call spends one of the
+    // submit's camera slots. So z orders only within a model; models are
+    // ordered by their backmost puppet.
     let mut groups: Vec<(ModelKey, Vec<Entity>)> = Vec::new();
     for (model, _z, entity) in &order {
         match groups.iter_mut().find(|(key, _)| key == model) {

@@ -21,11 +21,7 @@ impl PreviewRenderer {
     pub(super) fn new() -> Result<Self> {
         let (device, queue) =
             pollster::block_on(create_headless_context()).map_err(|e| anyhow!("gpu init: {e}"))?;
-        let renderer = pollster::block_on(WgpuRenderer::new(
-            device,
-            queue,
-            wgpu::TextureFormat::Rgba8UnormSrgb,
-        ));
+        let renderer = WgpuRenderer::new(device, queue, wgpu::TextureFormat::Rgba8UnormSrgb);
         // Resized on first preview; this size only has to be legal.
         let ctx = RenderContext::with_renderer(renderer, 1, 1)
             .map_err(|e| anyhow!("render context: {e}"))?;

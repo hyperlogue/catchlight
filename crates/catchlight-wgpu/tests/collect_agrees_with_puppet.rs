@@ -37,11 +37,7 @@ fn nested_model() -> (Model, Vec<&'static str>) {
 #[test]
 fn a_drawables_z_and_opacity_are_the_puppets() {
     let (device, queue) = common::shared_context();
-    let mut renderer = pollster::block_on(WgpuRenderer::new(
-        device,
-        queue,
-        wgpu::TextureFormat::Rgba8Unorm,
-    ));
+    let mut renderer = WgpuRenderer::new(device, queue, wgpu::TextureFormat::Rgba8Unorm);
 
     let (model, names) = nested_model();
     let mut scene = common::Scene::new(&mut renderer, model);
@@ -93,11 +89,7 @@ fn a_drawables_z_and_opacity_are_the_puppets() {
 #[test]
 fn a_composite_does_not_fold_its_opacity_into_its_children() {
     let (device, queue) = common::shared_context();
-    let mut renderer = pollster::block_on(WgpuRenderer::new(
-        device,
-        queue,
-        wgpu::TextureFormat::Rgba8Unorm,
-    ));
+    let mut renderer = WgpuRenderer::new(device, queue, wgpu::TextureFormat::Rgba8Unorm);
 
     let mut build = common::Build::new();
     let tex = build.texture(common::solid_texture(4, 4, [200, 120, 60, 255]));

@@ -44,7 +44,7 @@ impl RenderContext {
         let (device, queue) = create_headless_context()
             .await
             .map_err(|e| format!("create_headless_context: {e}"))?;
-        let renderer = WgpuRenderer::new(device, queue, wgpu::TextureFormat::Rgba8UnormSrgb).await;
+        let renderer = WgpuRenderer::new(device, queue, wgpu::TextureFormat::Rgba8UnormSrgb);
         Self::with_renderer(renderer, width, height)
     }
 

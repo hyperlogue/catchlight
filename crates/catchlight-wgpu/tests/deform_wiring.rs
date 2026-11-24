@@ -20,7 +20,7 @@ async fn render_with_test_deform(path: &Path, shift: Vec2) -> Vec<u8> {
     let model = Model::from_clm_bytes(&std::fs::read(path).unwrap()).expect("load model");
 
     let (device, queue) = common::shared_context();
-    let renderer = WgpuRenderer::new(device, queue, wgpu::TextureFormat::Rgba8Unorm).await;
+    let renderer = WgpuRenderer::new(device, queue, wgpu::TextureFormat::Rgba8Unorm);
     let mut ctx = RenderContext::with_renderer(renderer, W, H).expect("render context");
     let mut scene = Scene::new(&mut ctx.renderer, model);
     ctx.renderer

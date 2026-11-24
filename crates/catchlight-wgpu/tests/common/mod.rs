@@ -29,11 +29,7 @@ pub fn shared_context() -> (wgpu::Device, wgpu::Queue) {
 
 pub fn render_context(width: u32, height: u32) -> RenderContext {
     let (device, queue) = shared_context();
-    let renderer = pollster::block_on(WgpuRenderer::new(
-        device,
-        queue,
-        wgpu::TextureFormat::Rgba8UnormSrgb,
-    ));
+    let renderer = WgpuRenderer::new(device, queue, wgpu::TextureFormat::Rgba8UnormSrgb);
     RenderContext::with_renderer(renderer, width, height).expect("headless render target")
 }
 

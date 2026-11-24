@@ -41,11 +41,7 @@ fn one_quad_model() -> Model {
 
 fn ctx() -> RenderContext {
     let (device, queue) = common::shared_context();
-    let renderer = pollster::block_on(WgpuRenderer::new(
-        device,
-        queue,
-        wgpu::TextureFormat::Rgba8Unorm,
-    ));
+    let renderer = WgpuRenderer::new(device, queue, wgpu::TextureFormat::Rgba8Unorm);
     let mut ctx = RenderContext::with_renderer(renderer, W, H).expect("render context");
     ctx.renderer
         .update_camera(create_orthographic_camera(CAMERA_HEIGHT, 1.0));

@@ -6,7 +6,7 @@
 
 mod common;
 
-use catchlight_core::{Mesh, Model, Vec3};
+use catchlight_core::{Mesh, Model};
 use catchlight_wgpu::{
     create_orthographic_camera, CompositePool, FrameStats, FramebufferSnapshotPool, Pipelines,
     RenderList, RenderStats, RendererError, StencilTarget, Submission, WgpuRenderer,
@@ -411,35 +411,6 @@ fn every_reserved_slot_is_written_exactly_once() {
     }
 }
 
-#[test]
-fn part_uniform_offsets_are_distinct_and_increasing() {
-    let mut stage = Stage::new();
-    let mut pool = CompositePool::new(W, H);
-    let mut renderer = stage.renderer();
-    let mut scene = stage.admit(&mut renderer, grid_model(4));
-    stage.frame(&mut renderer, &mut scene, &mut pool);
-
-    // A repeated offset would make two draws share one uniform.
-    let offsets: Vec<u32> = (0..5)
-        .map(|i| renderer.write_part_uniform(1.0 - i as f32 * 0.1, Vec3::ONE, Vec3::ZERO, 0.5))
-        .collect();
-    for pair in offsets.windows(2) {
-        assert!(
-            pair[1] > pair[0],
-            "part-uniform offsets must strictly increase, got {offsets:?}",
-        );
-    }
-    let stride = offsets[1] - offsets[0];
-    assert!(stride > 0);
-    for (i, off) in offsets.iter().enumerate() {
-        assert_eq!(
-            *off,
-            offsets[0] + stride * i as u32,
-            "part-uniform slots must be evenly spaced, got {offsets:?}",
-        );
-    }
-}
-
 /// A shared pool must hold the deepest single model's slot count, not the sum.
 #[test]
 fn shared_composite_pool_costs_the_deepest_puppet_not_the_sum() {
@@ -627,6 +598,81 @@ fn two_views_in_one_submission_bind_distinct_camera_slots() {
         "two views sharing a submission must bind distinct camera offsets",
     );
     assert_eq!(submission.views_issued(), 2, "two views, two slots");
+}
+
+/// Views in one submit cull differently, so their instance and part-uniform
+/// layouts differ; the second view must not overwrite the first's bytes.
+#[test]
+fn two_views_in_one_submission_keep_their_own_draw_data() {
+    let mut stage = Stage::new();
+    let mut pool = CompositePool::new(W, H);
+    let mut renderer = stage.renderer();
+    let mut scene = stage.admit(&mut renderer, grid_model(6));
+    let list = scene.frame(&mut renderer, 0.0);
+
+    let whole = create_orthographic_camera(64.0, W as f32 / H as f32);
+    // Frames only the grid's last column.
+    let partial = catchlight_wgpu::create_orthographic_camera_at(
+        64.0,
+        W as f32 / H as f32,
+        catchlight_core::Vec2::new(34.0, 0.0),
+    );
+    let other = stage.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("second-view-target"),
+        size: stage.target.size(),
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: stage.target.format(),
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let other_view = other.create_view(&wgpu::TextureViewDescriptor::default());
+
+    let mut render = |stage: &mut Stage, second_view: bool| {
+        let mut encoder = stage
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        let mut submission = renderer.submission();
+        renderer.update_camera(whole);
+        let first = stage.record(
+            &mut renderer,
+            &mut submission,
+            &mut encoder,
+            &list,
+            &mut pool,
+            Some(CLEAR),
+        );
+        assert_eq!(first.0.drawn_parts, 6);
+        if second_view {
+            renderer.update_camera(partial);
+            let second = renderer
+                .render_into(
+                    &mut submission,
+                    &[&list],
+                    &mut encoder,
+                    &other_view,
+                    &stage.stencil,
+                    &mut pool,
+                    Some(&other),
+                    Some(&mut stage.snapshots),
+                    W,
+                    H,
+                    Some(CLEAR),
+                )
+                .expect("render the second view");
+            assert_eq!(second.drawn_parts, 2, "the second view culls four parts");
+        }
+        stage.queue.submit(std::iter::once(encoder.finish()));
+        stage.readback()
+    };
+
+    let alone = render(&mut stage, false);
+    let shared = render(&mut stage, true);
+    assert!(
+        alone == shared,
+        "a second view in the submit changed what the first view drew",
+    );
 }
 
 /// The view past the ring is refused before anything is recorded.

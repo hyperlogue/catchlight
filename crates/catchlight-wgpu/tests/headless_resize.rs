@@ -38,11 +38,7 @@ fn one_quad_model() -> Model {
 #[test]
 fn rendering_at_a_second_size_returns_a_buffer_for_that_size() {
     let (device, queue) = common::shared_context();
-    let renderer = pollster::block_on(WgpuRenderer::new(
-        device,
-        queue,
-        wgpu::TextureFormat::Rgba8Unorm,
-    ));
+    let renderer = WgpuRenderer::new(device, queue, wgpu::TextureFormat::Rgba8Unorm);
     let mut ctx = RenderContext::with_renderer(renderer, 64, 64).expect("render context");
 
     let model = one_quad_model();
@@ -72,11 +68,7 @@ fn rendering_at_a_second_size_returns_a_buffer_for_that_size() {
 #[test]
 fn a_zero_size_is_clamped_to_one_pixel() {
     let (device, queue) = common::shared_context();
-    let renderer = pollster::block_on(WgpuRenderer::new(
-        device,
-        queue,
-        wgpu::TextureFormat::Rgba8Unorm,
-    ));
+    let renderer = WgpuRenderer::new(device, queue, wgpu::TextureFormat::Rgba8Unorm);
     let mut ctx = RenderContext::with_renderer(renderer, 0, 0).expect("render context");
     assert_eq!((ctx.width, ctx.height), (1, 1));
     ctx.resize(8, 0);

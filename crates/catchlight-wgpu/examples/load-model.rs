@@ -251,7 +251,7 @@ impl ApplicationHandler for App {
                     .await
                     .expect("surface context");
 
-            let mut renderer = WgpuRenderer::new(device, queue, surface_ctx.render_format).await;
+            let mut renderer = WgpuRenderer::new(device, queue, surface_ctx.render_format);
 
             println!("Preparing the render cache...");
             match RenderCache::prepare(&mut renderer, &self.model, PrepareOptions::default()) {

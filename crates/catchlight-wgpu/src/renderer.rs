@@ -8,13 +8,13 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use thiserror::Error;
 use wgpu::util::DeviceExt;
 
+mod arena;
 mod pipelines;
+
+use arena::FrameArena;
 
 #[derive(Debug, Error)]
 pub enum RendererError {
-    #[error("failed to decode texture image: {0}")]
-    ImageDecode(#[from] image::ImageError),
-
     #[error("blit pipeline missing for blend mode {0:?}")]
     MissingBlitPipeline(BlendMode),
 
@@ -569,6 +569,27 @@ impl InstanceRaw {
             ],
         }
     }
+}
+
+const INSTANCE_STRIDE: u64 = std::mem::size_of::<InstanceRaw>() as u64;
+
+fn part_uniform_bind_group(
+    device: &wgpu::Device,
+    pipelines: &Pipelines,
+    buffer: &wgpu::Buffer,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        layout: &pipelines.part_uniform_bind_group_layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                buffer,
+                offset: 0,
+                size: std::num::NonZeroU64::new(std::mem::size_of::<PartUniform>() as u64),
+            }),
+        }],
+        label: Some("part_uniform_bind_group"),
+    })
 }
 
 #[repr(C)]
@@ -1259,10 +1280,10 @@ fn camera_slot_offset(slot: u32, stride: u64) -> u64 {
     u64::from(slot) * stride
 }
 
-/// One host-owned submit's worth of camera views for
-/// [`WgpuRenderer::render_into`]. Make a fresh one per submit: one kept
-/// across submits runs the ring out, and two over one submit alias (hence
-/// not `Clone`).
+/// One host-owned submit's worth of views for [`WgpuRenderer::render_into`]:
+/// each view takes its own camera slot and continues the frame buffers after
+/// the previous one. Make a fresh one per submit: one kept across submits
+/// runs the ring out, and two over one submit alias (hence not `Clone`).
 #[derive(Debug)]
 pub struct Submission {
     /// A token spent on another renderer is refused.
@@ -1389,23 +1410,11 @@ pub struct WgpuRenderer {
     pub queue: wgpu::Queue,
     pub shared: std::sync::Arc<Pipelines>,
     id: u64,
-    part_uniform_buffer: wgpu::Buffer,
+    part_uniforms: FrameArena,
     part_uniform_bind_group: wgpu::BindGroup,
     mesh_buffers: DenseMap<MeshBuffer>,
     textures: DenseMap<Texture>,
-    instance_buffer: wgpu::Buffer,
-    instance_buffer_capacity: usize,
-    // Distinct offsets per frame: `write_buffer` batches at submit start, so
-    // two writes to one offset alias.
-    instance_cursor: u64,
-    instance_staging: Vec<u8>,
-    instance_staging_len: usize,
-    batch_instance_writes: bool,
-    part_uniform_capacity: u32,
-    part_uniform_cursor: u64,
-    part_uniform_staging: Vec<u8>,
-    part_uniform_staging_len: usize,
-    batch_part_uniform_writes: bool,
+    instances: FrameArena,
     deform_buffer: wgpu::Buffer,
     deform_buffer_capacity: u64,
     deform_buffer_len: u64,
@@ -1425,10 +1434,6 @@ pub struct WgpuRenderer {
     frame_stats: FrameStats,
     // Any buffer recreation after this is set trips a debug assertion.
     frame_sizing_closed: bool,
-    // Cursors are monotonic, so a write below the watermark aliases an offset
-    // earlier draws already read.
-    instance_write_watermark: u64,
-    part_uniform_write_watermark: u64,
     /// None without `Features::TIMESTAMP_QUERY`; CPU `tracing` spans only.
     gpu_profiler: Option<wgpu_profiler::GpuProfiler>,
     /// Indexed by set; slot 0 is [`DeformSet::FIRST`].
@@ -1569,7 +1574,7 @@ impl StencilTarget {
 impl WgpuRenderer {
     /// Prefer `from_pipelines` to share pipelines across renderers; each
     /// `Pipelines::new` compiles ~18 pipelines.
-    pub async fn new(
+    pub fn new(
         device: wgpu::Device,
         queue: wgpu::Queue,
         surface_format: wgpu::TextureFormat,
@@ -1584,7 +1589,7 @@ impl WgpuRenderer {
     /// GL (WebGL2) takes the alpha-discard fallback because Chromium
     /// swiftshader fails Depth24PlusStencil8. `CATCHLIGHT_DISABLE_STENCIL`
     /// forces it elsewhere.
-    pub async fn new_autodetect(
+    pub fn new_autodetect(
         adapter: &wgpu::Adapter,
         device: wgpu::Device,
         queue: wgpu::Queue,
@@ -1602,33 +1607,20 @@ impl WgpuRenderer {
         queue: wgpu::Queue,
         shared: std::sync::Arc<Pipelines>,
     ) -> Self {
-        let instance_buffer_capacity = 512;
-        let instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Instance Buffer"),
-            size: (instance_buffer_capacity * std::mem::size_of::<InstanceRaw>()) as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        let part_uniform_capacity: u32 = 256;
-        let part_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Part Uniform Buffer"),
-            size: shared.part_uniform_stride * part_uniform_capacity as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let part_uniform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &shared.part_uniform_bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: &part_uniform_buffer,
-                    offset: 0,
-                    size: std::num::NonZeroU64::new(std::mem::size_of::<PartUniform>() as u64),
-                }),
-            }],
-            label: Some("part_uniform_bind_group"),
-        });
+        let instances = FrameArena::new(
+            &device,
+            "Instance Buffer",
+            wgpu::BufferUsages::VERTEX,
+            512 * INSTANCE_STRIDE,
+        );
+        let part_uniforms = FrameArena::new(
+            &device,
+            "Part Uniform Buffer",
+            wgpu::BufferUsages::UNIFORM,
+            256 * shared.part_uniform_stride,
+        );
+        let part_uniform_bind_group =
+            part_uniform_bind_group(&device, &shared, part_uniforms.buffer());
 
         let deform_buffer_capacity = 8;
         let deform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -1682,21 +1674,11 @@ impl WgpuRenderer {
             queue,
             shared,
             id: NEXT_RENDERER_ID.fetch_add(1, Ordering::Relaxed),
-            part_uniform_buffer,
+            part_uniforms,
             part_uniform_bind_group,
             mesh_buffers: DenseMap::new(),
             textures: DenseMap::new(),
-            instance_buffer,
-            instance_buffer_capacity,
-            instance_cursor: 0,
-            instance_staging: Vec::new(),
-            instance_staging_len: 0,
-            batch_instance_writes: false,
-            part_uniform_capacity,
-            part_uniform_cursor: 0,
-            part_uniform_staging: Vec::new(),
-            part_uniform_staging_len: 0,
-            batch_part_uniform_writes: false,
+            instances,
             deform_buffer,
             deform_buffer_capacity,
             deform_buffer_len: 0,
@@ -1710,8 +1692,6 @@ impl WgpuRenderer {
             current_stats: RenderStats::default(),
             frame_stats: FrameStats::default(),
             frame_sizing_closed: false,
-            instance_write_watermark: 0,
-            part_uniform_write_watermark: 0,
             gpu_profiler,
             deform_sets: vec![DeformSetState::live()],
             deform_free: Vec::new(),
@@ -1761,22 +1741,12 @@ impl WgpuRenderer {
 
     /// `total_instances` must cover every draw in the frame; growing mid-frame
     /// strands recorded passes.
-    fn begin_frame_instances(&mut self, total_instances: usize) {
+    fn begin_frame_instances(&mut self, total_instances: usize, continues: bool) {
         self.frame_stats.instance_slots_budgeted = total_instances as u32;
-        if total_instances > self.instance_buffer_capacity {
+        let needed = total_instances as u64 * INSTANCE_STRIDE;
+        if self.instances.begin_frame(&self.device, needed, continues) {
             self.note_realloc(RenderBuffer::Instance);
-            self.instance_buffer_capacity = (total_instances * 2).max(512);
-            self.instance_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("Instance Buffer"),
-                size: (self.instance_buffer_capacity * std::mem::size_of::<InstanceRaw>()) as u64,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
         }
-        self.instance_cursor = 0;
-        self.instance_staging_len = 0;
-        self.instance_write_watermark = 0;
-        self.batch_instance_writes = true;
     }
 
     /// The mirror is a byte-exact copy of the atlas, so re-uploading it keeps
@@ -1886,42 +1856,33 @@ impl WgpuRenderer {
     }
 
     fn reserve_instances(&mut self, count: usize) -> u64 {
-        let stride = std::mem::size_of::<InstanceRaw>() as u64;
-        let offset = self.instance_cursor;
-        self.instance_cursor += count as u64 * stride;
         self.frame_stats.instance_slots_reserved += count as u32;
-        debug_assert!(
-            self.instance_cursor <= (self.instance_buffer_capacity as u64) * stride,
-            "instance_buffer overrun — begin_frame_instances undersized: cursor={} cap={}",
-            self.instance_cursor,
-            self.instance_buffer_capacity as u64 * stride,
-        );
-        offset
+        self.instances.reserve(count as u64 * INSTANCE_STRIDE)
     }
 
     fn bind_pass_instances(&self, render_pass: &mut wgpu::RenderPass<'_>) {
         if self.shared.base_instance {
-            render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
+            render_pass.set_vertex_buffer(1, self.instances.buffer().slice(..));
         }
     }
 
-    /// `instance_offset` is stride-aligned from a zero cursor, so the derived
-    /// instance index is exact.
+    /// `instance_offset` is a whole number of strides into the buffer, so the
+    /// derived instance index is exact.
     fn emit_part_draw(
         &self,
         render_pass: &mut wgpu::RenderPass<'_>,
         num_indices: u32,
         instance_offset: u64,
     ) {
-        let stride = std::mem::size_of::<InstanceRaw>() as u64;
         if self.shared.base_instance {
-            let instance = (instance_offset / stride) as u32;
+            let instance = (instance_offset / INSTANCE_STRIDE) as u32;
             render_pass.draw_indexed(0..num_indices, 0, instance..instance + 1);
         } else {
             render_pass.set_vertex_buffer(
                 1,
-                self.instance_buffer
-                    .slice(instance_offset..instance_offset + stride),
+                self.instances
+                    .buffer()
+                    .slice(instance_offset..instance_offset + INSTANCE_STRIDE),
             );
             render_pass.draw_indexed(0..num_indices, 0, 0..1);
         }
@@ -1933,95 +1894,43 @@ impl WgpuRenderer {
             return;
         }
         let bytes: &[u8] = bytemuck::cast_slice(instances);
-        // A write below the watermark overlaps one already made this frame, and
-        // write_buffer batching makes the later one win for every draw.
-        debug_assert!(
-            offset >= self.instance_write_watermark,
-            "instance_buffer offset {offset} rewrites bytes already staged this frame \
-             (watermark {}); every draw reading that range would see the later write",
-            self.instance_write_watermark,
-        );
-        self.instance_write_watermark = offset + bytes.len() as u64;
         self.frame_stats.instance_slots_written += instances.len() as u32;
         self.frame_stats.instance_bytes_written += bytes.len() as u64;
-        if self.batch_instance_writes {
-            let start = offset as usize;
-            let end = start + bytes.len();
-            if self.instance_staging.len() < end {
-                self.instance_staging.resize(end, 0);
-            }
-            self.instance_staging[start..end].copy_from_slice(bytes);
-            self.instance_staging_len = self.instance_staging_len.max(end);
-        } else {
-            self.note_queue_write(RenderBuffer::Instance);
-            self.queue
-                .write_buffer(&self.instance_buffer, offset, bytes);
-        }
+        self.instances.write(offset, bytes);
     }
 
     fn flush_instance_writes(&mut self) {
-        if self.batch_instance_writes && self.instance_staging_len > 0 {
+        let uploaded = self.instances.flush(&self.queue);
+        if uploaded > 0 {
             self.note_queue_write(RenderBuffer::Instance);
-            self.queue.write_buffer(
-                &self.instance_buffer,
-                0,
-                &self.instance_staging[..self.instance_staging_len],
-            );
         }
-        self.batch_instance_writes = false;
-        self.instance_staging_len = 0;
+        self.current_stats.instance_bytes_uploaded = uploaded;
     }
 
-    fn begin_frame_uniforms(&mut self, count: u32) {
+    fn begin_frame_uniforms(&mut self, count: u32, continues: bool) {
         self.frame_stats.part_uniform_slots_budgeted = count;
-        if count > self.part_uniform_capacity {
+        let needed = u64::from(count) * self.shared.part_uniform_stride;
+        if self
+            .part_uniforms
+            .begin_frame(&self.device, needed, continues)
+        {
             self.note_realloc(RenderBuffer::PartUniform);
-            self.part_uniform_capacity = count.max(256).next_power_of_two();
-            self.part_uniform_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("Part Uniform Buffer"),
-                size: self.shared.part_uniform_stride * self.part_uniform_capacity as u64,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
             self.part_uniform_bind_group =
-                self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    layout: &self.shared.part_uniform_bind_group_layout,
-                    entries: &[wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                            buffer: &self.part_uniform_buffer,
-                            offset: 0,
-                            size: std::num::NonZeroU64::new(
-                                std::mem::size_of::<PartUniform>() as u64
-                            ),
-                        }),
-                    }],
-                    label: Some("part_uniform_bind_group"),
-                });
+                part_uniform_bind_group(&self.device, &self.shared, self.part_uniforms.buffer());
         }
-        self.part_uniform_cursor = 0;
-        self.part_uniform_staging_len = 0;
-        self.part_uniform_write_watermark = 0;
-        self.batch_part_uniform_writes = true;
         // Both frame buffers are now sized; every pass recorded from here
         // on binds them, so nothing may reallocate until the next frame.
         self.frame_sizing_closed = true;
     }
 
     fn flush_part_uniform_writes(&mut self) {
-        if self.batch_part_uniform_writes && self.part_uniform_staging_len > 0 {
+        if self.part_uniforms.flush(&self.queue) > 0 {
             self.note_queue_write(RenderBuffer::PartUniform);
-            self.queue.write_buffer(
-                &self.part_uniform_buffer,
-                0,
-                &self.part_uniform_staging[..self.part_uniform_staging_len],
-            );
         }
-        self.batch_part_uniform_writes = false;
-        self.part_uniform_staging_len = 0;
     }
 
-    pub fn write_part_uniform(
+    /// Only inside a frame: the slot is staged and uploaded with the frame.
+    fn write_part_uniform(
         &mut self,
         opacity: f32,
         tint: glam::Vec3,
@@ -2032,36 +1941,10 @@ impl WgpuRenderer {
         let tint_linear = srgb_to_linear_vec3(tint);
         let screen_tint_linear = srgb_to_linear_vec3(screen_tint);
         let uniform = PartUniform::new(opacity, tint_linear, screen_tint_linear, mask_threshold);
-        let offset = self.part_uniform_cursor;
-        let bytes = bytemuck::bytes_of(&uniform);
-        // Same aliasing hazard as `write_instances`.
-        debug_assert!(
-            offset >= self.part_uniform_write_watermark,
-            "part_uniform slot at offset {offset} rewritten this frame (watermark {}); \
-             every draw binding that slot would see the later write",
-            self.part_uniform_write_watermark,
-        );
-        self.part_uniform_write_watermark = offset + self.shared.part_uniform_stride;
+        let offset = self.part_uniforms.reserve(self.shared.part_uniform_stride);
+        self.part_uniforms
+            .write(offset, bytemuck::bytes_of(&uniform));
         self.frame_stats.part_uniform_writes += 1;
-        if self.batch_part_uniform_writes {
-            let start = offset as usize;
-            let end = start + bytes.len();
-            if self.part_uniform_staging.len() < end {
-                self.part_uniform_staging.resize(end, 0);
-            }
-            self.part_uniform_staging[start..end].copy_from_slice(bytes);
-            self.part_uniform_staging_len = self.part_uniform_staging_len.max(end);
-        } else {
-            self.note_queue_write(RenderBuffer::PartUniform);
-            self.queue
-                .write_buffer(&self.part_uniform_buffer, offset, bytes);
-        }
-        self.part_uniform_cursor += self.shared.part_uniform_stride;
-        debug_assert!(
-            self.part_uniform_cursor
-                <= self.shared.part_uniform_stride * self.part_uniform_capacity as u64,
-            "part_uniform_buffer overrun — begin_frame_uniforms undersized",
-        );
         offset as u32
     }
 
@@ -2636,7 +2519,7 @@ impl WgpuRenderer {
             pass.set_pipeline(&self.shared.composite_mask_part_pipeline);
             pass.set_bind_group(0, &self.camera_bind_group, &[self.camera_offset]);
             self.bind_pass_instances(&mut pass);
-            let stride = std::mem::size_of::<InstanceRaw>() as u64;
+            let stride = INSTANCE_STRIDE;
             for (i, part) in source.parts.iter().enumerate() {
                 let (Some(mesh), Some(texture)) = (
                     self.mesh_buffers.get(part.mesh_id as usize),
@@ -2682,7 +2565,7 @@ impl WgpuRenderer {
     ) {
         use crate::collect::MaskSourceData;
 
-        let stride = std::mem::size_of::<InstanceRaw>() as u64;
+        let stride = INSTANCE_STRIDE;
 
         for m in mask_sources {
             if let MaskSourceData::Part {
@@ -2846,7 +2729,7 @@ impl WgpuRenderer {
     ) {
         use crate::collect::MaskSourceData;
 
-        let stride = std::mem::size_of::<InstanceRaw>() as u64;
+        let stride = INSTANCE_STRIDE;
 
         for m in mask_sources {
             if let MaskSourceData::Part {
@@ -3010,7 +2893,7 @@ impl WgpuRenderer {
         }
         self.current_stats.drawn_parts += valid.len() as u32;
 
-        let stride = std::mem::size_of::<InstanceRaw>() as u64;
+        let stride = INSTANCE_STRIDE;
         let mask_part_count = mask_sources
             .iter()
             .filter(|source| source.is_part())
@@ -3046,7 +2929,7 @@ impl WgpuRenderer {
         parts_base: u64,
         bound_texture: &mut Option<u32>,
     ) -> RendererResult<()> {
-        let stride = std::mem::size_of::<InstanceRaw>() as u64;
+        let stride = INSTANCE_STRIDE;
         let has_stencil = self.shared.has_stencil;
 
         let mut current_blend_mode: Option<BlendMode> = None;
@@ -3247,7 +3130,7 @@ impl WgpuRenderer {
         base_offset: u64,
         bound_texture: &mut Option<u32>,
     ) {
-        let stride = std::mem::size_of::<InstanceRaw>() as u64;
+        let stride = INSTANCE_STRIDE;
 
         let mut current_blend_mode: Option<BlendMode> = None;
         let mut current_mesh: Option<u32> = None;
@@ -3579,12 +3462,10 @@ impl WgpuRenderer {
         );
     }
 
-    fn finalize_frame_stats(&mut self, composites: &CompositePool) {
+    fn finalize_frame_stats(&mut self) {
         self.current_stats.render_passes = self.frame_render_passes.load(Ordering::Relaxed);
         self.current_stats.total_draw_calls = self.frame_draw_calls.load(Ordering::Relaxed);
-        self.current_stats.instance_bytes_uploaded = self.instance_staging_len as u64;
         self.current_stats.deform_bytes_uploaded = self.pending_deform_bytes;
-        self.current_stats.composite_slots_used = composites.stats().0 as u32;
     }
 
     /// Alpha path only; the stencil path folds the mask write and blit into
@@ -4045,9 +3926,9 @@ impl WgpuRenderer {
         )
     }
 
-    /// Lists record back to back under one cursor and camera slot: a second
-    /// call inside one submit would rewrite the first's slots. Only the first
-    /// list may consume `clear_color`. Without `target_color_texture` (which
+    /// Lists record back to back under one camera slot. A later view of the
+    /// same submit takes the next `camera_slot` and continues the frame
+    /// buffers. Only the first list may consume `clear_color`. Without `target_color_texture` (which
     /// must carry `COPY_SRC`) and `snapshots`, dst-in-shader modes fall back to
     /// Normal-OVER.
     #[allow(clippy::too_many_arguments, clippy::expect_used)]
@@ -4112,7 +3993,9 @@ impl WgpuRenderer {
 
         // Sized over every list; mid-frame growth would strand earlier passes.
         let total_instances: usize = lists.iter().map(|l| l.total_instance_count()).sum();
-        self.begin_frame_instances(total_instances);
+        // Later views of one submit keep the bytes of the earlier ones.
+        let continues = camera_slot > 0;
+        self.begin_frame_instances(total_instances, continues);
         // One slot per drawable, composite child and mask source, plus one per
         // dst-in-shader part and masked dst-in-shader composite.
         let dst_in_shader_extra = if dst_in_shader_active {
@@ -4142,7 +4025,7 @@ impl WgpuRenderer {
             })
             .sum::<usize>()
             + dst_in_shader_extra;
-        self.begin_frame_uniforms(uniform_slot_count as u32);
+        self.begin_frame_uniforms(uniform_slot_count as u32, continues);
 
         let mut result = Ok(());
         for (i, list) in lists.iter().enumerate() {
@@ -4163,6 +4046,11 @@ impl WgpuRenderer {
                 if i == 0 { clear_color } else { None },
                 dst_in_shader_active,
             );
+            // Each list resets the pool, so the frame's peak is the deepest list's.
+            self.current_stats.composite_slots_used = self
+                .current_stats
+                .composite_slots_used
+                .max(composites.stats().0 as u32);
             if result.is_err() {
                 break;
             }
@@ -4175,7 +4063,7 @@ impl WgpuRenderer {
         }
         self.flush_instance_writes();
         self.flush_part_uniform_writes();
-        self.finalize_frame_stats(composites);
+        self.finalize_frame_stats();
         self.pending_deform_bytes = 0;
         span.record("drawn_parts", self.current_stats.drawn_parts);
         self.frame_sizing_closed = false;
@@ -4511,7 +4399,7 @@ impl WgpuRenderer {
     }
 
     /// Must run while the encoder is open and before it is submitted; pair
-    /// with `end_gpu_frame` after. [`Recorded::submit`] does this itself.
+    /// with `end_gpu_frame` after. [`Recorded::submit`] does both itself.
     pub fn resolve_gpu_queries(&mut self, encoder: &mut wgpu::CommandEncoder) {
         if let Some(profiler) = self.gpu_profiler.as_mut() {
             profiler.resolve_queries(encoder);
@@ -5091,15 +4979,19 @@ impl Recorded<'_> {
         self.stats
     }
 
-    /// Resolves timer queries into this encoder before submitting.
+    /// Resolves timer queries into this encoder before submitting, then closes
+    /// the profiler frame.
     pub fn submit(mut self) -> wgpu::SubmissionIndex {
         let mut encoder = self.encoder.take();
         if let Some(encoder) = encoder.as_mut() {
             self.renderer.resolve_gpu_queries(encoder);
         }
-        self.renderer
+        let index = self
+            .renderer
             .queue
-            .submit(encoder.map(wgpu::CommandEncoder::finish))
+            .submit(encoder.map(wgpu::CommandEncoder::finish));
+        self.renderer.end_gpu_frame();
+        index
     }
 }
 

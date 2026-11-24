@@ -11,11 +11,8 @@ fn lan_visual_regressions_fringe_coverage() {
     // 4 pixels per model unit catches thin skin-colored cracks that disappear
     // into the aggregate tolerance of the full-face baseline.
     let (device, queue) = visual_tests::shared_context().expect("headless device");
-    let renderer = pollster::block_on(catchlight_wgpu::WgpuRenderer::new(
-        device,
-        queue,
-        wgpu::TextureFormat::Rgba8UnormSrgb,
-    ));
+    let renderer =
+        catchlight_wgpu::WgpuRenderer::new(device, queue, wgpu::TextureFormat::Rgba8UnormSrgb);
     let mut ctx = RenderContext::with_renderer(renderer, 55, 135).expect("renderer");
     for roll in [0.0, -2.0, 2.0] {
         let config = Config {

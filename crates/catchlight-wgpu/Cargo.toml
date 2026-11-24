@@ -10,16 +10,16 @@ description = "wgpu rendering backend for catchlight"
 catchlight-core = { workspace = true }
 wgpu = { workspace = true }
 glam = { workspace = true }
-image.workspace = true
 thiserror = { workspace = true }
 tracing = { workspace = true }
 wgpu-profiler = { workspace = true }
 bytemuck = { version = "1.25.2", features = ["derive"] }
-futures = "0.3.31"
+futures-channel = "0.3.31"
 smallvec = { version = "1.15", features = ["union"] }
 pollster.workspace = true
 
 [dev-dependencies]
+image.workspace = true
 winit.workspace = true
 serde.workspace = true
 serde_json.workspace = true

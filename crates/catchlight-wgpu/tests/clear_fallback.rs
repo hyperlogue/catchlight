@@ -32,7 +32,7 @@ fn empty_render_list_still_clears_the_target() {
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let mut renderer = WgpuRenderer::new(device, queue, format).await;
+        let mut renderer = WgpuRenderer::new(device, queue, format);
         let stencil = StencilTarget::new_for_pipelines(&renderer.shared, &renderer.device, W, H);
         let mut composites = CompositePool::new(W, H);
 
