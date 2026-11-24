@@ -2,7 +2,7 @@ html,
 body {
   margin: 0;
   block-size: 100%;
-  background: #12171b;
+  background: #090b0e;
 }
 
 #root {
@@ -79,7 +79,7 @@ body { color: #e8eef2; font: 15px/1.6 system-ui, sans-serif; }
 .chooser-note, .privacy-note { color: #92a3b0; font-size: 13px; }
 .chooser-note { margin-top: 28px; }
 .demo-shell { height: 100%; display: grid; grid-template-rows: auto minmax(0, 1fr); }
-.demo-nav { display: flex; align-items: center; gap: 24px; padding: 8px 16px; border-bottom: 1px solid #364550; background: #12171b; font-size: 13px; }
+.demo-nav { display: flex; align-items: center; gap: 24px; padding: 8px 16px; border-bottom: 1px solid #20262d; background: #090b0e; font-size: 13px; }
 .demo-nav a { color: #72bffb; text-decoration: none; padding: 4px; }
 .demo-nav span { color: #92a3b0; }
 .face-demo { min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 340px; }

@@ -27,6 +27,10 @@ import {
   ParamsPanel,
   PresenceProvider,
   PropertiesPanel,
+  ReviewPanel,
+  ReviewProvider,
+  ReviewStatus,
+  useReview,
   SearchField,
   SessionList,
   WeldsPanel,
@@ -82,6 +86,8 @@ function Shell({ onOpenStarter }: { onOpenStarter?: () => Promise<Session> }) {
   const [notice, setNotice] = useState<string>();
   const [closing, setClosing] = useState<number>();
   const [confirmClose, setConfirmClose] = useState<SessionInfo>();
+  const [reviewAsked, setReviewAsked] = useState(0);
+  const askReview = useCallback(() => setReviewAsked((n) => n + 1), []);
   const dismissed = useRef(new Set<number>());
   const request = useRef(0);
   const failed = useCallback(
@@ -180,8 +186,10 @@ function Shell({ onOpenStarter }: { onOpenStarter?: () => Promise<Session> }) {
   return (
     <PresenceProvider session={session}>
       <EditingProvider session={session} onError={failed} onNotice={setNotice}>
+        <ReviewProvider session={session} onError={failed} onAttention={askReview}>
         <Workspace
           session={session}
+          reviewAsked={reviewAsked}
           info={sessions.find((s) => s.session === session?.id)}
           onOpened={opened}
           onNew={create}
@@ -191,6 +199,7 @@ function Shell({ onOpenStarter }: { onOpenStarter?: () => Promise<Session> }) {
           onNotice={setNotice}
           {...(onOpenStarter ? { onOpenStarter } : {})}
         />
+        </ReviewProvider>
       </EditingProvider>
       {(problem || notice) && (
         <Notification>
@@ -285,9 +294,12 @@ type WorkspaceProps = {
   onError: (e: unknown) => void;
   onNotice: (s: string) => void;
   onOpenStarter?: () => Promise<Session>;
+  /** Bumped each time review asks to be shown. */
+  reviewAsked: number;
 };
 function Workspace({
   session,
+  reviewAsked,
   info,
   onOpened,
   onNew,
@@ -311,7 +323,8 @@ function Workspace({
     editing.requestMode(next ? "mesh" : "arrange");
   const [grid, setGrid] = useState(false);
   const [left, setLeft] = useState<"structure" | "assets">("structure");
-  const [right, setRight] = useState<"properties" | "model">("properties");
+  const [right, setRight] = useState<"properties" | "model" | "review">("properties");
+  const review = useReview();
   const [dock, setDock] = useState<"params" | "bindings">("params");
   const [dockOpen, setDockOpen] = useState(true);
   const [focus, setFocus] = useState(false);
@@ -387,15 +400,27 @@ function Workspace({
     return () => document.removeEventListener("keydown", keydown);
   }, [mobilePanel, structurePanelId, propertiesPanelId, closePanel]);
   useEffect(() => {
+    // Threads stay where they were read while the selection moves under them.
+    if (right === "review") return;
     workspace.current
       ?.querySelector(
         '[data-catchlight-panel="right"] [data-catchlight-panel-scroll]',
       )
       ?.scrollTo({ top: 0 });
   }, [node, session, right, editing.mode]);
-  const structureSize = usePanelSize("structure", 232, 180, 360, "x");
-  const propertiesSize = usePanelSize("properties", 288, 248, 400, "x", -1);
-  const dockSize = usePanelSize("posing tools", 320, 140, 420, "y", -1);
+  const showReview = useCallback(() => {
+    setRight("review");
+    setFocus(false);
+    if (matchMedia("(max-width: 600px)").matches) setMobilePanel("properties");
+  }, []);
+  useEffect(() => {
+    if (reviewAsked > 0) showReview();
+  }, [reviewAsked, showReview]);
+  const commentOnSelection = () =>
+    review?.compose(node ? { kind: "node", node } : { kind: "model" });
+  const structureSize = usePanelSize("structure", 248, 180, 400, "x");
+  const propertiesSize = usePanelSize("properties", 304, 256, 460, "x", -1);
+  const dockSize = usePanelSize("posing tools", 220, 110, 420, "y", -1);
   const capture = usePreviewExport(canvas);
   const sweep = usePoseSweep(session, param);
   const fit = useCallback(() => {
@@ -540,6 +565,28 @@ function Workspace({
         (!mesh && (editing.info?.kind !== "part" || !editing.info.texture)),
     },
     {
+      name: node ? "Comment on selection" : "Comment on the model",
+      detail: "Start a review thread for your agent",
+      icon: "comment",
+      key: "C",
+      run: commentOnSelection,
+      disabled: !session,
+    },
+    {
+      name: "Send review to agent",
+      detail: review?.unsent ? `${review.unsent} unsent` : "Nothing new to send",
+      icon: "send",
+      run: () => void review?.send(),
+      disabled: !review?.unsent,
+    },
+    {
+      name: "Show review",
+      detail: "Threads and agent status",
+      icon: "comment",
+      run: showReview,
+      disabled: !session,
+    },
+    {
       name: "Toggle focus mode",
       detail: "Make room for the canvas",
       icon: "panel",
@@ -594,6 +641,10 @@ function Workspace({
         else if (editing.recording) editing.stop();
         else editing.arm();
       } else if (key === "g") setGrid(!grid);
+      else if (key === "c" && !mod && session) {
+        e.preventDefault();
+        commentOnSelection();
+      }
       else if (key === "?") setDialog("help");
       else if (key === "escape") {
         if (mesh) editing.requestMode("arrange");
@@ -677,7 +728,7 @@ function Workspace({
             width="20"
             height="20"
           />
-          catchlight<span data-catchlight-product="">STUDIO</span>
+          <span data-catchlight-wordmark="">catchlight</span>
         </a>
         <div data-catchlight-main-menus="">
           <details data-catchlight-menu="">
@@ -732,6 +783,19 @@ function Workspace({
             </div>
           </details>
         </div>
+        <nav data-catchlight-model-tabs="" aria-label="Open models">
+          <SessionList.Root
+            current={session?.id}
+            onSelect={(s) => editing.guard(() => onChoose(s))}
+            onClose={(s) => editing.guard(() => onClose(s))}
+          />
+          <IconButton
+            data-catchlight-new=""
+            icon="plus"
+            label="New model"
+            onClick={newModel}
+          />
+        </nav>
         <div data-catchlight-history-tools="">
           <IconButton
             icon="undo"
@@ -752,9 +816,10 @@ function Workspace({
           onClick={() => setDialog("commands")}
         >
           <Icon name="search" width="15" height="15" />
-          <span>Search anything…</span>
+          <span>Search</span>
           <kbd>⌘ K</kbd>
         </button>
+        <ReviewStatus onOpen={showReview} />
         <span data-catchlight-save-state="">
           <i data-dirty={info?.dirty || editing.mesh?.dirty ? "" : undefined} />
           {session
@@ -793,19 +858,6 @@ function Workspace({
           }}
         />
       </header>
-      <nav data-catchlight-model-tabs="" aria-label="Open models">
-        <SessionList.Root
-          current={session?.id}
-          onSelect={(s) => editing.guard(() => onChoose(s))}
-          onClose={(s) => editing.guard(() => onClose(s))}
-        />
-        <IconButton
-          data-catchlight-new=""
-          icon="plus"
-          label="New model"
-          onClick={newModel}
-        />
-      </nav>
       {mobilePanel && (
         <button
           type="button"
@@ -947,49 +999,6 @@ function Workspace({
         )}
       </aside>
       <main data-catchlight-center="">
-        <div data-catchlight-canvas-toolbar="">
-          <WorkspaceModes />
-          <div data-catchlight-canvas-actions="">
-            <button
-              type="button"
-              data-catchlight-panel-toggle="structure"
-              aria-label="Toggle structure panel"
-              aria-expanded={mobilePanel === "structure"}
-              aria-controls={structurePanelId}
-              disabled={mesh || editing.busy}
-              onClick={(event) => togglePanel("structure", event.currentTarget)}
-            >
-              <Icon name="group" />
-              <span>Parts</span>
-            </button>
-            <button
-              type="button"
-              data-catchlight-panel-toggle="properties"
-              aria-label="Toggle properties panel"
-              aria-expanded={mobilePanel === "properties"}
-              aria-controls={propertiesPanelId}
-              onClick={(event) => togglePanel("properties", event.currentTarget)}
-            >
-              <Icon name="settings" />
-              <span>Properties</span>
-            </button>
-            <div data-catchlight-tool-group="">
-              <IconButton
-                icon="grid"
-                label="Show grid (G)"
-                aria-pressed={grid}
-                disabled={mesh}
-                onClick={() => setGrid(!grid)}
-              />
-              <IconButton
-                icon="panel"
-                label="Focus mode (Shift F)"
-                aria-pressed={focus}
-                onClick={() => setFocus(!focus)}
-              />
-            </div>
-          </div>
-        </div>
         <EditingBar />
         {mesh && <MeshTools />}
         <div
@@ -1028,6 +1037,49 @@ function Workspace({
             });
           }}
         >
+          <div data-catchlight-canvas-toolbar="">
+            <WorkspaceModes />
+            <div data-catchlight-canvas-actions="">
+              <button
+                type="button"
+                data-catchlight-panel-toggle="structure"
+                aria-label="Toggle structure panel"
+                aria-expanded={mobilePanel === "structure"}
+                aria-controls={structurePanelId}
+                disabled={mesh || editing.busy}
+                onClick={(event) => togglePanel("structure", event.currentTarget)}
+              >
+                <Icon name="group" />
+                <span>Parts</span>
+              </button>
+              <button
+                type="button"
+                data-catchlight-panel-toggle="properties"
+                aria-label="Toggle properties panel"
+                aria-expanded={mobilePanel === "properties"}
+                aria-controls={propertiesPanelId}
+                onClick={(event) => togglePanel("properties", event.currentTarget)}
+              >
+                <Icon name="settings" />
+                <span>Properties</span>
+              </button>
+              <div data-catchlight-tool-group="">
+                <IconButton
+                  icon="grid"
+                  label="Show grid (G)"
+                  aria-pressed={grid}
+                  disabled={mesh}
+                  onClick={() => setGrid(!grid)}
+                />
+                <IconButton
+                  icon="panel"
+                  label="Focus mode (Shift F)"
+                  aria-pressed={focus}
+                  onClick={() => setFocus(!focus)}
+                />
+              </div>
+            </div>
+          </div>
           <Stage
             session={session}
             view={modelView}
@@ -1253,7 +1305,8 @@ function Workspace({
           <button
             type="button"
             data-active={
-              right === "properties" || editing.mode !== "arrange"
+              right === "properties" ||
+              (right === "model" && editing.mode !== "arrange")
                 ? ""
                 : undefined
             }
@@ -1264,10 +1317,24 @@ function Workspace({
           <button
             type="button"
             disabled={editing.mode !== "arrange"}
-            data-active={right === "model" ? "" : undefined}
+            data-active={
+              right === "model" && editing.mode === "arrange" ? "" : undefined
+            }
             onClick={() => setRight("model")}
           >
             Model
+          </button>
+          <button
+            type="button"
+            data-catchlight-review-tab=""
+            data-active={right === "review" ? "" : undefined}
+            data-attention={review?.replied ? "" : undefined}
+            onClick={() => setRight("review")}
+          >
+            Review
+            {!!review && review.replied + review.unsent > 0 && (
+              <small>{review.replied + review.unsent}</small>
+            )}
           </button>
           <IconButton
             icon="close"
@@ -1278,7 +1345,9 @@ function Workspace({
         </div>
         <div data-catchlight-panel-scroll="">
           {session ? (
-            mesh ? (
+            right === "review" ? (
+              <ReviewPanel session={session} />
+            ) : mesh ? (
               <MeshInspector />
             ) : editing.mode === "record" ? (
               <RecordingInspector />

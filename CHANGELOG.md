@@ -7,6 +7,21 @@ next release is 0.3.0.
 
 ### New
 
+- **Review threads: leave comments for an agent, in the editor.** Comment on
+  a node, param, texture, slot or the whole model (`C` on a selection), collect
+  as many as you like, then **Send to agent**. An agent waiting on
+  `catchlight-editor review watch` receives them, edits the model in the shared
+  session and answers on each thread with `review reply`; the tab shows it
+  listening, working and replying. Threads follow renames, flag a target that
+  was deleted, and remember the pose they were written at. Python sessions get
+  the same calls (`Client.review_*`). Review is session state: it is not saved
+  with the model.
+- **A redesigned editor.** One top bar holds the menus, open models, review
+  status and save; the canvas runs edge to edge with its modes and tools
+  floating over it; the tree, params and properties are denser, so more of the
+  model fits on screen. `@catchlight/editor-ui` hosts that restyled tokens
+  should recheck them: several `--cl-*` values changed and `--cl-gutter`,
+  `--cl-control-height`, `--cl-well`, `--cl-agent` and `--cl-ok` are new.
 - **Building a puppet is fast, and the second one is nearly free.** A mesh
   group finds the triangle under a vertex through bins instead of a per-texel
   grid, which makes `Puppet::new` about 40 times faster on a 100-part model

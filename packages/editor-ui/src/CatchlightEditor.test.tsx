@@ -43,6 +43,35 @@ describe("the assembled editor", () => {
     stop();
   });
 
+  test("C opens the review tab aimed at the selection", async () => {
+    const stop = stubObservers();
+    const editor = await fakeEditor();
+    const session = await editor.newSession("akari");
+    await session.send({ cmd: "node_add", parent: "root", kind: "part", name: "body" });
+    const { container: view, unmount } = await mount(<CatchlightEditor editor={editor} />);
+    await settle();
+    expect(view.querySelector("[data-catchlight-review]")).toBeNull();
+
+    await run(() =>
+      view
+        .querySelector<HTMLButtonElement>(
+          '[data-catchlight-node][data-node$="part-1"] [data-catchlight-node-label]',
+        )
+        ?.click(),
+    );
+    await run(() => document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "c", bubbles: true })));
+    await settle();
+
+    expect(view.querySelector("[data-catchlight-review-tab][data-active]")).not.toBeNull();
+    expect(
+      view.querySelector("[data-catchlight-review-composer] textarea")?.getAttribute("aria-label"),
+    ).toBe("Comment on body");
+
+    await unmount();
+    editor.close();
+    stop();
+  });
+
   test("a node is selected in the tree and a param is a named slider", async () => {
     const stop = stubObservers();
     const editor = await fakeEditor();

@@ -153,6 +153,7 @@ export function Shortcuts({ onClose }: { onClose: () => void }) {
           ["Edit mesh on artwork", "M"],
           ["Open / toggle recording", "R"],
           ["Grid overlay", "G"],
+          ["Comment for your agent", "C"],
           ["Find a command or node", "Ctrl / ⌘ K"],
           ["Save model", "Ctrl / ⌘ S"],
           ["Open model", "Ctrl / ⌘ O"],
