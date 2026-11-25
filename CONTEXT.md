@@ -284,8 +284,8 @@ _Avoid_: claim (as a separate concept — a claim is a contribution)
 ### Animating
 
 **Puppet**:
-A model being animated: its pose, its drivers' state, its animation playback,
-its scratch, and the evaluated frame. The model itself is never changed by
+A model being animated: its pose, its drivers' state, its scratch, and the
+evaluated frame. The model itself is never changed by
 animating it, and several puppets can animate one model.
 _Avoid_: instance, actor
 
@@ -299,9 +299,9 @@ The transforms, z orders, colours and deforms a puppet's last tick produced
 — what a render cache is refreshed from.
 
 **Tick**:
-Evaluating a puppet's next frame: rebake if the model changed, step the
-playing animation, which sets the pose, and step the drivers, which claim
-params; then, if anything changed, apply the pose through bindings, apply
+Evaluating a puppet's next frame from the pose it was given: rebake if the
+model changed and step the drivers, which claim params; then, if anything
+changed, apply the pose through bindings, apply
 scratch, resolve transforms, and deform by spines, mesh groups and welds in
 that order.
 
@@ -340,7 +340,8 @@ _Avoid_: draw list, scene
 A named, timed sequence of param values with a length in frames: an optional
 lead-in played once, then the **loop region** between it and an optional
 lead-out, repeated. A model keeps its animations in the official
-`catchlight.animations` extension, and no two share a name.
+`catchlight.animations` extension, and no two share a name. Playing one
+sets a puppet's pose before each tick.
 
 **Lane**:
 One animation's track over a single param, with its own interpolation mode.
@@ -398,12 +399,13 @@ _Avoid_: merge (the CLI's verb for it)
 
 **Uninstall**:
 Undoing an install: removing every node it added with its whole current
-subtree, and the bindings, welds, textures and animations it brought.
+subtree, the bindings, welds and textures it brought, and what each
+extension merged from it.
 
 **Extract**:
 Copying a subtree out of a model as an addon, leaving the model unchanged:
 the subtree, the bindings on it, the welds touching it and the textures it
-draws. Animations stay behind.
+draws. Extensions stay behind.
 
 **Extension**:
 Data on a whole model, filed under a key that is its owner first, then a dot
