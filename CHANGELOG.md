@@ -49,6 +49,41 @@ next release is 0.3.0.
   extension is capped at 1 MiB, and textures are held to 8192 texels a side
   and `decoded_texture_bytes` in total before any is decoded
   (`PrepareOptions::max_decoded_texture_bytes` in `catchlight-wgpu`).
+- **Extensions that keep up with the model.** A `.clm` can carry typed,
+  maintained extension data: a `{version, refs, payload}` envelope whose
+  reference table names nodes, params, textures and slots. The core rewrites
+  that table on every rename and marks what a removal leaves behind, whether
+  or not the build knows the extension, and never reads the payload. A third
+  party implements `Extension` for its own type and gets copy-on-write access
+  through `Model::extension`, `extension_mut` and `extension_or_default`
+  without registering; `catchlight_core::extension::register` adds addon
+  merging and checking, and `Model::extension_warnings` reports stale
+  references and each extension's own findings. Data a build cannot read,
+  written by a newer version or failing to decode, is kept and saved as
+  stored. Addon extensions merge into the base's data and come back out on
+  uninstall.
+- **Humanoid controls.** The official `catchlight.humanoid` extension
+  (`catchlight-extension-humanoid`) defines 35 standard face and body
+  controls and maps each onto one of a model's params by three stops, so one
+  source of tracking can pose any model that maps them. `Humanoid::pose`
+  applies `ControlValues`, and `controls_from_arkit` turns ARKit blend shapes
+  into control values.
+- **Expressions.** The official `catchlight.expressions` extension
+  (`catchlight-extension-expressions`) names expressions, such as the five
+  standard emotions and 21 visemes, by values for humanoid controls or the
+  model's own params, and blends them by weight around the control mappings
+  (`blend_controls`, `blend_params`). `standard_visemes()` offers default
+  viseme settings.
+- **Rig controls and expressions from the command line.** `catchlight-cli
+  humanoid` lists the standard controls and maps, lists and unmaps a model's
+  controls; `catchlight-cli expression` lists the standard names, and sets,
+  lists and removes a model's expressions, or adds the standard visemes.
+  Output is JSON, a typo in a control name is refused with the nearest
+  standard name, and each edit prints the extension's warnings for the
+  edited model. Texture bytes and other extensions are kept byte for byte.
+  `render` and `bounds` take `--control name=value` and `--expression
+  name=weight`, and a render spec request takes `controls` and
+  `expressions`.
 
 ### Fixed
 
@@ -124,6 +159,14 @@ next release is 0.3.0.
   private; `RenderCache` is the way in, and the crate root lists its exports.
 - **`create_headless_context_ext` is gone.** Nothing called it; build a
   device with timestamp queries directly to use the GPU profiler.
+- **Animations are an extension.** `catchlight-core` no longer knows
+  animations: clips live in the official `catchlight.animations` extension
+  (`catchlight-extension-animations`) and play through `AnimationPlayer`,
+  which a host advances before each `Puppet::tick` instead of asking the
+  puppet to play. The structure section drops its `animations` field, so a
+  file written before this change loses the clips stored there when it is
+  loaded; re-import or re-author them. `catchlight-cli`, the editor and the
+  importer register and use the extension.
 
 ## [0.2.2] - 2026-11-22
 
