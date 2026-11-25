@@ -706,7 +706,10 @@ fn clips(file: &ClmFile) -> Vec<Clip> {
 }
 
 fn lane_params(anim: &Clip) -> Vec<String> {
-    anim.lanes.iter().map(|l| l.param.to_string()).collect()
+    anim.lanes
+        .iter()
+        .filter_map(|l| Some(l.param()?.to_string()))
+        .collect()
 }
 
 #[test]

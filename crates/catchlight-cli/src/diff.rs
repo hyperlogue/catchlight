@@ -402,7 +402,7 @@ fn animation_fields(a: &Clip) -> Fields {
     f.insert("lead_out".into(), frame(a.lead_out));
     for lane in &a.lanes {
         f.insert(
-            format!("lane[{:?}]", lane.param.as_str()),
+            format!("lane[{}]", lane.target),
             format!(
                 "{}, {} keyframes, {}",
                 enum_name(&lane.interpolation),

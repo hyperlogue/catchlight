@@ -23,7 +23,7 @@ use catchlight_bevy::{
     CatchlightPuppet,
 };
 use catchlight_core::{BindingTarget, InterpolateMode, Model, ModelFormat, ParamId};
-use catchlight_extension_animations::{Animations, Clip, Keyframe, Lane};
+use catchlight_extension_animations::{Animations, Clip, Keyframe, Lane, LaneTarget};
 
 const GRID_COLS: usize = 10;
 const GRID_ROWS: usize = 5;
@@ -192,7 +192,7 @@ fn build_blink_animation(model: &Model) -> Option<Clip> {
         lanes: blink_params
             .into_iter()
             .map(|param| Lane {
-                param,
+                target: LaneTarget::Param(param),
                 interpolation: InterpolateMode::Linear,
                 keyframes: keyframes(),
             })

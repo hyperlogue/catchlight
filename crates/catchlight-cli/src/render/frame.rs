@@ -41,7 +41,9 @@ impl FrameRuntime {
             .map_or(0.0, |a| a.clip.0.timestep);
         if let Some(animation) = &request.animation {
             for lane in &animation.clip.0.lanes {
-                puppet.set_param_value(&lane.param, lane.value_at(0.0));
+                if let Some(param) = lane.param() {
+                    puppet.set_param_value(param, lane.value_at(0.0));
+                }
             }
         }
         let mut player = AnimationPlayer::default();

@@ -1,11 +1,13 @@
 //! Remote serde adapters add strict input-field checking and generated schema
-//! without changing the clip shape `catchlight.animations` stores.
+//! without changing the clip shape `catchlight.animations` stores. A lane
+//! names its target by exactly one of `param`, `control`, `expression` or
+//! `viseme`, as the clip type itself does.
 
 use super::bad;
 use crate::Error;
 use catchlight_core::interpolate::InterpolateMode;
 use catchlight_core::ParamId;
-use catchlight_extension_animations::{Clip, Keyframe, Lane};
+use catchlight_extension_animations::{Clip, Keyframe, Lane, LaneTarget};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -39,11 +41,24 @@ struct Animation {
     lanes: Vec<Lane>,
 }
 #[derive(Serialize, Deserialize, JsonSchema)]
-#[serde(remote = "Lane", deny_unknown_fields)]
-#[schemars(rename = "Lane")]
+#[serde(deny_unknown_fields)]
+#[schemars(rename = "Lane", transform = one_target)]
 struct LaneSchema {
-    #[schemars(with = "super::ModelIdSchema")]
-    param: ParamId,
+    /// A param id; the values are raw param values.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<super::ModelIdSchema>")]
+    param: Option<ParamId>,
+    /// A humanoid control the model maps; the values are in the control's
+    /// range.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    control: Option<String>,
+    /// An expression the model has; the values are its weight, 0..1. While
+    /// the clip plays the lane replaces the request's weight for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    expression: Option<String>,
+    /// A viseme the model has; the values are its weight, 0..1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    viseme: Option<String>,
     #[serde(with = "Interpolation")]
     #[schemars(with = "Interpolation")]
     interpolation: InterpolateMode,
@@ -67,20 +82,67 @@ struct KeyframeSchema {
     value: f32,
 }
 
+/// Exactly one target field.
+fn one_target(schema: &mut schemars::Schema) {
+    let one = |field: &str| serde_json::json!({"required": [field]});
+    schema.insert(
+        "oneOf".into(),
+        serde_json::json!([
+            one("param"),
+            one("control"),
+            one("expression"),
+            one("viseme")
+        ]),
+    );
+}
+
+impl TryFrom<LaneSchema> for Lane {
+    type Error = &'static str;
+    fn try_from(l: LaneSchema) -> Result<Self, Self::Error> {
+        let target = match (l.param, l.control, l.expression, l.viseme) {
+            (Some(id), None, None, None) => LaneTarget::Param(id),
+            (None, Some(name), None, None) => LaneTarget::Control(name),
+            (None, None, Some(name), None) => LaneTarget::Expression(name),
+            (None, None, None, Some(name)) => LaneTarget::Viseme(name),
+            _ => return Err("a lane names exactly one of param, control, expression or viseme"),
+        };
+        Ok(Lane::new(target, l.interpolation, l.keyframes))
+    }
+}
+impl From<&Lane> for LaneSchema {
+    fn from(lane: &Lane) -> Self {
+        let mut out = Self {
+            param: None,
+            control: None,
+            expression: None,
+            viseme: None,
+            interpolation: lane.interpolation,
+            keyframes: lane.keyframes.clone(),
+        };
+        match &lane.target {
+            LaneTarget::Param(id) => out.param = Some(id.clone()),
+            LaneTarget::Control(name) => out.control = Some(name.clone()),
+            LaneTarget::Expression(name) => out.expression = Some(name.clone()),
+            LaneTarget::Viseme(name) => out.viseme = Some(name.clone()),
+        }
+        out
+    }
+}
+
 mod lanes {
     use super::*;
-    #[derive(Serialize, Deserialize)]
-    struct Item(#[serde(with = "LaneSchema")] Lane);
     pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Lane>, D::Error> {
-        Ok(Vec::<Item>::deserialize(d)?
+        Vec::<LaneSchema>::deserialize(d)?
             .into_iter()
-            .map(|v| v.0)
-            .collect())
+            .map(|l| Lane::try_from(l).map_err(serde::de::Error::custom))
+            .collect()
     }
     pub fn serialize<S: serde::Serializer>(items: &[Lane], s: S) -> Result<S::Ok, S::Error> {
-        #[derive(Serialize)]
-        struct Ref<'a>(#[serde(with = "LaneSchema")] &'a Lane);
-        items.iter().map(Ref).collect::<Vec<_>>().serialize(s)
+        items
+            .iter()
+            .map(LaneSchema::from)
+            .collect::<Vec<_>>()
+            .serialize(s)
     }
 }
 mod keyframes {
@@ -112,11 +174,13 @@ pub(super) fn validate(model: &catchlight_core::Model, clip: &Clip) -> Result<()
         if lane.keyframes.iter().any(|k| !k.value.is_finite()) {
             return Err(bad("animation keyframe values must be finite"));
         }
-        if model.param(&lane.param).is_none() {
-            return Err(bad(format!(
-                "animation lane names param {:?}, which the model lacks",
-                lane.param.as_str()
-            )));
+        if let Some(param) = lane.param() {
+            if model.param(param).is_none() {
+                return Err(bad(format!(
+                    "animation lane names param {:?}, which the model lacks",
+                    param.as_str()
+                )));
+            }
         }
         if lane.keyframes.windows(2).any(|w| w[0].frame > w[1].frame) {
             return Err(bad("animation lane keyframes must be in frame order"));

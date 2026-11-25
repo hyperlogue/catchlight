@@ -298,7 +298,7 @@ fn a_maintained_extension_lists_and_prints_its_envelope() {
 
 #[test]
 fn get_prints_the_animations_byte_payload_as_its_decoded_clips() {
-    use catchlight_extension_animations::{Animations, Clip, Keyframe, Lane};
+    use catchlight_extension_animations::{Animations, Clip, Keyframe, Lane, LaneTarget};
 
     let dir = common::tmp("extension-animations");
     let path = common::copy_fixture("welded_seam", &dir);
@@ -307,7 +307,7 @@ fn get_prints_the_animations_byte_payload_as_its_decoded_clips() {
     let clip = Clip {
         length: 4,
         lanes: vec![Lane {
-            param: param.clone(),
+            target: LaneTarget::Param(param.clone()),
             interpolation: catchlight_core::InterpolateMode::Linear,
             keyframes: vec![Keyframe {
                 frame: 2,

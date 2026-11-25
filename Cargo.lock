@@ -1590,6 +1590,8 @@ name = "catchlight-extension-animations"
 version = "0.2.2"
 dependencies = [
  "catchlight-core",
+ "catchlight-extension-expressions",
+ "catchlight-extension-humanoid",
  "ciborium",
  "serde",
  "serde_bytes",

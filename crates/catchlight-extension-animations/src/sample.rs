@@ -151,7 +151,7 @@ mod tests {
 
     fn lane(kfs: Vec<(u32, f32)>, mode: InterpolateMode) -> Lane {
         Lane {
-            param: ParamId::new("p").unwrap(),
+            target: crate::LaneTarget::Param(ParamId::new("p").unwrap()),
             keyframes: kfs
                 .into_iter()
                 .map(|(frame, value)| Keyframe { frame, value })

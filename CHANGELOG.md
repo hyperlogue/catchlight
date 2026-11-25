@@ -108,6 +108,17 @@ next release is 0.3.0.
   `bounds` take `--control name=value`, `--expression name=weight` and
   `--viseme name=weight`, and a render spec request takes `controls`,
   `expressions` and `visemes`.
+- **Animate controls, expressions and visemes.** An animation lane can drive
+  a humanoid control, or the weight of an expression or a viseme, by name,
+  so a clip that blinks, smiles or speaks plays on any model that has them.
+  Clips written before keep their param lanes as they were.
+  `AnimationPlayer::advance_with` applies one frame in a fixed order: the
+  host's own control values and weights, with a playing clip's lanes winning
+  for the same name, then expressions and visemes, the control mappings and
+  the clip's param lanes. A weight held below 1 no longer creeps from frame
+  to frame, and motion responses do not react to a control lane's jump at a
+  loop wrap. `check` reports a lane on a control the model does not map or on
+  an expression or viseme it lacks.
 
 ### Fixed
 

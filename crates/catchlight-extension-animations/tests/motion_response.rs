@@ -8,7 +8,10 @@ use catchlight_core::{
     BindingKey, BindingTarget, Model, ModelNode, ModelNodeKind, ModelParam, MotionResponse, Name,
     NodeId, ParamId, Puppet, ResponseInput, ResponseSource, ScalarTarget,
 };
-use catchlight_extension_animations::{AnimationPlayer, Clip, Keyframe, Lane};
+use catchlight_extension_animations::{
+    AnimationPlayer, Clip, FrameInputs, Keyframe, Lane, LaneTarget, Rig,
+};
+use catchlight_extension_humanoid::{ControlMapping, Humanoid};
 
 /// A puppet with a player, ticked the way a host ticks them.
 #[derive(Clone)]
@@ -26,7 +29,12 @@ impl Played {
     }
 
     fn tick(&mut self, model: &Model, dt: f32) {
-        self.player.advance(&mut self.puppet, dt);
+        self.player.advance_with(
+            &mut self.puppet,
+            dt,
+            Rig::of(model),
+            &FrameInputs::default(),
+        );
         self.puppet.tick(model, dt);
     }
 }
@@ -148,7 +156,7 @@ fn cut_clip() -> Clip {
         lead_in: Some(1),
         lead_out: Some(4),
         lanes: vec![Lane {
-            param: pid("roll"),
+            target: LaneTarget::Param(pid("roll")),
             interpolation: catchlight_core::InterpolateMode::Linear,
             keyframes: vec![
                 Keyframe {
@@ -190,6 +198,82 @@ fn loop_and_restart_initialize_at_the_new_clip_sample() {
     p.player.advance(&mut p.puppet, -dt);
     p.tick(&m, 0.);
     assert_eq!(p.response_trace(&nid("upper")).unwrap().lag, 0.);
+}
+
+/// [`cut_clip`] with its lane on the control `head_roll`, which the model
+/// maps onto `roll`.
+fn control_cut() -> (Model, Clip) {
+    let mut m = model(0.75);
+    m.extension_or_default::<Humanoid>().unwrap().set(
+        "head_roll",
+        ControlMapping {
+            param: pid("roll"),
+            stops: [-1., 0., 1.],
+        },
+    );
+    let mut clip = cut_clip();
+    clip.lanes[0].target = LaneTarget::Control("head_roll".into());
+    (m, clip)
+}
+
+#[test]
+fn a_control_lanes_loop_cut_and_restart_initialize_at_the_new_sample() {
+    let (m, clip) = control_cut();
+    let mut p = Played::new(&m);
+    let dt = clip.timestep;
+    p.player.set_clips(vec![clip]);
+    assert!(p.player.play("turn"));
+    p.tick(&m, 0.);
+    for _ in 0..3 {
+        p.tick(&m, dt);
+    }
+    assert_eq!(p.param_value_posed(&pid("roll")), Some(0.5));
+    assert!(p.response_trace(&nid("tip")).unwrap().lag.abs() > 0.001);
+    p.tick(&m, dt);
+    assert_eq!(p.player.sample().unwrap().frame, 1.);
+    for name in ["upper", "tip"] {
+        assert_eq!(p.response_trace(&nid(name)).unwrap().lag, 0., "{name}");
+    }
+    p.tick(&m, dt);
+    assert!(p.player.play("turn"));
+    p.tick(&m, 0.);
+    assert_eq!(p.response_trace(&nid("tip")).unwrap().lag, 0.);
+    p.tick(&m, dt);
+    p.player
+        .advance_with(&mut p.puppet, -dt, Rig::of(&m), &FrameInputs::default());
+    p.tick(&m, 0.);
+    assert_eq!(p.response_trace(&nid("upper")).unwrap().lag, 0.);
+}
+
+#[test]
+fn a_control_lane_without_a_cut_keeps_the_response_moving() {
+    let (m, mut clip) = control_cut();
+    // A closed loop: the wrap is no discontinuity.
+    clip.lanes[0].keyframes = vec![
+        Keyframe {
+            frame: 1,
+            value: -1.,
+        },
+        Keyframe {
+            frame: 2,
+            value: 0.,
+        },
+        Keyframe {
+            frame: 3,
+            value: -1.,
+        },
+    ];
+    let mut p = Played::new(&m);
+    let dt = clip.timestep;
+    p.player.set_clips(vec![clip]);
+    p.player.play("turn");
+    p.tick(&m, 0.);
+    for _ in 0..3 {
+        p.tick(&m, dt);
+    }
+    p.tick(&m, dt);
+    assert_eq!(p.player.sample().unwrap().frame, 1.);
+    assert!(p.response_trace(&nid("upper")).unwrap().lag.abs() > 0.001);
 }
 
 #[test]
@@ -363,7 +447,7 @@ fn seamless_playback_preserves_the_same_cascade_as_uninterrupted_input() {
             lead_in: None,
             lead_out: None,
             lanes: vec![Lane {
-                param: pid("roll"),
+                target: LaneTarget::Param(pid("roll")),
                 interpolation: catchlight_core::InterpolateMode::Linear,
                 keyframes: values
                     .iter()
@@ -421,7 +505,7 @@ fn check_sine(count: u32, fps: f32) {
         lead_in: None,
         lead_out: None,
         lanes: vec![Lane {
-            param: pid("roll"),
+            target: LaneTarget::Param(pid("roll")),
             interpolation: catchlight_core::InterpolateMode::Linear,
             keyframes: (0..count)
                 .map(|frame| Keyframe {

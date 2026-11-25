@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use bevy::prelude::*;
 use catchlight_bevy::{CatchlightModel, CatchlightPlugin, CatchlightPuppet};
 use catchlight_core::{InterpolateMode, Model, ParamId, Pose, Puppet};
-use catchlight_extension_animations::{Animations, Clip, Keyframe, Lane};
+use catchlight_extension_animations::{Animations, Clip, Keyframe, Lane, LaneTarget};
 
 fn model_path(stem: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -281,7 +281,7 @@ fn a_models_animation_is_baked_onto_every_puppet_that_shares_it() {
         .expect("a fresh extension") = Animations::from_clips([Clip {
         length: 60,
         lanes: vec![Lane {
-            param: param.clone(),
+            target: LaneTarget::Param(param.clone()),
             interpolation: InterpolateMode::Linear,
             keyframes: vec![
                 Keyframe {

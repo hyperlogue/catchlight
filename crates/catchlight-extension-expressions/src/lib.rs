@@ -3,7 +3,10 @@
 //! values to humanoid controls or to the model's own params, and plays by
 //! weight; visemes blend over expressions.
 //!
-//! Control settings act before the control mappings, param settings after:
+//! Control settings act before the control mappings, param settings after.
+//! `catchlight_extension_animations::AnimationPlayer::advance_with` applies
+//! them in that order each frame, with any clip playing; by hand, for one
+//! frame, it is:
 //!
 //! ```no_run
 //! # use catchlight_core::{Model, Puppet};

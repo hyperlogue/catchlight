@@ -7,7 +7,7 @@ use catchlight_core::components::BlendMode;
 use catchlight_core::formats::clm::{ClmFile, ClmNode, ClmNodeKind, ClmTransform};
 use catchlight_core::id::NodeId;
 use catchlight_core::Model;
-use catchlight_extension_animations::{Animations, Clip, Keyframe, Lane};
+use catchlight_extension_animations::{Animations, Clip, Keyframe, Lane, LaneTarget};
 
 use common::{copy_fixture, decode, fixtures, read, tmp, write_clm};
 
@@ -222,7 +222,7 @@ fn an_animation_is_keyed_by_name() {
     let nod = |value: f32| Clip {
         length: 12,
         lanes: vec![Lane {
-            param: base.doc.params[0].id.clone(),
+            target: LaneTarget::Param(base.doc.params[0].id.clone()),
             interpolation: catchlight_core::interpolate::InterpolateMode::Linear,
             keyframes: vec![Keyframe { frame: 0, value }],
         }],
@@ -242,7 +242,7 @@ fn an_animation_is_keyed_by_name() {
     assert!(added[1].starts_with("+ extension catchlight.animations"));
     let edited = diff(&with_one, &changed);
     assert!(
-        edited[0].starts_with("~ animation \"nod\" lane[\""),
+        edited[0].starts_with("~ animation \"nod\" lane[param \""),
         "{edited:?}"
     );
 }

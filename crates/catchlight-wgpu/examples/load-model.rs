@@ -4,7 +4,9 @@
 //! sliders and stops animation playback.
 
 use catchlight_core::{load_model, Model, ModelFormat, ParamId, Puppet};
-use catchlight_extension_animations::{AnimationPlayer, Animations, Clip, Keyframe, Lane};
+use catchlight_extension_animations::{
+    AnimationPlayer, Animations, Clip, Keyframe, Lane, LaneTarget,
+};
 use catchlight_wgpu::{
     collect, create_orthographic_camera_at, create_surface_context, PrepareOptions, RenderCache,
     SurfaceContext, WgpuRenderer,
@@ -553,10 +555,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
             let lanes = blink_params
                 .iter()
-                .map(|param| Lane {
-                    param: param.clone(),
-                    keyframes: kfs(),
-                    interpolation: InterpolateMode::Linear,
+                .map(|param| {
+                    Lane::new(
+                        LaneTarget::Param(param.clone()),
+                        InterpolateMode::Linear,
+                        kfs(),
+                    )
                 })
                 .collect();
             let anim = Clip {

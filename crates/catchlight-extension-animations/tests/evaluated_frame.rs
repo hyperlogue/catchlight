@@ -13,7 +13,7 @@ use catchlight_core::formats::clm::{
     ClmNodeKind, ClmParam, ClmPart, ClmStructure, ClmTransform,
 };
 use catchlight_core::{InterpolateMode, Model, NodeId, NodeIdx, NodeKind, ParamId, Puppet};
-use catchlight_extension_animations::{AnimationPlayer, Clip, Keyframe, Lane};
+use catchlight_extension_animations::{AnimationPlayer, Clip, Keyframe, Lane, LaneTarget};
 
 const TOL: f32 = 1e-5;
 const DT: f32 = 1.0 / 60.0;
@@ -117,7 +117,7 @@ fn blink() -> Clip {
         lead_in: Some(6),
         lead_out: Some(28),
         lanes: vec![Lane {
-            param: ParamId::new("param-0").unwrap(),
+            target: LaneTarget::Param(ParamId::new("param-0").unwrap()),
             interpolation: InterpolateMode::Linear,
             keyframes: vec![
                 Keyframe {

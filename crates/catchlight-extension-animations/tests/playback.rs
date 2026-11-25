@@ -7,7 +7,9 @@ use catchlight_core::{
     BindingKey, BindingTarget, InterpolateMode, Model, ModelParam, Name, ParamId, Puppet,
     ScalarTarget,
 };
-use catchlight_extension_animations::{AnimationPlayer, Animations, Clip, Keyframe, Lane};
+use catchlight_extension_animations::{
+    AnimationPlayer, Animations, Clip, Keyframe, Lane, LaneTarget,
+};
 
 fn with_param(min: f32, max: f32) -> (Model, ParamId) {
     let mut model = Model::new();
@@ -29,7 +31,7 @@ fn clip(name: &str, timestep: f32, length: u32, param: &ParamId, keys: &[(u32, f
         lead_in: None,
         lead_out: None,
         lanes: vec![Lane {
-            param: param.clone(),
+            target: LaneTarget::Param(param.clone()),
             interpolation: InterpolateMode::Linear,
             keyframes: keys
                 .iter()

@@ -16,7 +16,7 @@ use catchlight_core::formats::clm::{
 use catchlight_core::interpolate::InterpolateMode;
 use catchlight_core::texture::TextureFormat;
 use catchlight_core::{Model, NodeId, ParamId, TexId};
-use catchlight_extension_animations::{Animations, Clip, Keyframe, Lane};
+use catchlight_extension_animations::{Animations, Clip, Keyframe, Lane, LaneTarget};
 
 use crate::error::ImportError;
 use crate::inx::InxModel;
@@ -614,11 +614,11 @@ fn convert_animation_lane(
     }
     // inochi2d sorts on load rather than trusting file order.
     keyframes.sort_by_key(|k| k.frame);
-    Some(Lane {
-        param: param.clone(),
-        interpolation: lane_interp(lane.interpolation.as_deref(), animation),
+    Some(Lane::new(
+        LaneTarget::Param(param.clone()),
+        lane_interp(lane.interpolation.as_deref(), animation),
         keyframes,
-    })
+    ))
 }
 
 /// Files `data` the way a model saves it, so the file carries it as stored.

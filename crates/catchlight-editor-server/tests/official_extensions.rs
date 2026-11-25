@@ -6,7 +6,7 @@
 use catchlight_core::{InterpolateMode, Model, ParamId};
 use catchlight_editor_protocol::{Command, Reply, Request, ResponseBody, SessionSource};
 use catchlight_editor_server::{Attachments, Editor};
-use catchlight_extension_animations::{Animations, Clip, Keyframe, Lane};
+use catchlight_extension_animations::{Animations, Clip, Keyframe, Lane, LaneTarget};
 use catchlight_extension_expressions::{Expression, Expressions, Setting};
 use catchlight_extension_humanoid::{ControlMapping, Humanoid};
 
@@ -16,7 +16,7 @@ fn a_session_checks_its_animations_as_the_extension_does() {
     *model.extension_or_default::<Animations>().unwrap() = Animations::from_clips([Clip {
         length: 2,
         lanes: vec![Lane {
-            param: ParamId::new("ghost").unwrap(),
+            target: LaneTarget::Param(ParamId::new("ghost").unwrap()),
             interpolation: InterpolateMode::Linear,
             keyframes: vec![Keyframe {
                 frame: 0,

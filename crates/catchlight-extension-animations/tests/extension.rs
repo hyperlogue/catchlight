@@ -8,7 +8,7 @@ use catchlight_core::{
     ExtensionValue, InstallError, InterpolateMode, Model, ModelNode, ModelNodeKind, ModelParam,
     ModelPart, MotionResponse, Name, NodeId, ParamId, ResponseInput, ResponseSource,
 };
-use catchlight_extension_animations::{Animations, Clip, Keyframe, Lane};
+use catchlight_extension_animations::{Animations, Clip, Keyframe, Lane, LaneTarget};
 
 fn pid(s: &str) -> ParamId {
     ParamId::new(s).unwrap()
@@ -42,7 +42,7 @@ fn rig() -> Model {
 
 fn lane(param: &str, keys: &[(u32, f32)]) -> Lane {
     Lane {
-        param: pid(param),
+        target: LaneTarget::Param(pid(param)),
         interpolation: InterpolateMode::Cubic,
         keyframes: keys
             .iter()
@@ -87,7 +87,7 @@ fn clips_round_trip_through_a_file_bit_for_bit_as_a_columnar_byte_payload() {
         lead_out: None,
         lanes: vec![
             Lane {
-                param: pid("eye"),
+                target: LaneTarget::Param(pid("eye")),
                 interpolation: InterpolateMode::Stepped,
                 keyframes: awkward
                     .iter()
@@ -146,7 +146,7 @@ fn insert_replaces_by_name_sorts_keyframes_and_keeps_the_table_compact() {
     let old = animations
         .insert(clip("a", vec![lane("mouth", &[(0, 1.0)])]))
         .unwrap();
-    assert_eq!(old.lanes[0].param, pid("eye"));
+    assert_eq!(old.lanes[0].target, LaneTarget::Param(pid("eye")));
     assert_eq!(animations.refs(), [IdRef::Param(pid("mouth"))]);
     assert_eq!(animations.len(), 1);
     animations.remove("a").unwrap();
@@ -169,7 +169,7 @@ fn a_renamed_param_carries_its_lanes_and_a_deleted_one_drops_them() {
             .unwrap()
             .lanes
             .into_iter()
-            .map(|l| l.param)
+            .filter_map(|l| l.param().cloned())
             .collect()
     };
     assert_eq!(params(&model), [pid("eye"), pid("jaw")]);

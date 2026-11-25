@@ -4,7 +4,7 @@
 
 use catchlight_core::extension::{self, Extension, IdRef, RemovedRef};
 use catchlight_core::{InterpolateMode, Model, ModelParam, Name, ParamId};
-use catchlight_extension_animations::{Animations, Clip, Keyframe, Lane};
+use catchlight_extension_animations::{Animations, Clip, Keyframe, Lane, LaneTarget};
 
 fn pid(s: &str) -> ParamId {
     ParamId::new(s).unwrap()
@@ -21,7 +21,7 @@ fn an_unregistered_reader_keeps_the_removal_marker_until_a_typed_write() {
         .unwrap();
     *model.extension_or_default::<Animations>().unwrap() = Animations::from_clips([Clip {
         lanes: vec![Lane {
-            param: pid("eye"),
+            target: LaneTarget::Param(pid("eye")),
             interpolation: InterpolateMode::Linear,
             keyframes: vec![Keyframe {
                 frame: 0,
