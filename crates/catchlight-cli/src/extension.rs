@@ -6,7 +6,7 @@
 use std::path::Path;
 
 use catchlight_core::formats::clm::{
-    extension_hash, ClmExtension, ClmExtensionBlob, ClmExtensionMarker, ClmFile,
+    extension_hash, ClmExtension, ClmExtensionBlob, ClmExtensionMarker, ClmFile, ClmPayload,
     MAX_EXTENSION_BYTES,
 };
 use catchlight_core::id::{ExtensionKey, EXTENSION_RESERVED_PREFIX};
@@ -16,7 +16,7 @@ use crate::{file, Error};
 pub struct Listed {
     pub key: ExtensionKey,
     pub kind: &'static str,
-    /// Present for a byte value only.
+    /// Present for a byte value or byte payload only.
     pub size: Option<u64>,
 }
 
@@ -62,6 +62,11 @@ pub fn list(path: &Path) -> Result<Vec<Listed>, Error> {
                 kind: "bytes",
                 size: Some(marker.size),
             },
+            ClmExtension::Maintained { .. } => Listed {
+                key: key.clone(),
+                kind: "maintained",
+                size: value.marker().map(|marker| marker.size),
+            },
         })
         .collect())
 }
@@ -78,7 +83,27 @@ pub fn get(path: &Path, key: &str, out: Option<&Path>) -> Result<Got, Error> {
             }
             Ok(Got::Json(render_json(value)))
         }
-        ClmExtension::Bytes(_) => {
+        ClmExtension::Maintained {
+            version,
+            refs,
+            payload: ClmPayload::Json(value),
+        } => {
+            let text = render_json(&serde_json::json!({
+                "version": version,
+                "refs": refs,
+                "payload": value,
+            }));
+            if let Some(out) = out {
+                std::fs::write(out, text.as_bytes()).map_err(|e| Error::io(out, e))?;
+                return Ok(Got::Json(String::new()));
+            }
+            Ok(Got::Json(text))
+        }
+        ClmExtension::Bytes(_)
+        | ClmExtension::Maintained {
+            payload: ClmPayload::Bytes(_),
+            ..
+        } => {
             let out = out.ok_or_else(|| Error::BytesNeedAFile {
                 key: key.to_string(),
             })?;
@@ -167,6 +192,19 @@ pub fn render(value: &ClmExtension) -> String {
         ClmExtension::Json(json) => render_json(json),
         ClmExtension::Bytes(marker) => {
             format!("{} bytes, blake3 {}", marker.size, marker.hash)
+        }
+        ClmExtension::Maintained {
+            version,
+            refs,
+            payload,
+        } => {
+            let payload = match payload {
+                ClmPayload::Json(json) => render_json(json),
+                ClmPayload::Bytes(marker) => {
+                    format!("{} bytes, blake3 {}", marker.size, marker.hash)
+                }
+            };
+            format!("version {version}, {} reference(s), {payload}", refs.len())
         }
     }
 }

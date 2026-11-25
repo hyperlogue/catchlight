@@ -1347,6 +1347,22 @@ fn describe_extension(value: &ExtensionValueInfo) -> String {
             serde_json::to_string(value).unwrap_or_else(|_| "<unprintable json>".into())
         }
         ExtensionValueInfo::Bytes { size, hash } => format!("{size} bytes  {hash}"),
+        ExtensionValueInfo::Maintained {
+            version,
+            refs,
+            value,
+            size,
+            hash,
+        } => {
+            let payload = match (value, size, hash) {
+                (Some(value), _, _) => {
+                    serde_json::to_string(value).unwrap_or_else(|_| "<unprintable json>".into())
+                }
+                (None, Some(size), Some(hash)) => format!("{size} bytes  {hash}"),
+                _ => String::new(),
+            };
+            format!("version {version}  {refs} reference(s)  {payload}")
+        }
     }
 }
 

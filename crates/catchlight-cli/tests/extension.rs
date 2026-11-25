@@ -256,3 +256,42 @@ fn render_shows_json_whole_and_bytes_as_their_marker() {
     let json = ClmExtension::Json(serde_json::json!({"a": [1, 2]}));
     assert_eq!(extension::render(&json), r#"{"a":[1,2]}"#);
 }
+
+#[test]
+fn a_maintained_extension_lists_and_prints_its_envelope() {
+    use catchlight_core::extension::{IdRef, Payload, RawExtension};
+    use catchlight_core::id::{ExtensionKey, ParamId};
+    use catchlight_core::{ExtensionValue, Model};
+
+    let dir = common::tmp("extension-maintained");
+    let path = common::copy_fixture("welded_seam", &dir);
+    let mut model = Model::from_clm_bytes(&std::fs::read(&path).unwrap()).unwrap();
+    model
+        .set_extension(
+            ExtensionKey::new("acme.pins").unwrap(),
+            ExtensionValue::Maintained(RawExtension {
+                version: 3,
+                refs: vec![IdRef::Param(ParamId::new("param-a").unwrap())],
+                payload: Payload::Json(serde_json::json!({"pins": [0]})),
+            }),
+        )
+        .unwrap();
+    std::fs::write(&path, model.to_clm_bytes().unwrap()).unwrap();
+
+    let (code, stdout, _) = common::run(&["extension", "list", path.to_str().unwrap()]);
+    assert_eq!(code, 0);
+    assert_eq!(stdout.trim(), "acme.pins\tmaintained");
+
+    let (code, stdout, stderr) =
+        common::run(&["extension", "get", path.to_str().unwrap(), "acme.pins"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json on stdout");
+    assert_eq!(
+        json,
+        serde_json::json!({
+            "version": 3,
+            "refs": [{"param": "param-a"}],
+            "payload": {"pins": [0]},
+        })
+    );
+}

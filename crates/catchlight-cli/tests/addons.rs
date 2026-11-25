@@ -5,8 +5,9 @@ mod common;
 
 use catchlight_cli::diff::diff;
 use catchlight_cli::{fragment, Error};
-use catchlight_core::id::{NodeId, SlotId, TexId};
-use catchlight_core::{InstallError, Model, Required, Requirement};
+use catchlight_core::extension::{IdRef, Payload, RawExtension};
+use catchlight_core::id::{ExtensionKey, NodeId, ParamId, SlotId, TexId};
+use catchlight_core::{ExtensionValue, InstallError, Model, Required, Requirement};
 
 use common::{decode, read, tmp};
 
@@ -165,6 +166,50 @@ fn the_file_level_scan_agrees_with_the_model() {
         assert_eq!(by_file, by_model, "{fixture} {ids:?}");
         assert!(!by_file.is_empty(), "{fixture} {ids:?} required nothing");
     }
+}
+
+#[test]
+fn the_file_level_scan_reads_extension_reference_tables_as_the_model_does() {
+    let dir = tmp("addons-requirements-extension");
+    let addon = dir.join("hood.clm");
+    fragment::extract(
+        &common::fixture("composite_masks"),
+        &["node-9".into()],
+        &addon,
+    )
+    .unwrap();
+    let mut model = Model::from_clm_bytes_fragment(&read(&addon)).unwrap();
+    model
+        .set_extension(
+            ExtensionKey::new("test.pins").unwrap(),
+            ExtensionValue::Maintained(RawExtension {
+                version: 1,
+                refs: vec![
+                    IdRef::Node(NodeId::new("node-9").unwrap()),
+                    IdRef::Node(NodeId::new("node-elsewhere").unwrap()),
+                    IdRef::Param(ParamId::new("param-elsewhere").unwrap()),
+                    IdRef::Texture(TexId::new("tex-4").unwrap()),
+                    IdRef::Texture(TexId::new("tex-elsewhere").unwrap()),
+                    IdRef::Slot(
+                        NodeId::new("node-elsewhere").unwrap(),
+                        SlotId::new("slot-a").unwrap(),
+                    ),
+                ],
+                payload: Payload::Json(serde_json::json!(null)),
+            }),
+        )
+        .unwrap();
+    std::fs::write(&addon, model.to_clm_bytes().unwrap()).unwrap();
+
+    let by_file = fragment::scan(&decode(&addon));
+    let by_model: Vec<Requirement> = model.requirements().iter().cloned().collect();
+    assert_eq!(by_file, by_model);
+    let from_table: Vec<&Required> = by_file
+        .iter()
+        .filter(|r| r.field == "extension reference")
+        .map(|r| &r.id)
+        .collect();
+    assert_eq!(from_table.len(), 4, "{from_table:?}");
 }
 
 #[test]

@@ -5,7 +5,8 @@
 
 use std::path::Path;
 
-use catchlight_core::formats::clm::{ClmFile, ClmNodeKind, ClmStructure};
+use catchlight_core::extension::IdRef;
+use catchlight_core::formats::clm::{ClmExtension, ClmFile, ClmNodeKind, ClmStructure};
 use catchlight_core::id::NodeId;
 use catchlight_core::{Required, Requirement};
 
@@ -113,8 +114,9 @@ pub fn requirements(path: &Path) -> Result<Vec<Requirement>, Error> {
     Ok(scan(&file::read(path)?))
 }
 
-/// Reads the wire directly so it works on files no reader accepts. Textures
-/// are never requirements: an addon carries the textures its own parts draw.
+/// Reads the wire directly so it works on files no reader accepts. A texture
+/// is a requirement only through an extension's reference table: an addon
+/// carries the textures its own parts draw.
 pub fn scan(clm: &ClmFile) -> Vec<Requirement> {
     let doc = &clm.doc;
     let mut out: Vec<Requirement> = Vec::new();
@@ -243,6 +245,29 @@ pub fn scan(clm: &ClmFile) -> Vec<Requirement> {
         }
     }
 
+    let has_texture = |id: &catchlight_core::id::TexId| clm.textures.iter().any(|t| &t.id == id);
+    for (key, value) in &doc.extensions {
+        let ClmExtension::Maintained { refs, .. } = value else {
+            continue;
+        };
+        for r in refs {
+            let id = match r {
+                IdRef::Node(id) if !has_node(id) => Required::Node(id.clone()),
+                IdRef::Param(id) if !has_param(id) => Required::Param(id.clone()),
+                IdRef::Texture(id) if !has_texture(id) => Required::Texture(id.clone()),
+                IdRef::Slot(node, slot) if !has_node(node) => {
+                    Required::Slot(node.clone(), slot.clone())
+                }
+                _ => continue,
+            };
+            need(
+                id,
+                "extension reference",
+                format!("extension {:?}", key.as_str()),
+            );
+        }
+    }
+
     out.sort();
     out.dedup();
     out
@@ -255,6 +280,7 @@ fn columns(id: &Required) -> (&'static str, String, Option<String>) {
         Required::Part(id) => ("part", id.to_string(), None),
         Required::Param(id) => ("param", id.to_string(), None),
         Required::Slot(node, slot) => ("slot", node.to_string(), Some(slot.to_string())),
+        Required::Texture(id) => ("texture", id.to_string(), None),
     }
 }
 

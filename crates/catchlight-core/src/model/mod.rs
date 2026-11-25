@@ -6,6 +6,7 @@ mod check;
 mod correspondence;
 mod equality;
 mod eval;
+mod extensions;
 mod file;
 mod response;
 mod validate;
@@ -15,18 +16,19 @@ pub use binding::{
     deform_cells, mask_mode_name, param_range_is_valid, scalar_cells, target_of, BindingKey,
     BindingParams, BindingTarget, DenseGrid, ScalarTarget,
 };
-pub use check::CheckWarning;
+pub use check::{CheckWarning, ExtensionWarning};
 pub use correspondence::{DeformMapping, MeshMappingError, VertexWeight, MAX_MAPPING_ENTRIES};
 pub use eval::Pose;
 pub use file::ClmLoadError;
 pub use validate::SpineJointError;
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use crate::components::{BlendMode, MaskMode};
+use crate::extension::{Extensions, IdRef, RawExtension};
 use crate::formats::clm::{
     self as clm, ClmAnimation, ClmBindingValues, ClmMesh, ClmTransform, TextureAlpha,
     TextureEncoding,
@@ -172,28 +174,53 @@ impl From<&ModelTexture> for crate::texture::EncodedTexture {
     }
 }
 
-/// JSON values travel inline with the structure; bytes live in their own
-/// section and travel by hash.
+/// An extension as stored. JSON values travel inline with the structure;
+/// bytes live in their own section and travel by hash.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExtensionValue {
+    /// A plain annotation: carried, never maintained.
     Json(serde_json::Value),
-    /// At most [`clm::MAX_EXTENSION_BYTES`].
+    /// A plain annotation of at most [`clm::MAX_EXTENSION_BYTES`].
     Bytes(Arc<[u8]>),
+    Maintained(RawExtension),
 }
 
 impl ExtensionValue {
+    /// The bytes this value keeps in the `Extensions` section, a maintained
+    /// extension's byte payload among them.
     pub fn bytes(&self) -> Option<&Arc<[u8]>> {
         match self {
             Self::Bytes(data) => Some(data),
+            Self::Maintained(raw) => raw.payload.bytes(),
             Self::Json(_) => None,
         }
     }
 
+    /// The JSON this value carries inline, a maintained extension's JSON
+    /// payload among them.
     pub fn json(&self) -> Option<&serde_json::Value> {
         match self {
             Self::Json(value) => Some(value),
+            Self::Maintained(raw) => raw.payload.json(),
             Self::Bytes(_) => None,
         }
+    }
+
+    /// Checked by the writer too, so any value a model takes can be saved.
+    fn check_size(&self, key: &ExtensionKey) -> Result<(), ModelError> {
+        let (size, max) = match (self.bytes(), self.json()) {
+            (Some(data), _) => (data.len(), clm::MAX_EXTENSION_BYTES),
+            (None, Some(json)) => (clm::extension_json_len(json), clm::MAX_EXTENSION_JSON_BYTES),
+            (None, None) => return Ok(()),
+        };
+        if size > max {
+            return Err(ModelError::ExtensionTooLarge {
+                key: key.to_string(),
+                size,
+                max,
+            });
+        }
+        Ok(())
     }
 }
 
@@ -215,7 +242,7 @@ pub struct Model {
     texture_order: Vec<TexId>,
     bindings: Vec<ModelBinding>,
     animations: Vec<ClmAnimation>,
-    extensions: BTreeMap<ExtensionKey, ExtensionValue>,
+    extensions: Extensions,
     /// Unrecognised file sections, written back unchanged on save.
     unknown_sections: Vec<clm::ClmUnknownSection>,
     /// Derived; dropped by [`Model::bump`].
@@ -764,7 +791,7 @@ impl Model {
             texture_order: Vec::new(),
             bindings: Vec::new(),
             animations: Vec::new(),
-            extensions: BTreeMap::new(),
+            extensions: Extensions::default(),
             unknown_sections: Vec::new(),
             binding_index: OnceLock::new(),
             bake: Default::default(),
@@ -1007,6 +1034,10 @@ impl Model {
         self.welds
             .retain(|w| !removed.contains(&w.a) && !removed.contains(&w.b));
         self.gc_textures();
+        self.remove_in_extensions(|r| match r {
+            IdRef::Node(id) | IdRef::Slot(id, _) => removed.contains(id),
+            _ => false,
+        });
     }
 
     /// The node keeps its Id: the prefix records where it was created.
@@ -1268,6 +1299,11 @@ impl Model {
                 }
             }
         }
+        self.extensions.rewrite(|r| match r {
+            IdRef::Node(id) if id == old => Some(IdRef::Node(new.clone())),
+            IdRef::Slot(id, slot) if id == old => Some(IdRef::Slot(new.clone(), slot.clone())),
+            _ => None,
+        });
         self.bump();
         Ok(())
     }
@@ -1316,6 +1352,10 @@ impl Model {
                 lane.param = new.clone();
             }
         }
+        self.extensions.rewrite(|r| match r {
+            IdRef::Param(id) if id == old => Some(IdRef::Param(new.clone())),
+            _ => None,
+        });
         for node in self.nodes.values_mut() {
             match &mut node.kind {
                 ModelNodeKind::Spine(spine) if spine.reads(old) => {
@@ -1372,6 +1412,10 @@ impl Model {
                 }
             }
         }
+        self.extensions.rewrite(|r| match r {
+            IdRef::Texture(id) if id == old => Some(IdRef::Texture(new.clone())),
+            _ => None,
+        });
         self.bump();
         Ok(())
     }
@@ -1693,6 +1737,12 @@ impl Model {
                 }
             }
         }
+        self.extensions.rewrite(|r| match r {
+            IdRef::Slot(part, slot) if part == id && slot == from => {
+                Some(IdRef::Slot(part.clone(), to.clone()))
+            }
+            _ => None,
+        });
         self.bump();
         Ok(())
     }
@@ -1735,6 +1785,7 @@ impl Model {
         for node in self.nodes.values_mut() {
             validate::drop_slot_inputs(&mut node.kind, |part, s| part == id && s == slot);
         }
+        self.remove_in_extensions(|r| matches!(r, IdRef::Slot(part, s) if part == id && s == slot));
         self.bump();
         Ok(())
     }
@@ -1827,6 +1878,7 @@ impl Model {
             }
         }
         self.response_index.take();
+        self.remove_in_extensions(|r| matches!(r, IdRef::Param(p) if p == id));
         self.bump();
         Ok(())
     }
@@ -1884,6 +1936,7 @@ impl Model {
                 }
             }
         }
+        self.remove_in_extensions(|r| matches!(r, IdRef::Texture(t) if t == id));
         self.bump();
         Ok(())
     }
@@ -1935,26 +1988,32 @@ impl Model {
             if !self.nodes.values().any(|n| albedo_of(n) == Some(&old)) {
                 self.textures.remove(&old);
                 self.texture_order.retain(|t| t != &old);
+                self.remove_in_extensions(|r| matches!(r, IdRef::Texture(t) if t == &old));
             }
         }
     }
 
     fn gc_textures(&mut self) {
         let drawn: HashSet<TexId> = self.nodes.values().filter_map(albedo_of).cloned().collect();
+        let dropped: HashSet<TexId> = self
+            .texture_order
+            .iter()
+            .filter(|id| !drawn.contains(*id))
+            .cloned()
+            .collect();
         self.textures.retain(|id, _| drawn.contains(id));
         self.texture_order.retain(|id| drawn.contains(id));
+        if !dropped.is_empty() {
+            self.remove_in_extensions(|r| matches!(r, IdRef::Texture(t) if dropped.contains(t)));
+        }
     }
 
     pub fn animations(&self) -> &[ClmAnimation] {
         &self.animations
     }
 
-    pub fn extensions(&self) -> &BTreeMap<ExtensionKey, ExtensionValue> {
+    pub fn extensions(&self) -> &Extensions {
         &self.extensions
-    }
-
-    pub fn extension(&self, key: &ExtensionKey) -> Option<&ExtensionValue> {
-        self.extensions.get(key)
     }
 
     pub fn unknown_sections(&self) -> &[clm::ClmUnknownSection] {
@@ -1971,20 +2030,10 @@ impl Model {
         if key.is_reserved() {
             return Err(ModelError::ReservedExtension(key.to_string()));
         }
-        let (size, max) = match &value {
-            ExtensionValue::Bytes(data) => (data.len(), clm::MAX_EXTENSION_BYTES),
-            ExtensionValue::Json(json) => {
-                (clm::extension_json_len(json), clm::MAX_EXTENSION_JSON_BYTES)
-            }
-        };
-        if size > max {
-            return Err(ModelError::ExtensionTooLarge {
-                key: key.to_string(),
-                size,
-                max,
-            });
-        }
-        self.extensions.insert(key, value);
+        value.check_size(&key)?;
+        self.extensions
+            .map
+            .insert(key, crate::extension::Stored::value(value));
         self.bump();
         Ok(())
     }
@@ -1994,7 +2043,7 @@ impl Model {
         if key.is_reserved() {
             return Err(ModelError::ReservedExtension(key.to_string()));
         }
-        if self.extensions.remove(key).is_none() {
+        if self.extensions.map.remove(key).is_none() {
             return Err(ModelError::UnknownExtension(key.to_string()));
         }
         self.bump();

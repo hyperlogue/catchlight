@@ -187,7 +187,7 @@ fn a_json_value_over_the_cap_is_refused() {
         "{err}"
     );
     assert!(
-        model.extension(&key("acme.huge")).is_none(),
+        model.extensions().get(&key("acme.huge")).is_none(),
         "a refused value is not set"
     );
 }

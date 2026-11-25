@@ -96,17 +96,25 @@ impl Entry {
                 hold_payload(&mut payloads, &texture.data);
             }
         }
-        // Core's estimate does not include extension entries.
-        for (key, value) in model.extensions() {
+        // Core's estimate does not include extension entries. A decoded
+        // extension is charged as it encodes, which core caches per version.
+        for (key, value) in model.extensions().iter() {
             own_bytes = own_bytes
                 .saturating_add(size_of_val(key))
                 .saturating_add(key.as_str().len())
                 .saturating_add(size_of::<ExtensionValue>());
-            match value {
-                ExtensionValue::Bytes(data) => hold_payload(&mut payloads, data),
-                ExtensionValue::Json(value) => {
-                    own_bytes = own_bytes.saturating_add(json_heap_bytes(value));
-                }
+            if let ExtensionValue::Maintained(raw) = value {
+                own_bytes = own_bytes.saturating_add(
+                    raw.refs
+                        .capacity()
+                        .saturating_mul(size_of::<catchlight_core::extension::IdRef>()),
+                );
+            }
+            if let Some(data) = value.bytes() {
+                hold_payload(&mut payloads, data);
+            }
+            if let Some(value) = value.json() {
+                own_bytes = own_bytes.saturating_add(json_heap_bytes(value));
             }
         }
         Self {

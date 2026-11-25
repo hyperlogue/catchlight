@@ -2382,6 +2382,20 @@ pub enum ExtensionValueInfo {
         /// Lowercase hex of the content hash the marker carries.
         hash: String,
     },
+    /// A maintained extension's envelope: its payload as inline `value`, or
+    /// as the `size` and `hash` of its bytes.
+    Maintained {
+        version: u32,
+        /// How many entries its reference table holds.
+        refs: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(type = "unknown"))]
+        value: Option<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        size: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hash: Option<String>,
+    },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

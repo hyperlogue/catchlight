@@ -1,0 +1,204 @@
+//! Typed access to a model's extensions, and the core's side of keeping them
+//! consistent with the model.
+
+use crate::extension::{
+    codes, decode_as, decode_registered, Extension, ExtensionError, Stored, Typed, Warning,
+};
+
+use super::*;
+
+impl Model {
+    /// Decodes on first read and caches the result; needs no registry.
+    pub fn extension<T: Extension>(&self) -> Result<&T, ExtensionError> {
+        let stored = self
+            .extensions
+            .map
+            .get(T::KEY)
+            .ok_or(ExtensionError::Missing)?;
+        let typed = match stored {
+            Stored::Typed(typed) => typed,
+            Stored::Value {
+                value: ExtensionValue::Maintained(raw),
+                decoded,
+            } => decoded
+                .get_or_init(|| {
+                    decode_as::<T>(raw.clone()).map(|data| Arc::new(Typed::new(Box::new(data))))
+                })
+                .as_ref()
+                .map_err(|why| ExtensionError::Unread(why.clone()))?,
+            Stored::Value { .. } => return Err(ExtensionError::NotMaintained),
+        };
+        typed
+            .data
+            .dyn_as_any()
+            .downcast_ref::<T>()
+            .ok_or(ExtensionError::WrongType)
+    }
+
+    /// Copy-on-write: unshares the data only if a clone or a history snapshot
+    /// still holds it. Bumps the generation up front, so a borrow that changes
+    /// nothing still counts as an edit.
+    pub fn extension_mut<T: Extension>(&mut self) -> Result<&mut T, ExtensionError> {
+        let stored = self
+            .extensions
+            .map
+            .get(T::KEY)
+            .ok_or(ExtensionError::Missing)?;
+        let promoted = match stored {
+            Stored::Typed(typed) => {
+                if !typed.data.dyn_as_any().is::<T>() {
+                    return Err(ExtensionError::WrongType);
+                }
+                None
+            }
+            Stored::Value {
+                value: ExtensionValue::Maintained(raw),
+                decoded,
+            } => {
+                let typed = match decoded.get() {
+                    Some(Ok(typed)) => (**typed).clone(),
+                    Some(Err(why)) => return Err(ExtensionError::Unread(why.clone())),
+                    None => Typed::new(Box::new(
+                        decode_as::<T>(raw.clone()).map_err(ExtensionError::Unread)?,
+                    )),
+                };
+                if !typed.data.dyn_as_any().is::<T>() {
+                    return Err(ExtensionError::WrongType);
+                }
+                Some(typed)
+            }
+            Stored::Value { .. } => return Err(ExtensionError::NotMaintained),
+        };
+        if let Some(mut typed) = promoted {
+            // A raw slot keeps its removed references until its first write.
+            typed.data_mut().dyn_reconcile(self);
+            let key = self.extension_key::<T>()?;
+            self.extensions
+                .map
+                .insert(key, Stored::Typed(Arc::new(typed)));
+        }
+        self.bump();
+        match self.extensions.map.get_mut(T::KEY) {
+            Some(Stored::Typed(typed)) => Arc::make_mut(typed)
+                .data_mut()
+                .dyn_as_any_mut()
+                .downcast_mut::<T>()
+                .ok_or(ExtensionError::WrongType),
+            _ => Err(ExtensionError::Missing),
+        }
+    }
+
+    /// Creates the extension when absent; needs no registry.
+    pub fn extension_or_default<T: Extension + Default>(
+        &mut self,
+    ) -> Result<&mut T, ExtensionError> {
+        if !self.extensions.map.contains_key(T::KEY) {
+            let key = self.extension_key::<T>()?;
+            self.extensions
+                .map
+                .insert(key, Stored::typed(Box::new(T::default())));
+        }
+        self.extension_mut::<T>()
+    }
+
+    fn extension_key<T: Extension>(&self) -> Result<ExtensionKey, ExtensionError> {
+        if let Some((key, _)) = self.extensions.map.get_key_value(T::KEY) {
+            return Ok(key.clone());
+        }
+        ExtensionKey::new(T::KEY).map_err(|_| ExtensionError::InvalidKey(T::KEY))
+    }
+
+    /// Marks every reference `gone` matches as removed, then lets each typed
+    /// extension apply its policy. A raw slot keeps the marker.
+    pub(super) fn remove_in_extensions(&mut self, gone: impl Fn(&IdRef) -> bool) {
+        let touched = self
+            .extensions
+            .rewrite(|r| (!r.is_removed() && gone(r)).then(|| r.removed()));
+        for key in touched {
+            // Out of the map while it reconciles, so it can read the model.
+            let Some(mut stored) = self.extensions.map.remove(&key) else {
+                continue;
+            };
+            if let Stored::Typed(typed) = &mut stored {
+                Arc::make_mut(typed).data_mut().dyn_reconcile(self);
+            }
+            self.extensions.map.insert(key, stored);
+        }
+    }
+
+    /// The typed data under `key`, decoding a raw slot through the registry.
+    /// `None` when the key is not registered.
+    pub(super) fn registered_extension(
+        stored: &Stored,
+        key: &ExtensionKey,
+    ) -> Option<Result<Arc<Typed>, crate::extension::Unread>> {
+        if let Some(typed) = stored.decoded() {
+            return Some(Ok(typed.clone()));
+        }
+        match stored {
+            Stored::Value {
+                value: ExtensionValue::Maintained(raw),
+                ..
+            } => decode_registered(key.as_ref(), raw),
+            _ => None,
+        }
+    }
+
+    /// Every finding about this model's maintained extensions: references
+    /// that no longer resolve, each extension's own check, and data this
+    /// program cannot read or check.
+    pub fn extension_warnings(&self) -> Vec<ExtensionWarning> {
+        let fragment = self.is_fragment();
+        let mut out = Vec::new();
+        for (key, stored) in &self.extensions.map {
+            let Some(refs) = stored.refs() else { continue };
+            let mut push = |warning: Warning| {
+                out.push(ExtensionWarning {
+                    key: key.clone(),
+                    warning,
+                })
+            };
+            for r in refs {
+                if r.is_removed() {
+                    push(
+                        Warning::new(codes::REMOVED, format!("refers to {r}"))
+                            .with_subjects(vec![r.clone()]),
+                    );
+                } else if !fragment && !r.resolves_in(self) {
+                    push(
+                        Warning::new(
+                            codes::DANGLING,
+                            format!("refers to {r}, which the model lacks"),
+                        )
+                        .with_subjects(vec![r.clone()]),
+                    );
+                }
+            }
+            let typed = match Self::registered_extension(stored, key) {
+                Some(Ok(typed)) => typed,
+                Some(Err(why)) => {
+                    let code = match why {
+                        crate::extension::Unread::Newer { .. } => codes::NEWER,
+                        _ => codes::UNREAD,
+                    };
+                    push(Warning::new(
+                        code,
+                        format!("kept as stored and not checked: {why}"),
+                    ));
+                    continue;
+                }
+                None => {
+                    push(Warning::new(
+                        codes::NOT_CHECKED,
+                        format!("not checked: this program has not registered {key:?}"),
+                    ));
+                    continue;
+                }
+            };
+            for warning in typed.data.dyn_check(self) {
+                push(warning);
+            }
+        }
+        out
+    }
+}

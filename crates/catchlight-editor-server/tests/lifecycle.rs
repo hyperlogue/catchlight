@@ -443,7 +443,8 @@ fn forks_are_independent_models_with_clean_history_and_source_metadata() {
     assert_eq!(
         editor
             .with_model(source, |model| model
-                .extension(&key)
+                .extensions()
+                .get(&key)
                 .unwrap()
                 .bytes()
                 .unwrap()

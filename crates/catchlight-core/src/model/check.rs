@@ -157,8 +157,28 @@ impl Model {
             }
         }
 
+        for found in self.extension_warnings() {
+            out.push(CheckWarning {
+                node: found.warning.subjects.iter().find_map(|r| match r {
+                    IdRef::Node(id) | IdRef::Slot(id, _) => Some(id.clone()),
+                    _ => None,
+                }),
+                message: format!(
+                    "extension {:?}: {}",
+                    found.key.as_str(),
+                    found.warning.message
+                ),
+            });
+        }
         out
     }
+}
+
+/// One finding about one extension, from [`Model::extension_warnings`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtensionWarning {
+    pub key: ExtensionKey,
+    pub warning: crate::extension::Warning,
 }
 
 fn warn(node: NodeId, message: String) -> CheckWarning {

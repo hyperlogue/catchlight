@@ -11,11 +11,11 @@ use std::sync::Arc;
 
 use catchlight_core::formats::clm::structure_texture_ids;
 use catchlight_core::formats::clm::{
-    decode_structure, extension_hash, ClmExtension, ClmTextureRef, TextureAlpha, TextureEncoding,
+    decode_structure, extension_hash, ClmTextureRef, TextureAlpha, TextureEncoding,
 };
 use catchlight_core::{
-    BlendMode, ExtensionKey, ExtensionValue, Mat4, Model, ModelTexture, Motion, NodeId, NodeKind,
-    ParamId, Puppet, ScratchTransform, TexId, Vec2, Vec3,
+    BlendMode, ExtensionKey, Mat4, Model, ModelTexture, Motion, NodeId, NodeKind, ParamId, Puppet,
+    ScratchTransform, TexId, Vec2, Vec3,
 };
 use catchlight_editor_protocol::{ErrorCode, Reply, Request, RequestId, SessionId};
 use catchlight_editor_server::{replica_reply, Editor};
@@ -101,10 +101,7 @@ impl ReplicaState {
             .doc
             .extensions
             .iter()
-            .filter_map(|(key, value)| match value {
-                ClmExtension::Bytes(marker) => Some((key, marker)),
-                ClmExtension::Json(_) => None,
-            })
+            .filter_map(|(key, value)| Some((key, value.marker()?)))
             .filter(|(key, marker)| {
                 self.extension_bytes
                     .get(*key)
@@ -193,11 +190,9 @@ impl ReplicaState {
             .model
             .extensions()
             .iter()
-            .filter_map(|(key, value)| match value {
-                ExtensionValue::Bytes(data) => {
-                    Some((key.clone(), (extension_hash(data), data.clone())))
-                }
-                ExtensionValue::Json(_) => None,
+            .filter_map(|(key, value)| {
+                let data = value.bytes()?;
+                Some((key.clone(), (extension_hash(data), data.clone())))
             })
             .collect();
         // Eagerly: `node_idx` answers off the bake, and a caller may pose a node the
@@ -1112,7 +1107,8 @@ mod tests {
         assert_eq!(
             replica
                 .model()
-                .extension(&"acme.thumb".parse().unwrap())
+                .extensions()
+                .get("acme.thumb")
                 .and_then(|v| v.bytes().cloned())
                 .as_deref(),
             Some(&b"first"[..]),

@@ -4,7 +4,9 @@
 //! Rules install enforces:
 //! - An Id an addon provides is exclusive; a collision is refused, not renamed
 //!   around, since renaming would break the addon's internal references.
-//! - An addon carries its own textures, no extensions and no params. Bindings
+//! - An addon carries its own textures and no params. Each maintained
+//!   extension it carries is merged by its registered type; a plain one is
+//!   refused, having nothing to merge it. Bindings
 //!   and welds must touch a node the addon provides; one wholly on base nodes
 //!   would be an unowned edit two addons could fight over.
 //! - Install is one edit: a refused install leaves the base untouched, and
@@ -15,6 +17,7 @@ use std::fmt;
 use std::sync::OnceLock;
 
 use super::*;
+use crate::extension::{MergeRefused, Receipt, Stored, Typed, Unread};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Required {
@@ -27,6 +30,9 @@ pub enum Required {
     Part(NodeId),
     Param(ParamId),
     Slot(NodeId, SlotId),
+    /// Named only by an extension's reference table: an addon's parts draw
+    /// the textures it carries.
+    Texture(TexId),
 }
 
 impl fmt::Display for Required {
@@ -39,6 +45,7 @@ impl fmt::Display for Required {
             Self::Slot(node, slot) => {
                 write!(f, "slot {:?} on part {:?}", slot.as_str(), node.as_str())
             }
+            Self::Texture(id) => write!(f, "texture {:?}", id.as_str()),
         }
     }
 }
@@ -47,7 +54,7 @@ impl fmt::Display for Required {
 pub struct Requirement {
     pub id: Required,
     pub field: &'static str,
-    /// The animation, for a lane.
+    /// The animation, for a lane; the extension, for a reference.
     pub owner: String,
 }
 
@@ -76,7 +83,7 @@ impl Requirements {
             | Required::Drawable(id)
             | Required::Part(id)
             | Required::Slot(id, _) => Some(id),
-            Required::Param(_) => None,
+            Required::Param(_) | Required::Texture(_) => None,
         }))
     }
 
@@ -129,10 +136,19 @@ pub enum InstallError {
     )]
     CarriesParam { param: String },
     #[error(
-        "the addon carries extension {key:?}: an extension annotates a whole model, and an addon \
-         is a subtree of one"
+        "the addon carries plain extension {key:?}: a plain annotation has no module to merge \
+         it into the base, so only a maintained extension may ride in an addon"
     )]
     CarriesExtension { key: String },
+    #[error(
+        "the addon carries extension {key:?}, which this program has not registered, so it \
+         cannot be merged; register {key:?} before installing"
+    )]
+    ExtensionNotRegistered { key: String },
+    #[error("extension {key:?} cannot be read, so the addon's cannot be merged into it: {why}")]
+    ExtensionUnread { key: String, why: Unread },
+    #[error("extension {key:?} refused the addon's data: {why}")]
+    ExtensionRefused { key: String, why: MergeRefused },
     #[error(
         "the addon's {target} binding names node {node:?}, which the addon does not provide: an \
          addon binds its own nodes"
@@ -181,6 +197,25 @@ pub struct Installed {
     bindings: Vec<BindingKey>,
     welds: Vec<ModelWeld>,
     animations: Vec<ClmAnimation>,
+    extensions: Vec<InstalledExtension>,
+}
+
+/// What an install did to one extension, for its uninstall to undo.
+#[derive(Debug, Clone)]
+enum InstalledExtension {
+    /// The base had none under this key; the addon's became the model's.
+    Added(ExtensionKey),
+    Merged(ExtensionKey, Receipt),
+}
+
+/// An extension merge worked out before the install touches the base.
+enum Merge {
+    Add(ExtensionKey, Stored),
+    Replace(
+        ExtensionKey,
+        Box<dyn crate::extension::DynExtension>,
+        Receipt,
+    ),
 }
 
 impl Installed {
@@ -207,6 +242,13 @@ impl Installed {
 
     pub fn animations(&self) -> &[ClmAnimation] {
         &self.animations
+    }
+
+    /// The keys of the extensions the install added or merged into.
+    pub fn extensions(&self) -> impl Iterator<Item = &ExtensionKey> {
+        self.extensions.iter().map(|e| match e {
+            InstalledExtension::Added(key) | InstalledExtension::Merged(key, _) => key,
+        })
     }
 }
 
@@ -327,6 +369,26 @@ impl Model {
             }
         }
 
+        for key in self.extensions.keys() {
+            let owner = format_args!("extension {:?}", key.as_str());
+            for r in self.extensions.refs(key).unwrap_or_default() {
+                let id = match r {
+                    IdRef::Node(id) if !self.nodes.contains_key(id) => Required::Node(id.clone()),
+                    IdRef::Param(id) if !self.params.contains_key(id) => {
+                        Required::Param(id.clone())
+                    }
+                    IdRef::Texture(id) if !self.textures.contains_key(id) => {
+                        Required::Texture(id.clone())
+                    }
+                    IdRef::Slot(node, slot) if !self.nodes.contains_key(node) => {
+                        Required::Slot(node.clone(), slot.clone())
+                    }
+                    _ => continue,
+                };
+                need(id, "extension reference", &owner);
+            }
+        }
+
         out.sort();
         out.dedup();
         Requirements { entries: out }
@@ -335,6 +397,7 @@ impl Model {
     /// On failure this model is untouched; on success the generation is bumped once.
     pub fn install(&mut self, addon: &Model) -> Result<Installed, InstallError> {
         self.check_install(addon)?;
+        let merges = self.plan_extension_merges(addon)?;
         let order = addon.nodes_in_order();
         let mut installed = Installed {
             nodes: Vec::with_capacity(order.len()),
@@ -343,6 +406,7 @@ impl Model {
             bindings: addon.bindings.iter().map(|b| b.key.clone()).collect(),
             welds: addon.welds.clone(),
             animations: addon.animations.clone(),
+            extensions: Vec::with_capacity(merges.len()),
         };
 
         self.response_count += addon.response_count;
@@ -392,8 +456,65 @@ impl Model {
         }
 
         self.welds.extend(addon.welds.iter().cloned());
+        for merge in merges {
+            let done = match merge {
+                Merge::Add(key, stored) => {
+                    self.extensions.map.insert(key.clone(), stored);
+                    InstalledExtension::Added(key)
+                }
+                Merge::Replace(key, merged, receipt) => {
+                    self.extensions
+                        .map
+                        .insert(key.clone(), Stored::typed(merged));
+                    InstalledExtension::Merged(key, receipt)
+                }
+            };
+            installed.extensions.push(done);
+        }
         self.bump();
         Ok(installed)
+    }
+
+    /// Refuses before anything changes: an unregistered key, data either side
+    /// cannot read, or a merge the extension refuses.
+    fn plan_extension_merges(&self, addon: &Model) -> Result<Vec<Merge>, InstallError> {
+        let mut merges = Vec::new();
+        for (key, stored) in &addon.extensions.map {
+            let refused = |why: Unread| InstallError::ExtensionUnread {
+                key: key.to_string(),
+                why,
+            };
+            let theirs = match Self::registered_extension(stored, key) {
+                Some(Ok(typed)) => typed,
+                Some(Err(why)) => return Err(refused(why)),
+                None => {
+                    return Err(InstallError::ExtensionNotRegistered {
+                        key: key.to_string(),
+                    })
+                }
+            };
+            let Some(base) = self.extensions.map.get(key) else {
+                merges.push(Merge::Add(key.clone(), Stored::Typed(theirs)));
+                continue;
+            };
+            let ours: Arc<Typed> = match Self::registered_extension(base, key) {
+                Some(Ok(typed)) => typed,
+                Some(Err(why)) => return Err(refused(why)),
+                None => {
+                    return Err(InstallError::ExtensionNotRegistered {
+                        key: key.to_string(),
+                    })
+                }
+            };
+            let (merged, receipt) = ours.data.dyn_merge_addon(&*theirs.data).map_err(|why| {
+                InstallError::ExtensionRefused {
+                    key: key.to_string(),
+                    why,
+                }
+            })?;
+            merges.push(Merge::Replace(key.clone(), merged, receipt));
+        }
+        Ok(merges)
     }
 
     fn check_install(&self, addon: &Model) -> Result<(), InstallError> {
@@ -409,7 +530,11 @@ impl Model {
                 param: param.to_string(),
             });
         }
-        if let Some((key, _)) = addon.extensions.first_key_value() {
+        if let Some(key) = addon
+            .extensions
+            .keys()
+            .find(|key| addon.extensions.refs(*key).is_none())
+        {
             return Err(InstallError::CarriesExtension {
                 key: key.to_string(),
             });
@@ -454,6 +579,7 @@ impl Model {
                 ),
                 Required::Param(id) => self.params.contains_key(id),
                 Required::Slot(node, slot) => self.slot(node, slot).is_some(),
+                Required::Texture(id) => self.textures.contains_key(id),
             };
             if !held {
                 return Err(InstallError::Missing {
@@ -595,7 +721,7 @@ impl Model {
                 })
                 .collect(),
             animations: Vec::new(),
-            extensions: BTreeMap::new(),
+            extensions: Extensions::default(),
             unknown_sections: Vec::new(),
             binding_index: OnceLock::new(),
             bake: Default::default(),
@@ -629,9 +755,36 @@ impl Model {
             self.textures.remove(t);
             self.texture_order.retain(|x| x != t);
         }
+        self.remove_in_extensions(
+            |r| matches!(r, IdRef::Texture(t) if installed.textures.contains(t)),
+        );
         self.gc_textures();
         retain_less(&mut self.welds, &installed.welds, |_| true);
         retain_less(&mut self.animations, &installed.animations, |_| true);
+        for done in &installed.extensions {
+            match done {
+                InstalledExtension::Added(key) => {
+                    self.extensions.map.remove(key);
+                }
+                InstalledExtension::Merged(key, receipt) => {
+                    let Some(stored) = self.extensions.map.get(key) else {
+                        continue;
+                    };
+                    // Data no registered type reads cannot be unmerged; it
+                    // stays as it is.
+                    let Some(Ok(typed)) = Self::registered_extension(stored, key) else {
+                        continue;
+                    };
+                    let mut typed = typed;
+                    Arc::make_mut(&mut typed)
+                        .data_mut()
+                        .dyn_unmerge_addon(receipt);
+                    self.extensions
+                        .map
+                        .insert(key.clone(), Stored::Typed(typed));
+                }
+            }
+        }
         self.bump();
     }
 

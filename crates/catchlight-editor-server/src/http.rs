@@ -609,7 +609,7 @@ fn extension(state: &ServerState, id: &str, key: &str) -> Response {
         return Response::text(400, "Bad Request", "extension key is outside the charset");
     };
     let read = state.editor.with_model(session, |m| {
-        m.extension(&key).and_then(|v| v.bytes().cloned())
+        m.extensions().get(&key).and_then(|v| v.bytes().cloned())
     });
     match read {
         Ok(Some(data)) => Response::new(200, "OK")

@@ -389,11 +389,16 @@ pub fn charge_clm_structure(
     // the reader holds the payload to, in a file and in a structure feed
     // alike, so the charge does not depend on which one this is.
     for value in doc.extensions.values() {
-        let size = match value {
-            ClmExtension::Json(json) => crate::formats::clm::extension_json_len(json) as u64,
-            ClmExtension::Bytes(marker) => marker.size,
+        let size = match (value.marker(), value.inline_json()) {
+            (Some(marker), _) => marker.size,
+            (None, Some(json)) => crate::formats::clm::extension_json_len(json) as u64,
+            (None, None) => 0,
         };
         budget.charge(LoadResource::ExtensionBytes, size)?;
+        if let ClmExtension::Maintained { refs, .. } = value {
+            let refs: usize = refs.iter().map(|r| r.encoded_len_hint()).sum();
+            budget.charge(LoadResource::ExtensionBytes, refs as u64)?;
+        }
     }
     Ok(())
 }

@@ -14,6 +14,7 @@ use thiserror::Error;
 
 use super::container::{self, ContainerError};
 use crate::components::{BlendMode, MaskMode};
+use crate::extension::IdRef;
 use crate::id::{ExtensionKey, NodeId, ParamId, SlotId, TexId};
 use crate::interpolate::InterpolateMode;
 
@@ -317,6 +318,55 @@ pub enum ClmExtension {
     /// Non-finite floats are refused rather than rewritten as `null`.
     Json(#[serde(deserialize_with = "json_value")] serde_json::Value),
     Bytes(ClmExtensionMarker),
+    /// Every reader keeps `refs` current; only the extension's module reads
+    /// `payload`, which names Ids by their index into `refs`.
+    Maintained {
+        version: u32,
+        refs: Vec<IdRef>,
+        payload: ClmPayload,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClmPayload {
+    Json(#[serde(deserialize_with = "json_value")] serde_json::Value),
+    /// The bytes live in the `Extensions` section under the extension's key.
+    Bytes(ClmExtensionMarker),
+}
+
+impl ClmExtension {
+    /// The marker of the bytes this value keeps in the `Extensions` section.
+    pub fn marker(&self) -> Option<&ClmExtensionMarker> {
+        match self {
+            Self::Bytes(marker)
+            | Self::Maintained {
+                payload: ClmPayload::Bytes(marker),
+                ..
+            } => Some(marker),
+            Self::Json(_)
+            | Self::Maintained {
+                payload: ClmPayload::Json(_),
+                ..
+            } => None,
+        }
+    }
+
+    /// The inline JSON this value carries in the structure.
+    pub fn inline_json(&self) -> Option<&serde_json::Value> {
+        match self {
+            Self::Json(json)
+            | Self::Maintained {
+                payload: ClmPayload::Json(json),
+                ..
+            } => Some(json),
+            Self::Bytes(_)
+            | Self::Maintained {
+                payload: ClmPayload::Bytes(_),
+                ..
+            } => None,
+        }
+    }
 }
 
 /// Unlike `serde_json::Value`, refuses NaN and infinity instead of reading
@@ -669,10 +719,10 @@ pub fn check_extensions(doc: &ClmStructure, blobs: &[ClmExtensionBlob]) -> Resul
     }
 
     for (key, value) in &doc.extensions {
-        let marker = match value {
-            ClmExtension::Bytes(marker) => marker,
-            ClmExtension::Json(json) => {
-                let size = extension_json_len(json);
+        let marker = match value.marker() {
+            Some(marker) => marker,
+            None => {
+                let size = value.inline_json().map_or(0, extension_json_len);
                 if size > MAX_EXTENSION_JSON_BYTES {
                     return Err(ClmError::ExtensionTooLarge {
                         key: key.to_string(),

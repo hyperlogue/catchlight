@@ -6,8 +6,10 @@
 //! on the wire (a fragment never has a parentless node), and the caller says
 //! which it is reading.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 
+use crate::extension::{decode_registered, Payload, Stored};
+use crate::formats::clm::ClmPayload;
 use crate::formats::clm::{
     self as clm, ClmBinding, ClmComposite, ClmExtension, ClmExtensionBlob, ClmExtensionMarker,
     ClmFile, ClmMask, ClmMeshGroup, ClmNode, ClmNodeKind, ClmParam, ClmPart, ClmSlot, ClmSlotPair,
@@ -184,39 +186,78 @@ impl Shape {
     }
 }
 
-/// A byte payload that disagrees with its marker is refused, not trusted.
+/// A byte payload that disagrees with its marker is refused, not trusted. A
+/// maintained extension whose key is registered is decoded now; one that does
+/// not decode is kept as stored, never refused.
 fn extensions_of(
     doc: &ClmStructure,
     bytes: impl Fn(&ExtensionKey) -> Option<Arc<[u8]>>,
-) -> Result<BTreeMap<ExtensionKey, ExtensionValue>, ModelError> {
-    let mut out = BTreeMap::new();
+) -> Result<Extensions, ModelError> {
+    let checked_bytes = |key: &ExtensionKey, marker: &ClmExtensionMarker| {
+        let data = bytes(key).ok_or_else(|| clm::ClmError::ExtensionBytesMissing {
+            key: key.to_string(),
+        })?;
+        if data.len() as u64 != marker.size {
+            return Err(clm::ClmError::ExtensionSizeMismatch {
+                key: key.to_string(),
+                expected: marker.size,
+                actual: data.len() as u64,
+            });
+        }
+        if clm::extension_hash(&data) != marker.hash {
+            return Err(clm::ClmError::ExtensionHashMismatch {
+                key: key.to_string(),
+            });
+        }
+        Ok(data)
+    };
+    let mut out = Extensions::default();
     for (key, value) in &doc.extensions {
         let value = match value {
             ClmExtension::Json(json) => ExtensionValue::Json(json.clone()),
-            ClmExtension::Bytes(marker) => {
-                let data = bytes(key).ok_or_else(|| clm::ClmError::ExtensionBytesMissing {
-                    key: key.to_string(),
-                })?;
-                if data.len() as u64 != marker.size {
-                    return Err(clm::ClmError::ExtensionSizeMismatch {
-                        key: key.to_string(),
-                        expected: marker.size,
-                        actual: data.len() as u64,
-                    }
-                    .into());
-                }
-                if clm::extension_hash(&data) != marker.hash {
-                    return Err(clm::ClmError::ExtensionHashMismatch {
-                        key: key.to_string(),
-                    }
-                    .into());
-                }
-                ExtensionValue::Bytes(data)
-            }
+            ClmExtension::Bytes(marker) => ExtensionValue::Bytes(checked_bytes(key, marker)?),
+            ClmExtension::Maintained {
+                version,
+                refs,
+                payload,
+            } => ExtensionValue::Maintained(RawExtension {
+                version: *version,
+                refs: refs.clone(),
+                payload: match payload {
+                    ClmPayload::Json(json) => Payload::Json(json.clone()),
+                    ClmPayload::Bytes(marker) => Payload::Bytes(checked_bytes(key, marker)?),
+                },
+            }),
         };
-        out.insert(key.clone(), value);
+        let stored = match &value {
+            ExtensionValue::Maintained(raw) => match decode_registered(key.as_ref(), raw) {
+                Some(Ok(typed)) => Stored::Typed(typed),
+                _ => Stored::value(value),
+            },
+            _ => Stored::value(value),
+        };
+        out.map.insert(key.clone(), stored);
     }
     Ok(out)
+}
+
+fn clm_extension(value: &ExtensionValue) -> ClmExtension {
+    let marker = |data: &[u8]| ClmExtensionMarker {
+        size: data.len() as u64,
+        hash: clm::extension_hash(data),
+    };
+    match value {
+        ExtensionValue::Json(json) => ClmExtension::Json(json.clone()),
+        ExtensionValue::Bytes(data) => ClmExtension::Bytes(marker(data)),
+        ExtensionValue::Maintained(raw) => ClmExtension::Maintained {
+            version: raw.version,
+            refs: raw.refs.clone(),
+            payload: match &raw.payload {
+                Payload::Json(json) => ClmPayload::Json(json.clone()),
+                Payload::Bytes(data) => ClmPayload::Bytes(marker(data)),
+            },
+        },
+    }
 }
 
 impl Model {
@@ -310,16 +351,7 @@ impl Model {
             extensions: self
                 .extensions
                 .iter()
-                .map(|(key, value)| {
-                    let value = match value {
-                        ExtensionValue::Json(json) => ClmExtension::Json(json.clone()),
-                        ExtensionValue::Bytes(data) => ClmExtension::Bytes(ClmExtensionMarker {
-                            size: data.len() as u64,
-                            hash: clm::extension_hash(data),
-                        }),
-                    };
-                    (key.clone(), value)
-                })
+                .map(|(key, value)| (key.clone(), clm_extension(value)))
                 .collect(),
         })
     }
@@ -484,7 +516,7 @@ impl Model {
         doc: &ClmStructure,
         textures: HashMap<TexId, ModelTexture>,
         texture_order: Vec<TexId>,
-        extensions: BTreeMap<ExtensionKey, ExtensionValue>,
+        extensions: Extensions,
         shape: Shape,
     ) -> Result<Model, ModelError> {
         let mut params = HashMap::with_capacity(doc.params.len());

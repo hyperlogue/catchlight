@@ -46,6 +46,7 @@ from .protocol_gen import (
     ResponseBody,
     ExtensionValueInfoBytes,
     ExtensionValueInfoJson,
+    ExtensionValueInfoMaintained,
     ResponseBodyExtension,
     ResponseBodyExtensions,
     ResponseBodyNode,
@@ -432,6 +433,8 @@ class Client:
         if not isinstance(body, ResponseBodyExtension):
             raise ProtocolError(ErrorCode.BAD_REQUEST, f"extension_get answered {body!r}")
         if isinstance(body.value, ExtensionValueInfoJson):
+            return body.value.value
+        if isinstance(body.value, ExtensionValueInfoMaintained) and body.value.value is not None:
             return body.value.value
         if payload is None:
             raise ProtocolError(

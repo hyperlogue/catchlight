@@ -1,6 +1,7 @@
 pub(crate) mod animation;
 pub mod components;
 pub mod deform;
+pub mod extension;
 pub mod fill;
 pub mod formats;
 pub mod geometry;
@@ -34,11 +35,11 @@ pub use load_budget::{
 };
 pub use model::{
     deform_cells, mask_mode_name, param_range_is_valid, scalar_cells, target_of, BindingKey,
-    BindingParams, BindingTarget, CheckWarning, ExtensionValue, InstallError, Installed, Model,
-    ModelBinding, ModelBindingValues, ModelComposite, ModelError, ModelMask, ModelMesh,
-    ModelMeshGroup, ModelNode, ModelNodeKind, ModelParam, ModelPart, ModelSpine, ModelTexture,
-    ModelWeld, ModelWeldPair, NodeProperties, Pose, Required, Requirement, Requirements,
-    ScalarTarget, Slot, SlotPair, SpineJointError, DEFAULT_SLOT_WEIGHT,
+    BindingParams, BindingTarget, CheckWarning, ExtensionValue, ExtensionWarning, InstallError,
+    Installed, Model, ModelBinding, ModelBindingValues, ModelComposite, ModelError, ModelMask,
+    ModelMesh, ModelMeshGroup, ModelNode, ModelNodeKind, ModelParam, ModelPart, ModelSpine,
+    ModelTexture, ModelWeld, ModelWeldPair, NodeProperties, Pose, Required, Requirement,
+    Requirements, ScalarTarget, Slot, SlotPair, SpineJointError, DEFAULT_SLOT_WEIGHT,
 };
 pub use motion_response::{MotionResponse, ResponseInput, ResponseSource};
 pub use node::{NodeTree, NodeTreeError};

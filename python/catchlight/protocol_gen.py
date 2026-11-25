@@ -3375,16 +3375,39 @@ class ExtensionValueInfoBytes:
         return _wire_fields(self)
 
 
+@dataclass(frozen=True, kw_only=True)
+class ExtensionValueInfoMaintained:
+    """A maintained extension's envelope: its payload as inline `value`, or
+    as the `size` and `hash` of its bytes.
+    """
+
+    TAG_FIELD: ClassVar[str] = "kind"
+    TAG: ClassVar[str] = "maintained"
+
+    version: int
+    # How many entries its reference table holds.
+    refs: int
+    value: Any | None = None
+    size: int | None = None
+    hash: str | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
 # What an extension holds; bytes are reported as their marker's size and
 # hash.
 ExtensionValueInfo = (
     ExtensionValueInfoJson
     | ExtensionValueInfoBytes
+    | ExtensionValueInfoMaintained
 )
 
 EXTENSION_VALUE_INFO_VARIANTS: dict[str, type[ExtensionValueInfo]] = {
     "json": ExtensionValueInfoJson,
     "bytes": ExtensionValueInfoBytes,
+    "maintained": ExtensionValueInfoMaintained,
 }
 
 
@@ -4610,6 +4633,7 @@ __all__ = [
     "parse_extension_set",
     "ExtensionValueInfoJson",
     "ExtensionValueInfoBytes",
+    "ExtensionValueInfoMaintained",
     "ExtensionValueInfo",
     "EXTENSION_VALUE_INFO_VARIANTS",
     "parse_extension_value_info",

@@ -1352,6 +1352,17 @@ export type ExtensionValueInfo =
      * Lowercase hex of the content hash the marker carries.
      */
     hash: string,
+  }
+  | {
+    "kind": "maintained",
+    version: number,
+    /**
+     * How many entries its reference table holds.
+     */
+    refs: number,
+    value?: unknown,
+    size?: number | null,
+    hash?: string | null,
   };
 
 export type ExtensionInfo = {

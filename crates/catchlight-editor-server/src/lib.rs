@@ -209,6 +209,7 @@ impl EditorError {
                     }
                     Required::Param(_) => ErrorCode::NoParam,
                     Required::Slot(..) => ErrorCode::UnknownSlot,
+                    Required::Texture(_) => ErrorCode::NoTexture,
                 },
                 InstallError::WeldUnknownSlot { .. } => ErrorCode::WeldUnknownSlot,
                 InstallError::WeldSlotPairedTwice { .. } => ErrorCode::WeldSlotPairedTwice,
@@ -1637,7 +1638,8 @@ impl Editor {
             Command::ExtensionGet { session, key } => {
                 let captured = self.with_session_captured(session, |s| {
                     s.model
-                        .extension(&key)
+                        .extensions()
+                        .get(&key)
                         .map(|value| (extension_value_info(value), value.bytes().cloned()))
                         .ok_or_else(|| EditorError::NoExtension(key.to_string()))
                 })?;
