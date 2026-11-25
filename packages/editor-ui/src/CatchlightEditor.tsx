@@ -1,6 +1,7 @@
 /** A close moves the screen to a live session before an effect frees the old replica. */
 import type { Editor, ParamId, Session, SessionInfo } from "@catchlight/core";
 import {
+  AnimationsPanel,
   AssetsPanel,
   EditingProvider,
   useEditing,
@@ -42,6 +43,7 @@ import {
   useEditor,
   useFileSave,
   usePosePublisher,
+  usePlayingClip,
   usePoseSweep,
   useSelection,
   useSessions,
@@ -392,7 +394,7 @@ function Workspace({
   const [right, setRight] = useState<"properties" | "model" | "review">("properties");
   const review = useReview();
   const [dock, setDock] = useState<
-    "params" | "bindings" | "controls" | "expressions"
+    "params" | "bindings" | "controls" | "expressions" | "animations"
   >("params");
   const [dockOpen, setDockOpen] = useState(true);
   const [focus, setFocus] = useState(false);
@@ -497,6 +499,7 @@ function Workspace({
   const capture = usePreviewExport(canvas);
   const captureStage = useCallback(() => captureCanvas(canvas.current), []);
   const sweep = usePoseSweep(session, param);
+  const playingClip = usePlayingClip(session);
   const fit = useCallback(() => {
     if (editing.mesh) {
       const element = workspace.current?.querySelector(
@@ -1376,6 +1379,17 @@ function Workspace({
                     <Icon name="face" width="14" height="14" />
                     Expressions
                   </button>
+                  <button
+                    type="button"
+                    data-active={dock === "animations" ? "" : undefined}
+                    onClick={() => {
+                      setDock("animations");
+                      setDockOpen(true);
+                    }}
+                  >
+                    <Icon name="film" width="14" height="14" />
+                    Animations
+                  </button>
                 </>
               )}
             </div>
@@ -1393,6 +1407,17 @@ function Workspace({
                 />
                 {sweep.playing ? "Stop sweep" : "Preview sweep"}
               </button>
+              {playingClip !== undefined && (
+                <button
+                  type="button"
+                  data-catchlight-clip-stop=""
+                  title={`Stop the animation “${playingClip}”`}
+                  onClick={() => session?.stop()}
+                >
+                  <Icon name="stop" width="13" height="13" />
+                  <span>Stop {playingClip}</span>
+                </button>
+              )}
               <IconButton
                 data-catchlight-pose-reset=""
                 icon="reset"
@@ -1431,6 +1456,8 @@ function Workspace({
                   <ControlsPanel key={session.id} session={session} onError={onError} />
                 ) : dock === "expressions" ? (
                   <ExpressionsPanel key={session.id} session={session} onError={onError} />
+                ) : dock === "animations" ? (
+                  <AnimationsPanel key={session.id} session={session} onError={onError} />
                 ) : (
                   <BindingsPanel
                     session={session}

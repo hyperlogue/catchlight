@@ -3849,6 +3849,102 @@
       grid-column: 1 / 3;
     }
   }
+  .catchlight [data-catchlight-clips] {
+    display: grid;
+    gap: 1px;
+    margin: 0;
+    padding: 0 8px;
+    list-style: none;
+  }
+  .catchlight [data-catchlight-clip] {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    min-height: 32px;
+    padding: 0 10px 0 4px;
+    border-radius: 6px;
+    border: 1px solid transparent;
+  }
+  .catchlight [data-catchlight-clip]:hover {
+    background: #ffffff05;
+  }
+  .catchlight [data-catchlight-clip][data-playing] {
+    background: var(--cl-accent-soft);
+  }
+  .catchlight [data-catchlight-clip][data-warned] {
+    border-color: color-mix(in srgb, var(--cl-warn) 35%, transparent);
+  }
+  .catchlight [data-catchlight-clip-play] {
+    flex: 0 0 26px;
+    width: 26px;
+    height: 26px;
+    min-height: 26px;
+    padding: 0;
+    border-radius: 50%;
+    background: var(--cl-surface);
+    color: var(--cl-text-secondary);
+  }
+  .catchlight [data-catchlight-clip][data-playing] [data-catchlight-clip-play] {
+    background: var(--cl-accent);
+    color: var(--cl-on-accent);
+  }
+  .catchlight [data-catchlight-clip-name] {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12.5px;
+    font-weight: 500;
+  }
+  .catchlight [data-catchlight-clip-lanes] {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 11px;
+    color: var(--cl-text-dim);
+  }
+  .catchlight [data-catchlight-clip-duration],
+  .catchlight [data-catchlight-clip-playhead] {
+    flex: none;
+    font-size: 11px;
+    color: var(--cl-text-secondary);
+    font-variant-numeric: tabular-nums;
+  }
+  .catchlight [data-catchlight-clip-playhead] {
+    color: var(--cl-accent);
+  }
+  .catchlight [data-catchlight-clip-playhead] small {
+    margin-left: 8px;
+    color: var(--cl-text-dim);
+  }
+  .catchlight [data-catchlight-dock-actions] > [data-catchlight-clip-stop] {
+    gap: 5px;
+    max-width: 180px;
+    font-size: 11px;
+    background: var(--cl-accent-soft);
+    color: var(--cl-accent);
+  }
+  .catchlight [data-catchlight-clip-stop] > span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  @media (max-width: 600px) {
+    .catchlight [data-catchlight-clip-lanes] {
+      display: none;
+    }
+    .catchlight [data-catchlight-clip-name] {
+      flex: 1;
+    }
+    .catchlight [data-catchlight-clip-stop] > span {
+      display: none;
+    }
+  }
   @media (max-width: 1150px) {
     .catchlight [data-catchlight-save-state],
     .catchlight [data-catchlight-command-trigger] span,

@@ -84,6 +84,21 @@ next release is 0.3.0.
   uninstall. `catchlight-cli extension set --version <n> --refs <json>`
   writes a vendor's maintained extension with a JSON or byte payload, and
   warns about a reference the model lacks rather than refusing it.
+- **Controls, Expressions and Animations tabs in the editor's dock.**
+  Controls lists the 35 humanoid controls under Head, Body, Eyes, Brows,
+  Cheeks and Mouth: pick a param to map one, edit its three stops, and
+  preview it with a slider that clears back to no value; a filter shows only
+  the mapped ones. Expressions lists a model's expressions and visemes, each
+  previewed at a weight, added under a standard name or one of your own, and
+  authored as rows of settings on controls or params; **Add standard
+  visemes** asks whether to keep or replace the ones already there and says
+  what it added, replaced and skipped. Animations plays one clip at a time
+  with its playhead, and while one plays the dock header stops it from any
+  tab. Each tab lists its extension's warnings and marks what they concern,
+  asks before keeping a control name outside the standard, and leaves data
+  from a newer build alone. `@catchlight/react` exports the panels and the
+  hooks under them, among them `useHumanoid`, `useExpressions`, `useClips`,
+  `usePreviewInputs`, `usePlayingClip` and `usePlayhead`.
 - **Rig controls and expressions in the editor.** The editor takes typed
   commands for the official extensions, each one undo step that refuses what
   the file CLI refuses: `humanoid_map`, `humanoid_unmap`, `expression_set`

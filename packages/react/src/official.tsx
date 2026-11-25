@@ -103,14 +103,18 @@ export function usePreviewInputs(session: Session): PreviewInputs {
  * animation frame while one plays and stops once none does. `select` keeps
  * re-renders to what a caller shows: an unchanged value renders nothing.
  */
-function usePlayingSelect<T>(session: Session, select: (playing: Playing | undefined) => T, same: (a: T, b: T) => boolean): T {
+function usePlayingSelect<T>(
+  session: Session | undefined,
+  select: (playing: Playing | undefined) => T,
+  same: (a: T, b: T) => boolean,
+): T {
   const latest = useRef({ select, same });
   latest.current = { select, same };
-  const [value, setValue] = useState(() => select(session.playing()));
+  const [value, setValue] = useState(() => select(session?.playing()));
   useEffect(() => {
     let frame = 0;
     const read = () => {
-      const playing = session.playing();
+      const playing = session?.playing();
       const next = latest.current.select(playing);
       setValue((previous) => (latest.current.same(previous, next) ? previous : next));
       if (playing && !frame) frame = requestAnimationFrame(tick);
@@ -120,6 +124,7 @@ function usePlayingSelect<T>(session: Session, select: (playing: Playing | undef
       read();
     };
     read();
+    if (!session) return;
     const off = session.onInvalidate(read);
     return () => {
       off();
@@ -130,7 +135,7 @@ function usePlayingSelect<T>(session: Session, select: (playing: Playing | undef
 }
 
 /** The name of the clip that plays; `undefined` when none does. */
-export function usePlayingClip(session: Session): string | undefined {
+export function usePlayingClip(session: Session | undefined): string | undefined {
   return usePlayingSelect(session, (p) => p?.name, Object.is);
 }
 

@@ -171,7 +171,7 @@ describe("the assembled editor", () => {
     stop();
   });
 
-  test("the dock's Controls and Expressions tabs show the official extensions", async () => {
+  test("the dock's Controls, Expressions and Animations tabs show the official extensions", async () => {
     const stop = stubObservers();
     const editor = await fakeEditor();
     const session = await editor.newSession("akari");
@@ -179,7 +179,7 @@ describe("the assembled editor", () => {
     const { container: view, unmount } = await mount(<CatchlightEditor editor={editor} />);
     await settle();
 
-    expect(dockTabs(view)).toEqual(["Params", "Bindings", "Controls", "Expressions"]);
+    expect(dockTabs(view)).toEqual(["Params", "Bindings", "Controls", "Expressions", "Animations"]);
     await run(() => dockTab(view, "Controls").click());
     await settle();
     expect(dockTab(view, "Controls").hasAttribute("data-active")).toBe(true);
@@ -190,6 +190,58 @@ describe("the assembled editor", () => {
     await settle();
     expect(view.querySelector("[data-catchlight-controls-panel]")).toBeNull();
     expect(view.querySelector("[data-catchlight-dock-body] [data-catchlight-expressions-panel]")).not.toBeNull();
+
+    await run(() => dockTab(view, "Animations").click());
+    await settle();
+    expect(view.querySelector("[data-catchlight-dock-body] [data-catchlight-animations-panel]")).not.toBeNull();
+
+    await unmount();
+    editor.close();
+    stop();
+  });
+
+  test("a clip started in Animations is stopped from the dock header on another tab", async () => {
+    const stop = stubObservers();
+    const { editor, wasm } = await fakeStack();
+    const session = await editor.newSession("akari");
+    wasm.docs.get(session.id)!.clips = [
+      { name: "wave", timestep: 0.1, length: 10, lead_in: null, lead_out: null, lanes: [] },
+    ];
+    await session.send({ cmd: "param_add", name: "Jaw", min: 0, max: 1, default: 0 });
+    const { container: view, unmount } = await mount(<CatchlightEditor editor={editor} />);
+    await settle();
+    expect(view.querySelector("[data-catchlight-clip-stop]")).toBeNull();
+
+    await run(() => dockTab(view, "Animations").click());
+    await run(() => button(view, "[aria-label='Play wave']").click());
+    await settle();
+    await run(() => dockTab(view, "Params").click());
+    await settle();
+    expect(view.querySelector("[data-catchlight-animations-panel]")).toBeNull();
+    const header = button(view, "[data-catchlight-dock-actions] [data-catchlight-clip-stop]");
+    expect(header.textContent).toBe("Stop wave");
+
+    await run(() => header.click());
+    await settle();
+    expect(session.playing()).toBeUndefined();
+    expect(view.querySelector("[data-catchlight-clip-stop]")).toBeNull();
+
+    await unmount();
+    editor.close();
+    stop();
+  });
+
+  test("record mode keeps the dock to params and keypoints", async () => {
+    const stop = stubObservers();
+    const editor = await fakeEditor();
+    await editor.newSession("akari");
+    const { container: view, unmount } = await mount(<CatchlightEditor editor={editor} />);
+    await settle();
+    await run(() => dockTab(view, "Controls").click());
+    await run(() => button(view, "[title='Record parameter keypoints (R)']").click());
+    await settle();
+    expect(dockTabs(view)).toEqual(["Params", "Keypoints"]);
+    expect(view.querySelector("[data-catchlight-controls-panel]")).toBeNull();
 
     await unmount();
     editor.close();
