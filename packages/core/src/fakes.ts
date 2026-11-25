@@ -4,6 +4,8 @@ import type {
   BindingInfo,
   EditOp,
   BindingTarget,
+  ExtensionInfo,
+  ExtensionRef,
   Command,
   Event,
   Interpolate,
@@ -55,7 +57,19 @@ export interface FakeDoc {
 
 export type FakeExtension =
   | { key: string; kind: "json"; value: unknown }
-  | { key: string; kind: "bytes"; hash: string };
+  | { key: string; kind: "bytes"; hash: string; size?: number }
+  | { key: string; kind: "maintained"; version: number; refs: ExtensionRef[]; value: unknown };
+
+function extensionInfo(e: FakeExtension): ExtensionInfo {
+  switch (e.kind) {
+    case "json":
+      return { key: e.key, value: { kind: "json", value: e.value } };
+    case "bytes":
+      return { key: e.key, value: { kind: "bytes", size: e.size ?? 0, hash: e.hash } };
+    case "maintained":
+      return { key: e.key, value: { kind: "maintained", version: e.version, refs: e.refs, value: e.value } };
+  }
+}
 
 /** Only the cells a command authored, sparse like the model's own. */
 export interface FakeBinding {
@@ -285,6 +299,31 @@ export class FakeEditor implements WasmEditor {
         );
         return this.#changed(id, request.session, doc);
       }
+      case "extension_set": {
+        const doc = this.docs.get(request.session);
+        if (!doc) return this.#noSession(id, request.session);
+        if (request.key.startsWith("catchlight.")) return this.#reserved(id, request.key);
+        const value = request.value;
+        const bytes = this.attached.at(-1)?.value;
+        let stored: FakeExtension;
+        if (value.kind === "json") stored = { key: request.key, kind: "json", value: value.value };
+        else if (value.kind === "maintained")
+          stored = { key: request.key, kind: "maintained", version: value.version, refs: value.refs ?? [], value: value.value };
+        else stored = { key: request.key, kind: "bytes", hash: new TextDecoder().decode(bytes), size: bytes?.length ?? 0 };
+        doc.extensions = [...doc.extensions.filter((e) => e.key !== request.key), stored].sort((a, b) =>
+          a.key < b.key ? -1 : a.key > b.key ? 1 : 0,
+        );
+        return this.#changed(id, request.session, doc);
+      }
+      case "extension_delete": {
+        const doc = this.docs.get(request.session);
+        if (!doc) return this.#noSession(id, request.session);
+        if (request.key.startsWith("catchlight.")) return this.#reserved(id, request.key);
+        if (!doc.extensions.some((e) => e.key === request.key))
+          return JSON.stringify({ reply: "err", id, code: "no_extension", message: `no extension "${request.key}"` });
+        doc.extensions = doc.extensions.filter((e) => e.key !== request.key);
+        return this.#changed(id, request.session, doc);
+      }
       case "binding_add": {
         const doc = this.docs.get(request.session);
         if (!doc) return this.#noSession(id, request.session);
@@ -467,6 +506,15 @@ export class FakeEditor implements WasmEditor {
     doc.rev += 1;
     this.#emit({ event: "model_changed", session, rev: doc.rev });
     return this.#ok(id, body, doc.rev);
+  }
+
+  #reserved(id: number, key: string): string {
+    return JSON.stringify({
+      reply: "err",
+      id,
+      code: "reserved_extension",
+      message: `${key}: \`catchlight.\` is the format's own prefix`,
+    });
   }
 
   snapshot(session: number): FakeDoc {
@@ -699,6 +747,7 @@ export class FakeEditor implements WasmEditor {
 const READ_ONLY_REFUSES = new Set([
   "node_add", "node_set", "node_delete", "param_add", "param_set", "param_delete", "texture_add",
   "edit_apply", "session_save", "binding_add", "review_thread_add", "review_comment_add", "version_save",
+  "extension_set", "extension_delete",
 ]);
 
 /** Reports a small limit so the clamp is testable. */
@@ -852,6 +901,13 @@ export class FakeReplica implements WasmReplica {
           id,
           rev: this.#rev,
           body: { result: "params", params: doc.params },
+        });
+      case "extension_list":
+        return JSON.stringify({
+          reply: "ok",
+          id,
+          rev: this.#rev,
+          body: { result: "extensions", extensions: doc.extensions.map(extensionInfo) },
         });
       case "texture_list":
         return JSON.stringify({

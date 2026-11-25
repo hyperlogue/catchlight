@@ -1472,6 +1472,34 @@ export type ExtensionSet =
   }
   | {
     "kind": "bytes"
+  }
+  | {
+    "kind": "maintained",
+    version: number,
+    refs: Array<ExtensionRef>,
+    value?: unknown,
+  };
+
+/**
+ * One entry of a maintained extension's reference table, in the file's own
+ * form: `{"param": "eye_l"}`, `{"slot": ["head", "slot-1a2b3c4d"]}`, or
+ * `{"removed": {"param": "eye_l"}}` for an Id the model no longer holds.
+ */
+export type ExtensionRef =
+  | {
+    "node": NodeId
+  }
+  | {
+    "param": ParamId
+  }
+  | {
+    "texture": TexId
+  }
+  | {
+    "slot": [NodeId, SlotId]
+  }
+  | {
+    "removed": ExtensionRef
   };
 
 /**
@@ -1495,9 +1523,9 @@ export type ExtensionValueInfo =
     "kind": "maintained",
     version: number,
     /**
-     * How many entries its reference table holds.
+     * Its reference table, which the core keeps current.
      */
-    refs: number,
+    refs: Array<ExtensionRef>,
     value?: unknown,
     size?: number | null,
     hash?: string | null,

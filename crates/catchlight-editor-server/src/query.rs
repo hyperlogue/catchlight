@@ -29,7 +29,7 @@ pub fn extension_value_info(value: &ExtensionValue) -> ExtensionValueInfo {
         },
         ExtensionValue::Maintained(raw) => ExtensionValueInfo::Maintained {
             version: raw.version,
-            refs: raw.refs.len() as u32,
+            refs: raw.refs.iter().map(ExtensionRef::from).collect(),
             value: raw.payload.json().cloned(),
             size: raw.payload.bytes().map(|data| data.len() as u32),
             hash: raw.payload.bytes().map(|data| extension_hash(data)),

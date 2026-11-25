@@ -9,6 +9,7 @@
 pub use catchlight_core::{MotionResponse, ResponseInput, ResponseSource};
 use serde::{Deserialize, Serialize};
 
+use catchlight_core::extension::IdRef;
 pub use catchlight_core::id::{ExtensionKey, NodeId, ParamId, SlotId, TexId};
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -1044,7 +1045,10 @@ impl Command {
     pub fn carries_bytes(&self) -> Option<&'static Bytes> {
         let carrying = match self {
             Command::SessionNew { source, .. } => source.is_some(),
-            Command::ExtensionSet { value, .. } => matches!(value, ExtensionSet::Bytes),
+            Command::ExtensionSet { value, .. } => matches!(
+                value,
+                ExtensionSet::Bytes | ExtensionSet::Maintained { value: None, .. }
+            ),
             _ => true,
         };
         self.bytes().filter(|_| carrying)
@@ -2579,6 +2583,64 @@ pub enum ExtensionSet {
         value: serde_json::Value,
     },
     Bytes,
+    /// A maintained value: its payload is `value` inline, or the `value`
+    /// attachment when `value` is absent. A reference the model lacks is kept
+    /// and warned about, never refused.
+    Maintained {
+        version: u32,
+        #[serde(default)]
+        refs: Vec<ExtensionRef>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(type = "unknown"))]
+        value: Option<serde_json::Value>,
+    },
+}
+
+/// One entry of a maintained extension's reference table, in the file's own
+/// form: `{"param": "eye_l"}`, `{"slot": ["head", "slot-1a2b3c4d"]}`, or
+/// `{"removed": {"param": "eye_l"}}` for an Id the model no longer holds.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub enum ExtensionRef {
+    Node(NodeId),
+    Param(ParamId),
+    Texture(TexId),
+    /// A part's node, then the slot on it.
+    Slot((NodeId, SlotId)),
+    /// Never itself `removed`.
+    Removed(Box<ExtensionRef>),
+}
+
+impl From<&IdRef> for ExtensionRef {
+    fn from(r: &IdRef) -> Self {
+        match r {
+            IdRef::Node(id) => Self::Node(id.clone()),
+            IdRef::Param(id) => Self::Param(id.clone()),
+            IdRef::Texture(id) => Self::Texture(id.clone()),
+            IdRef::Slot(node, slot) => Self::Slot((node.clone(), slot.clone())),
+            IdRef::Removed(gone) => Self::Removed(Box::new(Self::from(&IdRef::from(gone.clone())))),
+        }
+    }
+}
+
+impl TryFrom<ExtensionRef> for IdRef {
+    type Error = String;
+
+    fn try_from(r: ExtensionRef) -> Result<Self, String> {
+        Ok(match r {
+            ExtensionRef::Node(id) => IdRef::Node(id),
+            ExtensionRef::Param(id) => IdRef::Param(id),
+            ExtensionRef::Texture(id) => IdRef::Texture(id),
+            ExtensionRef::Slot((node, slot)) => IdRef::Slot(node, slot),
+            ExtensionRef::Removed(inner) => match IdRef::try_from(*inner)? {
+                IdRef::Removed(_) => {
+                    return Err("a removed reference cannot itself be removed".into())
+                }
+                live => live.removed(),
+            },
+        })
+    }
 }
 
 /// What an extension holds; bytes are reported as their marker's size and
@@ -2600,8 +2662,8 @@ pub enum ExtensionValueInfo {
     /// as the `size` and `hash` of its bytes.
     Maintained {
         version: u32,
-        /// How many entries its reference table holds.
-        refs: u32,
+        /// Its reference table, which the core keeps current.
+        refs: Vec<ExtensionRef>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[cfg_attr(feature = "ts", ts(type = "unknown"))]
         value: Option<serde_json::Value>,

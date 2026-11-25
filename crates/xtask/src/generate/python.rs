@@ -272,6 +272,14 @@ fn py_type(ty: &Type, known: &BTreeSet<String>) -> Result<String> {
             let arms = vec![inner; len];
             Ok(format!("tuple[{}]", arms.join(", ")))
         }
+        Type::Tuple(tuple) if !tuple.elems.is_empty() => {
+            let arms = tuple
+                .elems
+                .iter()
+                .map(|elem| py_type(elem, known))
+                .collect::<Result<Vec<_>>>()?;
+            Ok(format!("tuple[{}]", arms.join(", ")))
+        }
         other => bail!("the protocol carries a type this generator cannot map: {other:?}"),
     }
 }

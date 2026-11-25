@@ -4,8 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from catchlight import Client, ErrorCode, LaunchedServer, ProtocolError
-from catchlight.protocol_gen import ExtensionValueInfoBytes, ExtensionValueInfoJson
+from catchlight import Client, ErrorCode, LaunchedServer, Maintained, ProtocolError
+from catchlight.protocol_gen import (
+    ExtensionRefParam,
+    ExtensionRefSlot,
+    ExtensionValueInfoBytes,
+    ExtensionValueInfoJson,
+    ExtensionValueInfoMaintained,
+)
 
 
 @pytest.fixture(params=["socket", "http"])
@@ -80,3 +86,28 @@ def test_an_extension_survives_a_save_and_an_open(
     reader = served.client()
     assert reader.extension_get(reopened, "acme.camera") == {"rig": "v2"}
     assert reader.extension_get(reopened, "acme.thumb") == b"a thumbnail"
+
+
+def test_a_maintained_value_comes_back_with_its_version_and_references(either: Client) -> None:
+    session = either.new()
+    refs = [ExtensionRefParam(param="ghost"), ExtensionRefSlot(slot=("nowhere", "slot-1"))]
+    either.extension_set(session, "acme.framing", Maintained(2, {"shot": 1}, refs))
+    either.extension_set(session, "acme.cache", Maintained(1, b"cached"))
+
+    assert either.extension_get(session, "acme.framing") == Maintained(2, {"shot": 1}, refs)
+    assert either.extension_get(session, "acme.cache") == Maintained(1, b"cached", [])
+
+    listed = {e.key: e.value for e in either.extensions(session)}
+    framing = listed["acme.framing"]
+    assert isinstance(framing, ExtensionValueInfoMaintained)
+    assert framing.refs == refs, "a reference the model lacks is kept"
+    cache = listed["acme.cache"]
+    assert isinstance(cache, ExtensionValueInfoMaintained)
+    assert (cache.size, cache.value) == (len(b"cached"), None)
+
+
+def test_a_maintained_value_under_the_formats_prefix_is_refused(either: Client) -> None:
+    session = either.new()
+    with pytest.raises(ProtocolError) as raised:
+        either.extension_set(session, "catchlight.humanoid", Maintained(1, {}))
+    assert raised.value.code is ErrorCode.RESERVED_EXTENSION

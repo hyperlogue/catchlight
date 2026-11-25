@@ -1,4 +1,10 @@
-import type { Session, NodeInfo, SlotPair, ExtensionValueInfo } from "@catchlight/core";
+import type {
+  Session,
+  NodeInfo,
+  SlotPair,
+  ExtensionRef,
+  ExtensionValueInfo,
+} from "@catchlight/core";
 import { ReviewBadge, ReviewCommentButton } from "./review.js";
 import { useState } from "react";
 import {
@@ -405,81 +411,119 @@ function describeExtension(value: ExtensionValueInfo): string {
       return "JSON metadata";
     case "bytes":
       return `${value.size.toLocaleString()} bytes`;
-    case "maintained":
+    case "maintained": {
+      const refs = `${value.refs.length} ${value.refs.length === 1 ? "reference" : "references"}`;
       return value.size == null
-        ? `Version ${value.version}`
-        : `Version ${value.version}, ${value.size.toLocaleString()} bytes`;
+        ? `Version ${value.version}, ${refs}`
+        : `Version ${value.version}, ${refs}, ${value.size.toLocaleString()} bytes`;
+    }
   }
 }
+
+function describeRef(ref: ExtensionRef): string {
+  if ("node" in ref) return `Node ${ref.node}`;
+  if ("param" in ref) return `Param ${ref.param}`;
+  if ("texture" in ref) return `Texture ${ref.texture}`;
+  if ("slot" in ref) return `Slot ${ref.slot[1]} on ${ref.slot[0]}`;
+  return `Removed: ${describeRef(ref.removed)}`;
+}
+
+const noop = () => {};
+
+/** The format's own; the editor refuses to change one through this panel. */
+function isOfficial(key: string): boolean {
+  return key.startsWith("catchlight.");
+}
+
+type Editing = {
+  key: string;
+  value: string;
+  /** Kept as they were; only the payload is edited. */
+  maintained?: { version: number; refs: ExtensionRef[] };
+  readOnly: boolean;
+};
 
 export function ExtensionsPanel({ session, onError }: { session: Session; onError: ErrorHandler }) {
   const { extensions } = useModelQuery(session, { cmd: "extension_list" }, "extensions");
   const { run, busy } = useCommand(session, onError);
-  const [editing, setEditing] = useState(false);
-  const [key, setKey] = useState("");
-  const [value, setValue] = useState("{\n  \n}");
+  const [editing, setEditing] = useState<Editing | null>(null);
   const [problem, setProblem] = useState("");
+  const update = (patch: Partial<Editing>) => setEditing((e) => (e ? { ...e, ...patch } : e));
   return (
     <>
       <p data-catchlight-hint="">
         Optional metadata for your tools and pipeline. Stored with the model.
       </p>
-      {extensions.map((ext) => (
-        <div data-catchlight-extension="" key={ext.key}>
-          <Icon name="code" />
-          <span>
-            {ext.key}
-            <small>
-              {describeExtension(ext.value)}
-            </small>
-          </span>
-          {ext.value.kind === "json" && (
-            <button
-              type="button"
-              onClick={() => {
-                setKey(ext.key);
-                setValue(
-                  JSON.stringify(ext.value.kind === "json" ? ext.value.value : null, null, 2),
-                );
-                setEditing(true);
-              }}
-            >
-              Edit
-            </button>
-          )}
-          <IconButton
-            icon="trash"
-            label={`Remove ${ext.key}`}
-            onClick={() => void run({ cmd: "extension_delete", key: ext.key })}
-          />
-        </div>
-      ))}
+      {extensions.map((ext) => {
+        const official = isOfficial(ext.key);
+        const value = ext.value;
+        const payload =
+          value.kind === "json" || (value.kind === "maintained" && value.value != null)
+            ? value.value
+            : undefined;
+        return (
+          <div data-catchlight-extension="" key={ext.key}>
+            <Icon name="code" />
+            <span>
+              {ext.key}
+              <small>{describeExtension(value)}</small>
+            </span>
+            {payload !== undefined && (
+              <button
+                type="button"
+                onClick={() => {
+                  setProblem("");
+                  setEditing({
+                    key: ext.key,
+                    value: JSON.stringify(payload, null, 2),
+                    ...(value.kind === "maintained"
+                      ? { maintained: { version: value.version, refs: value.refs } }
+                      : {}),
+                    readOnly: official,
+                  });
+                }}
+              >
+                {official ? "View" : "Edit"}
+              </button>
+            )}
+            {!official && (
+              <IconButton
+                icon="trash"
+                label={`Remove ${ext.key}`}
+                onClick={() => void run({ cmd: "extension_delete", key: ext.key })}
+              />
+            )}
+          </div>
+        );
+      })}
       <button
         type="button"
         data-catchlight-action=""
         onClick={() => {
-          setKey("");
-          setValue("{\n  \n}");
-          setEditing(true);
+          setProblem("");
+          setEditing({ key: "", value: "{\n  \n}", readOnly: false });
         }}
       >
         <Icon name="plus" />
         Add metadata
       </button>
       {editing && (
-        <Modal title="Model metadata" onClose={() => setEditing(false)}>
+        <Modal title="Model metadata" onClose={() => setEditing(null)}>
           <form
             onSubmit={(e) => {
               e.preventDefault();
+              if (editing.readOnly) return;
               try {
-                const parsed: unknown = JSON.parse(value);
+                const parsed: unknown = JSON.parse(editing.value);
                 setProblem("");
                 void run({
                   cmd: "extension_set",
-                  key,
-                  value: { kind: "json", value: parsed },
+                  key: editing.key,
+                  value: editing.maintained
+                    ? { kind: "maintained", ...editing.maintained, value: parsed }
+                    : { kind: "json", value: parsed },
                 }).then((body) => {
-                  if (body) setEditing(false);
+                  if (body) setEditing(null);
                 });
               } catch {
                 setProblem("Enter valid JSON before saving.");
@@ -491,20 +535,40 @@ export function ExtensionsPanel({ session, onError }: { session: Session; onErro
               <input
                 autoFocus
                 required
-                value={key}
+                readOnly={!!editing.maintained || editing.readOnly}
+                value={editing.key}
                 placeholder="studio.notes"
                 pattern="[^.]+\..+"
-                onChange={(e) => setKey(e.currentTarget.value)}
+                onChange={(e) => update({ key: e.currentTarget.value })}
               />
             </label>
+            {editing.maintained && (
+              <div data-catchlight-extension-refs="">
+                <p data-catchlight-hint="">
+                  Version {editing.maintained.version}. The editor keeps these references current
+                  as the model changes.
+                </p>
+                {editing.maintained.refs.length === 0 ? (
+                  <p data-catchlight-hint="">No references.</p>
+                ) : (
+                  <ul aria-label="References">
+                    {editing.maintained.refs.map((ref, i) => (
+                      <li key={i}>{describeRef(ref)}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
             <label data-catchlight-form-label="">
-              JSON value
+              {editing.maintained ? "JSON payload" : "JSON value"}
               <textarea
                 required
+                readOnly={editing.readOnly}
                 spellCheck={false}
                 rows={10}
-                value={value}
-                onChange={(e) => setValue(e.currentTarget.value)}
+                value={editing.value}
+                onInput={(e) => update({ value: e.currentTarget.value })}
+                onChange={noop}
               />
             </label>
             {problem && (
@@ -513,12 +577,14 @@ export function ExtensionsPanel({ session, onError }: { session: Session; onErro
               </p>
             )}
             <div data-catchlight-dialog-actions="">
-              <button type="button" onClick={() => setEditing(false)}>
-                Cancel
+              <button type="button" onClick={() => setEditing(null)}>
+                {editing.readOnly ? "Close" : "Cancel"}
               </button>
-              <button type="submit" data-primary="" disabled={busy}>
-                Save metadata
-              </button>
+              {!editing.readOnly && (
+                <button type="submit" data-primary="" disabled={busy}>
+                  Save metadata
+                </button>
+              )}
             </div>
           </form>
         </Modal>

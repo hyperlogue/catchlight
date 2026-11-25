@@ -7,8 +7,8 @@ use std::io;
 use std::sync::{Arc, Mutex};
 
 use catchlight_editor_protocol::{
-    Command, ErrorCode, ExtensionKey, ExtensionSet, ExtensionValueInfo, Reply, Request,
-    ResponseBody, SessionId,
+    Command, ErrorCode, ExtensionKey, ExtensionRef, ExtensionSet, ExtensionValueInfo, ParamId,
+    Rename, Reply, Request, ResponseBody, SessionId,
 };
 use catchlight_editor_server::{replica_query, Attachments, Editor, Payload, Storage};
 use serde_json::json;
@@ -404,4 +404,178 @@ fn a_replica_lists_the_extensions_the_editor_lists() {
 
 fn key_of(s: &str) -> ExtensionKey {
     s.parse().unwrap()
+}
+
+impl Fixture {
+    fn add_param(&mut self, id: &str) -> ParamId {
+        let param = ParamId::new(id).unwrap();
+        self.ok(
+            Command::ParamAdd {
+                session: self.session,
+                name: id.into(),
+                min: 0.0,
+                max: 1.0,
+                default: 0.0,
+                param: Some(param.clone()),
+            },
+            Attachments::none(),
+        );
+        param
+    }
+
+    fn set_maintained(
+        &mut self,
+        key: &str,
+        refs: Vec<ExtensionRef>,
+        value: Option<serde_json::Value>,
+        bytes: Option<&[u8]>,
+    ) -> Reply {
+        let mut attachments = Attachments::none();
+        if let Some(bytes) = bytes {
+            attachments.insert("value", bytes.to_vec());
+        }
+        self.reply(
+            Command::ExtensionSet {
+                session: self.session,
+                key: key.parse().unwrap(),
+                value: ExtensionSet::Maintained {
+                    version: 2,
+                    refs,
+                    value,
+                },
+            },
+            attachments,
+        )
+        .0
+    }
+}
+
+#[test]
+fn a_maintained_vendor_extension_is_set_listed_and_fetched_with_its_references() {
+    let mut f = Fixture::new();
+    let eye = f.add_param("eye");
+    let refs = vec![
+        ExtensionRef::Param(eye.clone()),
+        ExtensionRef::Param(ParamId::new("ghost").unwrap()),
+    ];
+    let reply = f.set_maintained("acme.framing", refs.clone(), Some(json!({"shot": 0})), None);
+    assert!(matches!(reply, Reply::Ok { .. }), "{reply:?}");
+    let reply = f.set_maintained("acme.cache", Vec::new(), None, Some(b"cached"));
+    assert!(matches!(reply, Reply::Ok { .. }), "{reply:?}");
+
+    let listed = f.list();
+    match &listed[1] {
+        (
+            key,
+            ExtensionValueInfo::Maintained {
+                version,
+                refs: listed_refs,
+                value,
+                size,
+                ..
+            },
+        ) => {
+            assert_eq!(key, "acme.framing");
+            assert_eq!(*version, 2);
+            assert_eq!(*listed_refs, refs, "an unresolved reference is kept");
+            assert_eq!(*value, Some(json!({"shot": 0})));
+            assert_eq!(*size, None);
+        }
+        other => panic!("expected a maintained value, got {other:?}"),
+    }
+
+    let (body, payload) = f.get("acme.cache");
+    match body {
+        ResponseBody::Extension {
+            value:
+                ExtensionValueInfo::Maintained {
+                    version,
+                    size,
+                    value,
+                    ..
+                },
+            ..
+        } => {
+            assert_eq!((version, size, value), (2, Some(6), None));
+        }
+        other => panic!("expected a maintained value, got {other:?}"),
+    }
+    assert_eq!(payload.unwrap().bytes, b"cached");
+
+    // The table travels in the file's own form.
+    let wire = serde_json::to_value(&listed[1].1).unwrap();
+    assert_eq!(wire["refs"], json!([{"param": "eye"}, {"param": "ghost"}]));
+}
+
+#[test]
+fn a_maintained_extensions_references_follow_a_rename_and_a_removal() {
+    let mut f = Fixture::new();
+    let eye = f.add_param("eye");
+    let brow = f.add_param("brow");
+    f.set_maintained(
+        "acme.framing",
+        vec![
+            ExtensionRef::Param(eye.clone()),
+            ExtensionRef::Param(brow.clone()),
+        ],
+        Some(json!({})),
+        None,
+    );
+    let left = ParamId::new("eye_left").unwrap();
+    f.ok(
+        Command::RenameId {
+            session: f.session,
+            rename: Rename::Param {
+                from: eye,
+                to: left.clone(),
+            },
+        },
+        Attachments::none(),
+    );
+    f.ok(
+        Command::ParamDelete {
+            session: f.session,
+            param: brow.clone(),
+        },
+        Attachments::none(),
+    );
+    match &f.list()[0].1 {
+        ExtensionValueInfo::Maintained { refs, .. } => assert_eq!(
+            *refs,
+            vec![
+                ExtensionRef::Param(left),
+                ExtensionRef::Removed(Box::new(ExtensionRef::Param(brow))),
+            ]
+        ),
+        other => panic!("expected a maintained value, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_maintained_value_needs_exactly_one_payload_and_a_vendor_key() {
+    let mut f = Fixture::new();
+    let code = |reply: Reply| match reply {
+        Reply::Err { code, .. } => code,
+        other => panic!("expected Err, got {other:?}"),
+    };
+    assert_eq!(
+        code(f.set_maintained("acme.x", Vec::new(), None, None)),
+        ErrorCode::BadRequest
+    );
+    assert_eq!(
+        code(f.set_maintained("acme.x", Vec::new(), Some(json!(1)), Some(b"b"))),
+        ErrorCode::BadRequest
+    );
+    let twice_removed = ExtensionRef::Removed(Box::new(ExtensionRef::Removed(Box::new(
+        ExtensionRef::Param(ParamId::new("p").unwrap()),
+    ))));
+    assert_eq!(
+        code(f.set_maintained("acme.x", vec![twice_removed], Some(json!(1)), None)),
+        ErrorCode::BadRequest
+    );
+    assert_eq!(
+        code(f.set_maintained("catchlight.humanoid", Vec::new(), Some(json!({})), None)),
+        ErrorCode::ReservedExtension
+    );
+    assert!(f.list().is_empty());
 }

@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -30,8 +31,10 @@ from .protocol_gen import (
     ExtensionGet,
     ExtensionInfo,
     ExtensionKey,
+    ExtensionRef,
     ExtensionSetBytes,
     ExtensionSetJson,
+    ExtensionSetMaintained,
     Extensions,
     CommandExtensionSet,
     ImportJson,
@@ -112,10 +115,24 @@ from .protocol_gen import (
 )
 from .transport import ByteTransport, Transport
 
-__all__ = ["AGENT", "Client", "ProtocolError"]
+__all__ = ["AGENT", "Client", "Maintained", "ProtocolError"]
 
 AGENT = ReviewIdentity(id="agent", name="agent")
 """The agent a review call acts as unless told otherwise."""
+
+
+@dataclass(frozen=True)
+class Maintained:
+    """A maintained extension: a payload, the version of its format, and the
+    reference table the editor keeps current as the model's Ids change.
+
+    `payload` is any JSON value, or `bytes`. A reference the model lacks is
+    kept, never refused.
+    """
+
+    version: int
+    payload: Any
+    refs: list[ExtensionRef] = field(default_factory=list)
 
 
 class ProtocolError(RuntimeError):
@@ -429,11 +446,26 @@ class Client:
     # -- extensions
 
     def extension_set(self, session: SessionId, key: ExtensionKey, value: Any) -> None:
-        """`bytes` becomes a byte extension; anything else is JSON.
+        """`bytes` becomes a byte extension, a `Maintained` a maintained one;
+        anything else is JSON.
 
         The `catchlight.` prefix is reserved and refused.
         """
-        if isinstance(value, (bytes, bytearray)):
+        if isinstance(value, Maintained):
+            inline = not isinstance(value.payload, (bytes, bytearray))
+            self.send_with(
+                CommandExtensionSet(
+                    session=session,
+                    key=key,
+                    value=ExtensionSetMaintained(
+                        version=value.version,
+                        refs=list(value.refs),
+                        value=value.payload if inline else None,
+                    ),
+                ),
+                None if inline else {"value": bytes(value.payload)},
+            )
+        elif isinstance(value, (bytes, bytearray)):
             self.send_with(
                 CommandExtensionSet(session=session, key=key, value=ExtensionSetBytes()),
                 {"value": bytes(value)},
@@ -446,13 +478,22 @@ class Client:
             )
 
     def extension_get(self, session: SessionId, key: ExtensionKey) -> Any:
+        """A JSON value, `bytes`, or a `Maintained` with its reference table."""
         body, payload = self.send_with(ExtensionGet(session=session, key=key))
         if not isinstance(body, ResponseBodyExtension):
             raise ProtocolError(ErrorCode.BAD_REQUEST, f"extension_get answered {body!r}")
         if isinstance(body.value, ExtensionValueInfoJson):
             return body.value.value
-        if isinstance(body.value, ExtensionValueInfoMaintained) and body.value.value is not None:
-            return body.value.value
+        if isinstance(body.value, ExtensionValueInfoMaintained):
+            if body.value.value is None and payload is None:
+                raise ProtocolError(
+                    ErrorCode.BAD_REQUEST, f"{key}: a byte payload came back with no bytes"
+                )
+            return Maintained(
+                version=body.value.version,
+                payload=body.value.value if body.value.value is not None else payload,
+                refs=list(body.value.refs),
+            )
         if payload is None:
             raise ProtocolError(
                 ErrorCode.BAD_REQUEST, f"{key}: a bytes extension came back with no bytes"

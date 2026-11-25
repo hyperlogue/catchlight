@@ -84,6 +84,15 @@ next release is 0.3.0.
   uninstall. `catchlight-cli extension set --version <n> --refs <json>`
   writes a vendor's maintained extension with a JSON or byte payload, and
   warns about a reference the model lacks rather than refusing it.
+- **Vendor extensions in the editor keep their references.**
+  `extension_set` takes a maintained value: a version, a reference table and
+  a payload, inline JSON or the `value` attachment. `extension_list` and
+  `extension_get` report the reference table itself rather than its length.
+  `catchlight-editor extension list|get|set|delete` mirrors the file CLI's
+  group, with the JSON value as `--value`; Python's `Client.extension_set`
+  and `extension_get` take and return a `Maintained`. The Metadata panel
+  shows a maintained extension's version, references and payload, edits a
+  vendor's payload keeping the rest, and only views an official one.
 - **Humanoid controls.** The official `catchlight.humanoid` extension
   (`catchlight-extension-humanoid`) defines 35 standard face and body
   controls and maps each onto one of a model's params by three stops, so one

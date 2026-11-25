@@ -125,6 +125,7 @@ pub fn declarations(cfg: &Config) -> Vec<Decl> {
         proto::Camera,
         proto::ExtensionKey,
         proto::ExtensionSet,
+        proto::ExtensionRef,
         proto::ExtensionValueInfo,
         proto::ExtensionInfo,
         proto::Reply,

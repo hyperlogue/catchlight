@@ -36,6 +36,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use catchlight_core::components::BlendMode as CoreBlendMode;
+use catchlight_core::extension::{IdRef, Payload as ExtensionPayload, RawExtension};
 use catchlight_core::formats::clm::{
     self as clm, ClmIndices, ClmMesh, TextureAlpha, TextureEncoding as CoreTextureEncoding,
 };
@@ -1715,6 +1716,43 @@ impl Editor {
                         return Err(EditorError::BadRequest(
                             "a bytes extension needs the `value` attachment".into(),
                         ))
+                    }
+                    (
+                        ExtensionSet::Maintained {
+                            version,
+                            refs,
+                            value,
+                        },
+                        attached,
+                    ) => {
+                        let payload = match (value, attached) {
+                            (Some(value), None) => ExtensionPayload::Json(value),
+                            (None, Some(bytes)) => ExtensionPayload::Bytes(bytes.into()),
+                            (Some(_), Some(_)) => {
+                                return Err(EditorError::BadRequest(
+                                    "a maintained extension's payload is its inline `value` \
+                                     or the `value` attachment, not both"
+                                        .into(),
+                                ))
+                            }
+                            (None, None) => {
+                                return Err(EditorError::BadRequest(
+                                    "a maintained extension needs an inline `value` or the \
+                                     `value` attachment"
+                                        .into(),
+                                ))
+                            }
+                        };
+                        let refs = refs
+                            .into_iter()
+                            .map(IdRef::try_from)
+                            .collect::<Result<_, _>>()
+                            .map_err(EditorError::BadRequest)?;
+                        ExtensionValue::Maintained(RawExtension {
+                            version,
+                            refs,
+                            payload,
+                        })
                     }
                 };
                 self.edit_session_captured(session, move |s| {

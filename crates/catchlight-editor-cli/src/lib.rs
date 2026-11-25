@@ -3,6 +3,7 @@
 use std::io::Read;
 
 mod compose;
+mod extension;
 #[cfg(unix)]
 mod listen;
 mod review;
@@ -203,6 +204,11 @@ enum Cmd {
     /// Saved versions: numbered snapshots of the model to compare, restore or
     /// point a reply at.
     Version(version::VersionArgs),
+    /// Vendor data the model carries under its own key.
+    Extension {
+        #[command(subcommand)]
+        action: extension::ExtensionCmd,
+    },
     /// Render a preview to a PNG.
     Preview {
         /// Where the PNG is written.
@@ -837,6 +843,13 @@ where
         }
         return Ok(());
     }
+    if let Cmd::Extension { action } = &cli.cmd {
+        let code = extension::run(&cli, action, &mut transport)?;
+        if code != 0 {
+            std::process::exit(code);
+        }
+        return Ok(());
+    }
     let composed = match compose::execute(&cli, &mut transport)? {
         Some(compose::Output::Reply(reply)) => Some(reply),
         Some(compose::Output::Unfilled { revision, slots }) => {
@@ -1187,7 +1200,9 @@ fn build_command(cli: &Cli) -> Result<Command> {
             }
         }
         Cmd::Undo | Cmd::Redo => unreachable!("composed before building"),
-        Cmd::Review(_) | Cmd::Version(_) => unreachable!("handled in run"),
+        Cmd::Review(_) | Cmd::Version(_) | Cmd::Extension { .. } => {
+            unreachable!("handled in run")
+        }
         Cmd::Texture { action } => match action {
             TextureCmd::Add { node, path, id } => Command::TextureAdd {
                 session: resolve_session(cli)?,
@@ -1408,7 +1423,8 @@ fn describe_extension(value: &ExtensionValueInfo) -> String {
                 (None, Some(size), Some(hash)) => format!("{size} bytes  {hash}"),
                 _ => String::new(),
             };
-            format!("version {version}  {refs} reference(s)  {payload}")
+            let refs = serde_json::to_string(refs).unwrap_or_default();
+            format!("version {version}  refs {refs}  {payload}")
         }
     }
 }

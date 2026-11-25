@@ -3602,16 +3602,37 @@ class ExtensionSetBytes:
         return _wire_fields(self)
 
 
+@dataclass(frozen=True, kw_only=True)
+class ExtensionSetMaintained:
+    """A maintained value: its payload is `value` inline, or the `value`
+    attachment when `value` is absent. A reference the model lacks is kept
+    and warned about, never refused.
+    """
+
+    TAG_FIELD: ClassVar[str] = "kind"
+    TAG: ClassVar[str] = "maintained"
+
+    version: int
+    refs: list[ExtensionRef] = field(default_factory=list)
+    value: Any | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
 # What [`Command::ExtensionSet`] sets: inline JSON, or bytes attached as
 # `value`. Tagged by `kind` because a byte marker is itself a JSON object.
 ExtensionSet = (
     ExtensionSetJson
     | ExtensionSetBytes
+    | ExtensionSetMaintained
 )
 
 EXTENSION_SET_VARIANTS: dict[str, type[ExtensionSet]] = {
     "json": ExtensionSetJson,
     "bytes": ExtensionSetBytes,
+    "maintained": ExtensionSetMaintained,
 }
 
 
@@ -3622,6 +3643,47 @@ def parse_extension_set(message: Mapping[str, Any]) -> ExtensionSet:
     if found is None:
         raise ValueError(f"no ExtensionSet carries the kind {tag!r}")
     return _decode_class(found, message)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ExtensionRefNode:
+    node: NodeId
+
+
+@dataclass(frozen=True, kw_only=True)
+class ExtensionRefParam:
+    param: ParamId
+
+
+@dataclass(frozen=True, kw_only=True)
+class ExtensionRefTexture:
+    texture: TexId
+
+
+@dataclass(frozen=True, kw_only=True)
+class ExtensionRefSlot:
+    """A part's node, then the slot on it."""
+
+    slot: tuple[NodeId, SlotId]
+
+
+@dataclass(frozen=True, kw_only=True)
+class ExtensionRefRemoved:
+    """Never itself `removed`."""
+
+    removed: ExtensionRef
+
+
+# One entry of a maintained extension's reference table, in the file's own
+# form: `{"param": "eye_l"}`, `{"slot": ["head", "slot-1a2b3c4d"]}`, or
+# `{"removed": {"param": "eye_l"}}` for an Id the model no longer holds.
+ExtensionRef = (
+    ExtensionRefNode
+    | ExtensionRefParam
+    | ExtensionRefTexture
+    | ExtensionRefSlot
+    | ExtensionRefRemoved
+)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -3660,8 +3722,8 @@ class ExtensionValueInfoMaintained:
     TAG: ClassVar[str] = "maintained"
 
     version: int
-    # How many entries its reference table holds.
-    refs: int
+    # Its reference table, which the core keeps current.
+    refs: list[ExtensionRef]
     value: Any | None = None
     size: int | None = None
     hash: str | None = None
@@ -5020,9 +5082,16 @@ __all__ = [
     "ExtensionKey",
     "ExtensionSetJson",
     "ExtensionSetBytes",
+    "ExtensionSetMaintained",
     "ExtensionSet",
     "EXTENSION_SET_VARIANTS",
     "parse_extension_set",
+    "ExtensionRefNode",
+    "ExtensionRefParam",
+    "ExtensionRefTexture",
+    "ExtensionRefSlot",
+    "ExtensionRefRemoved",
+    "ExtensionRef",
     "ExtensionValueInfoJson",
     "ExtensionValueInfoBytes",
     "ExtensionValueInfoMaintained",

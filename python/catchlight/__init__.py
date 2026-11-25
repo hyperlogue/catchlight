@@ -9,7 +9,7 @@ no second hand-kept roster to drift.
 """
 
 from .builder import Builder, BuilderError, build_from_layers
-from .client import Client, ProtocolError
+from .client import Client, Maintained, ProtocolError
 from .layers import (
     LAYERS_VERSION,
     Layer,
@@ -40,6 +40,7 @@ __all__ = [
     "LaunchedServer",
     "Layer",
     "LayersError",
+    "Maintained",
     "Placement",
     "ProtocolError",
     "ServerError",
