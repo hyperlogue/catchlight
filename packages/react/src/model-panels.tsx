@@ -1,4 +1,4 @@
-import type { Session, NodeInfo, SlotPair } from "@catchlight/core";
+import type { Session, NodeInfo, SlotPair, ExtensionValueInfo } from "@catchlight/core";
 import { ReviewBadge, ReviewCommentButton } from "./review.js";
 import { useState } from "react";
 import {
@@ -399,6 +399,19 @@ export function ModelHealth({ session }: { session: Session }) {
   );
 }
 
+function describeExtension(value: ExtensionValueInfo): string {
+  switch (value.kind) {
+    case "json":
+      return "JSON metadata";
+    case "bytes":
+      return `${value.size.toLocaleString()} bytes`;
+    case "maintained":
+      return value.size == null
+        ? `Version ${value.version}`
+        : `Version ${value.version}, ${value.size.toLocaleString()} bytes`;
+  }
+}
+
 export function ExtensionsPanel({ session, onError }: { session: Session; onError: ErrorHandler }) {
   const { extensions } = useModelQuery(session, { cmd: "extension_list" }, "extensions");
   const { run, busy } = useCommand(session, onError);
@@ -417,9 +430,7 @@ export function ExtensionsPanel({ session, onError }: { session: Session; onErro
           <span>
             {ext.key}
             <small>
-              {ext.value.kind === "json"
-                ? "JSON metadata"
-                : `${ext.value.size.toLocaleString()} bytes`}
+              {describeExtension(ext.value)}
             </small>
           </span>
           {ext.value.kind === "json" && (
