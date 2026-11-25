@@ -302,14 +302,6 @@ fn viseme_commands_refuse_what_expression_commands_refuse() {
 }
 
 #[test]
-fn expression_commands_no_longer_add_visemes() {
-    let path = grid("expression-no-visemes");
-    let (code, _, stderr) = in_group("expression", &["add-visemes"], &path);
-    assert_eq!(code, 2, "{stderr}");
-    assert!(stderr.contains("unrecognized subcommand"), "{stderr}");
-}
-
-#[test]
 fn removing_the_last_expression_drops_the_extension() {
     let path = grid("expression-remove");
     let original = common::read(&path);

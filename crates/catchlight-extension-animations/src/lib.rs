@@ -213,8 +213,7 @@ pub struct Animations {
 
 /// The payload, CBOR-encoded. Lanes are columnar, and values are stored as
 /// little-endian bytes so every f32 round-trips bit for bit. A lane carries
-/// exactly one of its four target fields; a param lane is stored as it was
-/// before the other three existed.
+/// exactly one of its four target fields.
 mod stored {
     use catchlight_core::InterpolateMode;
     use serde::{Deserialize, Serialize};

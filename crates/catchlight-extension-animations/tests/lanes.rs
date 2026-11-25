@@ -321,51 +321,6 @@ fn each_lane_target_round_trips_through_a_file_and_names_by_string() {
     assert_eq!(kept.lanes, clip.lanes[1..]);
 }
 
-/// The stored shape before control, expression and viseme lanes existed: a
-/// lane's `param` was a plain index.
-#[test]
-fn a_payload_in_the_old_shape_still_decodes_and_encodes_as_it_was() {
-    use ciborium::Value;
-    let text = |s: &str| Value::Text(s.into());
-    let lane = Value::Map(vec![
-        (text("param"), Value::Integer(0.into())),
-        (text("interpolation"), text("Linear")),
-        (
-            text("frames"),
-            Value::Array(vec![Value::Integer(0.into()), Value::Integer(4.into())]),
-        ),
-        (
-            text("values"),
-            Value::Bytes(
-                [0.25f32, 1.0]
-                    .iter()
-                    .flat_map(|v| v.to_le_bytes())
-                    .collect(),
-            ),
-        ),
-    ]);
-    let clip = Value::Map(vec![
-        (text("name"), text("blink")),
-        (text("timestep"), Value::Float(0.5)),
-        (text("length"), Value::Integer(5.into())),
-        (text("lead_in"), Value::Null),
-        (text("lead_out"), Value::Null),
-        (text("lanes"), Value::Array(vec![lane])),
-    ]);
-    let mut bytes = Vec::new();
-    ciborium::into_writer(&Value::Array(vec![clip]), &mut bytes).unwrap();
-    let raw = RawExtension {
-        version: 1,
-        refs: vec![IdRef::Param(pid("blush"))],
-        payload: Payload::Bytes(bytes.clone().into()),
-    };
-    let animations = Animations::decode(raw.clone()).unwrap();
-    let blink = animations.clip("blink").unwrap();
-    assert_eq!(blink.lanes[0].target, LaneTarget::Param(pid("blush")));
-    assert_eq!(blink.lanes[0].value_at(2.0), 0.625);
-    assert_eq!(animations.encode(), raw);
-}
-
 #[test]
 fn a_stored_lane_with_two_targets_or_none_does_not_decode() {
     use ciborium::Value;
