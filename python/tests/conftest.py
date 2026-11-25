@@ -12,15 +12,16 @@ from catchlight import Client, LaunchedServer, launch
 
 
 @pytest.fixture(autouse=True, scope="session")
-def _reviews_kept_apart(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
-    """Spawned servers would otherwise keep reviews in the real per-user directory."""
-    before = os.environ.get("CATCHLIGHT_REVIEWS")
-    os.environ["CATCHLIGHT_REVIEWS"] = str(tmp_path_factory.mktemp("reviews"))
+def _kept_apart(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
+    """Spawned servers would otherwise keep reviews and versions in the real
+    per-user directory."""
+    before = os.environ.get("CATCHLIGHT_KEEP")
+    os.environ["CATCHLIGHT_KEEP"] = str(tmp_path_factory.mktemp("kept"))
     yield
     if before is None:
-        del os.environ["CATCHLIGHT_REVIEWS"]
+        del os.environ["CATCHLIGHT_KEEP"]
     else:
-        os.environ["CATCHLIGHT_REVIEWS"] = before
+        os.environ["CATCHLIGHT_KEEP"] = before
 
 
 @pytest.fixture

@@ -61,6 +61,15 @@ export class Editor {
     return this.#adopt(await this.#backend.send({ cmd: "session_create", name: name ?? null }));
   }
 
+  /**
+   * A read-only session showing one of `source`'s saved versions; the editor
+   * answers the same session for the same version, and closes it with
+   * `source`. Every edit to it is refused with `read_only`.
+   */
+  async openVersion(source: Session, version: number): Promise<Session> {
+    return this.#adopt(await this.#backend.send({ cmd: "version_open", session: source.id, version }));
+  }
+
   /** Opens a file in the *editor's* store; page-held bytes go to [`openFile`]. */
   async openSession(key: string): Promise<Session> {
     return this.#adopt(await this.#backend.send({ cmd: "session_open", path: key }));

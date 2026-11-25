@@ -224,3 +224,17 @@ export type {
   Reviewer,
   TargetLabel,
 } from "./review.js";
+export {
+  useVersions,
+  useVersionView,
+  VersionSelect,
+  VersionBanner,
+  versionName,
+  relativeTime,
+} from "./versions.js";
+export type {
+  VersionsState,
+  VersionView,
+  VersionSelectProps,
+  VersionBannerProps,
+} from "./versions.js";

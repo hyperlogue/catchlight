@@ -7,6 +7,7 @@ mod compose;
 mod listen;
 mod review;
 mod transport;
+mod version;
 use std::path::PathBuf;
 
 use anyhow::{anyhow, bail, Result};
@@ -56,6 +57,13 @@ Working with a running editor (a person may be watching the same session):
      that shows you the image before you answer. Show your own evidence the
      same way: `preview --out after.png`, then
      `review reply <thread> -m <text> --attach after.png`.
+  9. When a batch of review work is done, save a version and point the
+     replies at it: `review reply <thread> -m <text> --save-version <label>`
+     saves one and references it; `--version <n>` references one already
+     saved. `version save -l <label>`, `version list`, `version export <n>
+     --out <file>`, `version open <n>` (read-only) and `version restore <n>`
+     (one undoable edit) do the rest. A version is not a revision: it is
+     numbered per model and kept with it.
 Edits appear in the browser as they land. The editor is found through the
 connection file it writes; --server/--token name one explicitly.";
 
@@ -192,6 +200,9 @@ enum Cmd {
     },
     /// Review threads: comments the person leaves on the model for an agent.
     Review(review::ReviewArgs),
+    /// Saved versions: numbered snapshots of the model to compare, restore or
+    /// point a reply at.
+    Version(version::VersionArgs),
     /// Render a preview to a PNG.
     Preview {
         /// Where the PNG is written.
@@ -819,6 +830,13 @@ where
         }
         return Ok(());
     }
+    if let Cmd::Version(args) = &cli.cmd {
+        let code = version::run(&cli, args, &mut transport)?;
+        if code != 0 {
+            std::process::exit(code);
+        }
+        return Ok(());
+    }
     let composed = match compose::execute(&cli, &mut transport)? {
         Some(compose::Output::Reply(reply)) => Some(reply),
         Some(compose::Output::Unfilled { revision, slots }) => {
@@ -1169,7 +1187,7 @@ fn build_command(cli: &Cli) -> Result<Command> {
             }
         }
         Cmd::Undo | Cmd::Redo => unreachable!("composed before building"),
-        Cmd::Review(_) => unreachable!("handled in run"),
+        Cmd::Review(_) | Cmd::Version(_) => unreachable!("handled in run"),
         Cmd::Texture { action } => match action {
             TextureCmd::Add { node, path, id } => Command::TextureAdd {
                 session: resolve_session(cli)?,
@@ -1533,7 +1551,9 @@ fn print_body(body: &ResponseBody) {
         | ResponseBody::EditResults { .. }
         | ResponseBody::BindingCells { .. }
         | ResponseBody::SessionFork { .. }
-        | ResponseBody::ModelExport { .. } => {
+        | ResponseBody::ModelExport { .. }
+        | ResponseBody::Version { .. }
+        | ResponseBody::Versions { .. } => {
             println!("{}", serde_json::to_string_pretty(body).unwrap_or_default());
         }
         ResponseBody::Empty => println!("ok"),
@@ -1543,8 +1563,14 @@ fn print_body(body: &ResponseBody) {
                 println!("(no open sessions)");
             }
             for s in sessions {
+                let viewing = s.viewing.map_or(String::new(), |v| {
+                    format!(
+                        "  read-only: version {} of session {}",
+                        v.version, v.session.0
+                    )
+                });
                 println!(
-                    "session {}  {}{}  nodes={} rev={}",
+                    "session {}  {}{}  nodes={} rev={}{viewing}",
                     s.session.0,
                     s.title,
                     if s.dirty { " *" } else { "" },

@@ -72,6 +72,61 @@ describe("the assembled editor", () => {
     stop();
   });
 
+  test("a saved version opens read-only in place of the model, never as a tab of its own", async () => {
+    const stop = stubObservers();
+    const { editor, wasm } = await fakeStack();
+    const session = await editor.newSession("akari");
+    await session.send({ cmd: "node_add", parent: "root", kind: "part", name: "body" });
+    await session.sendVersion({ cmd: "version_save", label: "baseline", author: { role: "human" } });
+    await session.sendReview({
+      cmd: "review_thread_add",
+      target: { kind: "model" },
+      author: { role: "agent", id: "claude:1", name: "claude" },
+      body: "Saved the baseline.",
+      pose: [],
+      images: [],
+      version: 1,
+    });
+    const { container: view, unmount } = await mount(<CatchlightEditor editor={editor} />);
+    await settle();
+    expect(text(view, "[data-catchlight-version-trigger]")).toContain("Current");
+
+    await run(() =>
+      document.body.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ß", code: "KeyS", ctrlKey: true, altKey: true, bubbles: true }),
+      ),
+    );
+    await settle();
+    expect(document.activeElement?.getAttribute("aria-label")).toBe("Version label");
+    expect(wasm.requests.some((r) => r.cmd === "session_save")).toBe(false);
+
+    await run(() => button(view, "[data-catchlight-review-tab]").click());
+    await settle();
+    await run(() => button(view, "button[data-catchlight-version-chip]").click());
+    await settle();
+    await settle();
+
+    const viewed = [...wasm.viewing.keys()];
+    expect(viewed).toHaveLength(1);
+    expect(text(view, "[data-catchlight-version-banner]")).toContain("Viewing v1 · baseline");
+    expect(view.querySelector("[data-catchlight-workspace][data-viewing]")).not.toBeNull();
+    expect(view.querySelectorAll("[data-catchlight-session]")).toHaveLength(1);
+    expect(save(view).disabled).toBe(true);
+    expect(view.querySelector('[data-catchlight-panel="left"]')?.hasAttribute("inert")).toBe(true);
+    // The review panel stays on the live model's threads.
+    expect(view.querySelectorAll("[data-catchlight-review-thread]")).toHaveLength(1);
+
+    await run(() => button(view, "[data-catchlight-version-back]").click());
+    await settle();
+    expect(view.querySelector("[data-catchlight-version-banner]")).toBeNull();
+    expect(wasm.viewing.size).toBe(0);
+    expect(save(view).disabled).toBe(false);
+
+    await unmount();
+    editor.close();
+    stop();
+  });
+
   test("a node is selected in the tree and a param is a named slider", async () => {
     const stop = stubObservers();
     const editor = await fakeEditor();

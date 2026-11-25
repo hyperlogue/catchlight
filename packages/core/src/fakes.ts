@@ -16,6 +16,8 @@ import type {
   SessionInfo,
   TexInfo,
   TreeNode,
+  VersionInfo,
+  VersionViewing,
 } from "./protocol.gen.js";
 import type {
   Attachment,
@@ -109,6 +111,13 @@ export class FakeEditor implements WasmEditor {
   reviewImages = new Map<number, Uint8Array>();
   /** What every review says of how long it is kept. */
   reviewKept: Review["kept"] = "stored";
+  /** Each session's versions, with the doc each one saved. */
+  versions = new Map<number, { info: VersionInfo; doc: FakeDoc }[]>();
+  versionsKept: Review["kept"] = "stored";
+  /** Read-only sessions `version_open` made. */
+  viewing = new Map<number, VersionViewing>();
+  /** Advanced by tests; each version records it as its time. */
+  now = 1_700_000_000_000;
   freed = false;
 
   #events: string[] = [];
@@ -135,6 +144,14 @@ export class FakeEditor implements WasmEditor {
     const id = request.id;
     const refusal = this.refuse.get(request.cmd);
     if (refusal) return JSON.stringify({ reply: "err", id, ...refusal });
+    const viewed = "session" in request ? this.viewing.get(request.session as number) : undefined;
+    if (viewed && READ_ONLY_REFUSES.has(request.cmd))
+      return JSON.stringify({
+        reply: "err",
+        id,
+        code: "read_only",
+        message: `this session shows version ${viewed.version} of session ${viewed.session} and takes no edits`,
+      });
 
     switch (request.cmd) {
       case "session_get": {
@@ -180,6 +197,7 @@ export class FakeEditor implements WasmEditor {
             dirty: false,
             rev: doc.rev,
             node_count: 1 + doc.root.children.length,
+            ...(this.viewing.has(session) ? { viewing: this.viewing.get(session)! } : {}),
           }),
         );
         return this.#ok(id, { result: "sessions", sessions });
@@ -331,6 +349,12 @@ export class FakeEditor implements WasmEditor {
         if (!this.docs.delete(request.session))
           return this.#noSession(id, request.session);
         this.presence.delete(request.session);
+        this.viewing.delete(request.session);
+        for (const [view, of] of [...this.viewing])
+          if (of.session === request.session) {
+            this.viewing.delete(view);
+            this.docs.delete(view);
+          }
         this.#emit({ event: "sessions_changed" });
         return this.#ok(id, { result: "empty" });
       }
@@ -370,6 +394,63 @@ export class FakeEditor implements WasmEditor {
           this.#emit({ event: "review_changed", session: request.session });
         return this.#ok(id, body, doc.rev);
       }
+      case "version_save": {
+        const doc = this.docs.get(request.session);
+        if (!doc) return this.#noSession(id, request.session);
+        const list = this.versions.get(request.session) ?? [];
+        this.versions.set(request.session, list);
+        const info: VersionInfo = {
+          version: list.length + 1,
+          author: request.author,
+          time: this.now,
+          rev: doc.rev,
+          byte_length: structureBytes(doc).length,
+          sha256: "",
+          ...(request.label?.trim() ? { label: request.label.trim() } : {}),
+          ...(request.summary?.trim() ? { summary: request.summary.trim() } : {}),
+        };
+        list.push({ info, doc: readStructure(structureBytes(doc)) });
+        this.#emit({ event: "versions_changed", session: request.session });
+        return this.#ok(id, { result: "version", version: info }, doc.rev);
+      }
+      case "version_list": {
+        const doc = this.docs.get(request.session);
+        if (!doc) return this.#noSession(id, request.session);
+        const versions = (this.versions.get(request.session) ?? []).map((v) => structuredClone(v.info));
+        return this.#ok(id, { result: "versions", versions, kept: this.versionsKept }, doc.rev);
+      }
+      case "version_get":
+      case "version_restore":
+      case "version_open": {
+        const doc = this.docs.get(request.session);
+        if (!doc) return this.#noSession(id, request.session);
+        const saved = this.versions.get(request.session)?.[request.version - 1];
+        if (!saved)
+          return JSON.stringify({ reply: "err", id, code: "no_version", message: `no version ${request.version}` });
+        if (request.cmd === "version_get") {
+          this.#payload = structureBytes(saved.doc);
+          return this.#ok(id, { result: "version", version: structuredClone(saved.info) }, doc.rev);
+        }
+        if (request.cmd === "version_restore") {
+          const restored = readStructure(structureBytes(saved.doc));
+          doc.root = restored.root;
+          doc.params = restored.params;
+          return this.#changed(id, request.session, doc, { result: "version", version: structuredClone(saved.info) });
+        }
+        const viewing = { session: request.session, version: request.version };
+        for (const [view, of] of this.viewing)
+          if (of.session === viewing.session && of.version === viewing.version)
+            return this.#ok(id, { result: "session", session: view }, 0);
+        const view = this.#nextSession++;
+        const copy = readStructure(structureBytes(saved.doc));
+        copy.rev = 0;
+        copy.title = `${doc.title} v${request.version}`;
+        copy.file = null;
+        this.docs.set(view, copy);
+        this.viewing.set(view, viewing);
+        this.#emit({ event: "sessions_changed" });
+        return this.#ok(id, { result: "session", session: view }, 0);
+      }
       default: {
         const session =
           "session" in request ? (request.session as number) : undefined;
@@ -382,10 +463,10 @@ export class FakeEditor implements WasmEditor {
     }
   }
 
-  #changed(id: number, session: number, doc: FakeDoc): string {
+  #changed(id: number, session: number, doc: FakeDoc, body: ResponseBody = { result: "empty" }): string {
     doc.rev += 1;
     this.#emit({ event: "model_changed", session, rev: doc.rev });
-    return this.#ok(id, { result: "empty" }, doc.rev);
+    return this.#ok(id, body, doc.rev);
   }
 
   snapshot(session: number): FakeDoc {
@@ -492,6 +573,7 @@ export class FakeEditor implements WasmEditor {
             delivery: request.author.role === "human" ? "unsent" : "delivered",
             rev,
             images: claim(request.images),
+            ...(request.version != null ? { version: request.version } : {}),
           }],
         };
         review.threads.push(thread);
@@ -507,6 +589,7 @@ export class FakeEditor implements WasmEditor {
           delivery: request.author.role === "human" ? "unsent" : "delivered",
           rev,
           images: claim(request.images),
+          ...(request.version != null ? { version: request.version } : {}),
         });
         if (request.author.role === "human") thread.status = "open";
         else if (thread.holder?.id === request.author.id) delete thread.holder;
@@ -611,6 +694,12 @@ export class FakeEditor implements WasmEditor {
     this.#events.push(JSON.stringify(event));
   }
 }
+
+/** What a fake read-only session refuses; the real editor refuses every edit. */
+const READ_ONLY_REFUSES = new Set([
+  "node_add", "node_set", "node_delete", "param_add", "param_set", "param_delete", "texture_add",
+  "edit_apply", "session_save", "binding_add", "review_thread_add", "review_comment_add", "version_save",
+]);
 
 /** Reports a small limit so the clamp is testable. */
 export class FakeGpu implements WasmGpu {

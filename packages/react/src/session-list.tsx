@@ -1,4 +1,7 @@
-/** Every model the editor has open, including other clients' sessions. */
+/**
+ * Every model the editor has open, including other clients' sessions. A
+ * read-only session showing a saved version is not a model of its own.
+ */
 
 import type { SessionId, SessionInfo } from "@catchlight/core";
 import type { ComponentProps } from "react";
@@ -18,7 +21,7 @@ export function SessionListRoot({ onSelect, onClose, current, ...rest }: Session
   const { sessions } = useSessions();
   return (
     <ul data-catchlight-session-list="" {...rest}>
-      {sessions.map((info) => (
+      {sessions.filter((info) => !info.viewing).map((info) => (
         <li
           data-catchlight-session=""
           data-session={info.session}

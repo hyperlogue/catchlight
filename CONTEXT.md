@@ -494,7 +494,18 @@ A session's increasing publication number, advanced by a changed edit or
 history navigation. Session replies and feeds identify the revision they
 capture; failed and no-op edits leave it unchanged. An edit may name the
 revision it expects, and fails if the session has moved past it.
-_Avoid_: version, generation (that's the model's edit count)
+_Avoid_: version (that's a kept snapshot), generation (that's the model's
+edit count)
+
+**Version**:
+A numbered snapshot of a model's bytes, saved on purpose by the person or an
+agent with an optional label and summary. Numbered 1, 2, 3… per model and
+never reused or changed; kept beside the model like its review, so it
+outlives the session, and not carried into a fork. Saving one is not an
+edit: it moves no revision and does not save the file. **Restoring** one is
+an edit that replaces the model, undone like any other; **viewing** one opens
+it as a read-only session beside the live one.
+_Avoid_: revision (that's the session's edit counter), snapshot, checkpoint
 
 **Fork**:
 A new session started from another session's model at a given revision,
@@ -564,10 +575,15 @@ client. Published, never saved, never undone.
 **Review**:
 A session's threads, and the agents attending to them. Shared like presence
 and kept beside the model: never an edit, never undone, never in the model
-file, and not carried into a fork. An editor may keep a review with a saved
-model so it is there when the model is next opened; where is the editor's
-choice, and no client depends on it.
+file, and not carried into a fork.
 _Avoid_: chat, annotations
+
+**Kept**:
+What the editor keeps beside a saved model between runs, its review and its
+versions, so they are there when the model is next opened. Where is the
+editor's choice, made once for both, and no client depends on it; a client
+is told only how long they last.
+_Avoid_: sidecar (that's one place they may be kept), cache
 
 **Thread**:
 One conversation in a review about one target, open or resolved. It keeps the
@@ -589,7 +605,8 @@ when an agent acknowledges having received it, not when it merely reads it;
 an agent's comment is delivered as written. A repeated write under the same
 **retry key** from the same author lands once. A comment
 may carry a few images in place of or beside its text, kept with the review
-and never in the model.
+and never in the model, and may point at a version, such as the one holding
+a fix.
 _Avoid_: note, message
 
 **Agent**:

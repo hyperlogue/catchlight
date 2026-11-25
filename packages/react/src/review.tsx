@@ -86,6 +86,8 @@ export interface ReviewState {
   removeThread(thread: ThreadId): Promise<boolean>;
   removeComment(thread: ThreadId, comment: number): Promise<boolean>;
   send(): Promise<boolean>;
+  /** Shows a saved version a comment points at; absent when the host shows none. */
+  openVersion: ((version: number) => void) | undefined;
 }
 
 const ReviewContext = createContext<ReviewState | undefined>(undefined);
@@ -100,10 +102,19 @@ export interface ReviewProviderProps {
   reviewer?: Reviewer;
   /** A thread was focused or a comment started from outside the panel. */
   onAttention?: () => void;
+  /** Shows a saved version a comment points at, such as the one holding a fix. */
+  onOpenVersion?: (version: number) => void;
   children?: ReactNode;
 }
 
-export function ReviewProvider({ session, onError, reviewer, onAttention, children }: ReviewProviderProps) {
+export function ReviewProvider({
+  session,
+  onError,
+  reviewer,
+  onAttention,
+  onOpenVersion,
+  children,
+}: ReviewProviderProps) {
   const review = useSyncExternalStore(
     session?.subscribeReview ?? neverChanges,
     session?.getReview ?? noReview,
@@ -217,9 +228,10 @@ export function ReviewProvider({ session, onError, reviewer, onAttention, childr
       busy: pending > 0,
       composing: here.target,
       focused: here.thread,
+      openVersion: onOpenVersion,
       ...actions,
     };
-  }, [session, review, pending, here.target, here.thread, actions, reviewerId, reviewerName]);
+  }, [session, review, pending, here.target, here.thread, actions, reviewerId, reviewerName, onOpenVersion]);
 
   return <ReviewContext.Provider value={value}>{children}</ReviewContext.Provider>;
 }
@@ -577,6 +589,7 @@ export function ReviewPanel({ session, connect, capture }: ReviewPanelProps) {
             onStatus={(status) => void review.setStatus(thread.thread, status)}
             onDelete={() => void review.removeThread(thread.thread)}
             onDeleteComment={(comment) => void review.removeComment(thread.thread, comment)}
+            onOpenVersion={review.openVersion}
           />
         ))}
       </ol>
@@ -752,6 +765,7 @@ function ReviewThreadCard({
   onStatus,
   onDelete,
   onDeleteComment,
+  onOpenVersion,
 }: {
   thread: ReviewThread;
   label: TargetLabel;
@@ -767,6 +781,7 @@ function ReviewThreadCard({
   onStatus: (status: ThreadStatus) => void;
   onDelete: () => void;
   onDeleteComment: (comment: number) => void;
+  onOpenVersion: ((version: number) => void) | undefined;
 }) {
   const [reply, setReply] = useState("");
   const [replying, setReplying] = useState(false);
@@ -839,6 +854,9 @@ function ReviewThreadCard({
             )}
           </header>
           {comment.body && <p>{comment.body}</p>}
+          {comment.version != null && (
+            <VersionChip version={comment.version} onOpen={onOpenVersion} />
+          )}
           {!!comment.images?.length && <ReviewImages session={session} images={comment.images} />}
         </article>
       ))}
@@ -1074,6 +1092,27 @@ function AttachButtons({ attached }: { attached: Attachments }) {
         />
       )}
     </span>
+  );
+}
+
+/** The saved version a comment points at; opens it where the host can show it. */
+function VersionChip({ version, onOpen }: { version: number; onOpen: ((version: number) => void) | undefined }) {
+  if (!onOpen)
+    return (
+      <span data-catchlight-version-chip="" title={`Points at saved version ${version}`}>
+        v{version}
+      </span>
+    );
+  return (
+    <button
+      type="button"
+      data-catchlight-version-chip=""
+      title={`Open saved version ${version}`}
+      aria-label={`Open version ${version}`}
+      onClick={() => onOpen(version)}
+    >
+      <Icon name="history" width="12" height="12" />v{version}
+    </button>
   );
 }
 

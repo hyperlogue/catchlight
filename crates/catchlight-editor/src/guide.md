@@ -167,13 +167,13 @@ not be delivered: that agent stops showing as listening until it runs
 `listen` again. `review worker stop` stops the worker and keeps the
 registrations for the next `listen` or `review worker start`.
 
-Threads of a saved model are kept for you on this machine and are there when
-it is next opened; those of a model never saved last only as long as its
-session. Moving or renaming the model file leaves its threads behind; an
-editor started with `--reviews beside` keeps them next to the file
-(`<model>.review/`) instead. `catchlight-editor reviews gc --dry-run` lists
-the kept threads of models that no longer exist; without `--dry-run` it
-removes them.
+Threads and versions (section 7) of a saved model are kept for you on this
+machine and are there when it is next opened; those of a model never saved
+last only as long as its session. Moving or renaming the model file leaves
+them behind; an editor started with `--keep beside` keeps them next to the
+file (`<model>.clm.kept/`) instead. `catchlight-editor gc --dry-run` lists
+what is kept for models that no longer exist; without `--dry-run` it removes
+it.
 
 A comment can carry images: a screenshot, or one the user drew on to point at
 the problem. Such a comment lists `image <id> (…)` and may have no text at
@@ -194,7 +194,35 @@ catchlight-editor preview --out after.png
 catchlight-editor review reply <thread> -m "Ear now draws above the hair." --attach after.png
 ```
 
-## 7. Report
+## 7. Versions
+
+A version is a numbered snapshot of the model (1, 2, 3…, never reused) that
+the user can open beside the live model and restore. It is not a revision:
+`rev` counts every edit and lasts as long as the session, while versions are
+kept with the model. Saving one moves no revision and does not save the file.
+
+When a batch of review work is done, save a version and point each reply at
+it, so the user can compare before and after; `--save-version` does both in
+one step, and with `--key` a retry saves nothing twice:
+
+```sh
+catchlight-editor review reply <thread> -m "Ear now draws above the hair." --save-version "ear fix" --key ear-1
+catchlight-editor review reply <other> -m "Shortened the fringe." --version 4
+```
+
+The user sees a `v4` chip on the reply that opens that version. Otherwise:
+
+```sh
+catchlight-editor version save -l "before rig" -m "one line on what changed"
+catchlight-editor version list                  # newest first
+catchlight-editor version export 3 --out v3.clm # the exact bytes saved
+catchlight-editor version open 3                # a read-only session to inspect or preview
+catchlight-editor version restore 3             # one undoable edit
+```
+
+Restore only when the user asks; `undo` takes a restore back.
+
+## 8. Report
 
 Tell the user what you changed in their terms (which parts, params or
 motions), mention anything `check` still reports, and offer a `preview` image

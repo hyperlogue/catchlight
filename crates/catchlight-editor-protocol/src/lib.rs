@@ -575,6 +575,10 @@ pub enum Command {
         /// thread it opened back and opens nothing.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         key: Option<String>,
+        /// A saved version the comment points at, such as the one holding a
+        /// fix; [`ErrorCode::NoVersion`] unless the session has it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<u64>,
     },
     ReviewThreadSet {
         session: SessionId,
@@ -598,6 +602,9 @@ pub enum Command {
         /// thread and adds nothing.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         key: Option<String>,
+        /// As for [`Command::ReviewThreadAdd`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<u64>,
     },
     /// Removing a thread's only comment removes the thread.
     ReviewCommentDelete {
@@ -654,6 +661,48 @@ pub enum Command {
         agent: ReviewIdentity,
         threads: Vec<ThreadId>,
     },
+
+    /// Keep the session's model as it is now as the next numbered version.
+    /// Moves no revision, writes no file and leaves `dirty` alone.
+    VersionSave {
+        session: SessionId,
+        /// One line each; blank is absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        summary: Option<String>,
+        author: ReviewAuthor,
+        /// As for [`Command::ReviewThreadAdd`]: the same author saving again
+        /// under it with the same label and summary gets the version it saved
+        /// back and saves nothing.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<String>,
+    },
+    /// The session's versions, oldest first.
+    VersionList {
+        session: SessionId,
+    },
+    /// One version's `.clm`, byte for byte as it was saved, as the reply's
+    /// payload.
+    VersionGet {
+        session: SessionId,
+        version: u64,
+    },
+    /// Replace the session's model with a version's, as one undoable edit.
+    VersionRestore {
+        session: SessionId,
+        version: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        if_rev: Option<u64>,
+    },
+    /// A read-only session holding a version's model, for looking at it
+    /// beside the live one; every edit to it is [`ErrorCode::ReadOnly`]. One
+    /// already open on the same version is answered again. It closes with
+    /// the session it came from.
+    VersionOpen {
+        session: SessionId,
+        version: u64,
+    },
 }
 
 /// What applying a [`Command`] does to the model it addresses.
@@ -665,6 +714,8 @@ pub enum CommandKind {
     Presence,
     /// Changes the session's review threads; changes no model.
     Review,
+    /// Changes the session's saved versions; changes no model.
+    Version,
     /// A pure function of the model, so a replica answers it locally.
     ReplicaQuery,
     /// Needs the editor's sessions, store or renderer. `export_manifest` is here
@@ -757,6 +808,11 @@ pub const COMMAND_KINDS: &[(&str, CommandKind)] = &[
     ("review_ack", CommandKind::Review),
     ("review_claim", CommandKind::Review),
     ("review_release", CommandKind::Review),
+    ("version_save", CommandKind::Version),
+    ("version_list", CommandKind::ServerQuery),
+    ("version_get", CommandKind::ServerQuery),
+    ("version_restore", CommandKind::Edit),
+    ("version_open", CommandKind::Edit),
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -859,6 +915,13 @@ pub const COMMAND_BYTES: &[(&str, Bytes)] = &[
             payload: true,
         },
     ),
+    (
+        "version_get",
+        Bytes {
+            attachments: &[],
+            payload: true,
+        },
+    ),
 ];
 
 impl Command {
@@ -947,6 +1010,11 @@ impl Command {
             Command::ReviewAck { .. } => "review_ack",
             Command::ReviewClaim { .. } => "review_claim",
             Command::ReviewRelease { .. } => "review_release",
+            Command::VersionSave { .. } => "version_save",
+            Command::VersionList { .. } => "version_list",
+            Command::VersionGet { .. } => "version_get",
+            Command::VersionRestore { .. } => "version_restore",
+            Command::VersionOpen { .. } => "version_open",
         }
     }
 
@@ -1064,7 +1132,12 @@ impl Command {
             | Command::ReviewFetch { session, .. }
             | Command::ReviewAck { session, .. }
             | Command::ReviewClaim { session, .. }
-            | Command::ReviewRelease { session, .. } => Some(*session),
+            | Command::ReviewRelease { session, .. }
+            | Command::VersionSave { session, .. }
+            | Command::VersionList { session }
+            | Command::VersionGet { session, .. }
+            | Command::VersionRestore { session, .. }
+            | Command::VersionOpen { session, .. } => Some(*session),
         }
     }
 }
@@ -2077,6 +2150,9 @@ pub enum ErrorCode {
     /// `catchlight.` is the format's own prefix: a reader accepts a key under
     /// it, and nothing outside the format may author one.
     ReservedExtension,
+    NoVersion,
+    /// The session shows a saved version and takes no edits.
+    ReadOnly,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -2250,6 +2326,18 @@ pub enum ResponseBody {
         threads: Vec<ThreadId>,
         lease_seconds: u32,
     },
+    /// The version saved, or the one whose `.clm` is this reply's payload.
+    Version {
+        version: VersionInfo,
+    },
+    Versions {
+        /// Oldest first.
+        versions: Vec<VersionInfo>,
+        kept: Kept,
+        /// Why, when `kept` is `unreadable`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kept_problem: Option<String>,
+    },
 }
 
 /// A retained authored state, identified by its creation revision.
@@ -2369,6 +2457,9 @@ pub struct ReviewComment {
     pub rev: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<ReviewImage>,
+    /// The saved version the comment points at.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<u64>,
 }
 
 /// An image on a review comment; its bytes come from
@@ -2421,28 +2512,60 @@ pub struct Review {
     #[serde(default)]
     pub agents: Vec<ReviewAgent>,
     #[serde(default)]
-    pub kept: ReviewKept,
+    pub kept: Kept,
     /// Why, when `kept` is `unreadable`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kept_problem: Option<String>,
 }
 
-/// How long a review outlives its session. Says nothing about where it is
-/// kept: that is the editor's choice.
+/// How long what the editor keeps beside a model, its review or its
+/// versions, outlives the session. Says nothing about where it is kept: that
+/// is the editor's choice.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-pub enum ReviewKept {
+pub enum Kept {
     /// Kept with the model: it is there when the model is next opened.
     Stored,
-    /// The model has no file yet; the review is kept once it is saved.
+    /// The model has no file yet; it is kept once the model is saved.
     Unsaved,
-    /// This editor keeps no reviews: it lasts until the session closes.
+    /// This editor keeps nothing: it lasts until the session closes.
     #[default]
     Session,
-    /// A review kept earlier could not be read. It is left as it was and
+    /// What was kept earlier could not be read. It is left as it was and
     /// what is written now lasts until the session closes.
     Unreadable,
+}
+
+/// A snapshot of a session's model, kept beside it. Not a revision: a
+/// revision counts the session's edits and is gone when it closes, while a
+/// version is numbered per model and outlives the session as its review does.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct VersionInfo {
+    /// 1, 2, 3… within the model; never reused.
+    pub version: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    pub author: ReviewAuthor,
+    /// Milliseconds since the Unix epoch; 0 where the editor has no clock.
+    pub time: u64,
+    /// The session revision it was saved at.
+    pub rev: u64,
+    pub byte_length: u64,
+    /// Lowercase hex of the `.clm` bytes' SHA-256.
+    pub sha256: String,
+}
+
+/// What a read-only session opened by [`Command::VersionOpen`] shows.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct VersionViewing {
+    /// The session whose version it is.
+    pub session: SessionId,
+    pub version: u64,
 }
 
 /// What [`Command::ExtensionSet`] sets: inline JSON, or bytes attached as
@@ -2514,6 +2637,8 @@ pub enum Event {
     SessionsChanged,
     /// The session's review changed; re-read [`Command::ReviewGet`].
     ReviewChanged { session: SessionId },
+    /// The session's versions changed; re-read [`Command::VersionList`].
+    VersionsChanged { session: SessionId },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -2526,6 +2651,9 @@ pub struct SessionInfo {
     pub dirty: bool,
     pub rev: u64,
     pub node_count: u32,
+    /// Set on a read-only session showing a saved version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub viewing: Option<VersionViewing>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

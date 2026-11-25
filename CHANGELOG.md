@@ -24,16 +24,28 @@ next release is 0.3.0.
   repeated `reply` or `open` write once; and `CatchlightEditor`'s `reviewer`
   prop tells people sharing a review apart. A review is kept with a
   saved model, never in the `.clm`: `catchlight-editor` keeps it in a per-user
-  data directory (`--reviews beside` writes a `<model>.clm.review/` sidecar
-  instead; `catchlight-editor reviews gc --dry-run` lists threads left by
-  models that no longer exist), and an embedding host chooses its own store
-  with `Editor::with_review_store`. The in-tab editor keeps none yet. A host
+  data directory (`--keep beside` writes a `<model>.clm.kept/` sidecar
+  instead; `catchlight-editor gc --dry-run` lists what models that no
+  longer exist left behind), and an embedding host chooses its own store
+  with `Editor::with_kept_store`. The in-tab editor keeps none yet. A host
   says how an agent joins through `CatchlightEditor`'s `agentConnect` prop,
   so the same editor serves a local process or a hosted one that offers its
   own agent. `review listen` returns at once and has a per-user background
   worker announce each Send in the agent's Claude Code, Codex or Antigravity
   session, so nothing blocks the agent's turn; `review watch` remains the
   fallback.
+- **Saved versions: go back to an earlier result.** Save the model as a
+  numbered version with an optional label (the selector beside the model
+  tabs, Ctrl/⌘+Alt+S, or `catchlight-editor version save -l <label>`), open
+  any version read-only beside the live model, and restore it as one
+  undoable edit. Versions are kept with the review, deduplicated so shared
+  textures are stored once, and outlive the session; `version export <n>`
+  writes a version's exact bytes. An agent answering a review can point a
+  reply at the version holding its fix (`review reply --save-version
+  <label>` or `--version <n>`), shown as a chip that opens it. Python
+  sessions get `Client.version_*`. `--reviews`/`CATCHLIGHT_REVIEWS` are now
+  `--keep`/`CATCHLIGHT_KEEP` and govern both, `reviews gc` is `gc`, and the
+  per-user directory moved from `catchlight/reviews` to `catchlight/kept`.
 - **A redesigned editor.** One top bar holds the menus, open models, review
   status and save; the canvas runs edge to edge with its modes and tools
   floating over it; the tree, params and properties are denser, so more of the

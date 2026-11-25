@@ -156,6 +156,7 @@ export function Shortcuts({ onClose }: { onClose: () => void }) {
           ["Comment for your agent", "C"],
           ["Find a command or node", "Ctrl / ⌘ K"],
           ["Save model", "Ctrl / ⌘ S"],
+          ["Save version", "Ctrl / ⌘ Alt S"],
           ["Open model", "Ctrl / ⌘ O"],
           ["Undo / redo", "Ctrl / ⌘ Z / Shift Z"],
           ["Duplicate selection", "Ctrl / ⌘ D"],

@@ -53,6 +53,11 @@ fn harness(env: &dyn Fn(&str) -> Option<String>) -> Option<(&'static str, String
         .map(|id| ("codex", format!("codex:{id}")))
 }
 
+/// The agent this process writes as, from its harness and environment.
+pub(super) fn agent(name: Option<&str>) -> ReviewIdentity {
+    identity(name, &|name| std::env::var(name).ok())
+}
+
 fn identity(name: Option<&str>, env: &dyn Fn(&str) -> Option<String>) -> ReviewIdentity {
     // As r3 decides: the harness `listen` would notify names the agent, so
     // the worker polls as the identity the agent fetches with; only without
@@ -138,6 +143,8 @@ enum ReviewCmd {
         human: bool,
         #[command(flatten)]
         key: KeyArg,
+        #[command(flatten)]
+        version: VersionRef,
     },
     /// Start a thread on a node, param, texture, slot or the whole model.
     Open {
@@ -153,6 +160,8 @@ enum ReviewCmd {
         human: bool,
         #[command(flatten)]
         key: KeyArg,
+        #[command(flatten)]
+        version: VersionRef,
     },
     /// Take or renew a 60-minute claim on threads: the person sees you
     /// working on them, and other agents leave them to you.
@@ -199,6 +208,49 @@ struct KeyArg {
     /// the original result; the same key with other content is refused.
     #[arg(long, value_name = "KEY")]
     key: Option<String>,
+}
+
+/// The saved version a comment points at, such as the one holding the fix.
+#[derive(clap::Args)]
+#[group(multiple = false)]
+struct VersionRef {
+    /// Point at this saved version; the person can open it from the comment.
+    #[arg(long, value_name = "N")]
+    version: Option<u64>,
+    /// Save the model as a new version first, with this label if given, and
+    /// point at it. With `--key`, a retry saves nothing twice.
+    #[arg(long, value_name = "LABEL", num_args = 0..=1, default_missing_value = "")]
+    save_version: Option<String>,
+}
+
+impl VersionRef {
+    /// The version to point at, saving it first when asked; `Err(reply)`
+    /// when the save was refused.
+    fn resolve(
+        &self,
+        client: &mut Client,
+        session: SessionId,
+        author: &ReviewAuthor,
+        key: Option<&str>,
+    ) -> Result<std::result::Result<Option<u64>, Reply>> {
+        let Some(label) = &self.save_version else {
+            return Ok(Ok(self.version));
+        };
+        let reply = client.send(Command::VersionSave {
+            session,
+            label: Some(label.clone()).filter(|l| !l.trim().is_empty()),
+            summary: None,
+            author: author.clone(),
+            key: key.map(str::to_owned),
+        })?;
+        Ok(match reply {
+            Reply::Ok {
+                body: ResponseBody::Version { version },
+                ..
+            } => Ok(Some(version.version)),
+            other => Err(other),
+        })
+    }
 }
 
 #[derive(clap::Args)]
@@ -548,8 +600,15 @@ pub(super) fn run(
             attach,
             human,
             key,
+            version,
         } => {
             let body = message(text, attach)?;
+            let author = author(&who, *human);
+            let version =
+                match version.resolve(&mut client, session, &author, key.key.as_deref())? {
+                    Ok(version) => version,
+                    Err(refused) => return Ok(finish(cli, &refused, all, None)),
+                };
             let images = match client.upload(session, attach)? {
                 Ok(images) => images,
                 Err(refused) => return Ok(finish(cli, &refused, all, None)),
@@ -557,10 +616,11 @@ pub(super) fn run(
             Command::ReviewCommentAdd {
                 session,
                 thread: ThreadId(*thread),
-                author: author(&who, *human),
+                author,
                 body,
                 images,
                 key: key.key.clone(),
+                version,
             }
         }
         ReviewCmd::Open {
@@ -569,9 +629,16 @@ pub(super) fn run(
             attach,
             human,
             key,
+            version,
         } => {
             let target = target.target()?;
             let body = message(text, attach)?;
+            let author = author(&who, *human);
+            let version =
+                match version.resolve(&mut client, session, &author, key.key.as_deref())? {
+                    Ok(version) => version,
+                    Err(refused) => return Ok(finish(cli, &refused, all, None)),
+                };
             let images = match client.upload(session, attach)? {
                 Ok(images) => images,
                 Err(refused) => return Ok(finish(cli, &refused, all, None)),
@@ -579,11 +646,12 @@ pub(super) fn run(
             Command::ReviewThreadAdd {
                 session,
                 target,
-                author: author(&who, *human),
+                author,
                 body,
                 pose: Vec::new(),
                 images,
                 key: key.key.clone(),
+                version,
             }
         }
         ReviewCmd::Claim { threads: ids } => Command::ReviewClaim {
@@ -743,7 +811,7 @@ pub(super) fn describe(body: &ResponseBody, all: bool, saved: Option<&Saved>) ->
                 let state = if agent.listening { "is" } else { "is not" };
                 let _ = writeln!(out, "agent {} ({}) {state} listening", agent.name, agent.id);
             }
-            if review.kept == ReviewKept::Unreadable {
+            if review.kept == Kept::Unreadable {
                 let _ = writeln!(
                     out,
                     "the review kept with this model could not be read ({}); it is left as it is, and comments made now last until the session closes",
@@ -894,7 +962,14 @@ fn describe_thread(out: &mut String, thread: &ReviewThread, fetched: bool, saved
             (ReviewDelivery::Unsent, _) => " (not sent yet)",
             (ReviewDelivery::Delivered, _) => "",
         };
-        let _ = writeln!(out, "  {who}{mark} at rev {}:", comment.rev);
+        let _ = match comment.version {
+            Some(version) => writeln!(
+                out,
+                "  {who}{mark} at rev {}, pointing at version {version}:",
+                comment.rev
+            ),
+            None => writeln!(out, "  {who}{mark} at rev {}:", comment.rev),
+        };
         for line in comment.body.lines() {
             let _ = writeln!(out, "    {line}");
         }
@@ -941,6 +1016,7 @@ mod tests {
             delivery,
             rev: 4,
             images: Vec::new(),
+            version: None,
         }
     }
 
@@ -1005,6 +1081,18 @@ mod tests {
     }
 
     #[test]
+    fn a_comment_names_the_version_it_points_at() {
+        let mut thread = thread();
+        thread.comments.truncate(1);
+        thread.comments[0].version = Some(3);
+        let text = describe(&ResponseBody::ReviewThread { thread }, true, None).unwrap();
+        assert!(
+            text.contains("at rev 4, pointing at version 3:\n"),
+            "{text}"
+        );
+    }
+
+    #[test]
     fn a_list_hides_resolved_threads_unless_asked() {
         let mut resolved = thread();
         resolved.status = ThreadStatus::Resolved;
@@ -1023,7 +1111,7 @@ mod tests {
                         listening: false,
                     },
                 ],
-                kept: ReviewKept::Stored,
+                kept: Kept::Stored,
                 kept_problem: None,
             },
         };

@@ -106,8 +106,51 @@ impl Editor {
     pub(super) fn open_session(&self, path: String) -> Result<Captured<ResponseBody>, EditorError> {
         let model = Model::from_clm_bytes(&self.storage.read(&path)?)?;
         let title = key_stem(&path);
-        let kept = crate::review::ReviewKeeping::open(&*self.review_store, &path, &model);
-        self.publish_session_with(model, Some(title), Some(path), None, kept)
+        let review = crate::review::ReviewKeeping::open(&*self.kept_store, &path, &model);
+        let versions = crate::versions::Versions::open(&*self.kept_store, &path);
+        self.publish_session_with(model, Some(title), Some(path), None, |session| {
+            (session.review, session.review_keeping) = review;
+            session.versions = versions;
+        })
+    }
+
+    /// The open session viewing exactly this version, if any.
+    pub(super) fn viewing_session(&self, viewing: VersionViewing) -> Option<SessionId> {
+        self.sessions_where(|s| s.viewing == Some(viewing))
+            .into_iter()
+            .next()
+    }
+
+    pub(super) fn views_of(&self, session: SessionId) -> Vec<SessionId> {
+        self.sessions_where(|s| s.viewing.is_some_and(|v| v.session == session))
+    }
+
+    fn sessions_where(&self, wanted: impl Fn(&Session) -> bool) -> Vec<SessionId> {
+        let handles: Vec<_> = lock(&self.sessions)
+            .iter()
+            .map(|(&id, session)| (id, session.clone()))
+            .collect();
+        let mut found: Vec<SessionId> = handles
+            .into_iter()
+            .filter(|(_, handle)| {
+                let s = lock(handle);
+                !s.closed && wanted(&s)
+            })
+            .map(|(id, _)| id)
+            .collect();
+        found.sort_by_key(|id| id.0);
+        found
+    }
+
+    pub(super) fn publish_viewing(
+        &self,
+        model: Model,
+        title: String,
+        viewing: VersionViewing,
+    ) -> Result<Captured<ResponseBody>, EditorError> {
+        self.publish_session_with(model, Some(title), None, None, |session| {
+            session.viewing = Some(viewing);
+        })
     }
 
     pub(super) fn fork_session(
@@ -145,7 +188,7 @@ impl Editor {
         file: Option<String>,
         source: Option<SessionOrigin>,
     ) -> Result<Captured<ResponseBody>, EditorError> {
-        self.publish_session_with(model, name, file, source, Default::default())
+        self.publish_session_with(model, name, file, source, |_| {})
     }
 
     fn publish_session_with(
@@ -154,7 +197,7 @@ impl Editor {
         name: Option<String>,
         file: Option<String>,
         source: Option<SessionOrigin>,
-        (review, review_keeping): (crate::review::ReviewState, crate::review::ReviewKeeping),
+        kept: impl FnOnce(&mut Session),
     ) -> Result<Captured<ResponseBody>, EditorError> {
         if model.is_fragment() {
             return Err(ModelError::Fragment.into());
@@ -171,8 +214,7 @@ impl Editor {
         let session = self.alloc_id();
         let title = name.unwrap_or_else(|| format!("untitled-{}", session.0));
         let mut opened = Session::new(session, model, title, file);
-        opened.review = review;
-        opened.review_keeping = review_keeping;
+        kept(&mut opened);
         self.insert_session(session, opened);
         let body = match source {
             Some(source) => ResponseBody::SessionFork { session, source },

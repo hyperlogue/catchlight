@@ -12,7 +12,7 @@ use catchlight_editor_protocol::*;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::review_store::ReviewStore;
+use crate::kept_store::KeptStore;
 use crate::{Attachments, Captured, Editor, EditorError, Payload};
 
 /// A `review watch` polls about once a second; a few missed beats is a gone
@@ -308,6 +308,7 @@ struct Draft {
     body: String,
     images: Vec<u64>,
     key: Option<String>,
+    version: Option<u64>,
 }
 
 fn body_of(body: String, images: &[u64]) -> Result<String, EditorError> {
@@ -337,7 +338,7 @@ fn identity(who: ReviewIdentity) -> Result<ReviewIdentity, EditorError> {
     })
 }
 
-fn author_of(author: ReviewAuthor) -> Result<ReviewAuthor, EditorError> {
+pub(crate) fn author_of(author: ReviewAuthor) -> Result<ReviewAuthor, EditorError> {
     let optional = |what: &str, text: Option<String>, max: usize| {
         text.filter(|t| !t.trim().is_empty())
             .map(|t| bounded(what, &t, max))
@@ -408,7 +409,7 @@ fn comments_of(batch: &str) -> Result<Vec<u64>, EditorError> {
 }
 
 impl ReviewState {
-    fn wire(&self, model: &Model, kept: ReviewKept, kept_problem: Option<String>) -> Review {
+    fn wire(&self, model: &Model, kept: Kept, kept_problem: Option<String>) -> Review {
         Review {
             threads: self.threads.iter().map(|t| t.wire(model)).collect(),
             agents: self.presence(),
@@ -566,6 +567,7 @@ impl ReviewState {
         body: String,
         rev: u64,
         images: &[u64],
+        version: Option<u64>,
     ) -> ReviewComment {
         self.last_comment += 1;
         ReviewComment {
@@ -578,15 +580,17 @@ impl ReviewState {
             body,
             rev,
             images: self.claim(images),
+            version,
         }
     }
 
     /// What `draft` writes about `scope`, for telling a retry from a reuse
     /// of its key. Images are compared by their bytes: a retry uploads them
     /// again under new Ids.
-    fn digest(&self, scope: &str, body: &str, images: &[u64]) -> String {
+    fn digest(&self, scope: &str, body: &str, images: &[u64], version: Option<u64>) -> String {
         let mut hash = Sha256::new();
-        for part in [scope.as_bytes(), body.as_bytes()] {
+        let version = version.map(|v| v.to_string()).unwrap_or_default();
+        for part in [scope.as_bytes(), body.as_bytes(), version.as_bytes()] {
             hash.update((part.len() as u64).to_le_bytes());
             hash.update(part);
         }
@@ -661,7 +665,7 @@ impl ReviewState {
             "open {}",
             serde_json::to_string(&target).unwrap_or_default()
         );
-        let digest = self.digest(&scope, &body, &draft.images);
+        let digest = self.digest(&scope, &body, &draft.images, draft.version);
         if let Some(thread) =
             self.repeated(model, &author, key.as_deref(), &digest, &draft.images)?
         {
@@ -671,7 +675,7 @@ impl ReviewState {
         if let Some(agent) = agent_of(&author) {
             self.hear(&agent, Heard::Acted);
         }
-        let comment = self.comment(author, body, rev, &draft.images);
+        let comment = self.comment(author, body, rev, &draft.images, draft.version);
         self.last_thread += 1;
         let thread = Thread {
             id: ThreadId(self.last_thread),
@@ -706,7 +710,12 @@ impl ReviewState {
         let author = author_of(draft.author)?;
         let key = key_of(draft.key)?;
         self.check_images(&draft.images)?;
-        let digest = self.digest(&format!("reply {}", id.0), &body, &draft.images);
+        let digest = self.digest(
+            &format!("reply {}", id.0),
+            &body,
+            &draft.images,
+            draft.version,
+        );
         if let Some(thread) =
             self.repeated(model, &author, key.as_deref(), &digest, &draft.images)?
         {
@@ -717,7 +726,7 @@ impl ReviewState {
         if let Some(agent) = &agent {
             self.hear(agent, Heard::Acted);
         }
-        let comment = self.comment(author, body, rev, &draft.images);
+        let comment = self.comment(author, body, rev, &draft.images, draft.version);
         let thread = self.thread_mut(id)?;
         if let Some(key) = key {
             thread.keys.push(Keyed {
@@ -988,6 +997,16 @@ impl ReviewState {
 }
 
 const DOCUMENT_VERSION: u32 = 2;
+const DOCUMENT: &str = "review.json";
+
+fn kept_image(store: &dyn KeptStore, key: &str, name: &str) -> io::Result<Vec<u8>> {
+    store.read(key, name)?.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("{} is missing", store.place(key, name)),
+        )
+    })
+}
 
 /// The part of a review that outlives the session. Agents, claims and held
 /// images are the session's own.
@@ -1133,14 +1152,14 @@ pub(crate) struct ReviewKeeping {
 impl ReviewKeeping {
     /// The review `key` was left with, and what is known of the store. A
     /// review that cannot be read never blocks opening its model.
-    pub(crate) fn open(store: &dyn ReviewStore, key: &str, model: &Model) -> (ReviewState, Self) {
+    pub(crate) fn open(store: &dyn KeptStore, key: &str, model: &Model) -> (ReviewState, Self) {
         if !store.keeps() {
             return Default::default();
         }
-        let read = store.load(key).and_then(|found| match found {
+        let read = store.read(key, DOCUMENT).and_then(|found| match found {
             Some(bytes) => ReviewState::from_document(&bytes)
                 .map(|state| Some((state, bytes)))
-                .map_err(|e| bad_document(format!("{}: {e}", store.place(key)))),
+                .map_err(|e| bad_document(format!("{}: {e}", store.place(key, DOCUMENT)))),
             None => Ok(None),
         });
         match read {
@@ -1167,15 +1186,15 @@ impl ReviewKeeping {
         }
     }
 
-    pub(crate) fn kept(&self, store: &dyn ReviewStore, key: Option<&str>) -> ReviewKept {
+    pub(crate) fn kept(&self, store: &dyn KeptStore, key: Option<&str>) -> Kept {
         if !store.keeps() {
-            ReviewKept::Session
+            Kept::Session
         } else if key.is_none() {
-            ReviewKept::Unsaved
+            Kept::Unsaved
         } else if self.unreadable.is_some() {
-            ReviewKept::Unreadable
+            Kept::Unreadable
         } else {
-            ReviewKept::Stored
+            Kept::Stored
         }
     }
 
@@ -1184,7 +1203,7 @@ impl ReviewKeeping {
     /// document that names them and dropped only after one that does not.
     pub(crate) fn write(
         &mut self,
-        store: &dyn ReviewStore,
+        store: &dyn KeptStore,
         key: Option<&str>,
         next: &ReviewState,
     ) -> io::Result<()> {
@@ -1209,14 +1228,14 @@ impl ReviewKeeping {
                 .get(id)
                 .and_then(|image| image.bytes.as_ref())
                 .ok_or_else(|| bad_document(format!("review image {id} has no bytes to keep")))?;
-            store.put_image(key, name, bytes)?;
+            store.write(key, name, bytes)?;
         }
-        store.save(key, &document)?;
+        store.write(key, DOCUMENT, &document)?;
         for (id, name) in &self.stored {
             if !claimed.contains_key(id) {
                 // An orphan file is harmless and the document no longer
                 // names it; the comment's deletion already took effect.
-                let _ = store.delete_image(key, name);
+                let _ = store.delete(key, name);
             }
         }
         self.stored = claimed;
@@ -1228,7 +1247,7 @@ impl ReviewKeeping {
     /// `from` holds, then write the whole review under the new key.
     pub(crate) fn rekey(
         &mut self,
-        store: &dyn ReviewStore,
+        store: &dyn KeptStore,
         from: Option<&str>,
         to: &str,
         review: &mut ReviewState,
@@ -1240,7 +1259,7 @@ impl ReviewKeeping {
             let held = review.held.clone();
             for (id, image) in &mut review.images {
                 if image.bytes.is_none() && !held.contains(id) {
-                    let bytes = store.image(from, &image_name(*id, image.media_type))?;
+                    let bytes = kept_image(store, from, &image_name(*id, image.media_type))?;
                     image.bytes = Some(Arc::new(bytes));
                 }
             }
@@ -1251,6 +1270,21 @@ impl ReviewKeeping {
 }
 
 impl Editor {
+    /// Versions are never removed, so one found here is there when the
+    /// comment naming it lands.
+    fn check_version(&self, session: SessionId, version: Option<u64>) -> Result<(), EditorError> {
+        let Some(version) = version else {
+            return Ok(());
+        };
+        self.with_session(session, |s| {
+            if s.versions.has(version) {
+                Ok(())
+            } else {
+                Err(EditorError::NoVersion(version))
+            }
+        })
+    }
+
     /// Runs `f` under the session lock and, when it reports a change, tells
     /// observers once the lock is released.
     fn review_session(
@@ -1259,6 +1293,7 @@ impl Editor {
         f: impl FnOnce(&mut ReviewState, &Model, u64) -> Result<(ResponseBody, bool), EditorError>,
     ) -> Result<Captured<ResponseBody>, EditorError> {
         let captured = self.with_session_captured(id, |s| {
+            s.writable()?;
             let rev = s.rev;
             // The change is kept before it is published: a store that
             // refuses leaves the review as every client last read it.
@@ -1267,7 +1302,7 @@ impl Editor {
             let (body, changed) = f(&mut next, &s.model, rev)?;
             let out = (body, changed || next.attendance() != attended);
             s.review_keeping
-                .write(&*self.review_store, s.file.as_deref(), &next)?;
+                .write(&*self.kept_store, s.file.as_deref(), &next)?;
             s.review = next;
             Ok(out)
         })?;
@@ -1309,9 +1344,11 @@ impl Editor {
                         .ok_or(EditorError::NoImage(image))?;
                     let bytes = match (&stored.bytes, s.file.as_deref()) {
                         (Some(bytes), _) => bytes.to_vec(),
-                        (None, Some(key)) => self
-                            .review_store
-                            .image(key, &image_name(image, stored.media_type))?,
+                        (None, Some(key)) => kept_image(
+                            &*self.kept_store,
+                            key,
+                            &image_name(image, stored.media_type),
+                        )?,
                         (None, None) => return Err(EditorError::NoImage(image)),
                     };
                     Ok((info, stored.media_type, bytes))
@@ -1327,10 +1364,8 @@ impl Editor {
                 })
             }
             Command::ReviewGet { session } => self.with_session_captured(session, |s| {
-                let kept = s
-                    .review_keeping
-                    .kept(&*self.review_store, s.file.as_deref());
-                let problem = (kept == ReviewKept::Unreadable)
+                let kept = s.review_keeping.kept(&*self.kept_store, s.file.as_deref());
+                let problem = (kept == Kept::Unreadable)
                     .then(|| s.review_keeping.unreadable.clone())
                     .flatten();
                 Ok(ResponseBody::Review {
@@ -1345,21 +1380,26 @@ impl Editor {
                 pose,
                 images,
                 key,
-            } => self.review_session(session, |review, model, rev| {
-                let (thread, wrote) = review.open(
-                    model,
-                    rev,
-                    target,
-                    Draft {
-                        author,
-                        body,
-                        images,
-                        key,
-                    },
-                    pose,
-                )?;
-                Ok((ResponseBody::ReviewThread { thread }, wrote))
-            }),
+                version,
+            } => {
+                self.check_version(session, version)?;
+                self.review_session(session, |review, model, rev| {
+                    let (thread, wrote) = review.open(
+                        model,
+                        rev,
+                        target,
+                        Draft {
+                            author,
+                            body,
+                            images,
+                            key,
+                            version,
+                        },
+                        pose,
+                    )?;
+                    Ok((ResponseBody::ReviewThread { thread }, wrote))
+                })
+            }
             Command::ReviewThreadSet {
                 session,
                 thread,
@@ -1381,20 +1421,25 @@ impl Editor {
                 body,
                 images,
                 key,
-            } => self.review_session(session, |review, model, rev| {
-                let (thread, wrote) = review.reply(
-                    model,
-                    rev,
-                    thread,
-                    Draft {
-                        author,
-                        body,
-                        images,
-                        key,
-                    },
-                )?;
-                Ok((ResponseBody::ReviewThread { thread }, wrote))
-            }),
+                version,
+            } => {
+                self.check_version(session, version)?;
+                self.review_session(session, |review, model, rev| {
+                    let (thread, wrote) = review.reply(
+                        model,
+                        rev,
+                        thread,
+                        Draft {
+                            author,
+                            body,
+                            images,
+                            key,
+                            version,
+                        },
+                    )?;
+                    Ok((ResponseBody::ReviewThread { thread }, wrote))
+                })
+            }
             Command::ReviewCommentDelete {
                 session,
                 thread,
@@ -1634,6 +1679,7 @@ mod tests {
                 body: body.into(),
                 images: Vec::new(),
                 key: Some(key.into()),
+                version: None,
             })
         }
 
@@ -1647,6 +1693,7 @@ mod tests {
                 pose: Vec::new(),
                 images: Vec::new(),
                 key: None,
+                version: None,
             }) {
                 ResponseBody::ReviewThread { thread } => thread,
                 other => panic!("{other:?}"),
@@ -1750,6 +1797,7 @@ mod tests {
             body: "done".into(),
             images: Vec::new(),
             key: None,
+            version: None,
         }) {
             ResponseBody::ReviewThread { thread } => thread,
             other => panic!("{other:?}"),
@@ -1830,6 +1878,7 @@ mod tests {
             pose: Vec::new(),
             images: Vec::new(),
             key: None,
+            version: None,
         };
         let node = NodeId::new("nope").unwrap();
         assert_eq!(
@@ -1865,6 +1914,7 @@ mod tests {
                 pose: Vec::new(),
                 images: Vec::new(),
                 key: None,
+                version: None,
             }),
             ErrorCode::BadRequest
         );
@@ -1876,6 +1926,7 @@ mod tests {
                 body: "x".into(),
                 images: Vec::new(),
                 key: None,
+                version: None,
             }),
             ErrorCode::NoThread
         );
@@ -1944,6 +1995,7 @@ mod tests {
             body: "still wrong".into(),
             images: Vec::new(),
             key: None,
+            version: None,
         }) {
             ResponseBody::ReviewThread { thread } => thread,
             other => panic!("{other:?}"),
@@ -2057,6 +2109,7 @@ mod tests {
                     body: "x".into(),
                     images: Vec::new(),
                     key: None,
+                    version: None,
                 },
                 Vec::new(),
             )
@@ -2073,7 +2126,7 @@ mod tests {
         assert_eq!(state.pending(&who("codex").id), 0, "held for claude");
         state.threads[0].claim.as_mut().unwrap().since = Stamp(long_ago);
         assert_eq!(
-            state.wire(&model, ReviewKept::Session, None).threads[0].holder,
+            state.wire(&model, Kept::Session, None).threads[0].holder,
             None
         );
         assert_eq!(
@@ -2275,6 +2328,7 @@ mod tests {
             pose: Vec::new(),
             images: Vec::new(),
             key: Some(key.into()),
+            version: None,
         };
         let thread = |body| match body {
             ResponseBody::ReviewThread { thread } => thread.thread,
@@ -2348,6 +2402,7 @@ mod tests {
                 pose: Vec::new(),
                 images,
                 key: None,
+                version: None,
             })
         }
     }
@@ -2447,6 +2502,7 @@ mod tests {
                 body: "x".into(),
                 images: vec![image],
                 key: None,
+                version: None,
             }),
             ErrorCode::NoThread
         );
@@ -2491,6 +2547,7 @@ mod tests {
                 body: "after".into(),
                 images: vec![image],
                 key: Some("k".into()),
+                version: None,
             })
         };
         f.open(ReviewTarget::Model, human());
@@ -2528,6 +2585,7 @@ mod tests {
             body: "two".into(),
             images: vec![second],
             key: None,
+            version: None,
         });
         f.ok(Command::ReviewCommentDelete {
             session,
@@ -2587,43 +2645,39 @@ mod tests {
         }
     }
 
-    impl ReviewStore for MemoryStore {
-        fn load(&self, model: &str) -> io::Result<Option<Vec<u8>>> {
+    impl KeptStore for MemoryStore {
+        fn read(&self, model: &str, name: &str) -> io::Result<Option<Vec<u8>>> {
             self.check()?;
-            Ok(self.documents.lock().unwrap().get(model).cloned())
+            Ok(if name == DOCUMENT {
+                self.documents.lock().unwrap().get(model).cloned()
+            } else {
+                self.images
+                    .lock()
+                    .unwrap()
+                    .get(&(model.to_owned(), name.to_owned()))
+                    .cloned()
+            })
         }
 
-        fn save(&self, model: &str, document: &[u8]) -> io::Result<()> {
+        fn write(&self, model: &str, name: &str, bytes: &[u8]) -> io::Result<()> {
             self.check()?;
-            self.saves
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            self.documents
-                .lock()
-                .unwrap()
-                .insert(model.into(), document.to_vec());
+            if name == DOCUMENT {
+                self.saves
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.documents
+                    .lock()
+                    .unwrap()
+                    .insert(model.into(), bytes.to_vec());
+            } else {
+                self.images
+                    .lock()
+                    .unwrap()
+                    .insert((model.into(), name.into()), bytes.to_vec());
+            }
             Ok(())
         }
 
-        fn put_image(&self, model: &str, name: &str, bytes: &[u8]) -> io::Result<()> {
-            self.check()?;
-            self.images
-                .lock()
-                .unwrap()
-                .insert((model.into(), name.into()), bytes.to_vec());
-            Ok(())
-        }
-
-        fn image(&self, model: &str, name: &str) -> io::Result<Vec<u8>> {
-            self.check()?;
-            self.images
-                .lock()
-                .unwrap()
-                .get(&(model.to_owned(), name.to_owned()))
-                .cloned()
-                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, name.to_owned()))
-        }
-
-        fn delete_image(&self, model: &str, name: &str) -> io::Result<()> {
+        fn delete(&self, model: &str, name: &str) -> io::Result<()> {
             self.check()?;
             self.images
                 .lock()
@@ -2670,7 +2724,7 @@ mod tests {
 
         /// A new session on an editor that keeps reviews in `store`.
         fn keeping(models: &Arc<MemoryModels>, store: &Arc<MemoryStore>) -> Self {
-            let editor = Editor::with_storage(models.clone()).with_review_store(store.clone());
+            let editor = Editor::with_storage(models.clone()).with_kept_store(store.clone());
             let session = match editor.handle(Request {
                 id: 1,
                 command: Command::SessionNew {
@@ -2689,7 +2743,7 @@ mod tests {
 
         /// The model at `key`, opened by a fresh editor on the same stores.
         fn reopened(models: &Arc<MemoryModels>, store: &Arc<MemoryStore>, key: &str) -> Self {
-            let editor = Editor::with_storage(models.clone()).with_review_store(store.clone());
+            let editor = Editor::with_storage(models.clone()).with_kept_store(store.clone());
             let session = match editor.handle(Request {
                 id: 1,
                 command: Command::SessionOpen { path: key.into() },
@@ -2728,9 +2782,9 @@ mod tests {
         let (models, store) = Default::default();
         let mut f = Fixture::keeping(&models, &store);
         let session = f.session;
-        assert_eq!(f.review().kept, ReviewKept::Unsaved);
+        assert_eq!(f.review().kept, Kept::Unsaved);
         assert!(matches!(f.save("m.clm"), Reply::Ok { .. }));
-        assert_eq!(f.review().kept, ReviewKept::Stored);
+        assert_eq!(f.review().kept, Kept::Stored);
 
         let first = f.thread_with_image(PNG);
         let second = f.open(ReviewTarget::Model, human());
@@ -2748,7 +2802,7 @@ mod tests {
 
         let mut g = Fixture::reopened(&models, &store, "m.clm");
         let after = g.review();
-        assert_eq!(after.kept, ReviewKept::Stored);
+        assert_eq!(after.kept, Kept::Stored);
         assert_eq!(
             after.agents,
             [],
@@ -2967,7 +3021,7 @@ mod tests {
                 .insert("m.clm".into(), bad.to_vec());
             let mut f = Fixture::reopened(&models, &store, "m.clm");
             let review = f.review();
-            assert_eq!(review.kept, ReviewKept::Unreadable);
+            assert_eq!(review.kept, Kept::Unreadable);
             assert!(review.kept_problem.is_some());
             assert!(review.threads.is_empty());
 
@@ -2981,11 +3035,7 @@ mod tests {
             assert_eq!(store.documents.lock().unwrap()["m.clm"], bad);
 
             assert!(matches!(f.save("copy.clm"), Reply::Ok { .. }));
-            assert_eq!(
-                f.review().kept,
-                ReviewKept::Stored,
-                "a new key has no bad file"
-            );
+            assert_eq!(f.review().kept, Kept::Stored, "a new key has no bad file");
         }
     }
 
@@ -3033,12 +3083,12 @@ mod tests {
         let mut f = Fixture::on(editor, session);
         f.thread_with_image(PNG);
         assert!(matches!(f.save("m.clm"), Reply::Ok { .. }));
-        assert_eq!(f.review().kept, ReviewKept::Session);
+        assert_eq!(f.review().kept, Kept::Session);
     }
 
     #[test]
     fn the_sidecar_is_a_directory_beside_the_model() {
-        use crate::{FileStorage, SidecarReviewStore};
+        use crate::{FileStorage, SidecarKeptStore};
         static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let nth = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let dir =
@@ -3047,7 +3097,7 @@ mod tests {
         std::fs::create_dir_all(dir.join("models")).unwrap();
         let editor = || {
             Editor::with_storage(Arc::new(FileStorage::new(&dir)))
-                .with_review_store(Arc::new(SidecarReviewStore::new(&dir)))
+                .with_kept_store(Arc::new(SidecarKeptStore::new(&dir)))
         };
         let first = editor();
         let session = match first.handle(Request {
@@ -3067,7 +3117,7 @@ mod tests {
         f.save("models/m.clm");
         let thread = f.thread_with_image(PNG);
 
-        let sidecar = dir.join("models/m.clm.review");
+        let sidecar = dir.join("models/m.clm.kept");
         let mut names: Vec<String> = std::fs::read_dir(&sidecar)
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
@@ -3114,7 +3164,7 @@ mod tests {
         };
         let mut h = Fixture::on(third, session);
         let review = h.review();
-        assert_eq!(review.kept, ReviewKept::Unreadable);
+        assert_eq!(review.kept, Kept::Unreadable);
         assert!(
             review.kept_problem.unwrap().contains("review.json"),
             "the problem names the file to look at"
@@ -3124,7 +3174,7 @@ mod tests {
 
     #[test]
     fn the_user_store_keeps_one_directory_per_model_and_prunes_deleted_ones() {
-        use crate::{FileStorage, UserReviewStore};
+        use crate::{FileStorage, UserKeptStore};
         use std::time::Duration;
         static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let nth = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -3133,10 +3183,10 @@ mod tests {
         let models = dir.join("models");
         let reviews = dir.join("reviews");
         std::fs::create_dir_all(&models).unwrap();
-        let store = UserReviewStore::new(&models, &reviews);
+        let store = UserKeptStore::new(&models, &reviews);
         let editor = || {
             Editor::with_storage(Arc::new(FileStorage::new(&models)))
-                .with_review_store(Arc::new(store.clone()))
+                .with_kept_store(Arc::new(store.clone()))
         };
         let open = |editor: Editor, path: &str| {
             let session = match editor.handle(Request {

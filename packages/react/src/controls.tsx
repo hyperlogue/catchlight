@@ -45,6 +45,7 @@ const paths = {
   comment: "M4 5h16v11h-9l-5 4v-4H4Z",
   send: "M4 12 21 4l-6 17-3-7Zm8 2 4-5",
   spark: "M12 3l2 6 6 3-6 3-2 6-2-6-6-3 6-3Z",
+  history: "M3 12a9 9 0 1 0 3-6.7L3 8m0-5v5h5m4-1v5l3 2",
 } as const;
 export type IconName = keyof typeof paths;
 export function Icon({ name, ...props }: { name: IconName } & ComponentProps<"svg">) {

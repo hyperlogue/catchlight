@@ -104,6 +104,9 @@ impl CatchlightEditor {
         let written = Arc::new(WrittenBytes::default());
         let events: Arc<Mutex<Vec<String>>> = Arc::default();
         let editor = Editor::with_storage(written.clone());
+        // A version's time; the server cannot read the clock on wasm32.
+        #[cfg(target_arch = "wasm32")]
+        let editor = editor.with_clock(|| js_sys::Date::now() as u64);
         let sink = events.clone();
         // The observer holds only the queue; the subscription lives as long as the
         // editor.

@@ -65,6 +65,8 @@ from .protocol_gen import (
     ResponseBodyReviewImage,
     ResponseBodyReviewPending,
     ResponseBodyReviewThread,
+    ResponseBodyVersion,
+    ResponseBodyVersions,
     Review,
     ReviewAuthor,
     ReviewAuthorAgent,
@@ -100,6 +102,12 @@ from .protocol_gen import (
     TextureAdd,
     TextureAlpha,
     TextureEncoding,
+    VersionGet,
+    VersionInfo,
+    VersionList,
+    VersionOpen,
+    VersionRestore,
+    VersionSave,
     parse_reply,
 )
 from .transport import ByteTransport, Transport
@@ -480,6 +488,7 @@ class Client:
         pose: Sequence[ParamPose] = (),
         attach: Sequence[ReviewAttachment] = (),
         key: str | None = None,
+        version: int | None = None,
     ) -> ReviewThread:
         """Start a thread, on the whole model unless `target` names something.
 
@@ -487,6 +496,7 @@ class Client:
         `attach` is up to four PNG, JPEG or WebP images, each a path or the
         file's bytes; with one, `body` may be empty. Repeating the call with
         the same `key` returns the thread it opened and opens nothing.
+        `version` points the comment at a saved version, such as the fix.
         """
         return _thread(
             self.send(
@@ -498,6 +508,7 @@ class Client:
                     pose=list(pose),
                     images=self._review_images(session, attach),
                     key=key,
+                    version=version,
                 )
             )
         )
@@ -511,11 +522,23 @@ class Client:
         agent: ReviewIdentity | None = AGENT,
         attach: Sequence[ReviewAttachment] = (),
         key: str | None = None,
+        version: int | None = None,
+        save_version: str | bool = False,
     ) -> ReviewThread:
         """An agent's reply releases its claim on the thread.
 
-        `attach` and `key` are as for `review_open`.
+        `attach`, `key` and `version` are as for `review_open`.
+        `save_version` saves the model as a new version first, labelled
+        when it is a string, and points the reply at it; with `key`, a
+        retry saves nothing twice.
         """
+        if save_version is not False:
+            version = self.version_save(
+                session,
+                label=save_version if isinstance(save_version, str) else None,
+                agent=agent,
+                key=key,
+            ).version
         return _thread(
             self.send(
                 ReviewCommentAdd(
@@ -525,6 +548,7 @@ class Client:
                     body=body,
                     images=self._review_images(session, attach),
                     key=key,
+                    version=version,
                 )
             )
         )
@@ -618,7 +642,62 @@ class Client:
         )
 
 
+    # -- versions
+
+    def version_save(
+        self,
+        session: SessionId,
+        *,
+        label: str | None = None,
+        summary: str | None = None,
+        agent: ReviewIdentity | None = AGENT,
+        key: str | None = None,
+    ) -> VersionInfo:
+        """Keep the model as it is now as the next numbered version.
+
+        Moves no revision and saves no file. `agent=None` saves as the
+        person. Repeating the call with the same `key` and label returns the
+        version it saved and saves nothing.
+        """
+        return _version(self.send(VersionSave(
+            session=session, label=label, summary=summary, author=_author(agent), key=key,
+        )))
+
+    def versions(self, session: SessionId) -> ResponseBodyVersions:
+        """The session's versions, oldest first, and how long they are kept."""
+        body = self.send(VersionList(session=session))
+        if not isinstance(body, ResponseBodyVersions):
+            raise ProtocolError(ErrorCode.BAD_REQUEST, f"version_list answered {body!r}")
+        return body
+
+    def version_bytes(self, session: SessionId, version: int) -> bytes:
+        """A version's `.clm`, byte for byte as it was saved."""
+        body, payload = self.send_with(VersionGet(session=session, version=version))
+        info = _version(body)
+        if payload is None or len(payload) != info.byte_length:
+            raise ProtocolError(
+                ErrorCode.BAD_REQUEST, f"version {version} came back without its bytes"
+            )
+        return payload
+
+    def version_restore(
+        self, session: SessionId, version: int, *, if_rev: int | None = None
+    ) -> VersionInfo:
+        """Replace the model with a version's as one undoable edit."""
+        return _version(self.send(VersionRestore(session=session, version=version, if_rev=if_rev)))
+
+    def version_open(self, session: SessionId, version: int) -> SessionId:
+        """A read-only session showing the version; it refuses every edit."""
+        return _session(self.send(VersionOpen(session=session, version=version)))
+
+
 ReviewAttachment = bytes | bytearray | str | os.PathLike[str]
+
+
+def _version(body: ResponseBody) -> VersionInfo:
+    if not isinstance(body, ResponseBodyVersion):
+        raise ProtocolError(ErrorCode.BAD_REQUEST, f"expected a version, got {body!r}")
+    return body.version
 
 
 def _author(agent: ReviewIdentity | None) -> ReviewAuthor:

@@ -600,6 +600,7 @@ fn a_comment_made_over_post_reaches_a_websocket_subscriber() {
                 pose: Vec::new(),
                 images: Vec::new(),
                 key: None,
+                version: None,
             },
         },
     ));

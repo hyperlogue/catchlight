@@ -57,6 +57,12 @@ class CommandKind(StrEnum):
     # undo entry. Other clients learn of it from `review_changed`.
     REVIEW = "review"
 
+    # A command that changes a session's saved versions.
+    #
+    # Like review it goes to the editor and changes no model: no revision, no
+    # undo entry. Other clients learn of it from `versions_changed`.
+    VERSION = "version"
+
     # A read that is a pure function of the model.
     #
     # A client holding a replica answers it locally, with no round trip. The
@@ -1538,6 +1544,9 @@ class ReviewThreadAdd:
     # A retry key: the same author writing again under it gets the
     # thread it opened back and opens nothing.
     key: str | None = None
+    # A saved version the comment points at, such as the one holding a
+    # fix; [`ErrorCode::NoVersion`] unless the session has it.
+    version: int | None = None
 
     def to_wire(self) -> dict[str, Any]:
         """This value, as one JSON object: its tag, then every field it set."""
@@ -1593,6 +1602,8 @@ class ReviewCommentAdd:
     # As for [`Command::ReviewThreadAdd`]: a repeat answers with the
     # thread and adds nothing.
     key: str | None = None
+    # As for [`Command::ReviewThreadAdd`].
+    version: int | None = None
 
     def to_wire(self) -> dict[str, Any]:
         """This value, as one JSON object: its tag, then every field it set."""
@@ -1767,6 +1778,106 @@ class ReviewRelease:
         return _wire_fields(self)
 
 
+@dataclass(frozen=True, kw_only=True)
+class VersionSave:
+    """Keep the session's model as it is now as the next numbered version.
+    Moves no revision, writes no file and leaves `dirty` alone.
+    """
+
+    TAG_FIELD: ClassVar[str] = "cmd"
+    TAG: ClassVar[str] = "version_save"
+    CMD: ClassVar[str] = TAG
+    KIND: ClassVar[CommandKind] = CommandKind.VERSION
+
+    session: SessionId
+    # One line each; blank is absent.
+    label: str | None = None
+    summary: str | None = None
+    author: ReviewAuthor
+    # As for [`Command::ReviewThreadAdd`]: the same author saving again
+    # under it with the same label and summary gets the version it saved
+    # back and saves nothing.
+    key: str | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class VersionList:
+    """The session's versions, oldest first."""
+
+    TAG_FIELD: ClassVar[str] = "cmd"
+    TAG: ClassVar[str] = "version_list"
+    CMD: ClassVar[str] = TAG
+    KIND: ClassVar[CommandKind] = CommandKind.SERVER_QUERY
+
+    session: SessionId
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class VersionGet:
+    """One version's `.clm`, byte for byte as it was saved, as the reply's
+    payload.
+    """
+
+    TAG_FIELD: ClassVar[str] = "cmd"
+    TAG: ClassVar[str] = "version_get"
+    CMD: ClassVar[str] = TAG
+    KIND: ClassVar[CommandKind] = CommandKind.SERVER_QUERY
+
+    session: SessionId
+    version: int
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class VersionRestore:
+    """Replace the session's model with a version's, as one undoable edit."""
+
+    TAG_FIELD: ClassVar[str] = "cmd"
+    TAG: ClassVar[str] = "version_restore"
+    CMD: ClassVar[str] = TAG
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
+
+    session: SessionId
+    version: int
+    if_rev: int | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class VersionOpen:
+    """A read-only session holding a version's model, for looking at it
+    beside the live one; every edit to it is [`ErrorCode::ReadOnly`]. One
+    already open on the same version is answered again. It closes with
+    the session it came from.
+    """
+
+    TAG_FIELD: ClassVar[str] = "cmd"
+    TAG: ClassVar[str] = "version_open"
+    CMD: ClassVar[str] = TAG
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
+
+    session: SessionId
+    version: int
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
 Command = (
     SessionNew
     | SessionOpen
@@ -1850,6 +1961,11 @@ Command = (
     | ReviewAck
     | ReviewClaim
     | ReviewRelease
+    | VersionSave
+    | VersionList
+    | VersionGet
+    | VersionRestore
+    | VersionOpen
 )
 
 COMMAND_VARIANTS: dict[str, type[Command]] = {
@@ -1935,6 +2051,11 @@ COMMAND_VARIANTS: dict[str, type[Command]] = {
     "review_ack": ReviewAck,
     "review_claim": ReviewClaim,
     "review_release": ReviewRelease,
+    "version_save": VersionSave,
+    "version_list": VersionList,
+    "version_get": VersionGet,
+    "version_restore": VersionRestore,
+    "version_open": VersionOpen,
 }
 
 
@@ -2033,6 +2154,11 @@ COMMAND_KINDS: dict[str, CommandKind] = {
     "review_ack": CommandKind.REVIEW,
     "review_claim": CommandKind.REVIEW,
     "review_release": CommandKind.REVIEW,
+    "version_save": CommandKind.VERSION,
+    "version_list": CommandKind.SERVER_QUERY,
+    "version_get": CommandKind.SERVER_QUERY,
+    "version_restore": CommandKind.EDIT,
+    "version_open": CommandKind.EDIT,
 }
 
 
@@ -2094,6 +2220,10 @@ COMMAND_BYTES: dict[str, CommandBytes] = {
         (),
         True,
     ),
+    "version_get": CommandBytes(
+        (),
+        True,
+    ),
 }
 
 # A command that changes a session's model, or which sessions exist.
@@ -2147,6 +2277,8 @@ EditCommand = (
     | ImportJson
     | CommandExtensionSet
     | ExtensionDelete
+    | VersionRestore
+    | VersionOpen
 )
 
 # A command that publishes shared view state: pose, camera, selection.
@@ -2173,6 +2305,12 @@ ReviewCommand = (
     | ReviewClaim
     | ReviewRelease
 )
+
+# A command that changes a session's saved versions.
+#
+# Like review it goes to the editor and changes no model: no revision, no
+# undo entry. Other clients learn of it from `versions_changed`.
+VersionCommand = VersionSave
 
 # A read that is a pure function of the model.
 #
@@ -2210,6 +2348,8 @@ ServerQueryCommand = (
     | ExtensionGet
     | ReviewGet
     | ReviewImageGet
+    | VersionList
+    | VersionGet
 )
 
 # A command that reads, whoever answers it.
@@ -3309,6 +3449,8 @@ class ReviewComment:
     # The session revision the author was looking at.
     rev: int
     images: list[ReviewImage] = field(default_factory=list)
+    # The saved version the comment points at.
+    version: int | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -3324,20 +3466,51 @@ class ReviewImage:
     byte_length: int
 
 
-class ReviewKept(StrEnum):
-    """How long a review outlives its session. Says nothing about where it is
-    kept: that is the editor's choice.
+class Kept(StrEnum):
+    """How long what the editor keeps beside a model, its review or its
+    versions, outlives the session. Says nothing about where it is kept: that
+    is the editor's choice.
     """
 
     # Kept with the model: it is there when the model is next opened.
     STORED = "stored"
-    # The model has no file yet; the review is kept once it is saved.
+    # The model has no file yet; it is kept once the model is saved.
     UNSAVED = "unsaved"
-    # This editor keeps no reviews: it lasts until the session closes.
+    # This editor keeps nothing: it lasts until the session closes.
     SESSION = "session"
-    # A review kept earlier could not be read. It is left as it was and
+    # What was kept earlier could not be read. It is left as it was and
     # what is written now lasts until the session closes.
     UNREADABLE = "unreadable"
+
+
+@dataclass(frozen=True, kw_only=True)
+class VersionInfo:
+    """A snapshot of a session's model, kept beside it. Not a revision: a
+    revision counts the session's edits and is gone when it closes, while a
+    version is numbered per model and outlives the session as its review does.
+    """
+
+    # 1, 2, 3… within the model; never reused.
+    version: int
+    label: str | None = None
+    summary: str | None = None
+    author: ReviewAuthor
+    # Milliseconds since the Unix epoch; 0 where the editor has no clock.
+    time: int
+    # The session revision it was saved at.
+    rev: int
+    byte_length: int
+    # Lowercase hex of the `.clm` bytes' SHA-256.
+    sha256: str
+
+
+@dataclass(frozen=True, kw_only=True)
+class VersionViewing:
+    """What a read-only session opened by [`Command::VersionOpen`] shows."""
+
+    # The session whose version it is.
+    session: SessionId
+    version: int
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -3393,7 +3566,7 @@ class Review:
     threads: list[ReviewThread]
     # Every agent recently heard from, most recent last.
     agents: list[ReviewAgent] = field(default_factory=list)
-    kept: ReviewKept | None = None
+    kept: Kept | None = None
     # Why, when `kept` is `unreadable`.
     kept_problem: str | None = None
 
@@ -3662,6 +3835,9 @@ class ErrorCode(StrEnum):
     # `catchlight.` is the format's own prefix: a reader accepts a key under
     # it, and nothing outside the format may author one.
     RESERVED_EXTENSION = "reserved_extension"
+    NO_VERSION = "no_version"
+    # The session shows a saved version and takes no edits.
+    READ_ONLY = "read_only"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -4177,6 +4353,36 @@ class ResponseBodyReviewClaimed:
         return _wire_fields(self)
 
 
+@dataclass(frozen=True, kw_only=True)
+class ResponseBodyVersion:
+    """The version saved, or the one whose `.clm` is this reply's payload."""
+
+    TAG_FIELD: ClassVar[str] = "result"
+    TAG: ClassVar[str] = "version"
+
+    version: VersionInfo
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ResponseBodyVersions:
+    TAG_FIELD: ClassVar[str] = "result"
+    TAG: ClassVar[str] = "versions"
+
+    # Oldest first.
+    versions: list[VersionInfo]
+    kept: Kept
+    # Why, when `kept` is `unreadable`.
+    kept_problem: str | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
 ResponseBody = (
     ResponseBodyMeshInfo
     | ResponseBodyModelStructure
@@ -4216,6 +4422,8 @@ ResponseBody = (
     | ResponseBodyReviewFetched
     | ResponseBodyReviewAcked
     | ResponseBodyReviewClaimed
+    | ResponseBodyVersion
+    | ResponseBodyVersions
 )
 
 RESPONSE_BODY_VARIANTS: dict[str, type[ResponseBody]] = {
@@ -4257,6 +4465,8 @@ RESPONSE_BODY_VARIANTS: dict[str, type[ResponseBody]] = {
     "review_fetched": ResponseBodyReviewFetched,
     "review_acked": ResponseBodyReviewAcked,
     "review_claimed": ResponseBodyReviewClaimed,
+    "version": ResponseBodyVersion,
+    "versions": ResponseBodyVersions,
 }
 
 
@@ -4312,16 +4522,32 @@ class EventReviewChanged:
         return _wire_fields(self)
 
 
+@dataclass(frozen=True, kw_only=True)
+class EventVersionsChanged:
+    """The session's versions changed; re-read [`Command::VersionList`]."""
+
+    TAG_FIELD: ClassVar[str] = "event"
+    TAG: ClassVar[str] = "versions_changed"
+
+    session: SessionId
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
 Event = (
     EventModelChanged
     | EventSessionsChanged
     | EventReviewChanged
+    | EventVersionsChanged
 )
 
 EVENT_VARIANTS: dict[str, type[Event]] = {
     "model_changed": EventModelChanged,
     "sessions_changed": EventSessionsChanged,
     "review_changed": EventReviewChanged,
+    "versions_changed": EventVersionsChanged,
 }
 
 
@@ -4342,6 +4568,8 @@ class SessionInfo:
     dirty: bool
     rev: int
     node_count: int
+    # Set on a read-only session showing a saved version.
+    viewing: VersionViewing | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -4670,6 +4898,11 @@ __all__ = [
     "ReviewAck",
     "ReviewClaim",
     "ReviewRelease",
+    "VersionSave",
+    "VersionList",
+    "VersionGet",
+    "VersionRestore",
+    "VersionOpen",
     "Command",
     "COMMAND_VARIANTS",
     "parse_command",
@@ -4678,6 +4911,7 @@ __all__ = [
     "EditCommand",
     "PresenceCommand",
     "ReviewCommand",
+    "VersionCommand",
     "ReplicaQueryCommand",
     "ServerQueryCommand",
     "QueryCommand",
@@ -4774,7 +5008,9 @@ __all__ = [
     "ThreadStatus",
     "ReviewComment",
     "ReviewImage",
-    "ReviewKept",
+    "Kept",
+    "VersionInfo",
+    "VersionViewing",
     "ReviewThread",
     "ReviewAgent",
     "ReviewIdentity",
@@ -4839,12 +5075,15 @@ __all__ = [
     "ResponseBodyReviewFetched",
     "ResponseBodyReviewAcked",
     "ResponseBodyReviewClaimed",
+    "ResponseBodyVersion",
+    "ResponseBodyVersions",
     "ResponseBody",
     "RESPONSE_BODY_VARIANTS",
     "parse_response_body",
     "EventModelChanged",
     "EventSessionsChanged",
     "EventReviewChanged",
+    "EventVersionsChanged",
     "Event",
     "EVENT_VARIANTS",
     "parse_event",

@@ -24,6 +24,9 @@ import type {
   SessionId,
   TexInfo,
   TreeNode,
+  VersionCommand,
+  VersionInfo,
+  Kept,
 } from "./protocol.gen.js";
 import type { Attachment, Backend, OkReplyWithPayload, Request, Unsubscribe } from "./backend.js";
 import {
@@ -50,11 +53,13 @@ export type SessionPresenceCommand = OnSession<PresenceCommand>;
 export type SessionReviewCommand = OnSession<ReviewCommand>;
 export type SessionReplicaQueryCommand = OnSession<ReplicaQueryCommand>;
 export type SessionServerQueryCommand = OnSession<ServerQueryCommand>;
+export type SessionVersionCommand = OnSession<VersionCommand>;
 
 export type SessionCommand =
   | SessionEditCommand
   | SessionPresenceCommand
   | SessionReviewCommand
+  | SessionVersionCommand
   | SessionReplicaQueryCommand
   | SessionServerQueryCommand;
 
@@ -74,6 +79,15 @@ export interface ScratchTransform {
 export const REVIEW_LISTENING_POLL_MS = 4000;
 
 const NO_REVIEW: Review = { threads: [], agents: [], kept: "stored" };
+
+/** A session's saved versions, oldest first, and how long they are kept. */
+export interface VersionList {
+  versions: VersionInfo[];
+  kept: Kept;
+  kept_problem?: string | null;
+}
+
+const NO_VERSION_LIST: VersionList = { versions: [], kept: "stored" };
 
 /** How long a `send` waits for its `model_changed` frame before re-feeding. */
 export const CATCH_UP_TIMEOUT_MS = 4000;
@@ -105,6 +119,9 @@ export class Session {
   #reviewRead = 0;
   #reviewTimer: ReturnType<typeof setTimeout> | undefined;
   #reviewImages = new Map<number, Promise<string>>();
+  #versions: VersionList = NO_VERSION_LIST;
+  #versionListeners = new Set<() => void>();
+  #versionRead = 0;
   #closed = false;
   #freed = false;
   #timeout: number;
@@ -159,6 +176,37 @@ export class Session {
     // Not every transport pushes events back to the sender before the reply.
     await this.refreshReview();
     return reply.body;
+  }
+
+  /** Moves no revision; the list follows from its `versions_changed` event. */
+  async sendVersion(command: SessionVersionCommand): Promise<ResponseBody> {
+    const reply = await this.#backend.send(this.#address(command));
+    await this.refreshVersions();
+    return reply.body;
+  }
+
+  /** Empty until the first subscriber's read lands. */
+  getVersions = (): VersionList => this.#versions;
+
+  subscribeVersions = (listener: () => void): Unsubscribe => {
+    const first = this.#versionListeners.size === 0;
+    this.#versionListeners.add(listener);
+    if (first) void this.refreshVersions().catch(() => undefined);
+    return () => {
+      this.#versionListeners.delete(listener);
+    };
+  };
+
+  async refreshVersions(): Promise<void> {
+    if (this.#closed) return;
+    const read = ++this.#versionRead;
+    const body = await this.queryServer({ cmd: "version_list" });
+    if (this.#closed || read !== this.#versionRead) return;
+    const { versions, kept, kept_problem } = expectResult(body, "versions");
+    const next: VersionList = { versions, kept, kept_problem: kept_problem ?? null };
+    if (JSON.stringify(next) === JSON.stringify(this.#versions)) return;
+    this.#versions = next;
+    for (const listener of [...this.#versionListeners]) listener();
   }
 
   /** Holds an image for the next comment to claim by its id. */
@@ -532,6 +580,7 @@ export class Session {
     this.#redraw.clear();
     this.#errors.clear();
     this.#reviewListeners.clear();
+    this.#versionListeners.clear();
     this.#stopReviewTimer();
     for (const url of this.#reviewImages.values())
       void url.then((made) => URL.revokeObjectURL(made)).catch(() => undefined);
@@ -551,6 +600,13 @@ export class Session {
   }
 
   #observe(event: Event): void {
+    if (event.event === "versions_changed") {
+      if (event.session === this.id && this.#versionListeners.size > 0)
+        void this.refreshVersions().catch((cause: unknown) => {
+          if (!this.#closed) this.#report(asProtocolError(cause));
+        });
+      return;
+    }
     if (event.event === "review_changed") {
       if (event.session === this.id && this.#reviewListeners.size > 0)
         void this.refreshReview().catch((cause: unknown) => {

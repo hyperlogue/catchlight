@@ -7,23 +7,24 @@ mod edit;
 mod history_tests;
 #[cfg(not(target_arch = "wasm32"))]
 mod http;
+mod kept_store;
 mod lifecycle;
 mod limits;
 #[cfg(not(target_arch = "wasm32"))]
 mod preview;
 mod query;
 mod review;
-mod review_store;
 mod storage;
 #[cfg(unix)]
 mod transport;
+mod versions;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use http::{bind_http, serve_http, HttpOptions, HttpServer, UiFiles};
-pub use query::{extension_value_info, replica_query, replica_reply};
 #[cfg(not(target_arch = "wasm32"))]
-pub use review_store::{user_review_dir, SidecarReviewStore, UnusedReview, UserReviewStore};
-pub use review_store::{NoReviewStore, ReviewStore};
+pub use kept_store::{user_kept_dir, SidecarKeptStore, UnusedKept, UserKeptStore};
+pub use kept_store::{KeptStore, NoKeptStore};
+pub use query::{extension_value_info, replica_query, replica_reply};
 #[cfg(not(target_arch = "wasm32"))]
 pub use storage::FileStorage;
 pub use storage::{join_key, key_stem, parent_key, NoStorage, Storage};
@@ -142,6 +143,10 @@ pub enum EditorError {
     },
     #[error("retry key {0:?} was already used for something else")]
     KeyConflict(String),
+    #[error("no version {0}")]
+    NoVersion(u64),
+    #[error("this session shows version {} of session {} and takes no edits; restore the version in that session, or fork this one to edit it", .0.version, .0.session.0)]
+    ReadOnly(VersionViewing),
 }
 
 impl EditorError {
@@ -212,6 +217,8 @@ impl EditorError {
             Self::BatchStale => ErrorCode::BatchStale,
             Self::Claimed { .. } => ErrorCode::ThreadClaimed,
             Self::KeyConflict(_) => ErrorCode::KeyConflict,
+            Self::NoVersion(_) => ErrorCode::NoVersion,
+            Self::ReadOnly(_) => ErrorCode::ReadOnly,
             // Install's refusals answer with the codes the equivalent edit gets.
             Self::Install(e) => match e {
                 InstallError::Collision { .. } => ErrorCode::DuplicateId,
@@ -290,6 +297,9 @@ struct Session {
     presence: Option<Presence>,
     review: review::ReviewState,
     review_keeping: review::ReviewKeeping,
+    versions: versions::Versions,
+    /// Set on a read-only session showing a saved version.
+    viewing: Option<VersionViewing>,
 }
 
 impl Session {
@@ -310,13 +320,22 @@ impl Session {
             presence: None,
             review: review::ReviewState::default(),
             review_keeping: review::ReviewKeeping::default(),
+            versions: versions::Versions::default(),
+            viewing: None,
+        }
+    }
+
+    fn writable(&self) -> Result<(), EditorError> {
+        match self.viewing {
+            Some(viewing) => Err(EditorError::ReadOnly(viewing)),
+            None => Ok(()),
         }
     }
 
     /// For a thread that followed an edit, which cannot fail on the review's
     /// account. A write that is refused is retried by the next one, and a
     /// reopened review finds its targets through the renames it kept.
-    fn keep_review(&mut self, store: &dyn ReviewStore) {
+    fn keep_review(&mut self, store: &dyn KeptStore) {
         let _ = self
             .review_keeping
             .write(store, self.file.as_deref(), &self.review);
@@ -545,27 +564,57 @@ pub struct Editor {
     observers: Mutex<Vec<(u64, SharedObserver)>>,
     next_observer: AtomicU64,
     storage: Arc<dyn Storage>,
-    review_store: Arc<dyn ReviewStore>,
+    kept_store: Arc<dyn KeptStore>,
+    /// Milliseconds since the Unix epoch, for a version's time.
+    clock: fn() -> u64,
+    version_limits: versions::VersionLimits,
     #[cfg(not(target_arch = "wasm32"))]
     preview: Mutex<Option<PreviewRenderer>>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+fn system_clock() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_millis() as u64)
+}
+
+/// `SystemTime` panics on wasm32-unknown-unknown; the host supplies a clock.
+#[cfg(target_arch = "wasm32")]
+fn system_clock() -> u64 {
+    0
+}
+
 impl Editor {
-    /// Filesystem rooted at the cwd natively, with reviews in sidecars there;
-    /// [`NoStorage`] on wasm, where the host must use [`Editor::with_storage`].
+    /// Filesystem rooted at the cwd natively, with reviews and versions in
+    /// sidecars there; [`NoStorage`] on wasm, where the host must use
+    /// [`Editor::with_storage`].
     pub fn new() -> Self {
         #[cfg(not(target_arch = "wasm32"))]
         let editor = Self::with_storage(Arc::new(FileStorage::default()))
-            .with_review_store(Arc::new(SidecarReviewStore::default()));
+            .with_kept_store(Arc::new(SidecarKeptStore::default()));
         #[cfg(target_arch = "wasm32")]
         let editor = Self::with_storage(Arc::new(NoStorage));
         editor
     }
 
-    /// Where reviews are kept between runs; without this, nowhere. Model keys
-    /// are the ones `storage` is given.
-    pub fn with_review_store(mut self, store: Arc<dyn ReviewStore>) -> Self {
-        self.review_store = store;
+    /// Where reviews and versions are kept between runs; without this,
+    /// nowhere. Model keys are the ones `storage` is given.
+    pub fn with_kept_store(mut self, store: Arc<dyn KeptStore>) -> Self {
+        self.kept_store = store;
+        self
+    }
+
+    /// Milliseconds since the Unix epoch; a wasm host must supply one for
+    /// versions to carry their time.
+    pub fn with_clock(mut self, clock: fn() -> u64) -> Self {
+        self.clock = clock;
+        self
+    }
+
+    #[cfg(test)]
+    fn with_version_limits(mut self, versions: u64, bytes: u64) -> Self {
+        self.version_limits = versions::VersionLimits { versions, bytes };
         self
     }
 
@@ -576,7 +625,9 @@ impl Editor {
             observers: Mutex::new(Vec::new()),
             next_observer: AtomicU64::new(1),
             storage,
-            review_store: Arc::new(NoReviewStore),
+            kept_store: Arc::new(NoKeptStore),
+            clock: system_clock,
+            version_limits: versions::VersionLimits::default(),
             #[cfg(not(target_arch = "wasm32"))]
             preview: Mutex::new(None),
         }
@@ -780,6 +831,7 @@ impl Editor {
         let (result, moved, reviewed) = {
             let mut session = lock(&handle);
             session.ensure_open(id)?;
+            session.writable()?;
             let before = session.rev;
             let snapshot = session.model.clone();
             let missing = session.review.missing(&session.model);
@@ -805,7 +857,7 @@ impl Editor {
             let moved = (session.rev != before).then_some(session.rev);
             let reviewed =
                 session.review.take_touched() || missing != session.review.missing(&session.model);
-            session.keep_review(&*self.review_store);
+            session.keep_review(&*self.kept_store);
             (result, moved, reviewed)
         };
         if let Some(rev) = moved {
@@ -827,6 +879,7 @@ impl Editor {
         let (captured, changed, reviewed) = {
             let mut session = lock(&handle);
             session.ensure_open(id)?;
+            session.writable()?;
             session.check_revision(Some(if_rev))?;
             let next = session.next_revision()?;
             let missing = session.review.missing(&session.model);
@@ -842,7 +895,7 @@ impl Editor {
             }
             let Session { review, model, .. } = &mut *session;
             let reviewed = review.follow_model(model) || missing != review.missing(model);
-            session.keep_review(&*self.review_store);
+            session.keep_review(&*self.kept_store);
             (
                 Captured::at(ResponseBody::Empty, session.rev),
                 changed,
@@ -940,6 +993,7 @@ impl Editor {
                         dirty: s.dirty(),
                         rev: s.rev,
                         node_count: s.model.node_count() as u32,
+                        viewing: s.viewing,
                     });
                 }
                 sessions.sort_by_key(|s| s.session.0);
@@ -956,14 +1010,21 @@ impl Editor {
                     state.closed = true;
                     lock(&self.sessions).remove(&session);
                 }
+                // A version open for viewing goes with the session it is of.
+                for view in self.views_of(session) {
+                    let handle = self.session(view)?;
+                    lock(&handle).closed = true;
+                    lock(&self.sessions).remove(&view);
+                }
                 self.notify_sessions();
                 Ok(Captured::unscoped(ResponseBody::Empty))
             }
             Command::Save { session, path } => {
                 let handle = self.session(session)?;
-                let (key, rev, moved, review) = {
+                let (key, rev, moved, review, versions) = {
                     let mut s = lock(&handle);
                     s.ensure_open(session)?;
+                    s.writable()?;
                     let key = match path {
                         Some(p) => p,
                         None => s.file.clone().ok_or(EditorError::NoSavePath)?,
@@ -984,22 +1045,35 @@ impl Editor {
                         ..
                     } = &mut *s;
                     let kept = if moved {
-                        review_keeping.rekey(&*self.review_store, from.as_deref(), &key, review)
+                        review_keeping.rekey(&*self.kept_store, from.as_deref(), &key, review)
                     } else {
-                        review_keeping.write(&*self.review_store, Some(&key), review)
+                        review_keeping.write(&*self.kept_store, Some(&key), review)
                     };
-                    (key, s.rev, moved, kept)
+                    let versions = if moved {
+                        s.versions.rekey(&*self.kept_store, from.as_deref(), &key)
+                    } else {
+                        s.versions.persist(&*self.kept_store, Some(&key))
+                    };
+                    (key, s.rev, moved, kept, versions)
                 };
                 // A save moves no revision but flips `dirty`.
                 self.notify_model_changed(session, rev);
                 if moved {
-                    // What the review says of how long it is kept changed.
+                    // What the review and versions say of how long they are
+                    // kept changed.
                     self.notify(Event::ReviewChanged { session });
+                    self.notify(Event::VersionsChanged { session });
                 }
                 review.map_err(|e| {
                     std::io::Error::new(
                         e.kind(),
                         format!("saved the model to {key}, but not its review: {e}"),
+                    )
+                })?;
+                versions.map_err(|e| {
+                    std::io::Error::new(
+                        e.kind(),
+                        format!("saved the model to {key}, but not its versions: {e}"),
                     )
                 })?;
                 Ok(Captured::at(ResponseBody::Saved { path: key }, rev))
@@ -1600,6 +1674,11 @@ impl Editor {
             | Command::ReviewAck { .. }
             | Command::ReviewClaim { .. }
             | Command::ReviewRelease { .. }) => self.review(command, attachments, payload),
+            command @ (Command::VersionSave { .. }
+            | Command::VersionList { .. }
+            | Command::VersionGet { .. }
+            | Command::VersionRestore { .. }
+            | Command::VersionOpen { .. }) => self.version(command, payload),
             Command::PresenceGet { session } => self.with_session_captured(session, |s| {
                 Ok(ResponseBody::Presence {
                     presence: s.presence.clone(),

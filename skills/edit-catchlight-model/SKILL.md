@@ -38,8 +38,11 @@ of `fetch` or `watch`; on 4 or 1 run `review fetch` again, as the guide's
 review section explains. Open every image it saved before acting. Change the
 model, answer each thread with `catchlight-editor review reply <thread> -m "…"
 --key <k>`, adding `--attach <image>` when a `preview --out` render shows the
-result, and, if you used `watch`, watch again. Repeat a failed reply with the
-same `--key`. Leave resolving to the user.
+result, and, if you used `watch`, watch again. When a batch of threads is
+done, save a version and point the replies at it: `--save-version <label>` on
+the first reply saves it, `--version <n>` on the others references it, and the
+user can open it from the reply. Repeat a failed reply with the same `--key`.
+Leave resolving to the user.
 
 Use `catchlight-editor help <command>` for a command's flags. Give the user the
 editor URL when you start one, so they can watch your edits land.

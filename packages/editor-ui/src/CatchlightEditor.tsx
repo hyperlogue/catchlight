@@ -49,8 +49,12 @@ import {
   useDismissMenus,
   usePreviewExport,
   captureCanvas,
+  useVersions,
+  useVersionView,
+  VersionBanner,
+  VersionSelect,
 } from "@catchlight/react";
-import type { IconName, Reviewer, SaveOutcome } from "@catchlight/react";
+import type { IconName, Reviewer, SaveOutcome, VersionsState, VersionView } from "@catchlight/react";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import { Stage, Environment } from "./stage.js";
@@ -103,7 +107,9 @@ function Shell({
   reviewer,
 }: Pick<CatchlightEditorProps, "onOpenStarter" | "agentConnect" | "reviewer">) {
   const editor = useEditor();
-  const { sessions } = useSessions();
+  const listed = useSessions().sessions;
+  // A version open for viewing is shown in place of its model, never as a tab.
+  const sessions = listed.filter((s) => !s.viewing);
   const [session, setSession] = useState<Session>();
   const [problem, setProblem] = useState<string>();
   const [notice, setNotice] = useState<string>();
@@ -190,7 +196,19 @@ function Shell({
       live = false;
     };
   }, [session, sessions, editor, failed]);
+  const versions = useVersions(session, failed, reviewer);
+  const view = useVersionView(session, versions, failed);
+  const shown = view.viewing?.session ?? session;
+  const openVersion = useCallback(
+    (number: number) => {
+      const version = versions.versions.find((v) => v.version === number);
+      if (version) view.open(version);
+      else failed(new Error(`Version ${number} is not among this model's versions.`));
+    },
+    [versions.versions, view, failed],
+  );
   useEffect(() => session?.onError(failed), [session, failed]);
+  useEffect(() => (shown !== session ? shown?.onError(failed) : undefined), [shown, session, failed]);
   useEffect(() => {
     const before = (e: BeforeUnloadEvent) => {
       if (sessions.some((s) => s.dirty)) {
@@ -207,16 +225,21 @@ function Shell({
     return () => clearTimeout(timer);
   }, [notice]);
   return (
-    <PresenceProvider session={session}>
-      <EditingProvider session={session} onError={failed} onNotice={setNotice}>
+    <PresenceProvider session={shown}>
+      <EditingProvider session={shown} onError={failed} onNotice={setNotice}>
         <ReviewProvider
           session={session}
           onError={failed}
           onAttention={askReview}
+          onOpenVersion={openVersion}
           {...(reviewer ? { reviewer } : {})}
         >
         <Workspace
-          session={session}
+          session={shown}
+          live={session}
+          versions={versions}
+          versionView={view}
+          reviewer={reviewer}
           reviewAsked={reviewAsked}
           info={sessions.find((s) => s.session === session?.id)}
           onOpened={opened}
@@ -314,7 +337,13 @@ function CloseDialog({
   );
 }
 type WorkspaceProps = {
+  /** What the stage shows: the live model, or a version of it read-only. */
   session: Session | undefined;
+  /** The model being edited, whose review and versions these are. */
+  live: Session | undefined;
+  versions: VersionsState;
+  versionView: VersionView;
+  reviewer: Reviewer | undefined;
   info: SessionInfo | undefined;
   onOpened: (s: Session) => void;
   onNew: () => void;
@@ -329,6 +358,10 @@ type WorkspaceProps = {
 };
 function Workspace({
   session,
+  live,
+  versions,
+  versionView,
+  reviewer,
   reviewAsked,
   info,
   onOpened,
@@ -362,6 +395,11 @@ function Workspace({
   const [search, setSearch] = useState("");
   const { param, selectParam: setParam } = editing;
   const [dialog, setDialog] = useState<"save" | "commands" | "help">();
+  const viewing = versionView.viewing;
+  const [saveVersionAsked, setSaveVersionAsked] = useState(0);
+  const askSaveVersion = () => {
+    if (live && !viewing) setSaveVersionAsked((n) => n + 1);
+  };
   const [dragOver, setDragOver] = useState(false);
   const [mobilePanel, setMobilePanel] = useState<"structure" | "properties">();
   const structurePanelId = useId();
@@ -492,13 +530,14 @@ function Workspace({
     [onNotice],
   );
   const quickSave = useCallback(() => {
+    if (viewing) return;
     const run = () => {
       if (session)
         void save(info?.file ? undefined : info?.title).then(saved, onError);
     };
     if (editing.mesh?.dirty) editing.guard(run);
     else run();
-  }, [session, info, save, saved, onError, editing]);
+  }, [session, info, save, saved, onError, editing, viewing]);
   useEffect(() => {
     setSearch("");
   }, [session]);
@@ -619,6 +658,30 @@ function Workspace({
       disabled: !session,
     },
     {
+      name: "Save version…",
+      detail: "Keep the model as it is now, to come back to",
+      icon: "history",
+      key: "⌥ ⌘ S",
+      run: askSaveVersion,
+      disabled: !live || !!viewing,
+    },
+    ...(viewing
+      ? [
+          {
+            name: "Back to current",
+            detail: "Stop viewing the saved version",
+            icon: "history" as const,
+            run: versionView.back,
+          },
+          {
+            name: "Restore this version",
+            detail: "Replace the model with it, as one undoable edit",
+            icon: "history" as const,
+            run: () => void versionView.restore(),
+          },
+        ]
+      : []),
+    {
       name: "Toggle focus mode",
       detail: "Make room for the canvas",
       icon: "panel",
@@ -638,6 +701,12 @@ function Workspace({
       if (mod && key === "k") {
         e.preventDefault();
         setDialog("commands");
+        return;
+      }
+      // By code: Option+S types "ß" on a Mac.
+      if (mod && e.altKey && e.code === "KeyS") {
+        e.preventDefault();
+        askSaveVersion();
         return;
       }
       if (mod && key === "s") {
@@ -737,6 +806,7 @@ function Workspace({
         } as CSSProperties
       }
       data-catchlight-workspace=""
+      data-viewing={viewing ? "" : undefined}
       data-mode={editing.mode}
       data-recording={editing.recording ? "" : undefined}
       data-focus={focus ? "" : undefined}
@@ -817,7 +887,7 @@ function Workspace({
         </div>
         <nav data-catchlight-model-tabs="" aria-label="Open models">
           <SessionList.Root
-            current={session?.id}
+            current={live?.id}
             onSelect={(s) => editing.guard(() => onChoose(s))}
             onClose={(s) => editing.guard(() => onClose(s))}
           />
@@ -828,17 +898,26 @@ function Workspace({
             onClick={newModel}
           />
         </nav>
+        {live && (
+          <VersionSelect
+            versions={versions}
+            current={viewing?.version.version}
+            onSelect={(version) => (version ? versionView.open(version) : versionView.back())}
+            reviewer={reviewer}
+            saveRequested={saveVersionAsked}
+          />
+        )}
         <div data-catchlight-history-tools="">
           <IconButton
             icon="undo"
             label="Undo (Ctrl/⌘ Z)"
-            disabled={!actions.canUndo || actions.busy || editing.busy}
+            disabled={!actions.canUndo || actions.busy || editing.busy || !!viewing}
             onClick={actions.undo}
           />
           <IconButton
             icon="redo"
             label="Redo (Ctrl/⌘ Shift Z)"
-            disabled={!actions.canRedo || actions.busy || editing.busy}
+            disabled={!actions.canRedo || actions.busy || editing.busy || !!viewing}
             onClick={actions.redo}
           />
         </div>
@@ -854,7 +933,9 @@ function Workspace({
         <ReviewStatus onOpen={showReview} />
         <span data-catchlight-save-state="">
           <i data-dirty={info?.dirty || editing.mesh?.dirty ? "" : undefined} />
-          {session
+          {viewing
+            ? "Viewing a saved version"
+            : session
             ? editing.mesh?.dirty
               ? "Mesh draft · not applied"
               : info?.dirty
@@ -865,7 +946,7 @@ function Workspace({
         <button
           type="button"
           data-catchlight-save=""
-          disabled={!session}
+          disabled={!session || !!viewing}
           onClick={quickSave}
         >
           <Icon name="save" width="15" height="15" />
@@ -901,7 +982,7 @@ function Workspace({
       <aside
         id={structurePanelId}
         data-catchlight-panel="left"
-        inert={mesh || editing.busy}
+        inert={mesh || editing.busy || !!viewing}
         role={mobilePanel === "structure" ? "dialog" : undefined}
         aria-modal={mobilePanel === "structure" ? true : undefined}
         aria-label="Structure"
@@ -1112,6 +1193,14 @@ function Workspace({
               </div>
             </div>
           </div>
+          {viewing && (
+            <VersionBanner
+              version={viewing.version}
+              busy={versions.busy}
+              onRestore={() => void versionView.restore()}
+              onBack={versionView.back}
+            />
+          )}
           <Stage
             session={session}
             view={modelView}
@@ -1375,12 +1464,12 @@ function Workspace({
             onClick={closePanel}
           />
         </div>
-        <div data-catchlight-panel-scroll="">
-          {session ? (
+        <div data-catchlight-panel-scroll="" inert={!!viewing && right !== "review"}>
+          {session && live ? (
             right === "review" ? (
               <ReviewPanel
-                session={session}
-                connect={agentConnect?.(session)}
+                session={live}
+                connect={agentConnect?.(live)}
                 capture={captureStage}
               />
             ) : mesh ? (

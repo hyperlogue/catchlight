@@ -114,7 +114,9 @@ pub fn declarations(cfg: &Config) -> Vec<Decl> {
         proto::ThreadStatus,
         proto::ReviewComment,
         proto::ReviewImage,
-        proto::ReviewKept,
+        proto::Kept,
+        proto::VersionInfo,
+        proto::VersionViewing,
         proto::ReviewThread,
         proto::ReviewAgent,
         proto::ReviewIdentity,
@@ -322,6 +324,16 @@ pub const KINDS: &[Kind] = &[
             "",
             "Like presence it goes to the editor and changes no model: no revision, no",
             "undo entry. Other clients learn of it from `review_changed`.",
+        ],
+    },
+    Kind {
+        kind: proto::CommandKind::Version,
+        name: "VersionCommand",
+        doc: &[
+            "A command that changes a session's saved versions.",
+            "",
+            "Like review it goes to the editor and changes no model: no revision, no",
+            "undo entry. Other clients learn of it from `versions_changed`.",
         ],
     },
     Kind {

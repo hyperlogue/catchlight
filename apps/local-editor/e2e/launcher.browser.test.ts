@@ -32,7 +32,7 @@ test.skipIf(!browserExe || !existsSync(exe))(
       CATCHLIGHT_EDITOR_CONNECTION: connection,
       XDG_RUNTIME_DIR: dir,
       XDG_CACHE_HOME: join(dir, "cache"),
-      CATCHLIGHT_REVIEWS: join(dir, "reviews"),
+      CATCHLIGHT_KEEP: join(dir, "kept"),
     };
     const cli = (...args: string[]) => {
       const run = Bun.spawnSync([exe, ...args], { env, stderr: "pipe" });
@@ -78,6 +78,15 @@ test.skipIf(!browserExe || !existsSync(exe))(
 
       cli("node", "set", "node-2", "--name", "Renamed by agent");
       await page.getByText("Renamed by agent").first().waitFor();
+
+      // A version the agent saves is listed in the tab and opens read-only.
+      expect(cli("version", "save", "-l", "agent pass")).toContain('saved version 1 "agent pass"');
+      await page.locator("[data-catchlight-version-trigger]").click();
+      await page.locator('[data-catchlight-version-option="1"]').filter({ hasText: "agent pass" }).click();
+      await page.locator("[data-catchlight-version-banner]").filter({ hasText: "Viewing v1 · agent pass" }).waitFor();
+      expect(cli("session", "list")).toContain("read-only: version 1 of session 1");
+      await page.getByRole("button", { name: "Back to current" }).click();
+      await page.locator("[data-catchlight-version-banner]").waitFor({ state: "detached" });
 
       // A second launch finds the first instead of starting another.
       const again = Bun.spawnSync([exe, "--no-open"], { env, stderr: "pipe" });

@@ -552,6 +552,11 @@ export type Command =
      * thread it opened back and opens nothing.
      */
     key?: string | null,
+    /**
+     * A saved version the comment points at, such as the one holding a
+     * fix; [`ErrorCode::NoVersion`] unless the session has it.
+     */
+    version?: number | null,
   }
   | {
     "cmd": "review_thread_set",
@@ -579,6 +584,10 @@ export type Command =
      * thread and adds nothing.
      */
     key?: string | null,
+    /**
+     * As for [`Command::ReviewThreadAdd`].
+     */
+    version?: number | null,
   }
   | {
     "cmd": "review_comment_delete",
@@ -626,6 +635,42 @@ export type Command =
     session: SessionId,
     agent: ReviewIdentity,
     threads: Array<ThreadId>,
+  }
+  | {
+    "cmd": "version_save",
+    session: SessionId,
+    /**
+     * One line each; blank is absent.
+     */
+    label?: string | null,
+    summary?: string | null,
+    author: ReviewAuthor,
+    /**
+     * As for [`Command::ReviewThreadAdd`]: the same author saving again
+     * under it with the same label and summary gets the version it saved
+     * back and saves nothing.
+     */
+    key?: string | null,
+  }
+  | {
+    "cmd": "version_list",
+    session: SessionId,
+  }
+  | {
+    "cmd": "version_get",
+    session: SessionId,
+    version: number,
+  }
+  | {
+    "cmd": "version_restore",
+    session: SessionId,
+    version: number,
+    if_rev?: number | null,
+  }
+  | {
+    "cmd": "version_open",
+    session: SessionId,
+    version: number,
   };
 
 export type NodeKindArg =
@@ -1263,6 +1308,10 @@ export type ReviewComment = {
    */
   rev: number,
   images?: Array<ReviewImage>,
+  /**
+   * The saved version the comment points at.
+   */
+  version?: number | null,
 };
 
 /**
@@ -1282,14 +1331,54 @@ export type ReviewImage = {
 };
 
 /**
- * How long a review outlives its session. Says nothing about where it is
- * kept: that is the editor's choice.
+ * How long what the editor keeps beside a model, its review or its
+ * versions, outlives the session. Says nothing about where it is kept: that
+ * is the editor's choice.
  */
-export type ReviewKept =
+export type Kept =
   | "stored"
   | "unsaved"
   | "session"
   | "unreadable";
+
+/**
+ * A snapshot of a session's model, kept beside it. Not a revision: a
+ * revision counts the session's edits and is gone when it closes, while a
+ * version is numbered per model and outlives the session as its review does.
+ */
+export type VersionInfo = {
+  /**
+   * 1, 2, 3… within the model; never reused.
+   */
+  version: number,
+  label?: string | null,
+  summary?: string | null,
+  author: ReviewAuthor,
+  /**
+   * Milliseconds since the Unix epoch; 0 where the editor has no clock.
+   */
+  time: number,
+  /**
+   * The session revision it was saved at.
+   */
+  rev: number,
+  byte_length: number,
+  /**
+   * Lowercase hex of the `.clm` bytes' SHA-256.
+   */
+  sha256: string,
+};
+
+/**
+ * What a read-only session opened by [`Command::VersionOpen`] shows.
+ */
+export type VersionViewing = {
+  /**
+   * The session whose version it is.
+   */
+  session: SessionId,
+  version: number,
+};
 
 export type ReviewThread = {
   thread: ThreadId,
@@ -1355,7 +1444,7 @@ export type Review = {
    * Every agent recently heard from, most recent last.
    */
   agents: Array<ReviewAgent>,
-  kept: ReviewKept,
+  kept: Kept,
   /**
    * Why, when `kept` is `unreadable`.
    */
@@ -1488,7 +1577,9 @@ export type ErrorCode =
   | "batch_stale"
   | "thread_claimed"
   | "key_conflict"
-  | "reserved_extension";
+  | "reserved_extension"
+  | "no_version"
+  | "read_only";
 
 export type ResponseBody =
   | {
@@ -1694,6 +1785,22 @@ export type ResponseBody =
     "result": "review_claimed",
     threads: Array<ThreadId>,
     lease_seconds: number,
+  }
+  | {
+    "result": "version",
+    version: VersionInfo,
+  }
+  | {
+    "result": "versions",
+    /**
+     * Oldest first.
+     */
+    versions: Array<VersionInfo>,
+    kept: Kept,
+    /**
+     * Why, when `kept` is `unreadable`.
+     */
+    kept_problem?: string | null,
   };
 
 export type Event =
@@ -1708,6 +1815,10 @@ export type Event =
   | {
     "event": "review_changed",
     session: SessionId,
+  }
+  | {
+    "event": "versions_changed",
+    session: SessionId,
   };
 
 export type SessionInfo = {
@@ -1717,6 +1828,10 @@ export type SessionInfo = {
   dirty: boolean,
   rev: number,
   node_count: number,
+  /**
+   * Set on a read-only session showing a saved version.
+   */
+  viewing?: VersionViewing | null,
 };
 
 export type StatusInfo = {
@@ -1965,7 +2080,9 @@ export type EditCommandTag =
   | "edit_goto"
   | "structure_json_import"
   | "extension_set"
-  | "extension_delete";
+  | "extension_delete"
+  | "version_restore"
+  | "version_open";
 export type EditCommand = Extract<Command, { cmd: EditCommandTag }>;
 
 /**
@@ -1998,6 +2115,16 @@ export type ReviewCommandTag =
   | "review_claim"
   | "review_release";
 export type ReviewCommand = Extract<Command, { cmd: ReviewCommandTag }>;
+
+/**
+ * A command that changes a session's saved versions.
+ *
+ * Like review it goes to the editor and changes no model: no revision, no
+ * undo entry. Other clients learn of it from `versions_changed`.
+ */
+export type VersionCommandTag =
+  | "version_save";
+export type VersionCommand = Extract<Command, { cmd: VersionCommandTag }>;
 
 /**
  * A read that is a pure function of the model.
@@ -2038,7 +2165,9 @@ export type ServerQueryCommandTag =
   | "preview_render"
   | "extension_get"
   | "review_get"
-  | "review_image_get";
+  | "review_image_get"
+  | "version_list"
+  | "version_get";
 export type ServerQueryCommand = Extract<Command, { cmd: ServerQueryCommandTag }>;
 
 /**
@@ -2116,6 +2245,10 @@ export const COMMAND_BYTES: Record<
     payload: false,
   },
   extension_get: {
+    attachments: [],
+    payload: true,
+  },
+  version_get: {
     attachments: [],
     payload: true,
   },
