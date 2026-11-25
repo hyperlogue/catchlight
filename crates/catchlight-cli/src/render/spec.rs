@@ -201,16 +201,20 @@ pub struct Request {
     pub pose: Setting<BTreeMap<ParamId, f32>>,
     /// Humanoid control values by name, each within the control's range.
     /// Every control must be one the model maps onto a param; the mappings
-    /// pose the model after the param overrides.
+    /// pose the model after the param overrides, every frame. An animation
+    /// lane on the same control replaces the value while it plays.
     #[serde(default, skip_serializing_if = "Setting::is_inherit")]
     pub controls: Setting<BTreeMap<String, f32>>,
     /// Expression weights by name, each in 0..1. Every expression must be
     /// one the model has. Its control settings blend into the controls
-    /// before the mappings pose the model, its param settings after.
+    /// before the mappings pose the model, its param settings after. An
+    /// animation lane on the same expression replaces the weight while it
+    /// plays.
     #[serde(default, skip_serializing_if = "Setting::is_inherit")]
     pub expressions: Setting<BTreeMap<String, f32>>,
     /// Viseme weights by name, each in 0..1. Every viseme must be one the
-    /// model has. Visemes blend over the expressions, the same way.
+    /// model has. Visemes blend over the expressions, the same way, and an
+    /// animation lane on the same viseme replaces the weight while it plays.
     #[serde(default, skip_serializing_if = "Setting::is_inherit")]
     pub visemes: Setting<BTreeMap<String, f32>>,
     #[serde(default, skip_serializing_if = "Setting::is_inherit")]

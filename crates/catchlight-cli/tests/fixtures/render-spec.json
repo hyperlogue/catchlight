@@ -16,6 +16,37 @@
           ]
         }
       ]
+    },
+    "talk": {
+      "name": "Talk",
+      "timestep": 0.016666667,
+      "length": 11,
+      "lanes": [
+        {
+          "expression": "happy",
+          "interpolation": "Linear",
+          "keyframes": [
+            {"frame": 0, "value": 0},
+            {"frame": 10, "value": 1}
+          ]
+        },
+        {
+          "viseme": "aa",
+          "interpolation": "Linear",
+          "keyframes": [
+            {"frame": 0, "value": 1},
+            {"frame": 10, "value": 0}
+          ]
+        },
+        {
+          "viseme": "pp",
+          "interpolation": "Linear",
+          "keyframes": [
+            {"frame": 0, "value": 0},
+            {"frame": 10, "value": 1}
+          ]
+        }
+      ]
     }
   },
   "requests": {
@@ -71,6 +102,13 @@
       "animation": {"source": "spec", "name": "pulse"},
       "frames": {"count": 61, "every": 1},
       "trace_params": ["drive", "response"]
+    },
+    "talk": {
+      "rect": [-500, -500, 1000, 1000],
+      "scale": 0.512,
+      "motion_responses": {"mode": "off"},
+      "animation": {"source": "spec", "name": "talk"},
+      "trace_params": ["closure", "drive"]
     }
   }
 }

@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use catchlight_core::{Mat4, Model, Pose, Puppet};
-use catchlight_extension_animations::{AnimationPlayer, Animations};
+use catchlight_extension_animations::{AnimationPlayer, Animations, FrameInputs, Rig};
 
 use crate::asset::CatchlightModel;
 
@@ -8,7 +8,8 @@ use crate::asset::CatchlightModel;
 ///
 /// The puppet is `None` until the asset loads; to pose before then, use
 /// [`CatchlightPuppet::with_pose`]. Its player holds the model's clips from
-/// the same bake on, and advances before every tick.
+/// the same bake on, and advances before every tick through the model's
+/// control mappings, expressions and visemes, with no inputs of its own.
 // `SyncToRenderWorld` comes from `SyncComponentPlugin`, not `#[require]`:
 // registering the same direct requirement twice panics.
 #[derive(Component)]
@@ -112,7 +113,8 @@ impl CatchlightPuppet {
 
     pub(crate) fn tick(&mut self, model: &Model, root: Mat4, dt: f32) {
         if let Some(puppet) = &mut self.puppet {
-            self.player.advance(puppet, dt);
+            self.player
+                .advance_with(puppet, dt, Rig::of(model), &FrameInputs::default());
             puppet.tick_with_root(model, root, dt);
         }
     }

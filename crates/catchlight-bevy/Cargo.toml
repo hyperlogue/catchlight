@@ -30,6 +30,7 @@ bytemuck = { version = "1.25.2", features = ["derive"] }
 # without growing the library's runtime deps.
 [dev-dependencies]
 bevy = { version = "0.19", default-features = false, features = ["bevy_log"] }
+catchlight-extension-humanoid = { workspace = true }
 wgpu-profiler = { workspace = true }
 
 [lints]

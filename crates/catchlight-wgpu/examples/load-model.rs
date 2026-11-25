@@ -5,7 +5,7 @@
 
 use catchlight_core::{load_model, Model, ModelFormat, ParamId, Puppet};
 use catchlight_extension_animations::{
-    AnimationPlayer, Animations, Clip, Keyframe, Lane, LaneTarget,
+    AnimationPlayer, Animations, Clip, FrameInputs, Keyframe, Lane, LaneTarget, Rig,
 };
 use catchlight_wgpu::{
     collect, create_orthographic_camera_at, create_surface_context, PrepareOptions, RenderCache,
@@ -413,7 +413,12 @@ impl ApplicationHandler for App {
                     if self.puppet.motion_responses_enabled() != responses_enabled {
                         self.puppet.set_motion_responses_enabled(responses_enabled);
                     }
-                    self.player.advance(&mut self.puppet, dt);
+                    self.player.advance_with(
+                        &mut self.puppet,
+                        dt,
+                        Rig::of(&self.model),
+                        &FrameInputs::default(),
+                    );
                     self.puppet.tick(&self.model, dt);
                     if let Err(e) = cache.refresh(renderer, &self.model, &self.puppet) {
                         eprintln!("Failed to refresh the render cache: {}", e);

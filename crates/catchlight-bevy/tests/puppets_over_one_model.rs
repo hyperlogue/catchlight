@@ -13,6 +13,7 @@ use bevy::prelude::*;
 use catchlight_bevy::{CatchlightModel, CatchlightPlugin, CatchlightPuppet};
 use catchlight_core::{InterpolateMode, Model, ParamId, Pose, Puppet};
 use catchlight_extension_animations::{Animations, Clip, Keyframe, Lane, LaneTarget};
+use catchlight_extension_humanoid::{ControlMapping, Humanoid};
 
 fn model_path(stem: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -323,6 +324,47 @@ fn a_models_animation_is_baked_onto_every_puppet_that_shares_it() {
         values[0] < values[1] && values[1] < values[2],
         "each puppet plays the shared clip from its own phase: {values:?}",
     );
+}
+
+#[test]
+fn a_clips_control_lane_plays_through_the_models_mapping() {
+    let mut model = fixture("welded_seam");
+    let param = deform_param(&model);
+    model
+        .extension_or_default::<Humanoid>()
+        .expect("a fresh extension")
+        .set(
+            "mouth_open",
+            ControlMapping {
+                param: param.clone(),
+                stops: [0.0, 0.0, 0.75],
+            },
+        );
+    *model
+        .extension_or_default::<Animations>()
+        .expect("a fresh extension") = Animations::from_clips([Clip {
+        length: 2,
+        lanes: vec![Lane::new(
+            LaneTarget::Control("mouth_open".into()),
+            InterpolateMode::Linear,
+            vec![Keyframe {
+                frame: 0,
+                value: 1.0,
+            }],
+        )],
+        ..Clip::new("Open")
+    }]);
+
+    let mut app = headless_app();
+    let handle = add_model(&mut app, model);
+    let entity = spawn(&mut app, &handle);
+    app.update();
+    let mut entity_mut = app.world_mut().entity_mut(entity);
+    let mut component = entity_mut.get_mut::<CatchlightPuppet>().unwrap();
+    assert!(component.player_mut().play("Open"));
+    app.update();
+
+    assert_eq!(puppet(&app, entity).param_value_posed(&param), Some(0.75));
 }
 
 #[test]

@@ -2,24 +2,26 @@
 //! observe the same evaluated frame; capture decimation never changes ticks.
 use super::spec::{bad, MotionResponseMode, ResolvedRequest};
 use crate::Error;
-use catchlight_core::extension::ExtensionError;
 use catchlight_core::{Model, NodeId, Pose, Puppet};
-use catchlight_extension_animations::AnimationPlayer;
-use catchlight_extension_expressions::{Expressions, Weights};
-use catchlight_extension_humanoid::{ControlValues, Humanoid};
+use catchlight_extension_animations::{AnimationPlayer, FrameInputs, Rig};
+use catchlight_extension_expressions::Weights;
+use catchlight_extension_humanoid::ControlValues;
 use std::collections::BTreeMap;
 
 pub struct FrameRuntime {
     pub puppet: Puppet,
     pub player: AnimationPlayer,
+    /// The request's controls, expressions and visemes, applied every frame
+    /// under the clip's lanes. Validation already found every name.
+    inputs: FrameInputs,
     timestep: f32,
     pub index: u32,
 }
 impl FrameRuntime {
     pub fn new(model: &Model, request: &ResolvedRequest) -> Result<Self, Error> {
         let mut puppet = Puppet::new(model);
-        // Before the controls and expressions, which skip a param a running
-        // motion response drives.
+        // Before the first frame, whose controls and expressions skip a param
+        // a running motion response drives.
         if let MotionResponseMode::On { response_clock } = request.motion_responses {
             puppet.set_response_clock(response_clock);
         }
@@ -34,7 +36,21 @@ impl FrameRuntime {
                 .map(|(id, v)| (id.clone(), *v))
                 .collect::<Pose>(),
         );
-        pose_controls(model, request, &mut puppet)?;
+        let weights = |named: &BTreeMap<String, f32>| -> Weights {
+            named
+                .iter()
+                .map(|(name, weight)| (name.as_str(), *weight))
+                .collect()
+        };
+        let inputs = FrameInputs {
+            controls: request
+                .controls
+                .iter()
+                .map(|(name, value)| (name.as_str(), *value))
+                .collect::<ControlValues>(),
+            expressions: weights(&request.expressions),
+            visemes: weights(&request.visemes),
+        };
         let timestep = request
             .animation
             .as_ref()
@@ -53,73 +69,29 @@ impl FrameRuntime {
                 return Err(bad("selected animation could not start"));
             }
         }
-        player.advance(&mut puppet, 0.0);
+        player.advance_with(&mut puppet, 0.0, Rig::of(model), &inputs);
         puppet.tick(model, 0.0);
         Ok(Self {
             puppet,
             player,
+            inputs,
             timestep,
             index: 0,
         })
     }
     pub fn advance(&mut self, model: &Model) {
-        self.player.advance(&mut self.puppet, self.timestep);
+        self.player.advance_with(
+            &mut self.puppet,
+            self.timestep,
+            Rig::of(model),
+            &self.inputs,
+        );
         self.puppet.tick(model, self.timestep);
         self.index += 1;
     }
     pub fn timestep(&self) -> f32 {
         self.timestep
     }
-}
-
-/// The order the expressions crate gives a host: control values, the
-/// control settings, the control mappings, then the param settings, visemes
-/// over expressions each time. Validation already found every name.
-fn pose_controls(
-    model: &Model,
-    request: &ResolvedRequest,
-    puppet: &mut Puppet,
-) -> Result<(), Error> {
-    if request.controls.is_empty() && request.expressions.is_empty() && request.visemes.is_empty() {
-        return Ok(());
-    }
-    let mut controls: ControlValues = request
-        .controls
-        .iter()
-        .map(|(name, value)| (name.as_str(), *value))
-        .collect();
-    let weights = |named: &BTreeMap<String, f32>| -> Weights {
-        named
-            .iter()
-            .map(|(name, weight)| (name.as_str(), *weight))
-            .collect()
-    };
-    let (emotions, visemes) = (weights(&request.expressions), weights(&request.visemes));
-    let expressions = if emotions.is_empty() && visemes.is_empty() {
-        None
-    } else {
-        Some(
-            model
-                .extension::<Expressions>()
-                .map_err(|e| bad(format!("the model's expressions cannot be read: {e}")))?,
-        )
-    };
-    if let Some(expressions) = expressions {
-        expressions.blend_controls(&emotions, &visemes, &mut controls);
-    }
-    match model.extension::<Humanoid>() {
-        Ok(humanoid) => humanoid.pose(&controls, puppet),
-        Err(ExtensionError::Missing) => {}
-        Err(e) => {
-            return Err(bad(format!(
-                "the model's control mappings cannot be read: {e}"
-            )))
-        }
-    }
-    if let Some(expressions) = expressions {
-        expressions.blend_params(&emotions, &visemes, puppet);
-    }
-    Ok(())
 }
 
 pub fn color_retained(request: &ResolvedRequest, id: &NodeId) -> bool {

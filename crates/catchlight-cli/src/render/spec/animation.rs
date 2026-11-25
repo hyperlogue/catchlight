@@ -8,8 +8,10 @@ use crate::Error;
 use catchlight_core::interpolate::InterpolateMode;
 use catchlight_core::ParamId;
 use catchlight_extension_animations::{Clip, Keyframe, Lane, LaneTarget};
+use catchlight_extension_expressions::Group;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(transparent)]
@@ -163,7 +165,8 @@ mod keyframes {
 }
 
 /// A spec clip plays on the model as given, so it must name the model's
-/// params and keep each lane in frame order.
+/// params, the controls it maps and its expressions and visemes, and keep
+/// each lane in frame order.
 pub(super) fn validate(model: &catchlight_core::Model, clip: &Clip) -> Result<(), Error> {
     if !clip.timestep.is_finite() || clip.timestep <= 0.0 || clip.length == 0 {
         return Err(bad(
@@ -174,17 +177,37 @@ pub(super) fn validate(model: &catchlight_core::Model, clip: &Clip) -> Result<()
         if lane.keyframes.iter().any(|k| !k.value.is_finite()) {
             return Err(bad("animation keyframe values must be finite"));
         }
-        if let Some(param) = lane.param() {
-            if model.param(param).is_none() {
-                return Err(bad(format!(
-                    "animation lane names param {:?}, which the model lacks",
-                    param.as_str()
-                )));
+        match &lane.target {
+            LaneTarget::Param(param) => {
+                if model.param(param).is_none() {
+                    return Err(bad(format!(
+                        "animation lane names param {:?}, which the model lacks",
+                        param.as_str()
+                    )));
+                }
             }
+            LaneTarget::Control(name) => {
+                let controls = BTreeMap::from([(name.clone(), 0.0)]);
+                super::validate_controls(model, &controls).map_err(in_lane)?;
+            }
+            LaneTarget::Expression(name) => lane_member(model, Group::Expression, name)?,
+            LaneTarget::Viseme(name) => lane_member(model, Group::Viseme, name)?,
         }
         if lane.keyframes.windows(2).any(|w| w[0].frame > w[1].frame) {
             return Err(bad("animation lane keyframes must be in frame order"));
         }
     }
     Ok(())
+}
+
+fn lane_member(model: &catchlight_core::Model, group: Group, name: &str) -> Result<(), Error> {
+    let weights = BTreeMap::from([(name.to_owned(), 0.0)]);
+    super::validate_weights(model, group, &weights).map_err(in_lane)
+}
+
+fn in_lane(e: Error) -> Error {
+    match e {
+        Error::Render(message) => bad(format!("animation lane: {message}")),
+        e => e,
+    }
 }

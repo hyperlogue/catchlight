@@ -306,14 +306,24 @@ fn get_prints_the_animations_byte_payload_as_its_decoded_clips() {
     let param = model.param_ids()[0].clone();
     let clip = Clip {
         length: 4,
-        lanes: vec![Lane {
-            target: LaneTarget::Param(param.clone()),
-            interpolation: catchlight_core::InterpolateMode::Linear,
-            keyframes: vec![Keyframe {
-                frame: 2,
-                value: 0.5,
-            }],
-        }],
+        lanes: vec![
+            Lane {
+                target: LaneTarget::Param(param.clone()),
+                interpolation: catchlight_core::InterpolateMode::Linear,
+                keyframes: vec![Keyframe {
+                    frame: 2,
+                    value: 0.5,
+                }],
+            },
+            Lane {
+                target: LaneTarget::Viseme("aa".into()),
+                interpolation: catchlight_core::InterpolateMode::Linear,
+                keyframes: vec![Keyframe {
+                    frame: 1,
+                    value: 1.0,
+                }],
+            },
+        ],
         ..Clip::new("nod")
     };
     *model.extension_or_default::<Animations>().unwrap() = Animations::from_clips([clip.clone()]);
@@ -328,10 +338,9 @@ fn get_prints_the_animations_byte_payload_as_its_decoded_clips() {
     assert_eq!(code, 0, "stderr: {stderr}");
     let clips: Vec<Clip> = serde_json::from_str(stdout.trim()).expect("json on stdout");
     assert_eq!(clips, [clip]);
-    assert!(
-        stdout.contains(param.as_str()),
-        "lanes name their param: {stdout}"
-    );
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(json[0]["lanes"][0]["param"], param.as_str(), "{stdout}");
+    assert_eq!(json[0]["lanes"][1]["viseme"], "aa", "{stdout}");
 }
 
 #[test]

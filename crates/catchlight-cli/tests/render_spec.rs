@@ -16,7 +16,8 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
 /// Maps `mouth_open` onto `closure`, and has a `happy` expression that sets
-/// that control and `drive`, and a `pp` viseme that closes the mouth.
+/// that control and `drive`, a `pp` viseme that closes the mouth and an `aa`
+/// viseme that opens it.
 fn model() -> Model {
     let mut m = bare_model();
     m.extension_or_default::<Humanoid>().unwrap().set(
@@ -34,10 +35,10 @@ fn model() -> Model {
                 ExpressionSetting::param(ParamId::new("drive").unwrap(), 1.0),
             ],
         )],
-        [Expression::new(
-            "pp",
-            vec![ExpressionSetting::control("mouth_open", 0.0)],
-        )],
+        [
+            Expression::new("pp", vec![ExpressionSetting::control("mouth_open", 0.0)]),
+            Expression::new("aa", vec![ExpressionSetting::control("mouth_open", 1.0)]),
+        ],
     );
     m
 }
@@ -883,7 +884,7 @@ fn controls_and_expressions_must_name_what_the_model_has() {
         ),
         (
             json!({"visemes":{"happy":1}}),
-            "unknown viseme happy; the model has: pp",
+            "unknown viseme happy; the model has: pp, aa",
         ),
         (
             json!({"expressions":{"pp":1}}),
@@ -978,4 +979,112 @@ fn a_control_and_an_expression_move_the_evaluated_model() {
         stderr.contains("unknown viseme oh; the model has: aa"),
         "{stderr}"
     );
+}
+
+/// The example spec's `talk` fades `happy` in while `aa` cross-fades to `pp`.
+#[test]
+fn a_spec_clips_lanes_ramp_an_expression_and_cross_fade_two_visemes() {
+    let m = model();
+    let doc = Document::parse(include_bytes!("fixtures/render-spec.json")).unwrap();
+    let talk = doc.resolve(&m).unwrap().requests.remove("talk").unwrap();
+    let mut runtime = catchlight_cli::render::frame::FrameRuntime::new(&m, &talk).unwrap();
+    let value = |runtime: &catchlight_cli::render::frame::FrameRuntime, id: &str| {
+        runtime
+            .puppet
+            .param_value(&ParamId::new(id).unwrap())
+            .unwrap()
+    };
+    for frame in 0..=10 {
+        if frame > 0 {
+            runtime.advance(&m);
+        }
+        if ![0, 3, 5, 10].contains(&frame) {
+            continue;
+        }
+        let t = frame as f32 / 10.0;
+        // `happy` at weight t opens the mouth to t, then the visemes, whose
+        // weights sum to 1, set it to their mix: 1 - t. The mapping turns
+        // that into closure, and happy's drive setting blends from rest.
+        let closure = 0.25 + 0.75 * (1.0 - t);
+        let drive = 0.25 + 0.75 * t;
+        for (id, want) in [("closure", closure), ("drive", drive)] {
+            let got = value(&runtime, id);
+            assert!(
+                (got - want).abs() < 1e-5,
+                "frame {frame}: {id} {got} != {want}"
+            );
+        }
+    }
+
+    // A request's own weight yields to the lane on the same name.
+    let mut with_weights = talk.clone();
+    with_weights.visemes = BTreeMap::from([("pp".into(), 1.0)]);
+    with_weights.expressions = BTreeMap::from([("happy".into(), 1.0)]);
+    let runtime = catchlight_cli::render::frame::FrameRuntime::new(&m, &with_weights).unwrap();
+    assert_eq!(value(&runtime, "closure"), 1.0);
+    assert_eq!(value(&runtime, "drive"), 0.25);
+}
+
+#[test]
+fn a_spec_lane_must_name_one_target_the_model_has() {
+    let spec = |lane: Value| {
+        json!({"schema":1,
+            "animations":{"a":{"timestep":0.1,"length":2,"lanes":[lane]}},
+            "requests":{"r":{"animation":{"source":"spec","name":"a"}}}})
+    };
+    let keys = json!([{"frame":0,"value":1}]);
+    for (lane, want) in [
+        (
+            json!({"control":"mouth_smile","interpolation":"Linear","keyframes":keys}),
+            "animation lane: control mouth_smile is not mapped by the model; it maps: mouth_open",
+        ),
+        (
+            json!({"expression":"sad","interpolation":"Linear","keyframes":keys}),
+            "animation lane: unknown expression sad; the model has: happy",
+        ),
+        (
+            json!({"viseme":"oh","interpolation":"Linear","keyframes":keys}),
+            "animation lane: unknown viseme oh; the model has: pp, aa",
+        ),
+        (
+            json!({"expression":"aa","interpolation":"Linear","keyframes":keys}),
+            "unknown expression aa",
+        ),
+    ] {
+        assert_bad(spec(lane), want);
+    }
+    for lane in [
+        json!({"interpolation":"Linear","keyframes":keys}),
+        json!({"param":"drive","viseme":"aa","interpolation":"Linear","keyframes":keys}),
+    ] {
+        let error = Document::parse(&serde_json::to_vec(&spec(lane)).unwrap())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("exactly one"), "{error}");
+    }
+    let bare = bare_model();
+    for (lane, want) in [
+        (
+            json!({"control":"mouth_open","interpolation":"Linear","keyframes":keys}),
+            "catchlight.humanoid",
+        ),
+        (
+            json!({"viseme":"aa","interpolation":"Linear","keyframes":keys}),
+            "catchlight.expressions",
+        ),
+    ] {
+        let error = parse(spec(lane)).resolve(&bare).unwrap_err().to_string();
+        assert!(error.contains(want), "wanted {want}, got {error}");
+    }
+}
+
+#[test]
+fn the_schema_lets_a_lane_name_each_kind_of_target() {
+    let schema = schema(false).unwrap();
+    let lane = &schema["$defs"]["Lane"];
+    for field in ["param", "control", "expression", "viseme"] {
+        assert!(lane["properties"].get(field).is_some(), "{field}: {lane}");
+    }
+    assert_eq!(lane["oneOf"].as_array().unwrap().len(), 4, "{lane}");
+    assert_eq!(lane["required"], json!(["interpolation"]), "{lane}");
 }

@@ -118,7 +118,11 @@ next release is 0.3.0.
   the clip's param lanes. A weight held below 1 no longer creeps from frame
   to frame, and motion responses do not react to a control lane's jump at a
   loop wrap. `check` reports a lane on a control the model does not map or on
-  an expression or viseme it lacks.
+  an expression or viseme it lacks. A render spec's clips take the same
+  lanes, so a timed request can ramp controls, expressions and visemes; the
+  CLI applies a request's controls and weights every frame under them, and
+  refuses a lane on a control, expression or viseme the model lacks. Bevy
+  puppets play these lanes through the model's own mappings.
 
 ### Fixed
 
