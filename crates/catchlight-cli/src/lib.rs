@@ -8,6 +8,7 @@
 //!   patch that breaks a load-time invariant is refused, not saved.
 
 pub mod diff;
+pub mod expression;
 pub mod extension;
 pub mod file;
 pub mod fragment;
@@ -194,6 +195,11 @@ pub enum Error {
         .path.display()
     )]
     NotMapped { path: PathBuf, control: String },
+    #[error(
+        "{} has no expression {name:?}; `catchlight-cli expression list` shows its expressions",
+        .path.display()
+    )]
+    NoSuchExpression { path: PathBuf, name: String },
     #[error(
         "{name:?} is not a standard humanoid control{}; `catchlight-cli humanoid controls` \
          lists them, and --nonstandard keeps a name outside the list",
