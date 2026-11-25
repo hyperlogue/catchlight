@@ -139,8 +139,8 @@ impl TraceFrame {
         runtime: &FrameRuntime,
     ) -> Result<Self, Error> {
         let sample = runtime
-            .puppet
-            .animation_sample()
+            .player
+            .sample()
             .ok_or_else(|| bad("animation has no evaluated sample"))?;
         let mut requested = BTreeMap::new();
         let mut effective = BTreeMap::new();
@@ -487,7 +487,7 @@ pub(super) fn schema_example(kind: &str) -> Result<serde_json::Value, Error> {
                      "trace_params":["drive"],"trace_responses":["sensor"]}
         },
         "animations":{"pulse":{"name":"Pulse","timestep":0.016666667,"length":2,
-            "lead_in":-1,"lead_out":-1,"lanes":[{"param":"drive","interpolation":"Linear",
+            "lanes":[{"param":"drive","interpolation":"Linear",
                 "keyframes":[{"frame":0,"value":0},{"frame":1,"value":1}]}]}}
     });
     let spec_bytes = serde_json::to_vec(&authored).map_err(|e| fail(&e))?;

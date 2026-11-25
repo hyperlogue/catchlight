@@ -4,6 +4,7 @@
 //! sliders and stops animation playback.
 
 use catchlight_core::{load_model, Model, ModelFormat, ParamId, Puppet};
+use catchlight_extension_animations::{AnimationPlayer, Animations, Clip, Keyframe, Lane};
 use catchlight_wgpu::{
     collect, create_orthographic_camera_at, create_surface_context, PrepareOptions, RenderCache,
     SurfaceContext, WgpuRenderer,
@@ -193,6 +194,7 @@ struct App {
     targets: catchlight_wgpu::FrameTargets,
     model: Model,
     puppet: Puppet,
+    player: AnimationPlayer,
     cache: Option<RenderCache>,
     start: std::time::Instant,
     last_frame: std::time::Instant,
@@ -299,9 +301,9 @@ impl ApplicationHandler for App {
         {
             self.control_enabled = !self.control_enabled;
             if self.control_enabled {
-                self.puppet.stop_animation();
+                self.player.stop();
             } else {
-                self.puppet.play_animation("Blink");
+                self.player.play("Blink");
             }
             if let Some(window) = &self.window {
                 window.request_redraw();
@@ -409,6 +411,7 @@ impl ApplicationHandler for App {
                     if self.puppet.motion_responses_enabled() != responses_enabled {
                         self.puppet.set_motion_responses_enabled(responses_enabled);
                     }
+                    self.player.advance(&mut self.puppet, dt);
                     self.puppet.tick(&self.model, dt);
                     if let Err(e) = cache.refresh(renderer, &self.model, &self.puppet) {
                         eprintln!("Failed to refresh the render cache: {}", e);
@@ -485,7 +488,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         model.texture_ids().len(),
         model.param_ids().len()
     );
-    let mut puppet = Puppet::new(&model);
+    let puppet = Puppet::new(&model);
 
     use catchlight_core::BindingTarget;
     let demo_param: Option<ParamId> = model
@@ -506,8 +509,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Synthesized blink for every param named "*Blink*": 0 = open, 1 = closed.
-    if puppet.animations().is_empty() {
-        use catchlight_core::formats::clm::{ClmAnimation, ClmKeyframe, ClmLane};
+    let mut player = model
+        .extension::<Animations>()
+        .map(AnimationPlayer::from_animations)
+        .unwrap_or_default();
+    if player.clips().is_empty() {
         use catchlight_core::InterpolateMode;
         let blink_params: Vec<ParamId> = model
             .param_ids()
@@ -520,26 +526,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .cloned()
             .collect();
         if !blink_params.is_empty() {
-            let kfs = || -> Vec<ClmKeyframe> {
+            let kfs = || -> Vec<Keyframe> {
                 // Frame values are seconds * 60 (60 fps timestep below).
                 vec![
-                    ClmKeyframe {
+                    Keyframe {
                         frame: 0,
                         value: 0.0,
                     },
-                    ClmKeyframe {
+                    Keyframe {
                         frame: 60,
                         value: 0.0,
                     }, // 1.0s open
-                    ClmKeyframe {
+                    Keyframe {
                         frame: 72,
                         value: 1.0,
                     }, // 200ms close
-                    ClmKeyframe {
+                    Keyframe {
                         frame: 90,
                         value: 1.0,
                     }, // 300ms hold closed
-                    ClmKeyframe {
+                    Keyframe {
                         frame: 102,
                         value: 0.0,
                     }, // 200ms reopen
@@ -547,21 +553,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
             let lanes = blink_params
                 .iter()
-                .map(|param| ClmLane {
+                .map(|param| Lane {
                     param: param.clone(),
                     keyframes: kfs(),
                     interpolation: InterpolateMode::Linear,
                 })
                 .collect();
-            let anim = ClmAnimation {
-                name: "Blink".into(),
-                timestep: 1.0 / 60.0,
+            let anim = Clip {
                 length: 102,
                 lanes,
-                ..Default::default()
+                ..Clip::new("Blink")
             };
-            puppet.set_animations(vec![anim]);
-            if !control_enabled && puppet.play_animation("Blink") {
+            player.set_clips(vec![anim]);
+            if !control_enabled && player.play("Blink") {
                 println!(
                     "Playing built-in animation: Blink ({} eye(s))",
                     blink_params.len()
@@ -581,6 +585,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         targets: catchlight_wgpu::FrameTargets::new(),
         model,
         puppet,
+        player,
         cache: None,
         start: now,
         last_frame: now,

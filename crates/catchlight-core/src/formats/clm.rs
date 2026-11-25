@@ -123,51 +123,6 @@ pub struct ClmCell<T> {
     pub value: T,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ClmAnimation {
-    #[serde(default)]
-    pub name: String,
-    /// Seconds per frame.
-    pub timestep: f32,
-    /// Length in frames.
-    pub length: i32,
-    /// Frame where the lead-in ends / looping restarts. -1 (or any value
-    /// outside `(0, length - 1)`) means the loop region starts at 0.
-    pub lead_in: i32,
-    /// Frame where the lead-out starts / looping wraps. -1 (or any value
-    /// outside `(0, length - 1)`) means the loop region ends at `length`.
-    pub lead_out: i32,
-    #[serde(default)]
-    pub lanes: Vec<ClmLane>,
-}
-
-impl Default for ClmAnimation {
-    fn default() -> Self {
-        Self {
-            name: String::new(),
-            timestep: 1.0 / 60.0,
-            length: 0,
-            lead_in: -1,
-            lead_out: -1,
-            lanes: Vec::new(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ClmLane {
-    pub param: ParamId,
-    pub interpolation: InterpolateMode,
-    #[serde(default)]
-    pub keyframes: Vec<ClmKeyframe>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct ClmKeyframe {
-    pub frame: i32,
-    pub value: f32,
-}
-
 pub const MAGIC: [u8; 8] = *b"NYANPASU";
 pub const FORMAT_VERSION: u16 = 5;
 
@@ -296,8 +251,6 @@ pub struct ClmStructure {
     pub bindings: Vec<ClmBinding>,
     #[serde(default)]
     pub welds: Vec<ClmWeld>,
-    #[serde(default)]
-    pub animations: Vec<ClmAnimation>,
     /// Skipped when empty, so files without extensions keep their bytes.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub extensions: BTreeMap<ExtensionKey, ClmExtension>,
@@ -1157,19 +1110,6 @@ mod tests {
                 }),
             }],
             welds: Vec::new(),
-            animations: vec![ClmAnimation {
-                name: "blink".into(),
-                length: 6,
-                lanes: vec![ClmLane {
-                    param: mouth,
-                    interpolation: InterpolateMode::Stepped,
-                    keyframes: vec![ClmKeyframe {
-                        frame: 2,
-                        value: 1.0,
-                    }],
-                }],
-                ..ClmAnimation::default()
-            }],
         };
         let textures = vec![ClmTexture {
             id: TexId::new("tex-skin").unwrap(),

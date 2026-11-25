@@ -8,6 +8,7 @@ description = "Bevy integration for catchlight: components, systems, and a rende
 
 [dependencies]
 catchlight-core = { workspace = true }
+catchlight-extension-animations = { workspace = true }
 catchlight-wgpu = { workspace = true }
 glam = { workspace = true }
 wgpu = { workspace = true }

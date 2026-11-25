@@ -295,3 +295,41 @@ fn a_maintained_extension_lists_and_prints_its_envelope() {
         })
     );
 }
+
+#[test]
+fn get_prints_the_animations_byte_payload_as_its_decoded_clips() {
+    use catchlight_extension_animations::{Animations, Clip, Keyframe, Lane};
+
+    let dir = common::tmp("extension-animations");
+    let path = common::copy_fixture("welded_seam", &dir);
+    let mut model = catchlight_core::Model::from_clm_bytes(&common::read(&path)).unwrap();
+    let param = model.param_ids()[0].clone();
+    let clip = Clip {
+        length: 4,
+        lanes: vec![Lane {
+            param: param.clone(),
+            interpolation: catchlight_core::InterpolateMode::Linear,
+            keyframes: vec![Keyframe {
+                frame: 2,
+                value: 0.5,
+            }],
+        }],
+        ..Clip::new("nod")
+    };
+    *model.extension_or_default::<Animations>().unwrap() = Animations::from_clips([clip.clone()]);
+    std::fs::write(&path, model.to_clm_bytes().unwrap()).unwrap();
+
+    let (code, stdout, stderr) = common::run(&[
+        "extension",
+        "get",
+        path.to_str().unwrap(),
+        "catchlight.animations",
+    ]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let clips: Vec<Clip> = serde_json::from_str(stdout.trim()).expect("json on stdout");
+    assert_eq!(clips, [clip]);
+    assert!(
+        stdout.contains(param.as_str()),
+        "lanes name their param: {stdout}"
+    );
+}

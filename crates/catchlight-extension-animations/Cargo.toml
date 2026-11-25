@@ -1,0 +1,21 @@
+[package]
+name = "catchlight-extension-animations"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The official catchlight.animations extension: named clips of param keyframes, and a player for them"
+readme = "README.md"
+
+[dependencies]
+catchlight-core = { workspace = true }
+serde.workspace = true
+ciborium = "0.2.2"
+serde_bytes = "0.11.19"
+tracing = { workspace = true }
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

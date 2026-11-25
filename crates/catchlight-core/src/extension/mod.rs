@@ -22,8 +22,9 @@ use crate::model::Model;
 
 pub(crate) use registry::decode_registered;
 pub use registry::{register, RegisterError};
+pub use store::decode_as;
 pub use store::Extensions;
-pub(crate) use store::{decode_as, Stored, Typed};
+pub(crate) use store::{Stored, Typed};
 
 /// Implemented on the data type itself. Typed access needs only the type in
 /// hand; [`register`] is for programs that install addons or check models.

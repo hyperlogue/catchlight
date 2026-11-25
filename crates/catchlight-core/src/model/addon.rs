@@ -50,7 +50,7 @@ impl fmt::Display for Required {
 pub struct Requirement {
     pub id: Required,
     pub field: &'static str,
-    /// The animation, for a lane; the extension, for a reference.
+    /// The extension, for a reference.
     pub owner: String,
 }
 
@@ -192,7 +192,6 @@ pub struct Installed {
     textures: Vec<TexId>,
     bindings: Vec<BindingKey>,
     welds: Vec<ModelWeld>,
-    animations: Vec<ClmAnimation>,
     /// What each extension merged, for its uninstall to take back.
     extensions: Vec<(ExtensionKey, Receipt)>,
 }
@@ -226,11 +225,7 @@ impl Installed {
         &self.welds
     }
 
-    pub fn animations(&self) -> &[ClmAnimation] {
-        &self.animations
-    }
-
-    /// The keys of the extensions the install added or merged into.
+    /// The keys of the extensions the addon's data merged into.
     pub fn extensions(&self) -> impl Iterator<Item = &ExtensionKey> {
         self.extensions.iter().map(|(key, _)| key)
     }
@@ -341,18 +336,6 @@ impl Model {
             }
         }
 
-        for animation in &self.animations {
-            for lane in &animation.lanes {
-                if !self.params.contains_key(&lane.param) {
-                    need(
-                        Required::Param(lane.param.clone()),
-                        "animation lane",
-                        &format_args!("animation {:?}", animation.name),
-                    );
-                }
-            }
-        }
-
         for key in self.extensions.keys() {
             let owner = format_args!("extension {:?}", key.as_str());
             for r in self.extensions.refs(key).unwrap_or_default() {
@@ -386,7 +369,6 @@ impl Model {
             textures: addon.texture_order.clone(),
             bindings: addon.bindings.iter().map(|b| b.key.clone()).collect(),
             welds: addon.welds.clone(),
-            animations: addon.animations.clone(),
             extensions: Vec::with_capacity(merges.len()),
         };
 
@@ -409,13 +391,10 @@ impl Model {
             });
         }
 
-        self.animations.extend(addon.animations.iter().cloned());
         self.response_index.take();
         if let Err(e) = self.validate_responses() {
             self.bindings
                 .truncate(self.bindings.len() - addon.bindings.len());
-            self.animations
-                .truncate(self.animations.len() - addon.animations.len());
             for node in &installed.nodes {
                 self.nodes.remove(node);
             }
@@ -702,7 +681,6 @@ impl Model {
                     dense: OnceLock::new(),
                 })
                 .collect(),
-            animations: Vec::new(),
             extensions: Extensions::default(),
             unknown_sections: Vec::new(),
             binding_index: OnceLock::new(),
@@ -742,7 +720,6 @@ impl Model {
         );
         self.gc_textures();
         retain_less(&mut self.welds, &installed.welds, |_| true);
-        retain_less(&mut self.animations, &installed.animations, |_| true);
         for (key, receipt) in &installed.extensions {
             let Some(stored) = self.extensions.map.get(key) else {
                 continue;
@@ -794,7 +771,7 @@ fn retain_less<T: PartialEq>(list: &mut Vec<T>, once: &[T], keep: impl Fn(&T) ->
 mod tests {
     use super::*;
     use crate::components::MaskMode;
-    use crate::formats::clm::{ClmIndices, ClmKeyframe, ClmLane, ClmMesh};
+    use crate::formats::clm::{ClmIndices, ClmMesh};
     use crate::id::SeededHex;
     use crate::interpolate::InterpolateMode;
 
@@ -1439,35 +1416,6 @@ mod tests {
             (pairs[1].a_vert, pairs[1].b_vert, pairs[1].weight),
             (3, 1, 0.25)
         );
-    }
-
-    #[test]
-    fn an_addons_animation_installs_and_its_lane_param_is_a_requirement() {
-        let b = base();
-        let mut addon = hat_addon(&b);
-        addon.animations.push(ClmAnimation {
-            name: "tip".into(),
-            length: 8,
-            lanes: vec![ClmLane {
-                param: b.param.clone(),
-                interpolation: InterpolateMode::Linear,
-                keyframes: vec![ClmKeyframe {
-                    frame: 2,
-                    value: 0.5,
-                }],
-            }],
-            ..ClmAnimation::default()
-        });
-        assert!(addon
-            .requirements()
-            .iter()
-            .any(|r| r.field == "animation lane"));
-
-        let mut m = b.m.clone();
-        let installed = m.install(&addon).unwrap();
-        assert_eq!(m.animations().len(), 1);
-        m.uninstall(&installed);
-        assert!(m.animations().is_empty());
     }
 
     #[test]

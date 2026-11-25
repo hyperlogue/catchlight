@@ -3,10 +3,12 @@
 use super::spec::{bad, MotionResponseMode, ResolvedRequest};
 use crate::Error;
 use catchlight_core::{Model, NodeId, Pose, Puppet};
+use catchlight_extension_animations::AnimationPlayer;
 use std::collections::BTreeMap;
 
 pub struct FrameRuntime {
     pub puppet: Puppet,
+    pub player: AnimationPlayer,
     timestep: f32,
     pub index: u32,
 }
@@ -36,20 +38,24 @@ impl FrameRuntime {
             request.motion_responses,
             MotionResponseMode::Off {}
         ));
+        let mut player = AnimationPlayer::default();
         if let Some(animation) = &request.animation {
-            puppet.set_animations(vec![animation.clip.0.clone()]);
-            if !puppet.play_animation(&animation.clip.0.name) {
+            player.set_clips(vec![animation.clip.0.clone()]);
+            if !player.play(&animation.clip.0.name) {
                 return Err(bad("selected animation could not start"));
             }
         }
+        player.advance(&mut puppet, 0.0);
         puppet.tick(model, 0.0);
         Ok(Self {
             puppet,
+            player,
             timestep,
             index: 0,
         })
     }
     pub fn advance(&mut self, model: &Model) {
+        self.player.advance(&mut self.puppet, self.timestep);
         self.puppet.tick(model, self.timestep);
         self.index += 1;
     }

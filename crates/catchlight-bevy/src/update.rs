@@ -28,9 +28,6 @@ pub(crate) fn update_puppets(
         if puppet.needs_bake(id) || replaced.contains(&id) {
             puppet.bake(model, id);
         }
-        let root = global_transform.to_matrix();
-        if let Some(puppet) = puppet.puppet_mut() {
-            puppet.tick_with_root(model, root, dt);
-        }
+        puppet.tick(model, global_transform.to_matrix(), dt);
     }
 }

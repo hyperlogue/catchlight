@@ -4,10 +4,10 @@ mod common;
 
 use catchlight_cli::diff::{diff, UNRENDERED};
 use catchlight_core::components::BlendMode;
-use catchlight_core::formats::clm::{
-    ClmAnimation, ClmFile, ClmKeyframe, ClmLane, ClmNode, ClmNodeKind, ClmTransform,
-};
+use catchlight_core::formats::clm::{ClmFile, ClmNode, ClmNodeKind, ClmTransform};
 use catchlight_core::id::NodeId;
+use catchlight_core::Model;
+use catchlight_extension_animations::{Animations, Clip, Keyframe, Lane};
 
 use common::{copy_fixture, decode, fixtures, read, tmp, write_clm};
 
@@ -218,24 +218,32 @@ fn a_weld_is_keyed_by_the_two_parts_it_joins() {
 #[test]
 fn an_animation_is_keyed_by_name() {
     let base = decode(&common::fixture("welded_seam"));
-    let mut changed = base.clone();
-    changed.doc.animations.push(ClmAnimation {
-        name: "nod".into(),
+    let mut model = Model::from_clm_file(&base).unwrap();
+    let nod = |value: f32| Clip {
         length: 12,
-        lanes: vec![ClmLane {
+        lanes: vec![Lane {
             param: base.doc.params[0].id.clone(),
             interpolation: catchlight_core::interpolate::InterpolateMode::Linear,
-            keyframes: vec![ClmKeyframe {
-                frame: 0,
-                value: 1.0,
-            }],
+            keyframes: vec![Keyframe { frame: 0, value }],
         }],
-        ..ClmAnimation::default()
-    });
+        ..Clip::new("nod")
+    };
+    *model.extension_or_default::<Animations>().unwrap() = Animations::from_clips([nod(1.0)]);
+    let with_one = model.to_clm_file().unwrap();
+    model
+        .extension_mut::<Animations>()
+        .unwrap()
+        .insert(nod(0.5));
+    let changed = model.to_clm_file().unwrap();
 
-    assert_eq!(
-        diff(&base, &changed),
-        vec!["+ animation \"nod\"".to_string()]
+    let added = diff(&base, &with_one);
+    assert_eq!(added.len(), 2, "{added:?}");
+    assert_eq!(added[0], "+ animation \"nod\"");
+    assert!(added[1].starts_with("+ extension catchlight.animations"));
+    let edited = diff(&with_one, &changed);
+    assert!(
+        edited[0].starts_with("~ animation \"nod\" lane[\""),
+        "{edited:?}"
     );
 }
 

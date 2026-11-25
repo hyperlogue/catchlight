@@ -19,10 +19,8 @@ use std::sync::Arc;
 
 use glam::{Mat4, Vec2, Vec3};
 
-use crate::animation::{AnimationPlayer, AnimationSample};
 use crate::components::{Node, NodeIdx, NodeKind};
 use crate::deform::DeformSource;
-use crate::formats::clm::ClmAnimation;
 use crate::id::{NodeId, ParamId};
 use crate::model::{Model, Pose};
 use crate::node::NodeTree;
@@ -83,13 +81,6 @@ pub struct ScratchTransform {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Motion {
     pub motion_responses: bool,
-    pub animation: bool,
-}
-
-impl Motion {
-    pub fn any(self) -> bool {
-        self.motion_responses || self.animation
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -148,7 +139,6 @@ pub struct Puppet {
     motion_responses_enabled: bool,
     spine_targets: Arc<Vec<Vec<Option<u32>>>>,
 
-    animation: AnimationPlayer,
     /// Params whose last change was a discontinuity, consumed by the next
     /// tick after it syncs.
     jumps: Vec<ParamId>,
@@ -192,7 +182,6 @@ impl Puppet {
             responses: response::Responses::default(),
             motion_responses_enabled: true,
             spine_targets: Arc::default(),
-            animation: AnimationPlayer::default(),
             jumps: Vec::new(),
             scratch_transforms: HashMap::new(),
             located: Vec::new(),
@@ -741,48 +730,6 @@ impl Puppet {
         self.param_generation = self.param_generation.wrapping_add(1);
     }
 
-    pub fn animations(&self) -> &[ClmAnimation] {
-        self.animation.clips()
-    }
-
-    pub fn set_animations(&mut self, animations: Vec<ClmAnimation>) {
-        self.animation.set_clips(animations);
-    }
-
-    /// A rebake does not do this: a caller may be playing clips the model does
-    /// not carry.
-    pub fn set_animations_from(&mut self, model: &Model) {
-        self.set_animations(model.animations().to_vec());
-    }
-
-    pub fn play_animation(&mut self, name: &str) -> bool {
-        self.animation.play(name)
-    }
-
-    pub fn stop_animation(&mut self) {
-        self.animation.stop();
-    }
-
-    pub fn animation_sample(&self) -> Option<AnimationSample<'_>> {
-        self.animation.sample()
-    }
-
-    pub fn has_playing_animation(&self) -> bool {
-        self.animation.is_playing()
-    }
-
-    pub fn playing_animation(&self) -> Option<&str> {
-        self.animation.playing()
-    }
-
-    /// `dt` is in seconds. Returns whether any param moved.
-    pub fn tick_animations(&mut self, dt: f32) -> bool {
-        let mut animation = std::mem::take(&mut self.animation);
-        let moved = animation.advance(self, dt);
-        self.animation = animation;
-        moved
-    }
-
     /// Marks a change to `param` as a discontinuity, such as a loop wrap, so
     /// motion responses reading it restart there instead of springing across
     /// it. Taken by the next tick.
@@ -848,12 +795,10 @@ impl Puppet {
     /// Drivers still sample the model-local pose, independent of `root`.
     pub fn tick_with_root(&mut self, model: &Model, root: Mat4, dt: f32) -> Motion {
         let _span = tracing::trace_span!("tick").entered();
-        let animation = self.tick_animations(dt);
         self.sync(model);
         self.take_jumps();
         let mut out = std::mem::take(&mut self.transforms);
         let motion = Motion {
-            animation,
             motion_responses: self.advance_responses(model, dt, false),
         };
         let params_changed = self.last_tick_folded_param_generation != Some(self.param_generation);
@@ -952,8 +897,6 @@ impl Puppet {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const DT: f32 = 1.0 / 60.0;
 
     #[test]
     #[allow(clippy::unwrap_used)]
@@ -1090,79 +1033,6 @@ mod tests {
         let mut puppet = Puppet::new(&model);
         puppet.tick(&snapshot, 0.0);
         assert_eq!(puppet.model_identity(), snapshot.identity());
-    }
-
-    #[test]
-    fn a_models_clips_reach_the_puppet_and_name_themselves_while_playing() {
-        use crate::formats::clm::{ClmAnimation, ClmKeyframe, ClmLane};
-        use crate::id::Name;
-        use crate::id::SeededHex;
-        use crate::interpolate::InterpolateMode;
-        use crate::model::ModelParam;
-
-        let mut model = Model::new();
-        let mut hex = SeededHex::new(9);
-        let param = model
-            .add_param(
-                ModelParam {
-                    name: Name::truncated("blink"),
-                    min: 0.0,
-                    max: 1.0,
-                    default: 0.0,
-                },
-                &mut hex,
-            )
-            .expect("add param");
-        model
-            .set_animations(vec![ClmAnimation {
-                name: "Blink".into(),
-                timestep: 1.0 / 60.0,
-                length: 4,
-                lead_in: -1,
-                lead_out: -1,
-                lanes: vec![ClmLane {
-                    param: param.clone(),
-                    interpolation: InterpolateMode::Linear,
-                    keyframes: vec![
-                        ClmKeyframe {
-                            frame: 0,
-                            value: 0.0,
-                        },
-                        ClmKeyframe {
-                            frame: 3,
-                            value: 1.0,
-                        },
-                    ],
-                }],
-            }])
-            .expect("install the clip");
-
-        let mut puppet = Puppet::new(&model);
-        assert!(
-            puppet.animations().is_empty(),
-            "clips are installed, not baked"
-        );
-        puppet.set_animations_from(&model);
-        assert_eq!(puppet.animations().len(), 1);
-        assert_eq!(puppet.playing_animation(), None, "nothing plays yet");
-
-        assert!(puppet.play_animation("Blink"));
-        assert_eq!(puppet.playing_animation(), Some("Blink"));
-        let motion = puppet.tick(&model, 3.0 / 60.0);
-        assert_eq!(
-            puppet.param_value(&param),
-            Some(1.0),
-            "the lane drove the param it names"
-        );
-        assert!(motion.animation, "a lane that wrote a param is motion");
-        assert!(!motion.motion_responses, "this model has no drivers");
-
-        puppet.stop_animation();
-        assert_eq!(puppet.playing_animation(), None);
-        assert!(
-            !puppet.tick(&model, DT).any(),
-            "a stopped clip leaves nothing moving",
-        );
     }
 
     #[test]

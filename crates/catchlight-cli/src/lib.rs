@@ -175,6 +175,13 @@ pub enum Error {
          names its vendor first"
     )]
     ReservedExtension { key: String, prefix: &'static str },
+    #[error(transparent)]
+    Register(#[from] catchlight_core::extension::RegisterError),
+    #[error("extension {key:?} cannot be read by this build: {why}")]
+    Unread {
+        key: String,
+        why: catchlight_core::extension::Unread,
+    },
     #[error("extension {key:?} would carry {size} bytes, over the {max}-byte cap")]
     ExtensionTooLarge {
         key: String,

@@ -5,12 +5,11 @@
 use crate::inx::InxModel;
 use crate::to_clm::from_inx_model;
 use crate::ImportError;
-use catchlight_core::formats::clm::{
-    ClmAnimation, ClmFile, ClmIndices, ClmNode, ClmNodeKind, ClmStructure,
-};
+use catchlight_core::formats::clm::{ClmFile, ClmIndices, ClmNode, ClmNodeKind, ClmStructure};
 use catchlight_core::interpolate::InterpolateMode;
 use catchlight_core::texture::{EncodedTexture, TextureFormat};
 use catchlight_core::{Model, NodeId, TexId};
+use catchlight_extension_animations::{Animations, Clip};
 use serde_json::json;
 use std::sync::Arc;
 
@@ -698,7 +697,15 @@ fn animated(animations: serde_json::Value) -> Result<ClmFile, ImportError> {
     )
 }
 
-fn lane_params(anim: &ClmAnimation) -> Vec<String> {
+fn clips(file: &ClmFile) -> Vec<Clip> {
+    Model::from_clm_file(file)
+        .expect("the import loads")
+        .extension::<Animations>()
+        .expect("the import carries its clips")
+        .clips()
+}
+
+fn lane_params(anim: &Clip) -> Vec<String> {
     anim.lanes.iter().map(|l| l.param.to_string()).collect()
 }
 
@@ -720,11 +727,15 @@ fn a_clip_carries_its_timing_and_a_lane_per_axis() {
     }))
     .expect("import");
 
-    assert_eq!(file.doc.animations.len(), 1);
-    let anim = &file.doc.animations[0];
+    let clips = clips(&file);
+    assert_eq!(clips.len(), 1);
+    let anim = &clips[0];
     assert_eq!(anim.name, "Blink");
     assert_eq!(anim.timestep, 0.02);
-    assert_eq!((anim.length, anim.lead_in, anim.lead_out), (30, 5, 25));
+    assert_eq!(
+        (anim.length, anim.lead_in, anim.lead_out),
+        (30, Some(5), Some(25))
+    );
     assert_eq!(
         lane_params(anim),
         vec!["param-0", "param-1.x", "param-1.y"],
@@ -752,7 +763,7 @@ fn a_clip_carries_its_timing_and_a_lane_per_axis() {
     );
 
     let model = reread(&file);
-    assert_eq!(model.animations(), file.doc.animations);
+    assert_eq!(model.extension::<Animations>().unwrap().clips(), clips);
 }
 
 #[test]
@@ -762,13 +773,9 @@ fn a_clip_that_authors_no_timing_takes_the_source_defaults() {
     }))
     .expect("import");
 
-    let anim = &file.doc.animations[0];
+    let anim = &clips(&file)[0];
     assert_eq!(anim.timestep, 1.0 / 60.0, "60 fps");
-    assert_eq!(
-        (anim.length, anim.lead_in, anim.lead_out),
-        (0, -1, -1),
-        "-1 is what the runtime reads as no lead-in and no lead-out"
-    );
+    assert_eq!((anim.length, anim.lead_in, anim.lead_out), (0, None, None));
     assert_eq!(
         anim.lanes[0].keyframes[0].value, 0.0,
         "a keyframe with no value holds zero"
@@ -797,7 +804,7 @@ fn a_lane_that_names_no_param_of_this_rig_is_dropped() {
     }))
     .expect("import");
 
-    let anim = &file.doc.animations[0];
+    let anim = &clips(&file)[0];
     assert_eq!(
         lane_params(anim),
         vec!["param-0"],
@@ -823,7 +830,7 @@ fn an_interpolation_with_no_equivalent_falls_back_and_keeps_the_lane() {
     }))
     .expect("import");
 
-    let lane = &file.doc.animations[0].lanes[0];
+    let lane = &clips(&file)[0].lanes[0];
     assert_eq!(lane.interpolation, InterpolateMode::Linear);
     assert_eq!(
         lane.keyframes.len(),
@@ -842,8 +849,7 @@ fn clips_read_from_an_array_as_well_as_from_a_name_map() {
     .expect("import");
 
     assert_eq!(
-        file.doc
-            .animations
+        clips(&file)
             .iter()
             .map(|a| a.name.as_str())
             .collect::<Vec<_>>(),

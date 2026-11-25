@@ -10,6 +10,7 @@ description = "Multi-session editor server for catchlight: a Model per session p
 catchlight-editor-core = { workspace = true }
 catchlight-editor-protocol = { workspace = true }
 catchlight-core = { workspace = true }
+catchlight-extension-animations = { workspace = true }
 image = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

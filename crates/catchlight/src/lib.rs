@@ -17,6 +17,9 @@
 
 pub use catchlight_core::*;
 
+/// The official `catchlight.animations` extension and its player.
+pub use catchlight_extension_animations as animations;
+
 /// GPU rendering backend. Requires the `wgpu` feature.
 #[cfg(feature = "wgpu")]
 pub use catchlight_wgpu as wgpu;

@@ -5,9 +5,8 @@
 
 use std::path::{Path, PathBuf};
 
-use catchlight_core::formats::clm::{self, ClmAnimation, ClmKeyframe, ClmLane, ClmMesh};
+use catchlight_core::formats::clm::{self, ClmMesh};
 use catchlight_core::id::{Name, ParamId, SeededHex};
-use catchlight_core::interpolate::InterpolateMode;
 use catchlight_core::{
     BindingKey, BindingTarget, Model, ModelNode, ModelNodeKind, ModelParam, ModelPart,
 };
@@ -195,24 +194,6 @@ fn five_hundred_node_model() -> Model {
         };
     }
     model
-        .set_animations(vec![ClmAnimation {
-            name: "sweep".into(),
-            length: 500,
-            lanes: params
-                .iter()
-                .map(|param| ClmLane {
-                    param: param.clone(),
-                    interpolation: InterpolateMode::Linear,
-                    keyframes: vec![ClmKeyframe {
-                        frame: 0,
-                        value: 0.0,
-                    }],
-                })
-                .collect(),
-            ..ClmAnimation::default()
-        }])
-        .unwrap();
-    model
 }
 
 /// Nodes, params and bindings live in `HashMap`s; a hash-order leak would
@@ -227,7 +208,6 @@ fn a_five_hundred_node_model_round_trips() {
 
     assert_eq!(reopened.to_clm_bytes().unwrap(), bytes);
     assert_eq!(identity(&reopened), identity(&model));
-    assert_eq!(reopened.animations(), model.animations());
     assert_eq!(
         model.to_clm_bytes().unwrap(),
         bytes,

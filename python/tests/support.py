@@ -117,7 +117,6 @@ def minimal_structure(texture: str = "tex-0") -> dict:
         "params": [],
         "bindings": [],
         "welds": [],
-        "animations": [],
     }
 
 

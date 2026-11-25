@@ -1421,6 +1421,7 @@ version = "0.2.2"
 dependencies = [
  "catchlight-bevy",
  "catchlight-core",
+ "catchlight-extension-animations",
  "catchlight-wgpu",
 ]
 
@@ -1431,6 +1432,7 @@ dependencies = [
  "bevy",
  "bytemuck",
  "catchlight-core",
+ "catchlight-extension-animations",
  "catchlight-wgpu",
  "glam",
  "tracing",
@@ -1444,6 +1446,7 @@ version = "0.2.2"
 dependencies = [
  "base64",
  "catchlight-core",
+ "catchlight-extension-animations",
  "catchlight-wgpu",
  "ciborium",
  "clap",
@@ -1536,6 +1539,7 @@ dependencies = [
  "catchlight-core",
  "catchlight-editor-core",
  "catchlight-editor-protocol",
+ "catchlight-extension-animations",
  "catchlight-wgpu",
  "ctrlc",
  "getrandom 0.3.4",
@@ -1574,12 +1578,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "catchlight-extension-animations"
+version = "0.2.2"
+dependencies = [
+ "catchlight-core",
+ "ciborium",
+ "serde",
+ "serde_bytes",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
 name = "catchlight-importer"
 version = "0.2.2"
 dependencies = [
  "anyhow",
  "base64",
  "catchlight-core",
+ "catchlight-extension-animations",
  "flate2",
  "image",
  "image_dds",
@@ -1597,6 +1614,7 @@ version = "0.2.2"
 dependencies = [
  "bytemuck",
  "catchlight-core",
+ "catchlight-extension-animations",
  "ciborium",
  "egui",
  "egui-wgpu",

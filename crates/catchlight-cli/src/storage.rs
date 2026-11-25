@@ -188,10 +188,6 @@ pub fn inspect(bytes: &[u8], path: &Path) -> Result<Report, Error> {
         encoded_size(&model.doc.params, path)?,
     );
     categories.insert("welds".into(), encoded_size(&model.doc.welds, path)?);
-    categories.insert(
-        "animations".into(),
-        encoded_size(&model.doc.animations, path)?,
-    );
     if !model.doc.extensions.is_empty() {
         categories.insert(
             "inline_extensions".into(),

@@ -175,11 +175,7 @@ impl ClipArgs {
         let Some(name) = &self.animation else {
             return Ok(());
         };
-        let clip = model
-            .animations()
-            .iter()
-            .find(|a| &a.name == name)
-            .ok_or_else(|| spec::bad(format!("unknown model animation {name}")))?;
+        let clip = spec::model_clip(model, name)?;
         let step = f64::from(clip.timestep);
         if !step.is_finite() || step <= 0.0 {
             return Err(spec::bad(format!(

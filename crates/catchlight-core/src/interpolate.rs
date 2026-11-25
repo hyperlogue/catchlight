@@ -66,7 +66,7 @@ pub(crate) fn frac(t: f32, a: f32, b: f32) -> f32 {
 
 /// Uniform Catmull-Rom from `p1`→`p2` (`t` in `[0,1]`). With a collapsed
 /// neighbourhood (p0==p1, p2==p3) it reduces to `lerp`.
-pub(crate) fn cubic<T>(p0: T, p1: T, p2: T, p3: T, t: f32) -> T
+pub fn cubic<T>(p0: T, p1: T, p2: T, p3: T, t: f32) -> T
 where
     T: Copy
         + std::ops::Add<Output = T>

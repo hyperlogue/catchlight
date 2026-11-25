@@ -40,16 +40,21 @@ pub struct Merged {
     pub textures: usize,
     pub bindings: usize,
     pub welds: usize,
-    pub animations: usize,
+    /// The keys of the extensions the addon's data merged into.
+    pub extensions: Vec<String>,
 }
 
 impl std::fmt::Display for Merged {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "installed {} node(s), {} texture(s), {} binding(s), {} weld(s), {} animation(s)",
-            self.nodes, self.textures, self.bindings, self.welds, self.animations
-        )
+            "installed {} node(s), {} texture(s), {} binding(s), {} weld(s)",
+            self.nodes, self.textures, self.bindings, self.welds
+        )?;
+        if !self.extensions.is_empty() {
+            write!(f, "; merged extension(s) {}", self.extensions.join(", "))?;
+        }
+        Ok(())
     }
 }
 
@@ -104,7 +109,7 @@ pub fn merge(base: &Path, addon: &Path, out: &Path) -> Result<Merged, Error> {
         textures: installed.textures().len(),
         bindings: installed.bindings().len(),
         welds: installed.welds().len(),
-        animations: installed.animations().len(),
+        extensions: installed.extensions().map(ToString::to_string).collect(),
     };
     file::write_model(&model, out)?;
     Ok(merged)
@@ -228,18 +233,6 @@ pub fn scan(clm: &ClmFile) -> Vec<Requirement> {
             }
             if weld.pairs.is_empty() {
                 need(Required::Part(end.clone()), "weld end", far.to_string());
-            }
-        }
-    }
-
-    for animation in &doc.animations {
-        for lane in &animation.lanes {
-            if !has_param(&lane.param) {
-                need(
-                    Required::Param(lane.param.clone()),
-                    "animation lane",
-                    format!("animation {:?}", animation.name),
-                );
             }
         }
     }

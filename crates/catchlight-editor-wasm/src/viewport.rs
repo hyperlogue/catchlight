@@ -555,7 +555,7 @@ impl Inner {
         // The timestamp, not a `dt`: the replica derives the step, so a second canvas
         // in this animation frame advances nothing. Stale again while the puppet is
         // still moving itself.
-        if replica.frame(now_ms, &mut self.list)?.any() {
+        if replica.frame(now_ms, &mut self.list)?.motion_responses {
             self.dirty = true;
         }
 

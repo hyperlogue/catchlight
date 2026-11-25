@@ -1,4 +1,3 @@
-pub(crate) mod animation;
 pub mod components;
 pub mod deform;
 pub mod extension;
@@ -18,7 +17,6 @@ pub mod spine;
 pub mod texture;
 pub mod weld;
 
-pub use animation::AnimationSample;
 pub use components::{
     BlendMode, CompositeData, DecodedTexture, Mask, MaskMode, Mesh, MeshGroupData, MeshIndices,
     Node, NodeIdx, NodeKind, PartData, TextureIdx, Transform,

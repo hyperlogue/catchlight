@@ -5,11 +5,13 @@
 
 use std::path::Path;
 
+use catchlight_core::extension::{decode_as, Extension, Payload, RawExtension, Unread};
 use catchlight_core::formats::clm::{
     extension_hash, ClmExtension, ClmExtensionBlob, ClmExtensionMarker, ClmFile, ClmPayload,
     MAX_EXTENSION_BYTES,
 };
 use catchlight_core::id::{ExtensionKey, EXTENSION_RESERVED_PREFIX};
+use catchlight_extension_animations::Animations;
 
 use crate::{file, Error};
 
@@ -71,9 +73,29 @@ pub fn list(path: &Path) -> Result<Vec<Listed>, Error> {
         .collect())
 }
 
+/// A maintained extension this program has a type for prints as that type
+/// decodes it, so its byte payload stays inspectable.
 pub fn get(path: &Path, key: &str, out: Option<&Path>) -> Result<Got, Error> {
-    let key = parse_key(key)?;
+    let key = ExtensionKey::new(key).map_err(|source| Error::BadId {
+        value: key.to_string(),
+        source,
+    })?;
     let file = file::read(path)?;
+    if key.as_str() == Animations::KEY {
+        if let Some(decoded) = typed::<Animations>(&file) {
+            let clips = decoded.map_err(|why| Error::Unread {
+                key: key.to_string(),
+                why,
+            })?;
+            let text = serde_json::to_string(&clips.clips())
+                .unwrap_or_else(|_| "<unrenderable>".to_string());
+            if let Some(out) = out {
+                std::fs::write(out, text.as_bytes()).map_err(|e| Error::io(out, e))?;
+                return Ok(Got::Json(String::new()));
+            }
+            return Ok(Got::Json(text));
+        }
+    }
     match lookup(&file, &key, path)? {
         ClmExtension::Json(value) => {
             if let Some(out) = out {
@@ -207,6 +229,40 @@ pub fn render(value: &ClmExtension) -> String {
             format!("version {version}, {} reference(s), {payload}", refs.len())
         }
     }
+}
+
+/// The maintained extension `T` as `file` stores it, decoded the way a
+/// model's typed read decodes it. `None` when the file has none, or a plain
+/// value under the key.
+pub fn typed<T: Extension>(file: &ClmFile) -> Option<Result<T, Unread>> {
+    raw(file, T::KEY).map(decode_as::<T>)
+}
+
+fn raw(file: &ClmFile, key: &str) -> Option<RawExtension> {
+    let ClmExtension::Maintained {
+        version,
+        refs,
+        payload,
+    } = file.doc.extensions.get(key)?
+    else {
+        return None;
+    };
+    let payload = match payload {
+        ClmPayload::Json(json) => Payload::Json(json.clone()),
+        ClmPayload::Bytes(_) => Payload::Bytes(
+            file.extensions
+                .iter()
+                .find(|blob| blob.key.as_str() == key)?
+                .data
+                .as_slice()
+                .into(),
+        ),
+    };
+    Some(RawExtension {
+        version: *version,
+        refs: refs.clone(),
+        payload,
+    })
 }
 
 fn render_json(value: &serde_json::Value) -> String {

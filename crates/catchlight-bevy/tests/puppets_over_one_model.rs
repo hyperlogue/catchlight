@@ -11,8 +11,8 @@ use std::path::PathBuf;
 
 use bevy::prelude::*;
 use catchlight_bevy::{CatchlightModel, CatchlightPlugin, CatchlightPuppet};
-use catchlight_core::formats::clm::{ClmAnimation, ClmKeyframe, ClmLane};
 use catchlight_core::{InterpolateMode, Model, ParamId, Pose, Puppet};
+use catchlight_extension_animations::{Animations, Clip, Keyframe, Lane};
 
 fn model_path(stem: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -276,28 +276,26 @@ fn a_models_animation_is_baked_onto_every_puppet_that_shares_it() {
     // and each puppet playing it from its own phase.
     let mut model = fixture("welded_seam");
     let param = deform_param(&model);
-    model
-        .set_animations(vec![ClmAnimation {
-            name: "Pull".into(),
-            timestep: 1.0 / 60.0,
-            length: 60,
-            lanes: vec![ClmLane {
-                param: param.clone(),
-                interpolation: InterpolateMode::Linear,
-                keyframes: vec![
-                    ClmKeyframe {
-                        frame: 0,
-                        value: 0.0,
-                    },
-                    ClmKeyframe {
-                        frame: 60,
-                        value: 1.0,
-                    },
-                ],
-            }],
-            ..ClmAnimation::default()
-        }])
-        .expect("install the clip");
+    *model
+        .extension_or_default::<Animations>()
+        .expect("a fresh extension") = Animations::from_clips([Clip {
+        length: 60,
+        lanes: vec![Lane {
+            param: param.clone(),
+            interpolation: InterpolateMode::Linear,
+            keyframes: vec![
+                Keyframe {
+                    frame: 0,
+                    value: 0.0,
+                },
+                Keyframe {
+                    frame: 60,
+                    value: 1.0,
+                },
+            ],
+        }],
+        ..Clip::new("Pull")
+    }]);
 
     let mut app = headless_app();
     let handle = add_model(&mut app, model);
@@ -308,14 +306,15 @@ fn a_models_animation_is_baked_onto_every_puppet_that_shares_it() {
     for (i, entity) in entities.iter().enumerate() {
         let mut entity_mut = app.world_mut().entity_mut(*entity);
         let mut component = entity_mut.get_mut::<CatchlightPuppet>().unwrap();
-        let puppet = component.puppet_mut().unwrap();
+        let (puppet, player) = component.puppet_and_player_mut();
+        let puppet = puppet.unwrap();
         assert_eq!(
-            puppet.animations().len(),
+            player.clips().len(),
             1,
-            "the model's own clip is on the puppet, converted at bake",
+            "the model's own clip is on the puppet's player from its bake",
         );
-        assert!(puppet.play_animation("Pull"));
-        puppet.tick_animations(i as f32 * 0.25);
+        assert!(player.play("Pull"));
+        player.advance(puppet, i as f32 * 0.25);
         values.push(puppet.param_value(&param));
     }
     app.update();

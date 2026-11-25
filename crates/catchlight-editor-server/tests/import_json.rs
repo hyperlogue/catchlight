@@ -336,11 +336,10 @@ fn renamed_fragment(file: &ClmFile) -> ClmFile {
                 .map(|t| catchlight_core::TexId::new(format!("copy{t}")).unwrap());
         }
     }
-    // An addon carries no params, no bindings on them and no animations;
-    // `Model::extract` drops all three and install refuses them.
+    // An addon carries no params and no bindings on them; `Model::extract`
+    // drops both and install refuses them.
     out.doc.params.clear();
     out.doc.bindings.clear();
     out.doc.welds.clear();
-    out.doc.animations.clear();
     out
 }

@@ -36,7 +36,6 @@ impl Model {
         if self.param_order != other.param_order
             || self.bindings.len() != other.bindings.len()
             || self.welds.len() != other.welds.len()
-            || self.animations.len() != other.animations.len()
         {
             return false;
         }
@@ -72,7 +71,6 @@ impl Model {
                 .zip(&other.bindings)
                 .all(|(a, b)| binding_eq(a, b))
             && self.welds == other.welds
-            && self.animations == other.animations
     }
 }
 
@@ -134,9 +132,7 @@ fn binding_eq(a: &ModelBinding, b: &ModelBinding) -> bool {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use crate::{
-        formats::clm::{
-            ClmAnimation, ClmIndices, ClmKeyframe, ClmLane, ClmMesh, TextureAlpha, TextureEncoding,
-        },
+        formats::clm::{ClmIndices, ClmMesh, TextureAlpha, TextureEncoding},
         BindingKey, BindingTarget, BlendMode, ExtensionKey, ExtensionValue, InterpolateMode,
         MaskMode, ModelComposite, ModelMeshGroup, ModelNode, ModelNodeKind, ModelParam, ModelPart,
         ModelSpine, ModelTexture, ModelWeld, MotionResponse, Name, NodeId, ParamId, ScalarTarget,
@@ -455,10 +451,6 @@ mod tests {
                 }),
             ),
             (
-                "animation",
-                Box::new(|m, r, _| m.set_animations(vec![animation(&r.x, 9)]).unwrap()),
-            ),
-            (
                 "spine joints",
                 Box::new(|m, r, _| {
                     m.set_spine_joints(&r.spine, vec![[0.0, -5.0], [0.0, -9.0]])
@@ -592,19 +584,6 @@ mod tests {
         }
     }
 
-    fn animation(param: &ParamId, frame: i32) -> ClmAnimation {
-        ClmAnimation {
-            name: "nod".into(),
-            length: 12,
-            lanes: vec![ClmLane {
-                param: param.clone(),
-                interpolation: InterpolateMode::Linear,
-                keyframes: vec![ClmKeyframe { frame, value: 0.5 }],
-            }],
-            ..ClmAnimation::default()
-        }
-    }
-
     struct Rich {
         model: Model,
         upper: NodeId,
@@ -698,7 +677,6 @@ mod tests {
         model
             .set_deform_vertices(&deform, [1, 0], vec![1.0; 8])
             .unwrap();
-        model.set_animations(vec![animation(&x, 4)]).unwrap();
         model
             .set_extension(
                 ExtensionKey::new("test.metadata").unwrap(),

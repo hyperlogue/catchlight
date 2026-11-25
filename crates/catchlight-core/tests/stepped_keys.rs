@@ -1,7 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! A `Stepped` key holds from its own position.
 
-use catchlight_core::formats::clm::{ClmAnimation, ClmKeyframe, ClmLane};
 use catchlight_core::id::SeededHex;
 use catchlight_core::model::{ModelNode, ModelNodeKind, ModelParam};
 use catchlight_core::{
@@ -93,46 +92,4 @@ fn the_other_modes_still_read_the_key_at_its_position() {
             assert_eq!(evaluated, expected, "{mode:?} eval_scalar at {value}");
         }
     }
-}
-
-#[test]
-fn a_stepped_lane_switches_on_the_keyframe() {
-    let (model, param, node, _) = three_keys(InterpolateMode::Linear);
-    let mut puppet = Puppet::new(&model);
-    let timestep = 1.0 / 4.0;
-    puppet.set_animations(vec![ClmAnimation {
-        name: "steps".into(),
-        timestep,
-        length: 9,
-        lead_in: -1,
-        lead_out: -1,
-        lanes: vec![ClmLane {
-            param: param.clone(),
-            keyframes: vec![
-                ClmKeyframe {
-                    frame: 0,
-                    value: -1.0,
-                },
-                ClmKeyframe {
-                    frame: 2,
-                    value: 0.0,
-                },
-                ClmKeyframe {
-                    frame: 4,
-                    value: 1.0,
-                },
-            ],
-            interpolation: InterpolateMode::Stepped,
-        }],
-    }]);
-    assert!(puppet.play_animation("steps"));
-    let idx = puppet.node_idx(&node).unwrap();
-    let mut seen = Vec::new();
-    puppet.tick(&model, 0.0);
-    seen.push(puppet.get(idx).unwrap().transform.translation.x);
-    for _ in 0..4 {
-        puppet.tick(&model, timestep);
-        seen.push(puppet.get(idx).unwrap().transform.translation.x);
-    }
-    assert_eq!(seen, [10.0, 10.0, 20.0, 20.0, 30.0]);
 }

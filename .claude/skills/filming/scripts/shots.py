@@ -21,7 +21,7 @@ WHITE = {"srgb": [1, 1, 1], "alpha": 1}
 def animation(tracks: Mapping[str, Sequence[float]], fps: float, start: int, count: int) -> dict:
     """A spec animation holding `count` frames of the sampled tracks from `start`."""
     return {
-        "timestep": 1.0 / fps, "length": count, "lead_in": -1, "lead_out": -1,
+        "timestep": 1.0 / fps, "length": count,
         "lanes": [{"param": param, "interpolation": "Linear",
                    "keyframes": [{"frame": i, "value": round(float(v), 5)}
                                  for i, v in enumerate(values[start:start + count])]}

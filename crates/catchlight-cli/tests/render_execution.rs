@@ -382,8 +382,7 @@ fn interrupt_after_a_frame_preserves_valid_artifacts_and_marks_manifest_incomple
     let model_path = dir.join("model.clm");
     write_model(&model_path);
     let mut value = spec();
-    value["animations"] =
-        json!({"pulse":{"timestep":0.016666667,"length":2,"lead_in":-1,"lead_out":-1,"lanes":[]}});
+    value["animations"] = json!({"pulse":{"timestep":0.016666667,"length":2,"lanes":[]}});
     value["requests"]["a"]["animation"] = json!({"source":"spec","name":"pulse"});
     value["requests"]["a"]["frames"] = json!({"count":1000});
     value["requests"]["a"]["scale"] = json!(8);
@@ -462,12 +461,13 @@ fn probe(path: &Path) -> String {
 fn clip_shortcuts_encode_a_time_span_to_one_video_file() {
     let dir = common::tmp("render-execution-video-cli");
     let mut m = model();
-    let clip: catchlight_core::formats::clm::ClmAnimation = serde_json::from_value(json!({
-        "name":"Slide","timestep":0.125,"length":8,"lead_in":-1,"lead_out":-1,
+    let clip: catchlight_extension_animations::Clip = serde_json::from_value(json!({
+        "name":"Slide","timestep":0.125,"length":8,
         "lanes":[{"param":"drive","interpolation":"Linear",
             "keyframes":[{"frame":0,"value":0},{"frame":7,"value":1}]}]}))
     .unwrap();
-    m.set_animations(vec![clip]).unwrap();
+    *m.extension_or_default::<catchlight_extension_animations::Animations>()
+        .unwrap() = catchlight_extension_animations::Animations::from_clips([clip]);
     let path = dir.join("model.clm");
     std::fs::write(&path, m.to_clm_bytes().unwrap()).unwrap();
     let out = dir.join("slide.mp4");
@@ -506,7 +506,7 @@ fn camera_moves_the_view_and_video_sits_beside_kept_frames() {
     let dir = common::tmp("render-execution-camera");
     let mut s = spec();
     s["animations"] = json!({"hold":{"name":"Hold","timestep":0.05,"length":4,
-        "lead_in":-1,"lead_out":-1,"lanes":[]}});
+        "lanes":[]}});
     s["requests"]["a"]["animation"] = json!({"source":"spec","name":"hold"});
     s["requests"]["a"]["video"] = json!({"format":"webm","keep_frames":true});
     s["requests"]["a"]["frames"] = json!({"start":1,"count":4,"every":2});
@@ -532,7 +532,7 @@ fn mkv_video_decodes_to_the_kept_frames_bit_for_bit() {
     let dir = common::tmp("render-execution-mkv");
     let mut s = spec();
     s["animations"] = json!({"slide":{"name":"Slide","timestep":0.1,"length":3,
-        "lead_in":-1,"lead_out":-1,"lanes":[{"param":"drive","interpolation":"Linear",
+        "lanes":[{"param":"drive","interpolation":"Linear",
             "keyframes":[{"frame":0,"value":0},{"frame":2,"value":1}]}]}});
     s["requests"]["a"]["animation"] = json!({"source":"spec","name":"slide"});
     s["requests"]["a"]["video"] = json!({"format":"mkv","keep_frames":true});
@@ -568,7 +568,7 @@ fn missing_ffmpeg_fails_before_rendering_with_an_honest_manifest() {
     write_model(&dir.join("model.clm"));
     let mut s = spec();
     s["animations"] = json!({"hold":{"name":"Hold","timestep":0.05,"length":2,
-        "lead_in":-1,"lead_out":-1,"lanes":[]}});
+        "lanes":[]}});
     s["requests"]["a"]["animation"] = json!({"source":"spec","name":"hold"});
     s["requests"]["a"]["video"] = json!({"format":"gif"});
     std::fs::write(dir.join("spec.json"), serde_json::to_vec(&s).unwrap()).unwrap();

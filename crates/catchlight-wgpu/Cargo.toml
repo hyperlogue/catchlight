@@ -19,6 +19,7 @@ smallvec = { version = "1.15", features = ["union"] }
 pollster.workspace = true
 
 [dev-dependencies]
+catchlight-extension-animations = { workspace = true }
 image.workspace = true
 winit.workspace = true
 serde.workspace = true

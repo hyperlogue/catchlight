@@ -10,9 +10,9 @@
 
 use catchlight_core::components::{BlendMode, MaskMode};
 use catchlight_core::formats::clm::{
-    ClmAnimation, ClmBinding, ClmBindingValues, ClmCell, ClmCells, ClmComposite, ClmFile,
-    ClmIndices, ClmKeyframe, ClmLane, ClmMask, ClmMesh, ClmMeshGroup, ClmNode, ClmNodeKind,
-    ClmParam, ClmPart, ClmSlot, ClmSlotPair, ClmSpine, ClmStructure, ClmTransform, ClmWeld,
+    ClmBinding, ClmBindingValues, ClmCell, ClmCells, ClmComposite, ClmFile, ClmIndices, ClmMask,
+    ClmMesh, ClmMeshGroup, ClmNode, ClmNodeKind, ClmParam, ClmPart, ClmSlot, ClmSlotPair, ClmSpine,
+    ClmStructure, ClmTransform, ClmWeld,
 };
 use catchlight_core::interpolate::InterpolateMode;
 use catchlight_core::puppet::Puppet;
@@ -23,8 +23,6 @@ use std::path::PathBuf;
 const TOL: f32 = 1e-5;
 
 const DT: f32 = 1.0 / 60.0;
-
-const SAMPLE_EVERY: usize = 10;
 
 /// Per node: the sixteen transform elements, z order, enabled flag, then
 /// colour and combined deform when present.
@@ -191,64 +189,7 @@ fn current() -> Baseline {
     }
     capture("welds", weld_fixture(), &mut out);
     capture("spine", spine_fixture(), &mut out);
-    animation_frames(&mut out);
     out
-}
-
-fn animation_frames(out: &mut Baseline) {
-    let mut fixture = Fixture::load(animation_fixture());
-    fixture.puppet.set_animations(vec![ClmAnimation {
-        name: "Blink".into(),
-        timestep: 1.0 / 60.0,
-        length: 31,
-        lead_in: 6,
-        lead_out: 28,
-        lanes: vec![ClmLane {
-            param: ParamId::new("param-0").unwrap(),
-            keyframes: vec![
-                ClmKeyframe {
-                    frame: 0,
-                    value: 0.0,
-                },
-                ClmKeyframe {
-                    frame: 12,
-                    value: 1.0,
-                },
-                ClmKeyframe {
-                    frame: 30,
-                    value: 0.25,
-                },
-            ],
-            interpolation: InterpolateMode::Linear,
-        }],
-    }]);
-    assert!(fixture.puppet.play_animation("Blink"));
-    assert_eq!(fixture.puppet.playing_animation(), Some("Blink"));
-
-    let mut moved = false;
-    for frame in 0..120 {
-        fixture.tick();
-        if frame % SAMPLE_EVERY == 0 {
-            out.insert(format!("animation frame {frame}"), fixture.frame());
-        }
-        if fixture
-            .puppet
-            .transforms()
-            .get(fixture.nodes[1])
-            .w_axis
-            .y
-            .abs()
-            > 1e-3
-        {
-            moved = true;
-        }
-    }
-    assert!(moved, "the lane actually drove the binding");
-
-    fixture.puppet.stop_animation();
-    assert!(!fixture.puppet.has_playing_animation());
-    fixture.tick();
-    out.insert("animation stopped".into(), fixture.frame());
 }
 
 fn baseline_path() -> PathBuf {
@@ -838,26 +779,4 @@ fn a_model_edit_between_ticks_rebakes_and_keeps_the_pose() {
             "a transform edit must not change the folded deform: {a:?} vs {b:?}"
         );
     }
-}
-
-fn animation_fixture() -> FixtureFile {
-    let nodes = vec![
-        node(None, "Root", ClmNodeKind::Group),
-        node(Some(0), "Body", ClmNodeKind::Part(part(quad(5.0, 5.0)))),
-    ];
-    let b = |values: ClmBindingValues| binding(1, InterpolateMode::Linear, one(0), values);
-    let params = vec![
-        FixtureParam::scalar("Blink", 0.0, 1.0, 0.0, vec![0.0, 0.5, 1.0]).driving(vec![
-            b(ClmBindingValues::TransformTY(cells(vec![
-                (0, 0, -3.0),
-                (2, 0, 9.0),
-            ]))),
-            b(ClmBindingValues::Deform(cells(vec![(
-                2,
-                0,
-                vec![1.0, 2.0, -1.0, 0.0, 0.0, 3.0, 0.5, -0.5],
-            )]))),
-        ]),
-    ];
-    file(nodes, params, Vec::new())
 }

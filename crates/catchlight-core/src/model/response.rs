@@ -46,7 +46,8 @@ impl Model {
         })
     }
 
-    pub(super) fn response_owner(&self, param: &ParamId) -> Option<&NodeId> {
+    /// The motion response whose output is `param`.
+    pub fn response_owner(&self, param: &ParamId) -> Option<&NodeId> {
         self.response_index().owners.get(param)
     }
 
@@ -235,9 +236,6 @@ impl Model {
                     Some(super::binding::normalized_zero(param.min, param.max))
                 })?;
             }
-        }
-        for lane in self.animations.iter().flat_map(|a| &a.lanes) {
-            check(&lane.param, "also has an animation lane")?;
         }
         Ok(())
     }

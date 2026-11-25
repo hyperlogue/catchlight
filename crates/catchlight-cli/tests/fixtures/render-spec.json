@@ -5,8 +5,6 @@
       "name": "Pulse",
       "timestep": 0.016666667,
       "length": 61,
-      "lead_in": -1,
-      "lead_out": -1,
       "lanes": [
         {
           "param": "drive",

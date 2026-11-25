@@ -3,12 +3,9 @@
 
 use std::path::{Path, PathBuf};
 
-use catchlight_core::formats::clm::{
-    self, ClmAnimation, ClmError, ClmExtension, ClmKeyframe, ClmLane, ClmStructure,
-};
+use catchlight_core::formats::clm::{self, ClmError, ClmExtension, ClmStructure};
 use catchlight_core::formats::container::{self, Section};
-use catchlight_core::id::{ExtensionKey, ParamId};
-use catchlight_core::interpolate::InterpolateMode;
+use catchlight_core::id::ExtensionKey;
 use catchlight_core::load_budget::charge_clm_structure;
 use catchlight_core::{LoadBudget, LoadLimitError, LoadLimits, Model, ModelError};
 
@@ -170,28 +167,6 @@ fn welds_and_their_pairs_are_charged() {
     assert_eq!(charge(&doc, |l| l.weld_pairs = 4), Ok(()));
     let err = charge(&doc, |l| l.weld_pairs = 3).unwrap_err();
     assert_eq!((err.resource, err.got), ("weld pairs", 4));
-}
-
-#[test]
-fn animations_lanes_and_keyframes_are_charged() {
-    let lane = |keys: i32| ClmLane {
-        param: ParamId::new("p").unwrap(),
-        interpolation: InterpolateMode::Linear,
-        keyframes: (0..keys)
-            .map(|frame| ClmKeyframe { frame, value: 0.0 })
-            .collect(),
-    };
-    let doc = ClmStructure {
-        animations: vec![ClmAnimation {
-            lanes: vec![lane(2), lane(3)],
-            ..ClmAnimation::default()
-        }],
-        ..ClmStructure::default()
-    };
-
-    assert_eq!(charge(&doc, |l| l.keyframes = 8), Ok(()));
-    let err = charge(&doc, |l| l.keyframes = 7).unwrap_err();
-    assert_eq!((err.resource, err.got), ("animation keyframes", 8));
 }
 
 #[test]

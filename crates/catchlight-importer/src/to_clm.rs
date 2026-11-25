@@ -7,14 +7,16 @@
 
 use std::collections::{HashMap, HashSet};
 
+use catchlight_core::extension::{Extension, Payload};
 use catchlight_core::formats::clm::{
-    ClmAnimation, ClmBinding, ClmComposite, ClmFile, ClmKeyframe, ClmLane, ClmMask, ClmMesh,
-    ClmMeshGroup, ClmNode, ClmNodeKind, ClmParam, ClmPart, ClmStructure, ClmTexture, TextureAlpha,
-    TextureEncoding,
+    extension_hash, ClmBinding, ClmComposite, ClmExtension, ClmExtensionBlob, ClmExtensionMarker,
+    ClmFile, ClmMask, ClmMesh, ClmMeshGroup, ClmNode, ClmNodeKind, ClmParam, ClmPart, ClmPayload,
+    ClmStructure, ClmTexture, TextureAlpha, TextureEncoding,
 };
 use catchlight_core::interpolate::InterpolateMode;
 use catchlight_core::texture::TextureFormat;
 use catchlight_core::{Model, NodeId, ParamId, TexId};
+use catchlight_extension_animations::{Animations, Clip, Keyframe, Lane};
 
 use crate::error::ImportError;
 use crate::inx::InxModel;
@@ -159,19 +161,23 @@ pub fn from_inx_model(model: &InxModel) -> Result<ClmFile, ImportError> {
         });
     }
 
-    Ok(ClmFile {
+    let mut file = ClmFile {
         doc: ClmStructure {
             nodes,
             params,
             bindings,
             welds: Vec::new(),
-            animations: convert_animations(obj.get("animations"), &refs),
             extensions: Default::default(),
         },
         textures,
         extensions: Vec::new(),
         unknown_sections: Vec::new(),
-    })
+    };
+    let clips = convert_animations(obj.get("animations"), &refs);
+    if !clips.is_empty() {
+        insert_extension(&mut file, &Animations::from_clips(clips))?;
+    }
+    Ok(file)
 }
 
 enum Slot {
@@ -522,7 +528,7 @@ fn convert_binding(
 
 /// inochi2d 0.8.6 writes `animations` as an object keyed by clip name; older
 /// and nijigenerate variants write an array with a `name` per entry.
-fn convert_animations(json: Option<&serde_json::Value>, refs: &Refs<'_>) -> Vec<ClmAnimation> {
+fn convert_animations(json: Option<&serde_json::Value>, refs: &Refs<'_>) -> Vec<Clip> {
     let entries: Vec<(String, &serde_json::Value)> = match json {
         Some(serde_json::Value::Object(map)) => map.iter().map(|(k, v)| (k.clone(), v)).collect(),
         Some(serde_json::Value::Array(items)) => items
@@ -548,18 +554,20 @@ fn convert_animations(json: Option<&serde_json::Value>, refs: &Refs<'_>) -> Vec<
         .collect()
 }
 
-fn convert_animation(name: String, anim: &SchemaAnimation, refs: &Refs<'_>) -> ClmAnimation {
+fn convert_animation(name: String, anim: &SchemaAnimation, refs: &Refs<'_>) -> Clip {
     let lanes = anim
         .lanes
         .iter()
         .filter_map(|lane| convert_animation_lane(&name, lane, refs))
         .collect();
-    ClmAnimation {
-        // inochi2d's defaults, which `.clm` shares.
+    // inochi2d marks an absent lead-in or lead-out with -1.
+    let frame = |f: Option<i32>| f.and_then(|f| u32::try_from(f).ok());
+    Clip {
+        // inochi2d's default.
         timestep: anim.timestep.unwrap_or(1.0 / 60.0),
-        length: anim.length.unwrap_or(0),
-        lead_in: anim.lead_in.unwrap_or(-1),
-        lead_out: anim.lead_out.unwrap_or(-1),
+        length: frame(anim.length).unwrap_or(0),
+        lead_in: frame(anim.lead_in),
+        lead_out: frame(anim.lead_out),
         name,
         lanes,
     }
@@ -569,7 +577,7 @@ fn convert_animation_lane(
     animation: &str,
     lane: &SchemaAnimationLane,
     refs: &Refs<'_>,
-) -> Option<ClmLane> {
+) -> Option<Lane> {
     let slot = match lane.uuid.and_then(|uuid| refs.slot_of_uuid(uuid)) {
         Some(slot) => slot,
         None => {
@@ -589,21 +597,56 @@ fn convert_animation_lane(
         );
         return None;
     };
-    let mut keyframes: Vec<ClmKeyframe> = lane
-        .keyframes
-        .iter()
-        .map(|k| ClmKeyframe {
-            frame: k.frame.unwrap_or(0),
+    let mut keyframes: Vec<Keyframe> = Vec::with_capacity(lane.keyframes.len());
+    for k in &lane.keyframes {
+        let frame = k.frame.unwrap_or(0);
+        let Ok(frame) = u32::try_from(frame) else {
+            tracing::warn!(
+                "animation {animation:?}: dropping a keyframe at frame {frame}, before the clip \
+                 starts"
+            );
+            continue;
+        };
+        keyframes.push(Keyframe {
+            frame,
             value: k.value.unwrap_or(0.0),
-        })
-        .collect();
+        });
+    }
     // inochi2d sorts on load rather than trusting file order.
     keyframes.sort_by_key(|k| k.frame);
-    Some(ClmLane {
+    Some(Lane {
         param: param.clone(),
         interpolation: lane_interp(lane.interpolation.as_deref(), animation),
         keyframes,
     })
+}
+
+/// Files `data` the way a model saves it, so the file carries it as stored.
+fn insert_extension<T: Extension>(file: &mut ClmFile, data: &T) -> Result<(), ImportError> {
+    let raw = data.encode();
+    let key = T::KEY.parse()?;
+    let payload = match raw.payload {
+        Payload::Json(json) => ClmPayload::Json(json),
+        Payload::Bytes(bytes) => {
+            file.extensions.push(ClmExtensionBlob {
+                key: T::KEY.parse()?,
+                data: bytes.to_vec(),
+            });
+            ClmPayload::Bytes(ClmExtensionMarker {
+                size: bytes.len() as u64,
+                hash: extension_hash(&bytes),
+            })
+        }
+    };
+    file.doc.extensions.insert(
+        key,
+        ClmExtension::Maintained {
+            version: raw.version,
+            refs: raw.refs,
+            payload,
+        },
+    );
+    Ok(())
 }
 
 fn lane_interp(mode: Option<&str>, animation: &str) -> InterpolateMode {

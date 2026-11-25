@@ -22,8 +22,8 @@ use catchlight_bevy::{
     model_from_bytes, CameraControlsPlugin, CatchlightCamera, CatchlightModel, CatchlightPlugin,
     CatchlightPuppet,
 };
-use catchlight_core::formats::clm::{ClmAnimation, ClmKeyframe, ClmLane};
 use catchlight_core::{BindingTarget, InterpolateMode, Model, ModelFormat, ParamId};
+use catchlight_extension_animations::{Animations, Clip, Keyframe, Lane};
 
 const GRID_COLS: usize = 10;
 const GRID_ROWS: usize = 5;
@@ -69,9 +69,14 @@ fn setup(mut commands: Commands, mut models: ResMut<Assets<CatchlightModel>>) {
 
     // A model carries its own animations now, and every puppet baked from it
     // gets them. Synthesize a blink if the file has none of its own.
-    if model.animations().is_empty() {
+    let has_clips = model
+        .extension::<Animations>()
+        .is_ok_and(|animations| !animations.is_empty());
+    if !has_clips {
         if let Some(blink) = build_blink_animation(&model) {
-            model.set_animations(vec![blink]).expect("install blink");
+            *model
+                .extension_or_default::<Animations>()
+                .expect("install blink") = Animations::from_clips([blink]);
         }
     }
     // Resolved against the model, because a range is the model's; the
@@ -115,15 +120,15 @@ fn start_puppets(
     mut query: Query<(Entity, &mut CatchlightPuppet, &StartWhenBaked)>,
 ) {
     for (entity, mut catchlight, start) in &mut query {
-        let Some(puppet) = catchlight.puppet_mut() else {
+        let (Some(puppet), player) = catchlight.puppet_and_player_mut() else {
             continue;
         };
         if let Some((param, value)) = &start.pose {
             // Posing is by `ParamId`; a name is only what a human reads.
             puppet.set_param_value(param, *value);
         }
-        if puppet.play_animation(BLINK) {
-            puppet.tick_animations(start.phase);
+        if player.play(BLINK) {
+            player.advance(puppet, start.phase);
         }
         commands.entity(entity).remove::<StartWhenBaked>();
     }
@@ -144,7 +149,7 @@ fn first_deform_param(model: &Model) -> Option<ParamId> {
 
 /// A blink over every param whose *name* contains "Blink", resolved to
 /// `ParamId`s against the model. value=0 -> open, value=1 -> closed.
-fn build_blink_animation(model: &Model) -> Option<ClmAnimation> {
+fn build_blink_animation(model: &Model) -> Option<Clip> {
     let blink_params: Vec<ParamId> = model
         .param_ids()
         .iter()
@@ -158,43 +163,41 @@ fn build_blink_animation(model: &Model) -> Option<ClmAnimation> {
     if blink_params.is_empty() {
         return None;
     }
-    let keyframes = || -> Vec<ClmKeyframe> {
+    let keyframes = || -> Vec<Keyframe> {
         vec![
-            ClmKeyframe {
+            Keyframe {
                 frame: 0,
                 value: 0.0,
             },
-            ClmKeyframe {
+            Keyframe {
                 frame: 60,
                 value: 0.0,
             },
-            ClmKeyframe {
+            Keyframe {
                 frame: 72,
                 value: 1.0,
             },
-            ClmKeyframe {
+            Keyframe {
                 frame: 90,
                 value: 1.0,
             },
-            ClmKeyframe {
+            Keyframe {
                 frame: 102,
                 value: 0.0,
             },
         ]
     };
-    Some(ClmAnimation {
-        name: BLINK.to_string(),
-        timestep: 1.0 / 60.0,
+    Some(Clip {
         length: 102,
         lanes: blink_params
             .into_iter()
-            .map(|param| ClmLane {
+            .map(|param| Lane {
                 param,
                 interpolation: InterpolateMode::Linear,
                 keyframes: keyframes(),
             })
             .collect(),
-        ..ClmAnimation::default()
+        ..Clip::new(BLINK)
     })
 }
 

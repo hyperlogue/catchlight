@@ -20,6 +20,7 @@ required-features = ["cli"]
 [dependencies]
 anyhow = { workspace = true, optional = true }
 catchlight-core = { workspace = true }
+catchlight-extension-animations = { workspace = true }
 image = { workspace = true, features = ["webp"] }
 # LivLiv packages use stored ZIP entries or DEFLATE; no other codecs or crypto.
 zip = { version = "9.5", default-features = false, features = ["deflate-flate2"] }

@@ -21,7 +21,6 @@ pub enum LoadResource {
     StructureBytes,
     SpineJoints,
     WeldPairs,
-    Keyframes,
     /// Bytes: a JSON value's compact-text length, a byte value's size.
     ExtensionBytes,
 }
@@ -46,7 +45,6 @@ impl LoadResource {
             Self::StructureBytes => "structure bytes",
             Self::SpineJoints => "spine joints",
             Self::WeldPairs => "weld pairs",
-            Self::Keyframes => "animation keyframes",
             Self::ExtensionBytes => "extension bytes",
         }
     }
@@ -73,7 +71,6 @@ pub struct LoadLimits {
     pub structure_bytes: u64,
     pub spine_joints: u64,
     pub weld_pairs: u64,
-    pub keyframes: u64,
     pub extension_bytes: u64,
 }
 
@@ -95,7 +92,6 @@ impl Default for LoadLimits {
             structure_bytes: 64 * 1024 * 1024,
             spine_joints: 1_000_000,
             weld_pairs: 4_000_000,
-            keyframes: 16_000_000,
             extension_bytes: 64 * 1024 * 1024,
         }
     }
@@ -141,7 +137,6 @@ impl LoadBudget {
                 structure_bytes: 0,
                 spine_joints: 0,
                 weld_pairs: 0,
-                keyframes: 0,
                 extension_bytes: 0,
             },
         }
@@ -176,7 +171,6 @@ impl LoadBudget {
             }
             LoadResource::SpineJoints => (&mut self.used.spine_joints, self.limits.spine_joints),
             LoadResource::WeldPairs => (&mut self.used.weld_pairs, self.limits.weld_pairs),
-            LoadResource::Keyframes => (&mut self.used.keyframes, self.limits.keyframes),
             LoadResource::ExtensionBytes => {
                 (&mut self.used.extension_bytes, self.limits.extension_bytes)
             }
@@ -252,7 +246,6 @@ impl LoadBudget {
             LoadResource::StructureBytes => self.limits.structure_bytes,
             LoadResource::SpineJoints => self.limits.spine_joints,
             LoadResource::WeldPairs => self.limits.weld_pairs,
-            LoadResource::Keyframes => self.limits.keyframes,
             LoadResource::ExtensionBytes => self.limits.extension_bytes,
         }
     }
@@ -375,14 +368,6 @@ pub fn charge_clm_structure(
     budget.charge(LoadResource::WeldPairs, doc.welds.len() as u64)?;
     for weld in &doc.welds {
         budget.charge(LoadResource::WeldPairs, weld.pairs.len() as u64)?;
-    }
-
-    budget.charge(LoadResource::Keyframes, doc.animations.len() as u64)?;
-    for animation in &doc.animations {
-        budget.charge(LoadResource::Keyframes, animation.lanes.len() as u64)?;
-        for lane in &animation.lanes {
-            budget.charge(LoadResource::Keyframes, lane.keyframes.len() as u64)?;
-        }
     }
 
     // A byte value is charged by what its marker states: the marker is what

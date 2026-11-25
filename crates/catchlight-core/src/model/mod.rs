@@ -30,8 +30,7 @@ use std::sync::{Arc, OnceLock};
 use crate::components::{BlendMode, MaskMode};
 use crate::extension::{Extensions, IdRef, RawExtension};
 use crate::formats::clm::{
-    self as clm, ClmAnimation, ClmBindingValues, ClmMesh, ClmTransform, TextureAlpha,
-    TextureEncoding,
+    self as clm, ClmBindingValues, ClmMesh, ClmTransform, TextureAlpha, TextureEncoding,
 };
 use crate::id::{
     ExtensionKey, HexSource, IdError, Name, NodeId, NodeIdKind, ParamId, SlotId, TexId,
@@ -142,8 +141,6 @@ pub enum ModelError {
     },
     #[error("mesh is malformed: {0}")]
     MalformedMesh(&'static str),
-    #[error("an animation lane's keyframes must be in frame order")]
-    UnsortedLane,
     #[error(".clm codec: {0}")]
     Clm(#[from] crate::formats::clm::ClmError),
     #[error("invalid .clm: {0}")]
@@ -241,7 +238,6 @@ pub struct Model {
     textures: HashMap<TexId, ModelTexture>,
     texture_order: Vec<TexId>,
     bindings: Vec<ModelBinding>,
-    animations: Vec<ClmAnimation>,
     extensions: Extensions,
     /// Unrecognised file sections, written back unchanged on save.
     unknown_sections: Vec<clm::ClmUnknownSection>,
@@ -790,7 +786,6 @@ impl Model {
             textures: HashMap::new(),
             texture_order: Vec::new(),
             bindings: Vec::new(),
-            animations: Vec::new(),
             extensions: Extensions::default(),
             unknown_sections: Vec::new(),
             binding_index: OnceLock::new(),
@@ -1347,11 +1342,6 @@ impl Model {
                 }
             }
         }
-        for lane in self.animations.iter_mut().flat_map(|a| &mut a.lanes) {
-            if &lane.param == old {
-                lane.param = new.clone();
-            }
-        }
         self.extensions.rewrite(|r| match r {
             IdRef::Param(id) if id == old => Some(IdRef::Param(new.clone())),
             _ => None,
@@ -1854,9 +1844,6 @@ impl Model {
         }
         self.param_order.retain(|p| p != id);
         self.bindings.retain(|b| !b.key.params.contains(id));
-        for animation in &mut self.animations {
-            animation.lanes.retain(|lane| &lane.param != id);
-        }
         for node in self.nodes.values_mut() {
             match &mut node.kind {
                 ModelNodeKind::MotionResponse(r) => {
@@ -2008,10 +1995,6 @@ impl Model {
         }
     }
 
-    pub fn animations(&self) -> &[ClmAnimation] {
-        &self.animations
-    }
-
     pub fn extensions(&self) -> &Extensions {
         &self.extensions
     }
@@ -2046,31 +2029,6 @@ impl Model {
         if self.extensions.map.remove(key).is_none() {
             return Err(ModelError::UnknownExtension(key.to_string()));
         }
-        self.bump();
-        Ok(())
-    }
-
-    /// Lanes must name live params and keep frames in order (playback
-    /// binary-searches them).
-    pub fn set_animations(&mut self, animations: Vec<ClmAnimation>) -> Result<(), ModelError> {
-        if animations
-            .iter()
-            .flat_map(|a| &a.lanes)
-            .any(|lane| !self.params.contains_key(&lane.param))
-        {
-            return Err(ModelError::UnknownParam);
-        }
-        if animations
-            .iter()
-            .flat_map(|a| &a.lanes)
-            .any(|lane| lane.keyframes.windows(2).any(|w| w[0].frame > w[1].frame))
-        {
-            return Err(ModelError::UnsortedLane);
-        }
-        for lane in animations.iter().flat_map(|a| &a.lanes) {
-            self.check_response_writer(&lane.param)?;
-        }
-        self.animations = animations;
         self.bump();
         Ok(())
     }
@@ -2177,19 +2135,7 @@ impl Model {
                     self.bindings
                         .capacity()
                         .saturating_mul(std::mem::size_of::<ModelBinding>()),
-                )
-                .saturating_add(
-                    self.animations
-                        .capacity()
-                        .saturating_mul(std::mem::size_of::<ClmAnimation>()),
                 );
-        for lane in self.animations.iter().flat_map(|a| &a.lanes) {
-            bytes = bytes.saturating_add(
-                lane.keyframes
-                    .capacity()
-                    .saturating_mul(std::mem::size_of::<clm::ClmKeyframe>()),
-            );
-        }
         for weld in &self.welds {
             bytes = bytes
                 .saturating_add(weld.a.as_str().len())
@@ -2574,74 +2520,6 @@ mod tests {
         BindingKey::new(r.param.clone(), r.part.clone(), BindingTarget::Deform)
     }
 
-    fn one_lane_animation(param: &ParamId) -> ClmAnimation {
-        ClmAnimation {
-            name: "blink".into(),
-            length: 10,
-            lanes: vec![crate::formats::clm::ClmLane {
-                param: param.clone(),
-                interpolation: InterpolateMode::Linear,
-                keyframes: vec![crate::formats::clm::ClmKeyframe {
-                    frame: 0,
-                    value: 1.0,
-                }],
-            }],
-            ..ClmAnimation::default()
-        }
-    }
-
-    #[test]
-    fn an_animation_lane_must_name_a_live_param() {
-        let mut r = fixture();
-        let stranger = ParamId::new("nobody").unwrap();
-
-        assert!(matches!(
-            r.model.set_animations(vec![one_lane_animation(&stranger)]),
-            Err(ModelError::UnknownParam)
-        ));
-        assert!(r.model.animations().is_empty());
-    }
-
-    #[test]
-    fn an_animation_lane_must_be_in_frame_order() {
-        let mut r = fixture();
-        let param = r.param.clone();
-        let mut animation = one_lane_animation(&param);
-        animation.lanes[0].keyframes = vec![
-            crate::formats::clm::ClmKeyframe {
-                frame: 8,
-                value: 1.0,
-            },
-            crate::formats::clm::ClmKeyframe {
-                frame: 2,
-                value: 0.0,
-            },
-        ];
-
-        assert!(matches!(
-            r.model.set_animations(vec![animation]),
-            Err(ModelError::UnsortedLane)
-        ));
-        assert!(r.model.animations().is_empty());
-    }
-
-    #[test]
-    fn deleting_a_param_drops_its_animation_lanes() {
-        let mut r = fixture();
-        let param = r.param.clone();
-        r.model
-            .set_animations(vec![one_lane_animation(&param)])
-            .unwrap();
-
-        r.model.delete_param(&param).unwrap();
-
-        assert_eq!(r.model.animations().len(), 1, "the animation survives");
-        assert!(
-            r.model.animations()[0].lanes.is_empty(),
-            "its lane over the deleted param does not"
-        );
-    }
-
     #[test]
     fn every_constructed_model_gets_its_own_identity() {
         let a = Model::new();
@@ -2942,13 +2820,13 @@ mod tests {
         let mut model = Model::new();
         let snapshot = model.clone();
 
-        model.set_animations(Vec::new()).unwrap();
+        model.set_welds(Vec::new()).unwrap();
         let undone = model.generation();
 
         model = snapshot;
         assert_ne!(model.generation(), undone);
 
-        model.set_animations(Vec::new()).unwrap();
+        model.set_welds(Vec::new()).unwrap();
         assert_ne!(
             model.generation(),
             undone,
@@ -3181,13 +3059,6 @@ mod tests {
             (
                 "delete_texture",
                 Box::new(|r| r.model.delete_texture(&r.tex).unwrap()),
-            ),
-            (
-                "set_animations",
-                Box::new(|r| {
-                    let animation = one_lane_animation(&r.param);
-                    r.model.set_animations(vec![animation]).unwrap()
-                }),
             ),
             (
                 "set_welds",
@@ -3979,17 +3850,8 @@ mod tests {
         assert_eq!(r.model.welds()[0].a(), &new_node);
         assert!(r.model.to_clm_bytes().is_ok());
 
-        r.model
-            .set_animations(vec![one_lane_animation(&param)])
-            .unwrap();
-
         let new_param = ParamId::new("head-turn").unwrap();
         r.model.rename_param_id(&param, new_param.clone()).unwrap();
-        assert_eq!(
-            r.model.animations()[0].lanes[0].param,
-            new_param,
-            "the animation lane follows its param",
-        );
         assert_eq!(r.model.param_ids(), std::slice::from_ref(&new_param));
         assert_eq!(
             r.model.bindings().next().unwrap().params(),

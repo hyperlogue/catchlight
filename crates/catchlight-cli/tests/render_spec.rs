@@ -5,10 +5,11 @@
 mod common;
 
 use catchlight_cli::render::{args::ImageArgs, spec::*};
-use catchlight_core::formats::clm::{ClmAnimation, ClmIndices, ClmMesh};
+use catchlight_core::formats::clm::{ClmIndices, ClmMesh};
 use catchlight_core::{
     MaskMode, Model, ModelNode, ModelNodeKind, ModelParam, ModelPart, Name, NodeId, ParamId,
 };
+use catchlight_extension_animations::{Animations, Clip};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
@@ -61,7 +62,7 @@ fn assert_bad(value: Value, want: &str) {
     assert!(error.contains(want), "wanted {want}, got {error}");
 }
 fn animation() -> Value {
-    json!({"name":"Pulse","timestep":0.016666667,"length":6,"lead_in":-1,"lead_out":-1,
+    json!({"name":"Pulse","timestep":0.016666667,"length":6,
         "lanes":[{"param":"drive","interpolation":"Linear","keyframes":[{"frame":0,"value":0},{"frame":5,"value":1}]}]})
 }
 fn animated(settings: Value) -> Value {
@@ -284,10 +285,10 @@ fn duplicate_keys_unknown_fields_and_non_native_motion_are_refused() {
 }
 
 #[test]
-fn native_animation_shape_matches_core_and_reuses_its_invariants() {
+fn native_animation_shape_matches_the_extension_and_reuses_its_invariants() {
     let bytes = serde_json::to_vec(&animation()).unwrap();
     let wrapped: NativeAnimation = decode_json(&bytes).unwrap();
-    let native: ClmAnimation = serde_json::from_slice(&bytes).unwrap();
+    let native: Clip = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(wrapped.0, native);
     assert_eq!(
         serde_json::to_value(&wrapped).unwrap(),
@@ -305,14 +306,10 @@ fn native_animation_shape_matches_core_and_reuses_its_invariants() {
         assert_bad(value, "timestep and length");
     }
     let mut model = model();
-    model.set_animations(vec![native.clone(), native]).unwrap();
+    *model.extension_or_default::<Animations>().unwrap() = Animations::from_clips([native]);
     let doc =
         parse(json!({"schema":1,"requests":{"a":{"animation":{"source":"model","name":"Pulse"}}}}));
-    assert!(doc
-        .resolve(&model)
-        .unwrap_err()
-        .to_string()
-        .contains("ambiguous"));
+    assert!(doc.resolve(&model).is_ok());
     assert_bad(
         animated(json!({"animation":{"source":"model","name":"pulse"}})),
         "unknown model animation",

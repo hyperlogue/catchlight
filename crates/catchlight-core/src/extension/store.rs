@@ -211,8 +211,10 @@ impl<'a> IntoIterator for &'a Extensions {
     }
 }
 
-/// Needs no registry: `T` knows its own migrations and decoding.
-pub(crate) fn decode_as<T: Extension>(raw: RawExtension) -> Result<T, Unread> {
+/// Migrates `raw` and decodes it as `T`, as a typed read does; for data read
+/// straight from a file. Needs no registry: `T` knows its own migrations and
+/// decoding.
+pub fn decode_as<T: Extension>(raw: RawExtension) -> Result<T, Unread> {
     if raw.version > T::VERSION {
         return Err(Unread::Newer {
             version: raw.version,

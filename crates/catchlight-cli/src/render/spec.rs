@@ -8,7 +8,9 @@ pub use catchlight_core::ResponseClock;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+use catchlight_core::extension::ExtensionError;
 use catchlight_core::{Model, ModelNodeKind, NodeId, ParamId};
+use catchlight_extension_animations::{Animations, Clip};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -955,26 +957,11 @@ impl Document {
                         .get(&selection.name)
                         .cloned()
                         .ok_or_else(|| bad(format!("unknown spec animation {}", selection.name)))?,
-                    AnimationSource::Model => {
-                        let mut matches = model
-                            .animations()
-                            .iter()
-                            .filter(|a| a.name == selection.name);
-                        let clip = matches.next().ok_or_else(|| {
-                            bad(format!("unknown model animation {}", selection.name))
-                        })?;
-                        if matches.next().is_some() {
-                            return Err(bad(format!(
-                                "ambiguous model animation {}",
-                                selection.name
-                            )));
-                        }
-                        NativeAnimation(clip.clone())
-                    }
+                    AnimationSource::Model => NativeAnimation(model_clip(model, &selection.name)?),
                 };
                 animation::validate(model, &clip.0)?;
                 let frames = request.frames.clone().value().unwrap_or_default();
-                let count = frames.count.unwrap_or(clip.0.length as u32);
+                let count = frames.count.unwrap_or(clip.0.length);
                 if count == 0 || frames.every == 0 {
                     return Err(bad("frame count and every must be positive"));
                 }
@@ -1238,6 +1225,18 @@ fn unit(v: f32) -> bool {
 }
 pub(super) fn bad(message: impl Into<String>) -> Error {
     Error::Render(message.into())
+}
+
+/// The model's clip named `name`, read from its `catchlight.animations`.
+pub fn model_clip(model: &Model, name: &str) -> Result<Clip, Error> {
+    let animations = match model.extension::<Animations>() {
+        Ok(animations) => Some(animations),
+        Err(ExtensionError::Missing) => None,
+        Err(e) => return Err(bad(format!("the model's animations cannot be read: {e}"))),
+    };
+    animations
+        .and_then(|a| a.clip(name))
+        .ok_or_else(|| bad(format!("unknown model animation {name}")))
 }
 fn limit(budget: &'static str, limit: u64, requested: u64, hint: &'static str) -> Error {
     Error::RenderLimit {

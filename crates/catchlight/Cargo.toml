@@ -16,6 +16,7 @@ bevy = ["dep:catchlight-bevy", "wgpu"]
 
 [dependencies]
 catchlight-core.workspace = true
+catchlight-extension-animations.workspace = true
 catchlight-wgpu = { workspace = true, optional = true }
 catchlight-bevy = { workspace = true, optional = true }
 

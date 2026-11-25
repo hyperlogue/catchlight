@@ -5,11 +5,9 @@
 use std::collections::{HashMap, HashSet};
 
 use catchlight_core::formats::clm::{
-    ClmAnimation, ClmBinding, ClmFile, ClmIndices, ClmKeyframe, ClmLane, ClmMesh, TextureAlpha,
-    TextureEncoding,
+    ClmBinding, ClmFile, ClmIndices, ClmMesh, TextureAlpha, TextureEncoding,
 };
 use catchlight_core::id::{Name, NodeId, ParamId, SeededHex, SlotId, TexId};
-use catchlight_core::interpolate::InterpolateMode;
 use catchlight_core::{
     target_of, BindingKey, BindingTarget, HexSource, InstallError, MaskMode, Model, ModelComposite,
     ModelMeshGroup, ModelNode, ModelNodeKind, ModelParam, ModelPart, ModelTexture, ModelWeld,
@@ -224,22 +222,6 @@ fn random_model(rng: &mut Rng) -> Model {
         .unwrap();
     }
 
-    if !params.is_empty() {
-        m.set_animations(vec![ClmAnimation {
-            name: "idle".into(),
-            length: 10,
-            lanes: vec![ClmLane {
-                param: rng.pick(&params).clone(),
-                interpolation: InterpolateMode::Linear,
-                keyframes: vec![ClmKeyframe {
-                    frame: 3,
-                    value: 0.25,
-                }],
-            }],
-            ..ClmAnimation::default()
-        }])
-        .unwrap();
-    }
     m
 }
 
@@ -253,7 +235,6 @@ fn canonical(m: &Model) -> ClmFile {
     doc.bindings.sort_by_key(binding_key);
     doc.welds
         .sort_by_key(|w| (w.a.to_string(), w.b.to_string()));
-    doc.animations.sort_by(|a, b| a.name.cmp(&b.name));
     file.textures.sort_by(|a, b| a.id.cmp(&b.id));
     file
 }
@@ -327,10 +308,6 @@ fn removing_a_subtree_and_installing_it_back_restores_the_model() {
         assert!(
             addon.param_ids().is_empty(),
             "seed {seed}: params travelled"
-        );
-        assert!(
-            addon.animations().is_empty(),
-            "seed {seed}: animations travelled"
         );
 
         let mut cut = without(&base, &root);

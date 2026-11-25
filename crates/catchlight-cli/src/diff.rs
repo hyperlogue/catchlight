@@ -8,10 +8,11 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use catchlight_core::formats::clm::{
-    ClmAnimation, ClmBinding, ClmFile, ClmIndices, ClmMask, ClmMesh, ClmNode, ClmNodeKind,
-    ClmParam, ClmStructure, ClmTexture, ClmWeld,
+    ClmBinding, ClmFile, ClmIndices, ClmMask, ClmMesh, ClmNode, ClmNodeKind, ClmParam,
+    ClmStructure, ClmTexture, ClmWeld,
 };
 use catchlight_core::{deform_cells, mask_mode_name, scalar_cells, target_of};
+use catchlight_extension_animations::{Animations, Clip};
 use serde::Serialize;
 
 use crate::{extension, file, Error};
@@ -58,10 +59,18 @@ pub fn diff(a: &ClmFile, b: &ClmFile) -> Vec<String> {
         weld_fields,
         &mut out,
     );
+    // Clips the build cannot decode still show as a changed extension below.
+    let clips = |file: &ClmFile| {
+        extension::typed::<Animations>(file)
+            .and_then(Result::ok)
+            .map(|animations| animations.clips())
+            .unwrap_or_default()
+    };
+    let (clips_a, clips_b) = (clips(a), clips(b));
     compare(
         "animation",
-        keyed(&a.doc.animations, |an| format!("{:?}", an.name)),
-        keyed(&b.doc.animations, |an| format!("{:?}", an.name)),
+        keyed(&clips_a, |clip| format!("{:?}", clip.name)),
+        keyed(&clips_b, |clip| format!("{:?}", clip.name)),
         animation_fields,
         &mut out,
     );
@@ -384,12 +393,13 @@ fn weld_fields(w: &ClmWeld) -> Fields {
     f
 }
 
-fn animation_fields(a: &ClmAnimation) -> Fields {
+fn animation_fields(a: &Clip) -> Fields {
+    let frame = |f: Option<u32>| f.map_or_else(|| "(none)".to_string(), |f| f.to_string());
     let mut f = Fields::new();
     f.insert("timestep".into(), a.timestep.to_string());
     f.insert("length".into(), a.length.to_string());
-    f.insert("lead_in".into(), a.lead_in.to_string());
-    f.insert("lead_out".into(), a.lead_out.to_string());
+    f.insert("lead_in".into(), frame(a.lead_in));
+    f.insert("lead_out".into(), frame(a.lead_out));
     for lane in &a.lanes {
         f.insert(
             format!("lane[{:?}]", lane.param.as_str()),

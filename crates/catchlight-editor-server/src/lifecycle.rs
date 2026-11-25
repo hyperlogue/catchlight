@@ -3,6 +3,7 @@
 use std::collections::HashSet;
 
 use catchlight_core::LoadLimits;
+use catchlight_extension_animations::Animations;
 use sha2::{Digest, Sha256};
 
 use super::*;
@@ -159,6 +160,10 @@ impl Editor {
         if let Some(name) = &name {
             validate_title(name)?;
         }
+        // A session installs addons and checks its model, which merge and
+        // check the official extensions through the registry.
+        catchlight_core::extension::register::<Animations>()
+            .map_err(|e| EditorError::BadRequest(e.to_string()))?;
         let session = self.alloc_id();
         let title = name.unwrap_or_else(|| format!("untitled-{}", session.0));
         let mut opened = Session::new(session, model, title, file);

@@ -160,11 +160,6 @@ pub enum ClmLoadError {
     )]
     WeldWeightOutOfRange { a: String, b: String, slot: String },
     #[error(
-        "a lane of animation {animation} on param {param:?} has keyframes out of frame order; a \
-         player reads a lane by binary search"
-    )]
-    UnsortedLane { animation: usize, param: String },
-    #[error(
         "the structure names texture {id:?}, which the caller could not supply; fetch it before \
          applying the structure"
     )]
@@ -356,7 +351,6 @@ impl Model {
             params,
             bindings,
             welds,
-            animations: self.animations.clone(),
             extensions: self
                 .extensions
                 .iter()
@@ -813,25 +807,6 @@ impl Model {
             welds.push(read_weld(w, &slots, &nodes, &mut welded, shape)?);
         }
 
-        for (i, animation) in doc.animations.iter().enumerate() {
-            for lane in &animation.lanes {
-                if !params.contains_key(&lane.param) && !shape.allows_dangling() {
-                    return Err(ClmLoadError::DanglingParam {
-                        owner: format!("a lane of animation {i}"),
-                        id: lane.param.to_string(),
-                    }
-                    .into());
-                }
-                if lane.keyframes.windows(2).any(|w| w[0].frame > w[1].frame) {
-                    return Err(ClmLoadError::UnsortedLane {
-                        animation: i,
-                        param: lane.param.to_string(),
-                    }
-                    .into());
-                }
-            }
-        }
-
         let model = Model {
             identity: super::next_identity(),
             generation: 0,
@@ -848,7 +823,6 @@ impl Model {
             textures,
             texture_order,
             bindings,
-            animations: doc.animations.clone(),
             extensions,
             // Set by whoever read a whole file; a structure push keeps them.
             unknown_sections: Vec::new(),
@@ -1298,11 +1272,9 @@ mod tests {
     use super::*;
     use crate::components::{BlendMode, MaskMode};
     use crate::formats::clm::{
-        ClmAnimation, ClmBindingValues, ClmCell, ClmCells, ClmIndices, ClmKeyframe, ClmLane,
-        ClmMesh, TextureAlpha, TextureEncoding,
+        ClmBindingValues, ClmCell, ClmCells, ClmIndices, ClmMesh, TextureAlpha, TextureEncoding,
     };
     use crate::id::SeededHex;
-    use crate::interpolate::InterpolateMode;
 
     fn slot(id: &str) -> SlotId {
         SlotId::new(id).unwrap()
@@ -1421,20 +1393,6 @@ mod tests {
         )])
         .unwrap();
 
-        m.set_animations(vec![ClmAnimation {
-            name: "nod".into(),
-            length: 12,
-            lanes: vec![ClmLane {
-                param: x,
-                interpolation: InterpolateMode::Linear,
-                keyframes: vec![ClmKeyframe {
-                    frame: 4,
-                    value: 0.5,
-                }],
-            }],
-            ..ClmAnimation::default()
-        }])
-        .unwrap();
         m
     }
 
@@ -1531,10 +1489,6 @@ mod tests {
         assert_eq!(f.welds()[0].pairs().len(), 2);
         let binding = f.bindings().next().unwrap();
         assert!(binding.params().iter().all(|p| f.param(p).is_none()));
-        assert!(f.animations()[0]
-            .lanes
-            .iter()
-            .all(|l| f.param(&l.param).is_none()));
 
         assert_eq!(f.to_clm_bytes().unwrap(), bytes);
         let again = Model::from_clm_bytes_fragment(&f.to_clm_bytes().unwrap()).unwrap();
@@ -2417,48 +2371,6 @@ mod tests {
             load_err(&file),
             ClmLoadError::WeldEndNotAPart { .. }
         ));
-    }
-
-    #[test]
-    fn a_dangling_animation_lane_param_is_a_structured_error() {
-        let mut file = sample().to_clm_file().unwrap();
-        file.doc.animations[0].lanes[0].param = ParamId::new("gone").unwrap();
-
-        assert!(matches!(
-            load_err(&file),
-            ClmLoadError::DanglingParam { id, .. } if id == "gone"
-        ));
-    }
-
-    #[test]
-    fn an_unsorted_animation_lane_is_a_structured_error() {
-        let mut file = sample().to_clm_file().unwrap();
-        file.doc.animations[0].lanes[0].keyframes = vec![
-            ClmKeyframe {
-                frame: 8,
-                value: 1.0,
-            },
-            ClmKeyframe {
-                frame: 2,
-                value: 0.0,
-            },
-        ];
-
-        assert!(matches!(
-            load_err(&file),
-            ClmLoadError::UnsortedLane { animation: 0, .. }
-        ));
-    }
-
-    #[test]
-    fn an_absent_animations_section_reads_as_none() {
-        let mut file = sample().to_clm_file().unwrap();
-        file.doc.animations.clear();
-        let bytes = clm::encode(&file.doc, &file.textures, &file.extensions).unwrap();
-
-        let m = Model::from_clm_bytes(&bytes).unwrap();
-
-        assert!(m.animations().is_empty());
     }
 
     #[test]

@@ -251,7 +251,7 @@ impl Responses {
         self.reserved.get(slot as usize) == Some(&true)
     }
 
-    /// A clip cut resets only rows reading a point that depends on the jumping
+    /// A jump resets only rows reading a point that depends on the jumping
     /// parameter.
     fn bake_point_dependencies(&mut self, puppet: &Puppet) {
         if self.points.is_empty() {
@@ -314,7 +314,6 @@ impl Responses {
         let mut pose = puppet.clone();
         pose.set_motion_responses_enabled(false);
         pose.responses.reserved.clone_from(&self.reserved);
-        pose.stop_animation();
         let needed = &self.geometry_nodes;
         let mut welds = self.geometry_welds.iter();
         std::sync::Arc::make_mut(&mut pose.arena.welds).retain(|_| welds.next() == Some(&true));
@@ -387,7 +386,7 @@ impl Responses {
         const STEP: f64 = 1.0 / 60.0;
         let dt = f64::from(dt);
         let fixed = self.clock == ResponseClock::Fixed60;
-        // Bound exceptional gaps without resetting ordinary low-rate clips.
+        // Bound exceptional gaps without resetting ordinary low-rate input.
         let max_interval = if fixed { 60. } else { 0.25 };
         let reset = reset || !(0.0..=max_interval).contains(&dt);
         let old_remainder = self.remainder;
