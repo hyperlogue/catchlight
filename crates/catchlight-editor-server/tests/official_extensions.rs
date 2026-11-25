@@ -59,7 +59,7 @@ fn a_session_checks_its_animations_as_the_extension_does() {
     assert!(
         warnings
             .iter()
-            .any(|w| w.contains("haunt") && w.contains("ghost")),
+            .any(|w| w.contains("catchlight.animations") && w.contains("ghost")),
         "{warnings:?}"
     );
     assert!(

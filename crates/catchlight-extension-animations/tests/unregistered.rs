@@ -2,9 +2,9 @@
 //! A program that never registers `Animations`, as the registry is
 //! process-wide: its raw slot is maintained by the core alone.
 
-use catchlight_core::extension::{Extension, IdRef, RemovedRef};
+use catchlight_core::extension::{self, Extension, IdRef, RemovedRef};
 use catchlight_core::{InterpolateMode, Model, ModelParam, Name, ParamId};
-use catchlight_extension_animations::{codes, Animations, Clip, Keyframe, Lane};
+use catchlight_extension_animations::{Animations, Clip, Keyframe, Lane};
 
 fn pid(s: &str) -> ParamId {
     ParamId::new(s).unwrap()
@@ -37,11 +37,15 @@ fn an_unregistered_reader_keeps_the_removal_marker_until_a_typed_write() {
         model.extensions().refs(Animations::KEY).unwrap(),
         [IdRef::Removed(RemovedRef::Param(pid("eye")))]
     );
-    let warnings: Vec<_> = Animations::check(model.extension::<Animations>().unwrap(), &model)
+    let codes: Vec<_> = model
+        .extension_warnings()
         .into_iter()
-        .map(|w| w.code)
+        .map(|w| w.warning.code)
         .collect();
-    assert_eq!(warnings, [codes::REMOVED_PARAM]);
+    assert_eq!(
+        codes,
+        [extension::codes::REMOVED, extension::codes::NOT_CHECKED]
+    );
     assert!(model
         .extension_mut::<Animations>()
         .unwrap()

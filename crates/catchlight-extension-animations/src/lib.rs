@@ -15,8 +15,6 @@ use serde::{Deserialize, Serialize};
 
 /// The warning codes [`Animations`] raises from its check.
 pub mod codes {
-    pub const REMOVED_PARAM: &str = "catchlight.animations/removed-param";
-    pub const MISSING_PARAM: &str = "catchlight.animations/missing-param";
     pub const DRIVEN_PARAM: &str = "catchlight.animations/driven-param";
 }
 
@@ -342,39 +340,20 @@ impl Extension for Animations {
     }
 
     fn check(&self, model: &Model) -> Vec<Warning> {
-        let mut out = Vec::new();
-        for (clip, r) in self.lanes() {
-            let warning = match r {
-                IdRef::Removed(_) => Warning::new(
-                    codes::REMOVED_PARAM,
-                    format!("clip {:?} has a lane on a {r}", clip.name),
-                ),
-                IdRef::Param(id) if model.param(id).is_none() => {
-                    // A fragment's missing params are requirements on its base.
-                    if model.is_fragment() {
-                        continue;
-                    }
-                    Warning::new(
-                        codes::MISSING_PARAM,
-                        format!(
-                            "clip {:?} has a lane on {r}, which the model lacks",
-                            clip.name
-                        ),
-                    )
-                }
-                IdRef::Param(id) if model.response_owner(id).is_some() => Warning::new(
+        self.lanes()
+            .filter(|(_, r)| matches!(r, IdRef::Param(id) if model.response_owner(id).is_some()))
+            .map(|(clip, r)| {
+                Warning::new(
                     codes::DRIVEN_PARAM,
                     format!(
                         "clip {:?} has a lane on {r}, which a motion response drives, so the \
                          lane never plays",
                         clip.name
                     ),
-                ),
-                _ => continue,
-            };
-            out.push(warning.with_subjects(vec![r.clone()]));
-        }
-        out
+                )
+                .with_subjects(vec![r.clone()])
+            })
+            .collect()
     }
 
     fn reconcile(&mut self, _model: &Model) {

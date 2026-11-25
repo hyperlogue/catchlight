@@ -182,7 +182,7 @@ fn a_renamed_param_carries_its_lanes_and_a_deleted_one_drops_them() {
 }
 
 #[test]
-fn check_warns_of_missing_and_driven_params() {
+fn check_warns_of_driven_params_and_leaves_missing_ones_to_the_core() {
     register::<Animations>().unwrap();
     let mut model = rig();
     let root = model.root().unwrap().clone();
@@ -217,7 +217,6 @@ fn check_warns_of_missing_and_driven_params() {
         codes,
         [
             "catchlight.animations/driven-param",
-            "catchlight.animations/missing-param",
             "catchlight/dangling-reference",
         ]
     );
