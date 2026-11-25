@@ -434,8 +434,9 @@ whether or not the extension is registered.
 
 **Humanoid**:
 The official `catchlight.humanoid` extension, which makes a human-like model
-drivable by any app that speaks the standard controls, Stage among them, by
-mapping each control the model supports onto one of its params.
+drivable by any app that speaks the standard controls, Stage among them. It
+maps each control the model supports onto one of its params and carries the
+model's expressions.
 _Avoid_: avatar, character config
 
 **Control**:
@@ -447,6 +448,16 @@ _Avoid_: param (that's the model's own), control parameter
 A control's link to one param: the param values the control's -1, 0 and +1
 land on, linear between them. The 0 stop need not be the param's default.
 _Avoid_: binding (that's a param driving a node)
+
+**Expression**:
+A named pose a humanoid model carries, written in control values and faded
+in by a weight from 0 to 1. A standard name — an emotion or a viseme — means
+the same on every model; a model may add names of its own.
+_Avoid_: preset, pose (alone)
+
+**Viseme**:
+An expression under a standard mouth-shape name, one for each group of
+speech sounds that look alike, which lip sync fades between.
 
 ### Editing
 
