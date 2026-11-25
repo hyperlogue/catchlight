@@ -2,12 +2,25 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
 from catchlight import Client, LaunchedServer, launch
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _reviews_kept_apart(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
+    """Spawned servers would otherwise keep reviews in the real per-user directory."""
+    before = os.environ.get("CATCHLIGHT_REVIEWS")
+    os.environ["CATCHLIGHT_REVIEWS"] = str(tmp_path_factory.mktemp("reviews"))
+    yield
+    if before is None:
+        del os.environ["CATCHLIGHT_REVIEWS"]
+    else:
+        os.environ["CATCHLIGHT_REVIEWS"] = before
 
 
 @pytest.fixture

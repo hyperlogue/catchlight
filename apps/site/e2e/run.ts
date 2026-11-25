@@ -67,6 +67,7 @@ const env = {
   ...process.env,
   XDG_RUNTIME_DIR: runtime,
   XDG_CACHE_HOME: join(runtime, "cache"),
+  CATCHLIGHT_REVIEWS: join(runtime, "reviews"),
 };
 
 const modelBytes = readFileSync(OPEN_MODEL);

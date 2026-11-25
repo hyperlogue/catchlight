@@ -22,7 +22,7 @@ mod transport;
 pub use http::{bind_http, serve_http, HttpOptions, HttpServer, UiFiles};
 pub use query::{extension_value_info, replica_query, replica_reply};
 #[cfg(not(target_arch = "wasm32"))]
-pub use review_store::SidecarReviewStore;
+pub use review_store::{user_review_dir, SidecarReviewStore, UnusedReview, UserReviewStore};
 pub use review_store::{NoReviewStore, ReviewStore};
 #[cfg(not(target_arch = "wasm32"))]
 pub use storage::FileStorage;

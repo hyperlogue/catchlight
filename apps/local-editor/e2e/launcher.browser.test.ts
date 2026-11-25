@@ -32,6 +32,7 @@ test.skipIf(!browserExe || !existsSync(exe))(
       CATCHLIGHT_EDITOR_CONNECTION: connection,
       XDG_RUNTIME_DIR: dir,
       XDG_CACHE_HOME: join(dir, "cache"),
+      CATCHLIGHT_REVIEWS: join(dir, "reviews"),
     };
     const cli = (...args: string[]) => {
       const run = Bun.spawnSync([exe, ...args], { env, stderr: "pipe" });

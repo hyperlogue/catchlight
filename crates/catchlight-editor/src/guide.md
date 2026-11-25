@@ -119,9 +119,13 @@ open threads at any time, and `review open --node <id> -m "…"` (or `--param`,
 need to ask about something. Set `CATCHLIGHT_AGENT` (or pass `--agent`) to the
 name the user should see on your comments.
 
-Threads of a saved model are kept beside its file (`<model>.review/`) and are
-there when it is next opened; those of a model never saved last only as long
-as its session.
+Threads of a saved model are kept for you on this machine and are there when
+it is next opened; those of a model never saved last only as long as its
+session. Moving or renaming the model file leaves its threads behind; an
+editor started with `--reviews beside` keeps them next to the file
+(`<model>.review/`) instead. `catchlight-editor reviews gc --dry-run` lists
+the kept threads of models that no longer exist; without `--dry-run` it
+removes them.
 
 A comment can carry images: a screenshot, or one the user drew on to point at
 the problem. Such a comment lists `image <id> (…)` and may have no text at

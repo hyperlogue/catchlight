@@ -2396,4 +2396,120 @@ mod tests {
         );
         std::fs::remove_dir_all(&dir).ok();
     }
+
+    #[test]
+    fn the_user_store_keeps_one_directory_per_model_and_prunes_deleted_ones() {
+        use crate::{FileStorage, UserReviewStore};
+        use std::time::Duration;
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let nth = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("cl-review-user-{}-{nth}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        let models = dir.join("models");
+        let reviews = dir.join("reviews");
+        std::fs::create_dir_all(&models).unwrap();
+        let store = UserReviewStore::new(&models, &reviews);
+        let editor = || {
+            Editor::with_storage(Arc::new(FileStorage::new(&models)))
+                .with_review_store(Arc::new(store.clone()))
+        };
+        let open = |editor: Editor, path: &str| {
+            let session = match editor.handle(Request {
+                id: 1,
+                command: Command::SessionOpen { path: path.into() },
+            }) {
+                Reply::Ok {
+                    body: ResponseBody::Session { session },
+                    ..
+                } => session,
+                other => panic!("{other:?}"),
+            };
+            Fixture::on(editor, session)
+        };
+        let listing = |dir: &std::path::Path| {
+            let mut names: Vec<String> = std::fs::read_dir(dir)
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            names.sort();
+            names
+        };
+
+        let first = editor();
+        let session = match first.handle(Request {
+            id: 1,
+            command: Command::SessionNew {
+                name: None,
+                source: None,
+            },
+        }) {
+            Reply::Ok {
+                body: ResponseBody::Session { session },
+                ..
+            } => session,
+            other => panic!("{other:?}"),
+        };
+        let mut f = Fixture::on(first, session);
+        f.save("m.clm");
+        let thread = f.thread_with_image(PNG);
+
+        assert_eq!(listing(&models), ["m.clm"], "nothing beside the model");
+        let ids = listing(&reviews);
+        assert_eq!(ids.len(), 1);
+        assert_eq!(ids[0].len(), 32);
+        let kept = reviews.join(&ids[0]);
+        assert_eq!(listing(&kept), ["1.png", "model", "review.json"]);
+        assert_eq!(std::fs::read(kept.join("1.png")).unwrap(), PNG);
+        let m = std::fs::canonicalize(models.join("m.clm")).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(kept.join("model")).unwrap(),
+            m.to_str().unwrap()
+        );
+        assert!(f.review().kept_problem.is_none());
+
+        // A relative key and the absolute path reach the same review.
+        for path in ["m.clm", m.to_str().unwrap()] {
+            let mut g = open(editor(), path);
+            assert_eq!(g.review().threads[0].comments, thread.comments);
+            assert_eq!(g.bytes(1).unwrap().bytes, PNG);
+        }
+        assert_eq!(listing(&reviews), ids);
+
+        // Another model gets its own directory.
+        f.save("n.clm");
+        let both = listing(&reviews);
+        assert_eq!(both.len(), 2);
+        let n = reviews.join(both.iter().find(|id| **id != ids[0]).unwrap());
+        assert_eq!(listing(&n), ["1.png", "model", "review.json"]);
+
+        // Neither a recently used review nor one whose model is still there
+        // is pruned, nor a directory that does not say whose it is.
+        std::fs::create_dir_all(reviews.join("unknown")).unwrap();
+        std::fs::remove_file(models.join("n.clm")).unwrap();
+        assert_eq!(store.unused(Duration::from_secs(3600)).unwrap(), []);
+        let unused = store.unused(Duration::ZERO).unwrap();
+        assert_eq!(unused.len(), 1);
+        assert_eq!(unused[0].dir, n);
+        assert_eq!(unused[0].model, m.with_file_name("n.clm"));
+        assert_eq!(
+            unused[0].bytes,
+            ["1.png", "model", "review.json"]
+                .map(|f| std::fs::metadata(n.join(f)).unwrap().len())
+                .iter()
+                .sum::<u64>()
+        );
+        assert!(n.exists(), "listing removes nothing");
+
+        // A model that comes back between listing and removal keeps its review.
+        std::fs::write(models.join("n.clm"), b"").unwrap();
+        assert!(store.remove(&unused[0]).is_err());
+        assert!(n.exists());
+        std::fs::remove_file(models.join("n.clm")).unwrap();
+
+        assert_eq!(store.prune(Duration::ZERO).unwrap(), unused);
+        assert!(!n.exists());
+        assert!(kept.exists());
+        assert!(reviews.join("unknown").exists());
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

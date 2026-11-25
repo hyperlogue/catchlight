@@ -1,9 +1,15 @@
 //! `catchlight-editor` — the Catchlight editor as one program.
 //!
 //! ```text
-//! catchlight-editor [serve] [--port <port>] [--store <dir>] [--no-open] [<model.clm>]
+//! catchlight-editor [serve] [--port <port>] [--store <dir>] [--reviews <where>] [--no-open] [<model.clm>]
+//! catchlight-editor reviews gc [--dry-run] [--unused-days <n>] [--reviews <user|dir>]
 //! catchlight-editor <command> ...
 //! ```
+//!
+//! Review threads are kept per user (`--reviews user`, the default), beside
+//! each model (`beside`), or under a named directory; `CATCHLIGHT_REVIEWS`
+//! supplies the value when the flag is absent. `reviews gc` removes the kept
+//! threads of models that no longer exist; nothing removes them on its own.
 //!
 //! A second `serve` that finds a live editor in the connection file opens that
 //! one instead of starting another, so agents and tabs never split across two
@@ -14,7 +20,7 @@ use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use anyhow::{anyhow, bail, Context, Result};
 use catchlight_editor_cli::Discovery;
@@ -23,7 +29,8 @@ use catchlight_editor_server::connection::{
     default_connection_path, read_connection, Connection, ConnectionFile,
 };
 use catchlight_editor_server::{
-    bind_http, Editor, FileStorage, HttpOptions, SidecarReviewStore, UiFiles,
+    bind_http, user_review_dir, Editor, FileStorage, HttpOptions, ReviewStore, SidecarReviewStore,
+    UiFiles, UserReviewStore,
 };
 
 mod ui {
@@ -40,7 +47,8 @@ const USAGE: &str = "\
 catchlight-editor: the Catchlight editor in your browser, drivable by local agents
 
 usage:
-  catchlight-editor [serve] [--port <port>] [--store <dir>] [--no-open] [<model.clm>]
+  catchlight-editor [serve] [--port <port>] [--store <dir>] [--reviews <where>] [--no-open] [<model.clm>]
+  catchlight-editor reviews gc [--dry-run] [--unused-days <n>] [--reviews <user|dir>]
   catchlight-editor <command> ...
 
 serve (the default) starts the editor on 127.0.0.1, opens it in the browser and
@@ -49,7 +57,14 @@ running, it opens that one instead.
 
   --port <port>   listen here (default 7323, or any free port if that is taken)
   --store <dir>   where relative model paths resolve (default: this directory)
+  --reviews <where>
+                  where review threads are kept: `user` (default) in your
+                  per-user data directory, `beside` next to each model, or a
+                  directory; CATCHLIGHT_REVIEWS sets it when the flag is absent
   --no-open       do not open a browser
+
+reviews gc removes the kept threads of models that no longer exist; see
+`catchlight-editor reviews --help`.
 
 Every other command drives the running editor, e.g.
   catchlight-editor session list
@@ -57,10 +72,23 @@ Every other command drives the running editor, e.g.
 Run `catchlight-editor help` for the full command list.
 Agents: read `catchlight-editor guide` once per session before working.";
 
+const REVIEWS_USAGE: &str = "\
+usage: catchlight-editor reviews gc [--dry-run] [--unused-days <n>] [--reviews <user|dir>]
+
+Removes the review threads kept for models that no longer exist and that have
+not changed for <n> days (default 30). It works on the files directly; no
+editor needs to be running.
+
+  --dry-run           list what would be removed, removing nothing
+  --unused-days <n>   how long a review must have gone unchanged (default 30)
+  --reviews <where>   `user` (default) or a directory; CATCHLIGHT_REVIEWS sets
+                      it when the flag is absent";
+
 #[derive(Debug, Default, PartialEq)]
 struct Serve {
     port: Option<u16>,
     store: Option<PathBuf>,
+    reviews: Option<Reviews>,
     open: bool,
     model: Option<PathBuf>,
 }
@@ -81,6 +109,7 @@ fn main() -> Result<()> {
             print!("{GUIDE}");
             Ok(())
         }
+        Some("reviews") => reviews_command(&args[2..]),
         Some("serve") => serve(parse_serve(&args[2..])?),
         None => serve(parse_serve(&[])?),
         Some(first) if is_serve_argument(first) => serve(parse_serve(&args[1..])?),
@@ -89,7 +118,7 @@ fn main() -> Result<()> {
 }
 
 fn is_serve_argument(arg: &str) -> bool {
-    matches!(arg, "--port" | "--store" | "--no-open")
+    matches!(arg, "--port" | "--store" | "--reviews" | "--no-open")
         || Path::new(arg)
             .extension()
             .is_some_and(|ext| ext.eq_ignore_ascii_case("clm"))
@@ -117,6 +146,12 @@ fn parse_serve(args: &[OsString]) -> Result<Serve> {
                     .next()
                     .ok_or_else(|| anyhow!("--store needs a directory"))?;
                 serve.store = Some(PathBuf::from(value));
+            }
+            Some("--reviews") => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| anyhow!("--reviews needs user, beside or a directory"))?;
+                serve.reviews = Some(Reviews::parse(value));
             }
             Some("--no-open") => serve.open = false,
             Some(flag) if flag.starts_with('-') => bail!("unknown flag {flag}\n\n{USAGE}"),
@@ -159,9 +194,8 @@ fn serve(options: Serve) -> Result<()> {
         Some(dir) => FileStorage::new(dir),
         None => FileStorage::default(),
     };
-    let reviews = SidecarReviewStore::new(store.root());
-    let editor =
-        Arc::new(Editor::with_storage(Arc::new(store)).with_review_store(Arc::new(reviews)));
+    let reviews = Reviews::chosen(options.reviews).store(store.root());
+    let editor = Arc::new(Editor::with_storage(Arc::new(store)).with_review_store(reviews));
     if let Some(model) = model {
         match editor.handle(Request {
             id: 0,
@@ -229,6 +263,187 @@ fn serve(options: Serve) -> Result<()> {
         file.take();
     }
     served.context("serving the editor")
+}
+
+/// Where review threads are kept, from `--reviews` or `CATCHLIGHT_REVIEWS`.
+#[derive(Debug, PartialEq)]
+enum Reviews {
+    User,
+    Beside,
+    In(PathBuf),
+}
+
+impl Reviews {
+    fn parse(value: &OsString) -> Self {
+        match value.to_str() {
+            Some("user") => Self::User,
+            Some("beside") => Self::Beside,
+            _ => Self::In(PathBuf::from(value)),
+        }
+    }
+
+    /// The flag wins over the environment.
+    fn chosen(flag: Option<Reviews>) -> Self {
+        flag.or_else(|| {
+            std::env::var_os("CATCHLIGHT_REVIEWS")
+                .filter(|v| !v.is_empty())
+                .map(|v| Self::parse(&v))
+        })
+        .unwrap_or(Self::User)
+    }
+
+    fn store(self, root: &Path) -> Arc<dyn ReviewStore> {
+        let dir = match self {
+            Self::Beside => return Arc::new(SidecarReviewStore::new(root)),
+            Self::In(dir) => dir,
+            Self::User => match user_review_dir() {
+                Some(dir) => dir,
+                None => {
+                    eprintln!(
+                        "{NAME}: no per-user data directory; keeping reviews beside each model"
+                    );
+                    return Arc::new(SidecarReviewStore::new(root));
+                }
+            },
+        };
+        Arc::new(UserReviewStore::new(root, dir))
+    }
+}
+
+#[derive(Debug, PartialEq)]
+struct Gc {
+    dry_run: bool,
+    unused_days: u64,
+    reviews: Option<Reviews>,
+}
+
+fn reviews_command(args: &[OsString]) -> Result<()> {
+    if args.iter().any(|a| a == "-h" || a == "--help") {
+        println!("{REVIEWS_USAGE}");
+        return Ok(());
+    }
+    match args.first().and_then(|a| a.to_str()) {
+        Some("gc") => {}
+        Some(other) => bail!("unknown command `reviews {other}`\n\n{REVIEWS_USAGE}"),
+        None => bail!("reviews needs a command\n\n{REVIEWS_USAGE}"),
+    }
+    let mut gc = parse_gc(&args[1..])?;
+    let dir = match Reviews::chosen(gc.reviews.take()) {
+        Reviews::Beside => bail!(
+            "reviews kept `beside` their models live next to each model file; there is \
+             nothing to collect"
+        ),
+        Reviews::User => user_review_dir()
+            .ok_or_else(|| anyhow!("no per-user data directory; pass --reviews <dir>"))?,
+        Reviews::In(dir) => dir,
+    };
+    let removed_all = collect(
+        &gc,
+        &dir,
+        &mut std::io::stdout().lock(),
+        &mut std::io::stderr().lock(),
+    )?;
+    if !removed_all {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+fn parse_gc(args: &[OsString]) -> Result<Gc> {
+    let mut gc = Gc {
+        dry_run: false,
+        unused_days: 30,
+        reviews: None,
+    };
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        match arg.to_str() {
+            Some("--dry-run") => gc.dry_run = true,
+            Some("--unused-days") => {
+                let value = args.next().and_then(|v| v.to_str());
+                let value = value.ok_or_else(|| anyhow!("--unused-days needs a number"))?;
+                gc.unused_days = value
+                    .parse()
+                    .map_err(|_| anyhow!("--unused-days {value}: not a number of days"))?;
+            }
+            Some("--reviews") => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| anyhow!("--reviews needs user or a directory"))?;
+                gc.reviews = Some(Reviews::parse(value));
+            }
+            _ => bail!(
+                "unexpected argument {}\n\n{REVIEWS_USAGE}",
+                arg.to_string_lossy()
+            ),
+        }
+    }
+    Ok(gc)
+}
+
+/// Lists, and unless `dry_run` removes, the unused reviews under `dir`.
+/// `false` when one could not be removed; the rest are removed regardless.
+fn collect(gc: &Gc, dir: &Path, out: &mut dyn Write, err: &mut dyn Write) -> Result<bool> {
+    const DAY: u64 = 24 * 60 * 60;
+    let unused_for = gc
+        .unused_days
+        .checked_mul(DAY)
+        .ok_or_else(|| anyhow!("--unused-days {}: too many", gc.unused_days))?;
+    // Listing and removing never resolve a model key, so the root is unused.
+    let store = UserReviewStore::new(".", dir);
+    let unused = store
+        .unused(Duration::from_secs(unused_for))
+        .with_context(|| format!("listing {}", dir.display()))?;
+    let now = SystemTime::now();
+    let (mut count, mut bytes, mut removed_all) = (0, 0, true);
+    for review in &unused {
+        if !gc.dry_run {
+            if let Err(e) = store.remove(review) {
+                writeln!(
+                    err,
+                    "{NAME}: could not remove the review of {}: {e}",
+                    review.model.display()
+                )?;
+                removed_all = false;
+                continue;
+            }
+        }
+        let days = now
+            .duration_since(review.changed)
+            .unwrap_or_default()
+            .as_secs()
+            / DAY;
+        writeln!(
+            out,
+            "{}  {}  unused {days} day{}",
+            review.model.display(),
+            size(review.bytes),
+            if days == 1 { "" } else { "s" }
+        )?;
+        count += 1;
+        bytes += review.bytes;
+    }
+    writeln!(
+        out,
+        "{} {count} review{} ({}) from {}",
+        if gc.dry_run {
+            "would remove"
+        } else {
+            "removed"
+        },
+        if count == 1 { "" } else { "s" },
+        size(bytes),
+        dir.display()
+    )?;
+    Ok(removed_all)
+}
+
+fn size(bytes: u64) -> String {
+    match bytes {
+        0..1024 => format!("{bytes} B"),
+        1024..1_048_576 => format!("{:.1} KiB", bytes as f64 / 1024.0),
+        _ => format!("{:.1} MiB", bytes as f64 / 1_048_576.0),
+    }
 }
 
 /// The browser never sends the fragment over the wire.
@@ -358,7 +573,8 @@ mod tests {
                     continue;
                 }
                 assert!(
-                    commands.contains(&word) || matches!(word.as_str(), "guide" | "help"),
+                    commands.contains(&word)
+                        || matches!(word.as_str(), "guide" | "help" | "reviews"),
                     "the guide names `{NAME} {word}`, which is no command"
                 );
                 checked += 1;
@@ -375,6 +591,7 @@ mod tests {
             Serve {
                 port: Some(9000),
                 store: None,
+                reviews: None,
                 open: false,
                 model: Some(PathBuf::from("a.clm")),
             }
@@ -382,6 +599,106 @@ mod tests {
         assert!(parse_serve(&args(&["a.clm", "b.clm"])).is_err());
         assert!(parse_serve(&args(&["--port", "x"])).is_err());
         assert!(parse_serve(&args(&["--bogus"])).is_err());
+    }
+
+    #[test]
+    fn reviews_are_kept_per_user_beside_the_model_or_in_a_named_directory() {
+        let reviews = |list: &[&str]| parse_serve(&args(list)).unwrap().reviews;
+        assert_eq!(reviews(&[]), None);
+        assert_eq!(reviews(&["--reviews", "user"]), Some(Reviews::User));
+        assert_eq!(reviews(&["--reviews", "beside"]), Some(Reviews::Beside));
+        assert_eq!(
+            reviews(&["--reviews", "/srv/reviews", "a.clm"]),
+            Some(Reviews::In(PathBuf::from("/srv/reviews")))
+        );
+        assert!(parse_serve(&args(&["--reviews"])).is_err());
+        assert!(is_serve_argument("--reviews"));
+        assert_eq!(Reviews::chosen(Some(Reviews::Beside)), Reviews::Beside);
+    }
+
+    #[test]
+    fn gc_flags_parse_with_thirty_days_by_default() {
+        assert_eq!(
+            parse_gc(&[]).unwrap(),
+            Gc {
+                dry_run: false,
+                unused_days: 30,
+                reviews: None,
+            }
+        );
+        assert_eq!(
+            parse_gc(&args(&[
+                "--dry-run",
+                "--unused-days",
+                "0",
+                "--reviews",
+                "/r"
+            ]))
+            .unwrap(),
+            Gc {
+                dry_run: true,
+                unused_days: 0,
+                reviews: Some(Reviews::In(PathBuf::from("/r"))),
+            }
+        );
+        assert!(parse_gc(&args(&["--unused-days", "-1"])).is_err());
+        assert!(parse_gc(&args(&["--unused-days"])).is_err());
+        assert!(parse_gc(&args(&["a.clm"])).is_err());
+        assert!(reviews_command(&args(&["gc", "--reviews", "beside"])).is_err());
+        assert!(reviews_command(&args(&["prune"])).is_err());
+    }
+
+    #[test]
+    fn gc_lists_on_a_dry_run_and_removes_only_reviews_of_missing_models() {
+        let dir = std::env::temp_dir().join(format!("cl-editor-gc-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        let reviews = dir.join("reviews");
+        let live = dir.join("live.clm");
+        let gone = dir.join("gone.clm");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&live, b"").unwrap();
+        for (id, model) in [("a", &gone), ("b", &live)] {
+            let review = reviews.join(id);
+            std::fs::create_dir_all(&review).unwrap();
+            std::fs::write(review.join("model"), model.to_str().unwrap()).unwrap();
+            std::fs::write(review.join("review.json"), b"{}").unwrap();
+        }
+        let bytes = gone.to_str().unwrap().len() + 2;
+        let run = |dry_run| {
+            let gc = Gc {
+                dry_run,
+                unused_days: 0,
+                reviews: None,
+            };
+            let (mut out, mut err) = (Vec::new(), Vec::new());
+            assert!(collect(&gc, &reviews, &mut out, &mut err).unwrap());
+            assert!(err.is_empty());
+            String::from_utf8(out).unwrap()
+        };
+
+        let line = format!("{}  {bytes} B  unused 0 days", gone.display());
+        assert_eq!(
+            run(true),
+            format!(
+                "{line}\nwould remove 1 review ({bytes} B) from {}\n",
+                reviews.display()
+            )
+        );
+        assert!(reviews.join("a").exists());
+        assert_eq!(
+            run(false),
+            format!(
+                "{line}\nremoved 1 review ({bytes} B) from {}\n",
+                reviews.display()
+            )
+        );
+        assert!(!reviews.join("a").exists());
+        assert!(reviews.join("b").exists());
+        assert_eq!(
+            run(false),
+            format!("removed 0 reviews (0 B) from {}\n", reviews.display())
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

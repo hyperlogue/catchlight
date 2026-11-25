@@ -16,18 +16,72 @@ fn main() -> std::io::Result<()> {
 #[cfg(not(target_arch = "wasm32"))]
 mod native {
     use std::net::SocketAddr;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::Arc;
 
     use catchlight_editor_protocol::{Command, Reply, Request};
     use catchlight_editor_server::connection::ConnectionFile;
     use catchlight_editor_server::{
-        bind_http, Editor, FileStorage, HttpOptions, SidecarReviewStore,
+        bind_http, user_review_dir, Editor, FileStorage, HttpOptions, ReviewStore,
+        SidecarReviewStore, UserReviewStore,
     };
 
     const USAGE: &str = "usage: catchlight-editor-server [--socket <path>] [--store <dir>] \
-                         [--http <addr>] [--allow-origin <origin>]... \
-                         [--connection-file <path>] [<model.clm>]";
+                         [--reviews <user|beside|dir>] [--http <addr>] \
+                         [--allow-origin <origin>]... [--connection-file <path>] \
+                         [<model.clm>]
+
+  --reviews  where review threads are kept: `user` (default) in the per-user
+             data directory, `beside` next to each model, or a directory;
+             CATCHLIGHT_REVIEWS sets it when the flag is absent";
+
+    /// Where review threads are kept, from `--reviews` or `CATCHLIGHT_REVIEWS`.
+    #[derive(Debug, PartialEq)]
+    enum Reviews {
+        User,
+        Beside,
+        In(PathBuf),
+    }
+
+    impl Reviews {
+        fn parse(value: &str) -> Self {
+            match value {
+                "user" => Self::User,
+                "beside" => Self::Beside,
+                dir => Self::In(PathBuf::from(dir)),
+            }
+        }
+
+        /// The flag wins over the environment.
+        fn chosen(flag: Option<Reviews>) -> Self {
+            flag.or_else(|| {
+                let value = std::env::var_os("CATCHLIGHT_REVIEWS").filter(|v| !v.is_empty())?;
+                Some(match value.to_str() {
+                    Some(value) => Self::parse(value),
+                    None => Self::In(PathBuf::from(value)),
+                })
+            })
+            .unwrap_or(Self::User)
+        }
+
+        fn store(self, root: &Path) -> Arc<dyn ReviewStore> {
+            let dir = match self {
+                Self::Beside => return Arc::new(SidecarReviewStore::new(root)),
+                Self::In(dir) => dir,
+                Self::User => match user_review_dir() {
+                    Some(dir) => dir,
+                    None => {
+                        eprintln!(
+                            "catchlight-editor-server: no per-user data directory; keeping \
+                             reviews beside each model"
+                        );
+                        return Arc::new(SidecarReviewStore::new(root));
+                    }
+                },
+            };
+            Arc::new(UserReviewStore::new(root, dir))
+        }
+    }
 
     #[derive(Debug)]
     struct Args {
@@ -35,6 +89,8 @@ mod native {
         socket: Option<PathBuf>,
         /// `None` means the current directory.
         store: Option<PathBuf>,
+        /// `None` means `CATCHLIGHT_REVIEWS`, else the per-user directory.
+        reviews: Option<Reviews>,
         http: Option<SocketAddr>,
         allowed_origins: Vec<String>,
         connection_file: Option<PathBuf>,
@@ -55,9 +111,8 @@ mod native {
             Some(dir) => FileStorage::new(dir),
             None => FileStorage::default(),
         };
-        let reviews = SidecarReviewStore::new(store.root());
-        let editor =
-            Arc::new(Editor::with_storage(Arc::new(store)).with_review_store(Arc::new(reviews)));
+        let reviews = Reviews::chosen(args.reviews).store(store.root());
+        let editor = Arc::new(Editor::with_storage(Arc::new(store)).with_review_store(reviews));
 
         if let Some(path) = args.model {
             // Through `handle` so the session shows up in `session_list`.
@@ -147,6 +202,7 @@ mod native {
         let mut parsed = Args {
             socket: None,
             store: None,
+            reviews: None,
             http: None,
             allowed_origins: Vec::new(),
             connection_file: None,
@@ -162,6 +218,12 @@ mod native {
                 "--store" => {
                     let value = args.next().ok_or("--store needs a directory")?;
                     parsed.store = Some(PathBuf::from(value));
+                }
+                "--reviews" => {
+                    let value = args
+                        .next()
+                        .ok_or("--reviews needs user, beside or a directory")?;
+                    parsed.reviews = Some(Reviews::parse(&value));
                 }
                 "--http" => {
                     let value = args.next().ok_or("--http needs an address")?;
@@ -221,6 +283,20 @@ mod native {
             let args = parse_args(&["--store", "models"]).expect("a store directory");
             assert_eq!(args.store, Some(PathBuf::from("models")));
             assert!(parse_args(&["--store"]).is_err());
+        }
+
+        #[test]
+        fn reviews_are_kept_per_user_beside_the_model_or_in_a_named_directory() {
+            let reviews = |list: &[&str]| parse_args(list).unwrap().reviews;
+            assert_eq!(reviews(&[]), None);
+            assert_eq!(reviews(&["--reviews", "user"]), Some(Reviews::User));
+            assert_eq!(reviews(&["--reviews", "beside"]), Some(Reviews::Beside));
+            assert_eq!(
+                reviews(&["--reviews", "/srv/reviews"]),
+                Some(Reviews::In(PathBuf::from("/srv/reviews")))
+            );
+            assert!(parse_args(&["--reviews"]).is_err());
+            assert_eq!(Reviews::chosen(Some(Reviews::Beside)), Reviews::Beside);
         }
 
         #[test]
