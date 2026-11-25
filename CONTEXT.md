@@ -369,12 +369,14 @@ The model an addon is authored against and installed into.
 _Avoid_: base (alone — say base value or base model), host
 
 **Addon**:
-A fragment — a subtree with its bindings, welds, textures and official
-extensions, its animations among them — authored against a base model and
-installed into it. It names what it needs from the base by Id, carries no
-params and no vendor extensions, and never changes the base's params. Each binding and weld it carries touches a node it
-provides. Two addons that provide the same Id are alternatives: only one can
-be installed at a time.
+A fragment — a subtree with its bindings, welds, textures and extensions,
+its animations among them — authored against a base model and installed into
+it. It names what it needs from the base by Id, carries no params, and never
+changes the base's params. Each extension it carries is merged into the base
+by its module, which may refuse; one the program has not registered refuses
+the install. Each binding and weld it carries touches a node it provides.
+Two addons that provide the same Id are alternatives: only one can be
+installed at a time.
 
 **Fragment**:
 The shape of an addon: a model whose every root names a parent it does not
@@ -404,35 +406,31 @@ the subtree, the bindings on it, the welds touching it and the textures it
 draws. Animations stay behind.
 
 **Extension**:
-An annotation on a whole model, filed under a key that is its owner first,
-then a dot — `acme.camera`. Its value is JSON or opaque bytes. A **vendor
-extension** is carried without ever being read. An **official extension** is
-one under `catchlight.`: catchlight defines its shape, and an extension
-module keeps it consistent with the model. Each official extension carries
-its own **version**, and its module **migrates** older versions forward. An
-official extension the build cannot read — no module for it, a newer
-version, or data that fails to decode — is carried unchanged, like a vendor
-extension. Every Id an official extension refers to sits in its **reference
-table**, so the core keeps those references current without the module.
+Data on a whole model, filed under a key that is its owner first, then a dot
+— `acme.camera` — with a JSON or byte value. An **official extension** is one
+under `catchlight.`, the format's own; any other is a **vendor extension**.
+Either kind is **registered** in a program that registers its extension
+module: the model then hands it out as typed data, and the module keeps it
+consistent with the model. An extension the program has not registered, at
+a newer version, or that fails to decode is carried unchanged.
 _Avoid_: metadata, custom data, plugin
 
 **Extension module**:
-The code that understands one official extension, kept outside the core and
-registered with it. The core knows no extension by name: it announces model
-events to every registered module, and each module keeps its own extension
-consistent with the model. Every entry point catchlight ships registers every
-official module. A module never refuses an edit: what an edit leaves
-dangling is **stale**, and the module decides what to do with it — repair
-it, drop it, or warn. Nor does a module assume its extension matches the
-model it is loaded with — an older build or a foreign tool may have edited
-the model without it — so it checks on load and reports what is stale as
-warnings, never as a failure to load.
+The code that understands one extension: its key, its **version**, how it
+**migrates** older versions forward, and its policies. It lives outside the
+core and is registered with it at startup; the core knows no extension by
+name. Every entry point catchlight ships registers every official module. A
+module never refuses an edit: what an edit leaves dangling is **stale**, and
+the module decides what to do with it — repair it, drop it, or warn. Nor
+does it assume its data matches the model it is loaded with; it checks on
+load and reports what is stale as warnings, never as a failure to load.
 _Avoid_: plugin
 
-**Model event**:
-A change the core announces to extension modules: an Id changed, a param or
-node deleted, an addon installed, uninstalled or extracted.
-_Avoid_: hook (that's the module's handler for one)
+**Reference table**:
+The Ids an extension refers to, stored beside its data, which names them
+only by their place in the table. The core keeps every reference table
+current — rewriting an Id that changes, marking one that is removed —
+whether or not the extension is registered.
 
 **Humanoid**:
 The official `catchlight.humanoid` extension, which makes a human-like model
