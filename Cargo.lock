@@ -1590,6 +1590,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "catchlight-extension-humanoid"
+version = "0.2.2"
+dependencies = [
+ "catchlight-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "catchlight-importer"
 version = "0.2.2"
 dependencies = [

@@ -1,0 +1,16 @@
+[package]
+name = "catchlight-extension-humanoid"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The official catchlight.humanoid extension: standard humanoid controls mapped onto a model's params"
+readme = "README.md"
+
+[dependencies]
+catchlight-core = { workspace = true }
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

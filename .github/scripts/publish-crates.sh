@@ -6,7 +6,7 @@ set -euo pipefail
 export CATCHLIGHT_EDITOR_REQUIRE_UI=1
 crates=(
   catchlight
-  catchlight-core catchlight-extension-animations catchlight-wgpu catchlight-bevy catchlight-cli
+  catchlight-core catchlight-extension-animations catchlight-extension-humanoid catchlight-wgpu catchlight-bevy catchlight-cli
   catchlight-editor-core catchlight-editor-protocol catchlight-editor-server catchlight-editor-cli
   catchlight-editor
 )
