@@ -114,6 +114,7 @@ pub fn declarations(cfg: &Config) -> Vec<Decl> {
         proto::ThreadStatus,
         proto::ReviewComment,
         proto::ReviewImage,
+        proto::ReviewKept,
         proto::ReviewThread,
         proto::ReviewAgent,
         proto::Review,

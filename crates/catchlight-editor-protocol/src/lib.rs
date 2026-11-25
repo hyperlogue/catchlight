@@ -2320,7 +2320,7 @@ pub struct ReviewAgent {
 }
 
 /// A session's review threads: shared, kept off the model path like
-/// [`Presence`] — never an edit, never undone, never saved.
+/// [`Presence`] — never an edit, never undone, never in the model file.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Review {
@@ -2329,6 +2329,29 @@ pub struct Review {
     /// The agent last heard from, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<ReviewAgent>,
+    #[serde(default)]
+    pub kept: ReviewKept,
+    /// Why, when `kept` is `unreadable`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kept_problem: Option<String>,
+}
+
+/// How long a review outlives its session. Says nothing about where it is
+/// kept: that is the editor's choice.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub enum ReviewKept {
+    /// Kept with the model: it is there when the model is next opened.
+    Stored,
+    /// The model has no file yet; the review is kept once it is saved.
+    Unsaved,
+    /// This editor keeps no reviews: it lasts until the session closes.
+    #[default]
+    Session,
+    /// A review kept earlier could not be read. It is left as it was and
+    /// what is written now lasts until the session closes.
+    Unreadable,
 }
 
 /// What [`Command::ExtensionSet`] sets: inline JSON, or bytes attached as

@@ -13,6 +13,7 @@ mod limits;
 mod preview;
 mod query;
 mod review;
+mod review_store;
 mod storage;
 #[cfg(unix)]
 mod transport;
@@ -20,6 +21,9 @@ mod transport;
 #[cfg(not(target_arch = "wasm32"))]
 pub use http::{bind_http, serve_http, HttpOptions, HttpServer, UiFiles};
 pub use query::{extension_value_info, replica_query, replica_reply};
+#[cfg(not(target_arch = "wasm32"))]
+pub use review_store::SidecarReviewStore;
+pub use review_store::{NoReviewStore, ReviewStore};
 #[cfg(not(target_arch = "wasm32"))]
 pub use storage::FileStorage;
 pub use storage::{join_key, key_stem, parent_key, NoStorage, Storage};
@@ -273,6 +277,7 @@ struct Session {
     snapshot: Option<Arc<DocSnapshot>>,
     presence: Option<Presence>,
     review: review::ReviewState,
+    review_keeping: review::ReviewKeeping,
 }
 
 impl Session {
@@ -292,7 +297,17 @@ impl Session {
             snapshot: None,
             presence: None,
             review: review::ReviewState::default(),
+            review_keeping: review::ReviewKeeping::default(),
         }
+    }
+
+    /// For a thread that followed an edit, which cannot fail on the review's
+    /// account. A write that is refused is retried by the next one, and a
+    /// reopened review finds its targets through the renames it kept.
+    fn keep_review(&mut self, store: &dyn ReviewStore) {
+        let _ = self
+            .review_keeping
+            .write(store, self.file.as_deref(), &self.review);
     }
 
     fn ensure_open(&self, id: SessionId) -> Result<(), EditorError> {
@@ -518,19 +533,28 @@ pub struct Editor {
     observers: Mutex<Vec<(u64, SharedObserver)>>,
     next_observer: AtomicU64,
     storage: Arc<dyn Storage>,
+    review_store: Arc<dyn ReviewStore>,
     #[cfg(not(target_arch = "wasm32"))]
     preview: Mutex<Option<PreviewRenderer>>,
 }
 
 impl Editor {
-    /// Filesystem rooted at the cwd natively; [`NoStorage`] on wasm, where the
-    /// host must use [`Editor::with_storage`].
+    /// Filesystem rooted at the cwd natively, with reviews in sidecars there;
+    /// [`NoStorage`] on wasm, where the host must use [`Editor::with_storage`].
     pub fn new() -> Self {
         #[cfg(not(target_arch = "wasm32"))]
-        let storage = Arc::new(FileStorage::default());
+        let editor = Self::with_storage(Arc::new(FileStorage::default()))
+            .with_review_store(Arc::new(SidecarReviewStore::default()));
         #[cfg(target_arch = "wasm32")]
-        let storage = Arc::new(NoStorage);
-        Self::with_storage(storage)
+        let editor = Self::with_storage(Arc::new(NoStorage));
+        editor
+    }
+
+    /// Where reviews are kept between runs; without this, nowhere. Model keys
+    /// are the ones `storage` is given.
+    pub fn with_review_store(mut self, store: Arc<dyn ReviewStore>) -> Self {
+        self.review_store = store;
+        self
     }
 
     pub fn with_storage(storage: Arc<dyn Storage>) -> Self {
@@ -540,6 +564,7 @@ impl Editor {
             observers: Mutex::new(Vec::new()),
             next_observer: AtomicU64::new(1),
             storage,
+            review_store: Arc::new(NoReviewStore),
             #[cfg(not(target_arch = "wasm32"))]
             preview: Mutex::new(None),
         }
@@ -768,6 +793,7 @@ impl Editor {
             let moved = (session.rev != before).then_some(session.rev);
             let reviewed =
                 session.review.take_touched() || missing != session.review.missing(&session.model);
+            session.keep_review(&*self.review_store);
             (result, moved, reviewed)
         };
         if let Some(rev) = moved {
@@ -804,6 +830,7 @@ impl Editor {
             }
             let Session { review, model, .. } = &mut *session;
             let reviewed = review.follow_model(model) || missing != review.missing(model);
+            session.keep_review(&*self.review_store);
             (
                 Captured::at(ResponseBody::Empty, session.rev),
                 changed,
@@ -922,7 +949,7 @@ impl Editor {
             }
             Command::Save { session, path } => {
                 let handle = self.session(session)?;
-                let (key, rev) = {
+                let (key, rev, moved, review) = {
                     let mut s = lock(&handle);
                     s.ensure_open(session)?;
                     let key = match path {
@@ -933,12 +960,36 @@ impl Editor {
                     // Save publication includes its persistent write; failure
                     // leaves session metadata untouched.
                     self.storage.write(&key, &bytes)?;
-                    s.file = Some(key.clone());
+                    let from = s.file.replace(key.clone());
                     s.saved_rev = s.rev;
-                    (key, s.rev)
+                    // The model is saved whatever becomes of its review: the
+                    // review is written second and its failure is reported
+                    // against a save that has fully taken effect.
+                    let moved = from.as_deref() != Some(key.as_str());
+                    let Session {
+                        review,
+                        review_keeping,
+                        ..
+                    } = &mut *s;
+                    let kept = if moved {
+                        review_keeping.rekey(&*self.review_store, from.as_deref(), &key, review)
+                    } else {
+                        review_keeping.write(&*self.review_store, Some(&key), review)
+                    };
+                    (key, s.rev, moved, kept)
                 };
                 // A save moves no revision but flips `dirty`.
                 self.notify_model_changed(session, rev);
+                if moved {
+                    // What the review says of how long it is kept changed.
+                    self.notify(Event::ReviewChanged { session });
+                }
+                review.map_err(|e| {
+                    std::io::Error::new(
+                        e.kind(),
+                        format!("saved the model to {key}, but not its review: {e}"),
+                    )
+                })?;
                 Ok(Captured::at(ResponseBody::Saved { path: key }, rev))
             }
             Command::ExportManifest { session, path } => {

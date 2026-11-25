@@ -21,7 +21,9 @@ mod native {
 
     use catchlight_editor_protocol::{Command, Reply, Request};
     use catchlight_editor_server::connection::ConnectionFile;
-    use catchlight_editor_server::{bind_http, Editor, FileStorage, HttpOptions};
+    use catchlight_editor_server::{
+        bind_http, Editor, FileStorage, HttpOptions, SidecarReviewStore,
+    };
 
     const USAGE: &str = "usage: catchlight-editor-server [--socket <path>] [--store <dir>] \
                          [--http <addr>] [--allow-origin <origin>]... \
@@ -53,7 +55,9 @@ mod native {
             Some(dir) => FileStorage::new(dir),
             None => FileStorage::default(),
         };
-        let editor = Arc::new(Editor::with_storage(Arc::new(store)));
+        let reviews = SidecarReviewStore::new(store.root());
+        let editor =
+            Arc::new(Editor::with_storage(Arc::new(store)).with_review_store(Arc::new(reviews)));
 
         if let Some(path) = args.model {
             // Through `handle` so the session shows up in `session_list`.

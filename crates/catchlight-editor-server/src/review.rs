@@ -1,12 +1,17 @@
 //! A session's review threads. Kept beside the model, never in it: no
-//! revision, no history entry, nothing saved.
+//! revision, no history entry, nothing in the model file. A session with a
+//! file writes each change through to the editor's [`ReviewStore`].
 
 use std::collections::{BTreeMap, VecDeque};
+use std::io;
+use std::sync::Arc;
 use std::time::Duration;
 
 use catchlight_core::{Model, ModelError};
 use catchlight_editor_protocol::*;
+use serde::{Deserialize, Serialize};
 
+use crate::review_store::ReviewStore;
 use crate::{Attachments, Captured, Editor, EditorError, Payload};
 
 /// A `review watch` polls about once a second; a few missed beats is a gone
@@ -55,13 +60,13 @@ impl Stamp {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Working {
     agent: String,
     since: Stamp,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Thread {
     id: ThreadId,
     target: ReviewTarget,
@@ -97,7 +102,7 @@ impl Thread {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Agent {
     name: String,
     polled: Option<Stamp>,
@@ -109,10 +114,28 @@ impl Agent {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Image {
     media_type: &'static str,
-    bytes: Vec<u8>,
+    byte_length: usize,
+    /// `None` for an image a kept review names and nobody has asked for yet.
+    bytes: Option<Arc<Vec<u8>>>,
+}
+
+fn media_type_named(name: &str) -> Option<&'static str> {
+    ["image/png", "image/jpeg", "image/webp"]
+        .into_iter()
+        .find(|known| *known == name)
+}
+
+/// What a [`ReviewStore`] knows an image by.
+fn image_name(id: u64, media_type: &str) -> String {
+    let ext = match media_type {
+        "image/jpeg" => "jpg",
+        "image/webp" => "webp",
+        _ => "png",
+    };
+    format!("{id}.{ext}")
 }
 
 /// Read from the magic bytes alone; the image is never decoded here.
@@ -128,12 +151,15 @@ fn media_type(bytes: &[u8]) -> Option<&'static str> {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub(crate) struct ReviewState {
     threads: Vec<Thread>,
     last_thread: u64,
     last_comment: u64,
     last_image: u64,
+    /// The highest image Id a comment ever held: what a kept review must not
+    /// hand out again. Held images come and go without touching it.
+    last_claimed_image: u64,
     images: BTreeMap<u64, Image>,
     /// Uploaded and not yet on a comment, oldest first.
     held: VecDeque<u64>,
@@ -268,13 +294,15 @@ fn author_of(author: ReviewAuthor) -> Result<ReviewAuthor, EditorError> {
 }
 
 impl ReviewState {
-    pub(crate) fn wire(&self, model: &Model) -> Review {
+    fn wire(&self, model: &Model, kept: ReviewKept, kept_problem: Option<String>) -> Review {
         Review {
             threads: self.threads.iter().map(|t| t.wire(model)).collect(),
             agent: self.agent.as_ref().map(|a| ReviewAgent {
                 name: a.name.clone(),
                 listening: a.listening(),
             }),
+            kept,
+            kept_problem,
         }
     }
 
@@ -299,7 +327,7 @@ impl ReviewState {
         Ok(ReviewImage {
             image: id,
             media_type: image.media_type.to_owned(),
-            byte_length: u32::try_from(image.bytes.len()).unwrap_or(u32::MAX),
+            byte_length: u32::try_from(image.byte_length).unwrap_or(u32::MAX),
         })
     }
 
@@ -319,7 +347,7 @@ impl ReviewState {
                 self.images.remove(&oldest);
             }
         }
-        let total: usize = self.images.values().map(|i| i.bytes.len()).sum();
+        let total: usize = self.images.values().map(|i| i.byte_length).sum();
         if total + bytes.len() > MAX_SESSION_IMAGE_BYTES {
             return Err(EditorError::Limit {
                 resource: "review_session_image_bytes",
@@ -329,7 +357,14 @@ impl ReviewState {
         }
         self.last_image += 1;
         let id = self.last_image;
-        self.images.insert(id, Image { media_type, bytes });
+        self.images.insert(
+            id,
+            Image {
+                media_type,
+                byte_length: bytes.len(),
+                bytes: Some(Arc::new(bytes)),
+            },
+        );
         self.held.push_back(id);
         self.image_info(id)
     }
@@ -353,6 +388,9 @@ impl ReviewState {
 
     fn claim(&mut self, images: &[u64]) -> Vec<ReviewImage> {
         self.held.retain(|id| !images.contains(id));
+        if let Some(highest) = images.iter().max() {
+            self.last_claimed_image = self.last_claimed_image.max(*highest);
+        }
         images
             .iter()
             .filter_map(|id| self.image_info(*id).ok())
@@ -597,6 +635,265 @@ impl ReviewState {
     }
 }
 
+const DOCUMENT_VERSION: u32 = 1;
+
+/// The part of a review that outlives the session. Agents, leases and held
+/// images are the session's own.
+#[derive(Serialize, Deserialize)]
+struct Document {
+    version: u32,
+    last_thread: u64,
+    last_comment: u64,
+    last_image: u64,
+    threads: Vec<DocumentThread>,
+    /// Kept so a thread written against a rename the model file never saw
+    /// still finds its target ([`ReviewState::follow_model`]).
+    #[serde(default)]
+    renames: Vec<Rename>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct DocumentThread {
+    thread: ThreadId,
+    target: ReviewTarget,
+    status: ThreadStatus,
+    #[serde(default)]
+    pose: Vec<ParamPose>,
+    comments: Vec<ReviewComment>,
+}
+
+fn bad_document(why: impl std::fmt::Display) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, why.to_string())
+}
+
+impl ReviewState {
+    fn blank(&self) -> bool {
+        self.threads.is_empty()
+            && self.last_thread == 0
+            && self.last_comment == 0
+            && self.last_claimed_image == 0
+    }
+
+    fn document(&self) -> io::Result<Vec<u8>> {
+        let document = Document {
+            version: DOCUMENT_VERSION,
+            last_thread: self.last_thread,
+            last_comment: self.last_comment,
+            last_image: self.last_claimed_image,
+            threads: self
+                .threads
+                .iter()
+                .map(|t| DocumentThread {
+                    thread: t.id,
+                    target: t.target.clone(),
+                    status: t.status,
+                    pose: t.pose.clone(),
+                    comments: t.comments.clone(),
+                })
+                .collect(),
+            renames: self.renames.clone(),
+        };
+        serde_json::to_vec_pretty(&document).map_err(bad_document)
+    }
+
+    fn from_document(bytes: &[u8]) -> io::Result<Self> {
+        #[derive(Deserialize)]
+        struct Versioned {
+            version: u32,
+        }
+        let Versioned { version } = serde_json::from_slice(bytes).map_err(bad_document)?;
+        if version != DOCUMENT_VERSION {
+            return Err(bad_document(format!(
+                "review document version {version}; this editor reads version {DOCUMENT_VERSION}"
+            )));
+        }
+        let document: Document = serde_json::from_slice(bytes).map_err(bad_document)?;
+        let mut images = BTreeMap::new();
+        for image in document
+            .threads
+            .iter()
+            .flat_map(|t| &t.comments)
+            .flat_map(|c| &c.images)
+        {
+            let media_type = media_type_named(&image.media_type).ok_or_else(|| {
+                bad_document(format!(
+                    "review image {} has type {:?}",
+                    image.image, image.media_type
+                ))
+            })?;
+            images.insert(
+                image.image,
+                Image {
+                    media_type,
+                    byte_length: image.byte_length as usize,
+                    bytes: None,
+                },
+            );
+        }
+        Ok(Self {
+            threads: document
+                .threads
+                .into_iter()
+                .map(|t| Thread {
+                    id: t.thread,
+                    target: t.target,
+                    status: t.status,
+                    pose: t.pose,
+                    comments: t.comments,
+                    working: None,
+                })
+                .collect(),
+            last_thread: document.last_thread,
+            last_comment: document.last_comment,
+            last_image: document.last_image,
+            last_claimed_image: document.last_image,
+            images,
+            renames: document.renames,
+            ..Self::default()
+        })
+    }
+
+    /// Every image a comment holds, by the name a store keeps it under.
+    fn claimed(&self) -> BTreeMap<u64, String> {
+        self.images
+            .iter()
+            .filter(|(id, _)| !self.held.contains(id))
+            .map(|(id, image)| (*id, image_name(*id, image.media_type)))
+            .collect()
+    }
+}
+
+/// What the store is known to hold for one session's review.
+#[derive(Debug, Default)]
+pub(crate) struct ReviewKeeping {
+    /// The document as last read or written; `None` forces the next write.
+    written: Option<Vec<u8>>,
+    stored: BTreeMap<u64, String>,
+    /// Set when the kept review could not be read. Nothing is written while
+    /// it stands, so the file a person may still want is never replaced.
+    unreadable: Option<String>,
+}
+
+impl ReviewKeeping {
+    /// The review `key` was left with, and what is known of the store. A
+    /// review that cannot be read never blocks opening its model.
+    pub(crate) fn open(store: &dyn ReviewStore, key: &str, model: &Model) -> (ReviewState, Self) {
+        if !store.keeps() {
+            return Default::default();
+        }
+        let read = store.load(key).and_then(|found| match found {
+            Some(bytes) => ReviewState::from_document(&bytes)
+                .map(|state| Some((state, bytes)))
+                .map_err(|e| bad_document(format!("{}: {e}", store.place(key)))),
+            None => Ok(None),
+        });
+        match read {
+            Ok(None) => Default::default(),
+            Ok(Some((mut state, bytes))) => {
+                state.follow_model(model);
+                let stored = state.claimed();
+                (
+                    state,
+                    Self {
+                        written: Some(bytes),
+                        stored,
+                        unreadable: None,
+                    },
+                )
+            }
+            Err(e) => (
+                ReviewState::default(),
+                Self {
+                    unreadable: Some(e.to_string()),
+                    ..Self::default()
+                },
+            ),
+        }
+    }
+
+    pub(crate) fn kept(&self, store: &dyn ReviewStore, key: Option<&str>) -> ReviewKept {
+        if !store.keeps() {
+            ReviewKept::Session
+        } else if key.is_none() {
+            ReviewKept::Unsaved
+        } else if self.unreadable.is_some() {
+            ReviewKept::Unreadable
+        } else {
+            ReviewKept::Stored
+        }
+    }
+
+    /// Brings the store to `next`, writing only when what it keeps differs.
+    /// On an error the store still reads as it did: images are put before the
+    /// document that names them and dropped only after one that does not.
+    pub(crate) fn write(
+        &mut self,
+        store: &dyn ReviewStore,
+        key: Option<&str>,
+        next: &ReviewState,
+    ) -> io::Result<()> {
+        let Some(key) = key else { return Ok(()) };
+        if !store.keeps() || self.unreadable.is_some() {
+            return Ok(());
+        }
+        if self.written.is_none() && next.blank() {
+            return Ok(());
+        }
+        let document = next.document()?;
+        if self.written.as_deref() == Some(document.as_slice()) {
+            return Ok(());
+        }
+        let claimed = next.claimed();
+        for (id, name) in &claimed {
+            if self.stored.contains_key(id) {
+                continue;
+            }
+            let bytes = next
+                .images
+                .get(id)
+                .and_then(|image| image.bytes.as_ref())
+                .ok_or_else(|| bad_document(format!("review image {id} has no bytes to keep")))?;
+            store.put_image(key, name, bytes)?;
+        }
+        store.save(key, &document)?;
+        for (id, name) in &self.stored {
+            if !claimed.contains_key(id) {
+                // An orphan file is harmless and the document no longer
+                // names it; the comment's deletion already took effect.
+                let _ = store.delete_image(key, name);
+            }
+        }
+        self.stored = claimed;
+        self.written = Some(document);
+        Ok(())
+    }
+
+    /// The session's model now lives at `to`: read what only the store under
+    /// `from` holds, then write the whole review under the new key.
+    pub(crate) fn rekey(
+        &mut self,
+        store: &dyn ReviewStore,
+        from: Option<&str>,
+        to: &str,
+        review: &mut ReviewState,
+    ) -> io::Result<()> {
+        if !store.keeps() {
+            return Ok(());
+        }
+        if let Some(from) = from {
+            let held = review.held.clone();
+            for (id, image) in &mut review.images {
+                if image.bytes.is_none() && !held.contains(id) {
+                    let bytes = store.image(from, &image_name(*id, image.media_type))?;
+                    image.bytes = Some(Arc::new(bytes));
+                }
+            }
+        }
+        *self = Self::default();
+        self.write(store, Some(to), review)
+    }
+}
+
 impl Editor {
     /// Runs `f` under the session lock and, when it reports a change, tells
     /// observers once the lock is released.
@@ -607,7 +904,14 @@ impl Editor {
     ) -> Result<Captured<ResponseBody>, EditorError> {
         let captured = self.with_session_captured(id, |s| {
             let rev = s.rev;
-            f(&mut s.review, &s.model, rev)
+            // The change is kept before it is published: a store that
+            // refuses leaves the review as every client last read it.
+            let mut next = s.review.clone();
+            let out = f(&mut next, &s.model, rev)?;
+            s.review_keeping
+                .write(&*self.review_store, s.file.as_deref(), &next)?;
+            s.review = next;
+            Ok(out)
         })?;
         let (body, changed) = captured.value;
         if changed {
@@ -645,7 +949,14 @@ impl Editor {
                         .images
                         .get(&image)
                         .ok_or(EditorError::NoImage(image))?;
-                    Ok((info, stored.media_type, stored.bytes.clone()))
+                    let bytes = match (&stored.bytes, s.file.as_deref()) {
+                        (Some(bytes), _) => bytes.to_vec(),
+                        (None, Some(key)) => self
+                            .review_store
+                            .image(key, &image_name(image, stored.media_type))?,
+                        (None, None) => return Err(EditorError::NoImage(image)),
+                    };
+                    Ok((info, stored.media_type, bytes))
                 })?;
                 let (image, content_type, bytes) = captured.value;
                 *payload = Some(Payload {
@@ -657,13 +968,16 @@ impl Editor {
                     rev: captured.rev,
                 })
             }
-            Command::ReviewGet { session } => self.review_session(session, |review, model, _| {
-                Ok((
-                    ResponseBody::Review {
-                        review: review.wire(model),
-                    },
-                    false,
-                ))
+            Command::ReviewGet { session } => self.with_session_captured(session, |s| {
+                let kept = s
+                    .review_keeping
+                    .kept(&*self.review_store, s.file.as_deref());
+                let problem = (kept == ReviewKept::Unreadable)
+                    .then(|| s.review_keeping.unreadable.clone())
+                    .flatten();
+                Ok(ResponseBody::Review {
+                    review: s.review.wire(&s.model, kept, problem),
+                })
             }),
             Command::ReviewThreadAdd {
                 session,
@@ -1274,13 +1588,24 @@ mod tests {
             return;
         };
         state.agent.as_mut().unwrap().polled = Some(Stamp(long_ago));
-        assert!(!state.wire(&model).agent.unwrap().listening);
+        assert!(
+            !state
+                .wire(&model, ReviewKept::Session, None)
+                .agent
+                .unwrap()
+                .listening
+        );
         assert!(state.poll("claude"), "coming back is a change");
 
         state.fetch(&model, "claude");
-        assert!(state.wire(&model).threads[0].working.is_some());
+        assert!(state.wire(&model, ReviewKept::Session, None).threads[0]
+            .working
+            .is_some());
         state.threads[0].working.as_mut().unwrap().since = Stamp(long_ago);
-        assert_eq!(state.wire(&model).threads[0].working, None);
+        assert_eq!(
+            state.wire(&model, ReviewKept::Session, None).threads[0].working,
+            None
+        );
     }
 
     const PNG: &[u8] = b"\x89PNG\r\n\x1a\n-not-really-a-png";
@@ -1508,5 +1833,567 @@ mod tests {
         assert!(f.bytes(ids[1]).is_ok());
         assert!(f.bytes(kept).is_ok(), "a claimed image is not held");
         assert_eq!(*ids.last().unwrap(), kept + MAX_HELD_IMAGES as u64 + 1);
+    }
+
+    /// A store that is not the filesystem, as a cloud or browser one would be.
+    #[derive(Debug, Default)]
+    struct MemoryStore {
+        documents: Mutex<BTreeMap<String, Vec<u8>>>,
+        images: Mutex<BTreeMap<(String, String), Vec<u8>>>,
+        saves: std::sync::atomic::AtomicUsize,
+        refuse: std::sync::atomic::AtomicBool,
+    }
+
+    impl MemoryStore {
+        fn check(&self) -> io::Result<()> {
+            if self.refuse.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err(io::Error::other("store is down"));
+            }
+            Ok(())
+        }
+
+        fn saves(&self) -> usize {
+            self.saves.load(std::sync::atomic::Ordering::Relaxed)
+        }
+
+        fn image_names(&self, model: &str) -> Vec<String> {
+            self.images
+                .lock()
+                .unwrap()
+                .keys()
+                .filter(|(m, _)| m == model)
+                .map(|(_, name)| name.clone())
+                .collect()
+        }
+    }
+
+    impl ReviewStore for MemoryStore {
+        fn load(&self, model: &str) -> io::Result<Option<Vec<u8>>> {
+            self.check()?;
+            Ok(self.documents.lock().unwrap().get(model).cloned())
+        }
+
+        fn save(&self, model: &str, document: &[u8]) -> io::Result<()> {
+            self.check()?;
+            self.saves
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.documents
+                .lock()
+                .unwrap()
+                .insert(model.into(), document.to_vec());
+            Ok(())
+        }
+
+        fn put_image(&self, model: &str, name: &str, bytes: &[u8]) -> io::Result<()> {
+            self.check()?;
+            self.images
+                .lock()
+                .unwrap()
+                .insert((model.into(), name.into()), bytes.to_vec());
+            Ok(())
+        }
+
+        fn image(&self, model: &str, name: &str) -> io::Result<Vec<u8>> {
+            self.check()?;
+            self.images
+                .lock()
+                .unwrap()
+                .get(&(model.to_owned(), name.to_owned()))
+                .cloned()
+                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, name.to_owned()))
+        }
+
+        fn delete_image(&self, model: &str, name: &str) -> io::Result<()> {
+            self.check()?;
+            self.images
+                .lock()
+                .unwrap()
+                .remove(&(model.to_owned(), name.to_owned()));
+            Ok(())
+        }
+    }
+
+    /// Model bytes in memory, so a test's sessions have keys without files.
+    #[derive(Debug, Default)]
+    struct MemoryModels(Mutex<BTreeMap<String, Vec<u8>>>);
+
+    impl crate::Storage for MemoryModels {
+        fn read(&self, key: &str) -> io::Result<Vec<u8>> {
+            self.0
+                .lock()
+                .unwrap()
+                .get(key)
+                .cloned()
+                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, key.to_owned()))
+        }
+
+        fn write(&self, key: &str, bytes: &[u8]) -> io::Result<()> {
+            self.0.lock().unwrap().insert(key.into(), bytes.to_vec());
+            Ok(())
+        }
+    }
+
+    impl Fixture {
+        fn on(editor: Editor, session: SessionId) -> Self {
+            let events = Arc::new(Mutex::new(Vec::new()));
+            let sink = events.clone();
+            editor.subscribe(Box::new(move |event| {
+                sink.lock().unwrap().push(event.clone());
+            }));
+            Self {
+                editor,
+                session,
+                events,
+                next: 1,
+            }
+        }
+
+        /// A new session on an editor that keeps reviews in `store`.
+        fn keeping(models: &Arc<MemoryModels>, store: &Arc<MemoryStore>) -> Self {
+            let editor = Editor::with_storage(models.clone()).with_review_store(store.clone());
+            let session = match editor.handle(Request {
+                id: 1,
+                command: Command::SessionNew {
+                    name: None,
+                    source: None,
+                },
+            }) {
+                Reply::Ok {
+                    body: ResponseBody::Session { session },
+                    ..
+                } => session,
+                other => panic!("{other:?}"),
+            };
+            Self::on(editor, session)
+        }
+
+        /// The model at `key`, opened by a fresh editor on the same stores.
+        fn reopened(models: &Arc<MemoryModels>, store: &Arc<MemoryStore>, key: &str) -> Self {
+            let editor = Editor::with_storage(models.clone()).with_review_store(store.clone());
+            let session = match editor.handle(Request {
+                id: 1,
+                command: Command::SessionOpen { path: key.into() },
+            }) {
+                Reply::Ok {
+                    body: ResponseBody::Session { session },
+                    ..
+                } => session,
+                other => panic!("{other:?}"),
+            };
+            Self::on(editor, session)
+        }
+
+        fn save(&mut self, key: &str) -> Reply {
+            let session = self.session;
+            self.send(Command::Save {
+                session,
+                path: Some(key.into()),
+            })
+        }
+
+        fn thread_with_image(&mut self, bytes: &[u8]) -> ReviewThread {
+            let image = self.image(bytes).image;
+            match self.say(vec![image], "see this") {
+                Reply::Ok {
+                    body: ResponseBody::ReviewThread { thread },
+                    ..
+                } => thread,
+                other => panic!("{other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_kept_review_is_there_when_another_editor_opens_the_model() {
+        let (models, store) = Default::default();
+        let mut f = Fixture::keeping(&models, &store);
+        let session = f.session;
+        assert_eq!(f.review().kept, ReviewKept::Unsaved);
+        assert!(matches!(f.save("m.clm"), Reply::Ok { .. }));
+        assert_eq!(f.review().kept, ReviewKept::Stored);
+
+        let first = f.thread_with_image(PNG);
+        let second = f.open(ReviewTarget::Model, ReviewAuthor::Human);
+        f.ok(Command::ReviewSubmit { session });
+        f.ok(Command::ReviewFetch {
+            session,
+            agent: "claude".into(),
+        });
+        f.ok(Command::ReviewThreadSet {
+            session,
+            thread: second.thread,
+            status: ThreadStatus::Resolved,
+        });
+        let before = f.review();
+
+        let mut g = Fixture::reopened(&models, &store, "m.clm");
+        let after = g.review();
+        assert_eq!(after.kept, ReviewKept::Stored);
+        assert_eq!(
+            after.agent, None,
+            "an agent belongs to the session it joined"
+        );
+        assert_eq!(after.threads.len(), 2);
+        for (was, now) in before.threads.iter().zip(&after.threads) {
+            assert_eq!(was.thread, now.thread);
+            assert_eq!(was.status, now.status);
+            assert_eq!(was.comments, now.comments);
+            assert_eq!(
+                now.working, None,
+                "a lease belongs to the session that took it"
+            );
+        }
+        let image = first.comments[0].images[0].image;
+        assert_eq!(g.bytes(image).unwrap().bytes, PNG);
+
+        let next = g.thread_with_image(PNG);
+        assert_eq!(next.thread, ThreadId(3), "thread Ids continue");
+        assert_eq!(next.comments[0].comment, 3, "comment Ids continue");
+        assert_eq!(
+            next.comments[0].images[0].image,
+            image + 1,
+            "image Ids continue"
+        );
+    }
+
+    #[test]
+    fn a_store_that_refuses_leaves_the_review_as_it_was() {
+        let (models, store) = Default::default();
+        let mut f = Fixture::keeping(&models, &store);
+        let session = f.session;
+        f.save("m.clm");
+        let thread = f.thread_with_image(PNG);
+        let held = f.image(PNG).image;
+        let before = f.review();
+        let events = f.review_events();
+
+        store
+            .refuse
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(matches!(
+            f.say(vec![held], "lost?"),
+            Reply::Err {
+                code: ErrorCode::Io,
+                ..
+            }
+        ));
+        assert_eq!(
+            f.refused(Command::ReviewThreadDelete {
+                session,
+                thread: thread.thread
+            }),
+            ErrorCode::Io
+        );
+        assert_eq!(f.review(), before);
+        assert_eq!(f.review_events(), events);
+
+        store
+            .refuse
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            matches!(f.say(vec![held], "kept"), Reply::Ok { .. }),
+            "the refused comment's image is still held"
+        );
+        assert_eq!(
+            Fixture::reopened(&models, &store, "m.clm")
+                .review()
+                .threads
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn only_a_change_to_what_is_kept_is_written() {
+        let (models, store) = Default::default();
+        let mut f = Fixture::keeping(&models, &store);
+        let session = f.session;
+        f.save("m.clm");
+        f.ok(Command::ReviewPoll {
+            session,
+            agent: "claude".into(),
+        });
+        f.review();
+        assert_eq!(store.saves(), 0, "an empty review is not written");
+
+        f.open(ReviewTarget::Model, ReviewAuthor::Human);
+        assert_eq!(store.saves(), 1);
+        f.image(PNG);
+        f.ok(Command::ReviewPoll {
+            session,
+            agent: "claude".into(),
+        });
+        f.ok(Command::ReviewFetch {
+            session,
+            agent: "claude".into(),
+        });
+        f.save("m.clm");
+        assert_eq!(
+            store.saves(),
+            1,
+            "presence, a held image and a re-save keep nothing new"
+        );
+        assert!(
+            store.image_names("m.clm").is_empty(),
+            "a held image is not kept"
+        );
+
+        f.ok(Command::ReviewSubmit { session });
+        assert_eq!(store.saves(), 2);
+    }
+
+    #[test]
+    fn deleting_a_comment_drops_its_kept_images() {
+        let (models, store) = Default::default();
+        let mut f = Fixture::keeping(&models, &store);
+        let session = f.session;
+        f.save("m.clm");
+        let thread = f.thread_with_image(PNG);
+        f.thread_with_image(PNG);
+        assert_eq!(store.image_names("m.clm"), ["1.png", "2.png"]);
+
+        f.ok(Command::ReviewThreadDelete {
+            session,
+            thread: thread.thread,
+        });
+        assert_eq!(store.image_names("m.clm"), ["2.png"]);
+    }
+
+    #[test]
+    fn a_review_follows_its_model_to_a_new_key() {
+        let (models, store) = Default::default();
+        let mut f = Fixture::keeping(&models, &store);
+        let thread = f.thread_with_image(PNG);
+        assert_eq!(
+            store.saves(),
+            0,
+            "a model with no file keeps its review in memory"
+        );
+        let events = f.review_events();
+
+        assert!(matches!(f.save("a.clm"), Reply::Ok { .. }));
+        assert_eq!(f.review_events(), events + 1, "how long it is kept changed");
+        assert_eq!(store.image_names("a.clm"), ["1.png"]);
+
+        // Reopened, the image is only in the store: saving elsewhere must
+        // still carry it.
+        let mut g = Fixture::reopened(&models, &store, "a.clm");
+        assert!(matches!(g.save("b.clm"), Reply::Ok { .. }));
+        let mut h = Fixture::reopened(&models, &store, "b.clm");
+        assert_eq!(h.review().threads[0].comments, thread.comments);
+        assert_eq!(
+            h.bytes(thread.comments[0].images[0].image).unwrap().bytes,
+            PNG
+        );
+        assert_eq!(
+            Fixture::reopened(&models, &store, "a.clm")
+                .review()
+                .threads
+                .len(),
+            1,
+            "the review left at the old key is untouched"
+        );
+    }
+
+    #[test]
+    fn a_save_whose_review_is_refused_still_saved_the_model() {
+        let (models, store) = Default::default();
+        let mut f = Fixture::keeping(&models, &store);
+        f.open(ReviewTarget::Model, ReviewAuthor::Human);
+        store
+            .refuse
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        match f.save("m.clm") {
+            Reply::Err {
+                code: ErrorCode::Io,
+                message,
+                ..
+            } => assert!(message.contains("saved the model to m.clm"), "{message}"),
+            other => panic!("{other:?}"),
+        }
+        assert!(models.0.lock().unwrap().contains_key("m.clm"));
+
+        store
+            .refuse
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        f.open(ReviewTarget::Model, ReviewAuthor::Human);
+        assert_eq!(
+            Fixture::reopened(&models, &store, "m.clm")
+                .review()
+                .threads
+                .len(),
+            2,
+            "the next change writes everything the refused save did not"
+        );
+    }
+
+    #[test]
+    fn a_review_that_cannot_be_read_is_left_alone() {
+        let (models, store): (Arc<MemoryModels>, Arc<MemoryStore>) = Default::default();
+        Fixture::keeping(&models, &store).save("m.clm");
+        for bad in [&b"{ not json"[..], br#"{"version": 99, "threads": []}"#] {
+            store
+                .documents
+                .lock()
+                .unwrap()
+                .insert("m.clm".into(), bad.to_vec());
+            let mut f = Fixture::reopened(&models, &store, "m.clm");
+            let review = f.review();
+            assert_eq!(review.kept, ReviewKept::Unreadable);
+            assert!(review.kept_problem.is_some());
+            assert!(review.threads.is_empty());
+
+            f.open(ReviewTarget::Model, ReviewAuthor::Human);
+            f.save("m.clm");
+            assert_eq!(
+                f.review().threads.len(),
+                1,
+                "comments still work, in memory"
+            );
+            assert_eq!(store.documents.lock().unwrap()["m.clm"], bad);
+
+            assert!(matches!(f.save("copy.clm"), Reply::Ok { .. }));
+            assert_eq!(
+                f.review().kept,
+                ReviewKept::Stored,
+                "a new key has no bad file"
+            );
+        }
+    }
+
+    #[test]
+    fn a_kept_thread_finds_a_target_renamed_after_the_last_save() {
+        let (models, store) = Default::default();
+        let mut f = Fixture::keeping(&models, &store);
+        let session = f.session;
+        let node = f.group("arm");
+        f.save("m.clm");
+        f.open(
+            ReviewTarget::Node { node: node.clone() },
+            ReviewAuthor::Human,
+        );
+        let renamed = NodeId::new("limb").unwrap();
+        f.ok(Command::RenameId {
+            session,
+            rename: Rename::Node {
+                from: node.clone(),
+                to: renamed,
+            },
+        });
+
+        // The file still calls it `arm`; the kept thread says `limb`.
+        let mut g = Fixture::reopened(&models, &store, "m.clm");
+        let thread = &g.review().threads[0];
+        assert_eq!(thread.target, ReviewTarget::Node { node });
+        assert!(!thread.target_missing);
+    }
+
+    #[test]
+    fn an_editor_without_a_review_store_says_reviews_last_for_the_session() {
+        let models: Arc<MemoryModels> = Default::default();
+        let editor = Editor::with_storage(models.clone());
+        let session = match editor.handle(Request {
+            id: 1,
+            command: Command::SessionNew {
+                name: None,
+                source: None,
+            },
+        }) {
+            Reply::Ok {
+                body: ResponseBody::Session { session },
+                ..
+            } => session,
+            other => panic!("{other:?}"),
+        };
+        let mut f = Fixture::on(editor, session);
+        f.thread_with_image(PNG);
+        assert!(matches!(f.save("m.clm"), Reply::Ok { .. }));
+        assert_eq!(f.review().kept, ReviewKept::Session);
+    }
+
+    #[test]
+    fn the_sidecar_is_a_directory_beside_the_model() {
+        use crate::{FileStorage, SidecarReviewStore};
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let nth = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir =
+            std::env::temp_dir().join(format!("cl-review-sidecar-{}-{nth}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(dir.join("models")).unwrap();
+        let editor = || {
+            Editor::with_storage(Arc::new(FileStorage::new(&dir)))
+                .with_review_store(Arc::new(SidecarReviewStore::new(&dir)))
+        };
+        let first = editor();
+        let session = match first.handle(Request {
+            id: 1,
+            command: Command::SessionNew {
+                name: None,
+                source: None,
+            },
+        }) {
+            Reply::Ok {
+                body: ResponseBody::Session { session },
+                ..
+            } => session,
+            other => panic!("{other:?}"),
+        };
+        let mut f = Fixture::on(first, session);
+        f.save("models/m.clm");
+        let thread = f.thread_with_image(PNG);
+
+        let sidecar = dir.join("models/m.clm.review");
+        let mut names: Vec<String> = std::fs::read_dir(&sidecar)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["1.png", "review.json"]);
+        assert_eq!(std::fs::read(sidecar.join("1.png")).unwrap(), PNG);
+
+        let second = editor();
+        let session = match second.handle(Request {
+            id: 1,
+            command: Command::SessionOpen {
+                path: "models/m.clm".into(),
+            },
+        }) {
+            Reply::Ok {
+                body: ResponseBody::Session { session },
+                ..
+            } => session,
+            other => panic!("{other:?}"),
+        };
+        let mut g = Fixture::on(second, session);
+        assert_eq!(g.review().threads[0].comments, thread.comments);
+        assert_eq!(g.bytes(1).unwrap().bytes, PNG);
+        g.ok(Command::ReviewThreadDelete {
+            session,
+            thread: thread.thread,
+        });
+        assert!(!sidecar.join("1.png").exists());
+
+        std::fs::write(sidecar.join("review.json"), b"torn").unwrap();
+        let third = editor();
+        let session = match third.handle(Request {
+            id: 1,
+            command: Command::SessionOpen {
+                path: "models/m.clm".into(),
+            },
+        }) {
+            Reply::Ok {
+                body: ResponseBody::Session { session },
+                ..
+            } => session,
+            other => panic!("{other:?}"),
+        };
+        let mut h = Fixture::on(third, session);
+        let review = h.review();
+        assert_eq!(review.kept, ReviewKept::Unreadable);
+        assert!(
+            review.kept_problem.unwrap().contains("review.json"),
+            "the problem names the file to look at"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

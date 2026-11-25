@@ -1250,6 +1250,16 @@ export type ReviewImage = {
   byte_length: number,
 };
 
+/**
+ * How long a review outlives its session. Says nothing about where it is
+ * kept: that is the editor's choice.
+ */
+export type ReviewKept =
+  | "stored"
+  | "unsaved"
+  | "session"
+  | "unreadable";
+
 export type ReviewThread = {
   thread: ThreadId,
   target: ReviewTarget,
@@ -1285,7 +1295,7 @@ export type ReviewAgent = {
 
 /**
  * A session's review threads: shared, kept off the model path like
- * [`Presence`] — never an edit, never undone, never saved.
+ * [`Presence`] — never an edit, never undone, never in the model file.
  */
 export type Review = {
   /**
@@ -1296,6 +1306,11 @@ export type Review = {
    * The agent last heard from, if any.
    */
   agent?: ReviewAgent | null,
+  kept: ReviewKept,
+  /**
+   * Why, when `kept` is `unreadable`.
+   */
+  kept_problem?: string | null,
 };
 
 export type Camera = {

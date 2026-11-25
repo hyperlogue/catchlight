@@ -107,6 +107,8 @@ export class FakeEditor implements WasmEditor {
   /** Tests set `agent` directly; no fake command moves it but a fetch. */
   reviews = new Map<number, Review>();
   reviewImages = new Map<number, Uint8Array>();
+  /** What every review says of how long it is kept. */
+  reviewKept: Review["kept"] = "stored";
   freed = false;
 
   #events: string[] = [];
@@ -428,7 +430,7 @@ export class FakeEditor implements WasmEditor {
     rev: number,
   ): ResponseBody | undefined {
     let review = this.reviews.get(request.session);
-    if (!review) this.reviews.set(request.session, (review = { threads: [] }));
+    if (!review) this.reviews.set(request.session, (review = { threads: [], kept: "stored" }));
     const find = (thread: number): ReviewThread | undefined =>
       review.threads.find((t) => t.thread === thread);
     const sent = (t: ReviewThread): boolean =>
@@ -441,7 +443,7 @@ export class FakeEditor implements WasmEditor {
       }));
     switch (request.cmd) {
       case "review_get":
-        return { result: "review", review: structuredClone(review) };
+        return { result: "review", review: { ...structuredClone(review), kept: this.reviewKept } };
       case "review_image_add": {
         const bytes = this.attached[this.attached.length - 1]?.image ?? new Uint8Array();
         const image = this.#nextReviewId++;

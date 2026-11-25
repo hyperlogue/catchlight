@@ -103,7 +103,8 @@ impl Editor {
     pub(super) fn open_session(&self, path: String) -> Result<Captured<ResponseBody>, EditorError> {
         let model = Model::from_clm_bytes(&self.storage.read(&path)?)?;
         let title = key_stem(&path);
-        self.publish_session(model, Some(title), Some(path), None)
+        let kept = crate::review::ReviewKeeping::open(&*self.review_store, &path, &model);
+        self.publish_session_with(model, Some(title), Some(path), None, kept)
     }
 
     pub(super) fn fork_session(
@@ -141,6 +142,17 @@ impl Editor {
         file: Option<String>,
         source: Option<SessionOrigin>,
     ) -> Result<Captured<ResponseBody>, EditorError> {
+        self.publish_session_with(model, name, file, source, Default::default())
+    }
+
+    fn publish_session_with(
+        &self,
+        model: Model,
+        name: Option<String>,
+        file: Option<String>,
+        source: Option<SessionOrigin>,
+        (review, review_keeping): (crate::review::ReviewState, crate::review::ReviewKeeping),
+    ) -> Result<Captured<ResponseBody>, EditorError> {
         if model.is_fragment() {
             return Err(ModelError::Fragment.into());
         }
@@ -149,7 +161,10 @@ impl Editor {
         }
         let session = self.alloc_id();
         let title = name.unwrap_or_else(|| format!("untitled-{}", session.0));
-        self.insert_session(session, Session::new(session, model, title, file));
+        let mut opened = Session::new(session, model, title, file);
+        opened.review = review;
+        opened.review_keeping = review_keeping;
+        self.insert_session(session, opened);
         let body = match source {
             Some(source) => ResponseBody::SessionFork { session, source },
             None => ResponseBody::Session { session },

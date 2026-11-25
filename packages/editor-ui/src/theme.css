@@ -2880,6 +2880,15 @@
     display: block;
     line-height: 1.35;
   }
+  .catchlight [data-catchlight-review-kept] {
+    margin: 0;
+    color: var(--cl-text-dim);
+    font-size: 11px;
+    line-height: 1.5;
+  }
+  .catchlight [data-catchlight-review-kept="unreadable"] {
+    color: var(--cl-warn);
+  }
   .catchlight [data-catchlight-review-connect] {
     padding: 10px;
     border: 1px dashed var(--cl-border-strong);

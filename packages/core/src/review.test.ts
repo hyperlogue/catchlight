@@ -21,11 +21,11 @@ function thread(id: number): Review["threads"][number] {
   };
 }
 
-function open(): { backend: ScriptedBackend; session: Session; serve(review: Review): void } {
+function open(): { backend: ScriptedBackend; session: Session; serve(review: Omit<Review, "kept">): void } {
   const backend = new ScriptedBackend();
   const session = new Session(backend, 1, new FakeReplica());
-  const serve = (review: Review): void => {
-    backend.replies.set("review_get", { body: { result: "review", review } });
+  const serve = (review: Omit<Review, "kept">): void => {
+    backend.replies.set("review_get", { body: { result: "review", review: { ...review, kept: "stored" } } });
   };
   serve({ threads: [] });
   return { backend, session, serve };

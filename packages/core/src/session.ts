@@ -73,7 +73,7 @@ export interface ScratchTransform {
  */
 export const REVIEW_LISTENING_POLL_MS = 4000;
 
-const NO_REVIEW: Review = { threads: [] };
+const NO_REVIEW: Review = { threads: [], kept: "stored" };
 
 /** How long a `send` waits for its `model_changed` frame before re-feeding. */
 export const CATCH_UP_TIMEOUT_MS = 4000;

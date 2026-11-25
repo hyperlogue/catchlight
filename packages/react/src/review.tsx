@@ -41,7 +41,7 @@ import { readPose } from "./pose.js";
 import { useSelection } from "./presence.js";
 import { useRevision } from "./replica.js";
 
-const NO_REVIEW: Review = { threads: [] };
+const NO_REVIEW: Review = { threads: [], kept: "stored" };
 const neverChanges = (): (() => void) => () => {};
 const noReview = (): Review => NO_REVIEW;
 
@@ -477,6 +477,7 @@ export function ReviewPanel({ session, connect, capture }: ReviewPanelProps) {
           {unsent > 0 ? `Send to agent · ${unsent}` : "Send to agent"}
         </button>
       </header>
+      <ReviewKeptNote review={review.review} />
       {connect && (phase === "absent" || phase === "away") && (
         <div data-catchlight-review-connect="">{connect}</div>
       )}
@@ -554,6 +555,25 @@ export function ReviewPanel({ session, connect, capture }: ReviewPanelProps) {
 
 function lastComment(thread: ReviewThread): number {
   return thread.comments[thread.comments.length - 1]?.comment ?? 0;
+}
+
+/** How long the comments last, said only when it is not "with the model". */
+function ReviewKeptNote({ review }: { review: Review }) {
+  if (review.kept === "unreadable")
+    return (
+      <p data-catchlight-review-kept="unreadable" role="status" title={review.kept_problem ?? undefined}>
+        The comments saved with this model could not be read and were left untouched. New ones last
+        until this editor closes.
+      </p>
+    );
+  if (review.kept === "stored" || review.threads.length === 0) return null;
+  return (
+    <p data-catchlight-review-kept={review.kept} role="status">
+      {review.kept === "unsaved"
+        ? "Save the model to keep these comments."
+        : "Comments last until this editor closes."}
+    </p>
+  );
 }
 
 /** A message for the person to hand their own agent, with a copy button. */

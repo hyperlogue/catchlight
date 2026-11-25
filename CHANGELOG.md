@@ -17,10 +17,13 @@ next release is 0.3.0.
   the same calls (`Client.review_*`). A comment can carry images: paste,
   drop or capture the canvas in the tab and mark it up, `review watch
   --attachments-dir` hands them to the agent as files, and `review reply
-  --attach` sends one back. Review is session state: it is not saved
-  with the model. A host says how an agent joins through `CatchlightEditor`'s
-  `agentConnect` prop, so the same editor serves a local process or a hosted
-  one that offers its own agent.
+  --attach` sends one back. A review is kept beside a
+  saved model, never in the `.clm`: `catchlight-editor` writes it to a
+  `<model>.clm.review/` sidecar, and an embedding host chooses its own store
+  with `Editor::with_review_store`. The in-tab editor keeps none yet. A host
+  says how an agent joins through `CatchlightEditor`'s `agentConnect` prop,
+  so the same editor serves a local process or a hosted one that offers its
+  own agent.
 - **A redesigned editor.** One top bar holds the menus, open models, review
   status and save; the canvas runs edge to edge with its modes and tools
   floating over it; the tree, params and properties are denser, so more of the

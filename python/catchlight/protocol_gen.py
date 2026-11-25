@@ -3241,6 +3241,22 @@ class ReviewImage:
     byte_length: int
 
 
+class ReviewKept(StrEnum):
+    """How long a review outlives its session. Says nothing about where it is
+    kept: that is the editor's choice.
+    """
+
+    # Kept with the model: it is there when the model is next opened.
+    STORED = "stored"
+    # The model has no file yet; the review is kept once it is saved.
+    UNSAVED = "unsaved"
+    # This editor keeps no reviews: it lasts until the session closes.
+    SESSION = "session"
+    # A review kept earlier could not be read. It is left as it was and
+    # what is written now lasts until the session closes.
+    UNREADABLE = "unreadable"
+
+
 @dataclass(frozen=True, kw_only=True)
 class ReviewThread:
     thread: ThreadId
@@ -3268,13 +3284,16 @@ class ReviewAgent:
 @dataclass(frozen=True, kw_only=True)
 class Review:
     """A session's review threads: shared, kept off the model path like
-    [`Presence`] — never an edit, never undone, never saved.
+    [`Presence`] — never an edit, never undone, never in the model file.
     """
 
     # Oldest first.
     threads: list[ReviewThread]
     # The agent last heard from, if any.
     agent: ReviewAgent | None = None
+    kept: ReviewKept | None = None
+    # Why, when `kept` is `unreadable`.
+    kept_problem: str | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -4578,6 +4597,7 @@ __all__ = [
     "ThreadStatus",
     "ReviewComment",
     "ReviewImage",
+    "ReviewKept",
     "ReviewThread",
     "ReviewAgent",
     "Review",

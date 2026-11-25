@@ -217,6 +217,29 @@ describe("the review panel", () => {
     await view.unmount();
   });
 
+  test("how long comments last is said only when it is not with the model", async () => {
+    const { view, wasm, session } = await review();
+    const note = () => view.container.querySelector("[data-catchlight-review-kept]");
+    await comment(view, "raise the collar");
+    expect(note()).toBeNull();
+
+    wasm.reviewKept = "unsaved";
+    await run(() => session.refreshReview());
+    await settle();
+    expect(note()?.textContent).toBe("Save the model to keep these comments.");
+
+    wasm.reviewKept = "session";
+    await run(() => session.refreshReview());
+    await settle();
+    expect(note()?.textContent).toBe("Comments last until this editor closes.");
+
+    wasm.reviewKept = "unreadable";
+    await run(() => session.refreshReview());
+    await settle();
+    expect(note()?.getAttribute("data-catchlight-review-kept")).toBe("unreadable");
+    await view.unmount();
+  });
+
   test("resolving moves a thread to the resolved tab", async () => {
     const { view } = await review();
     await comment(view, "done already");

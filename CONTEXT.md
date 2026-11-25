@@ -549,8 +549,10 @@ client. Published, never saved, never undone.
 
 **Review**:
 A session's threads, and the agent attending to them. Shared like presence
-and kept beside the model: never an edit, never undone, never saved, and not
-carried into a fork.
+and kept beside the model: never an edit, never undone, never in the model
+file, and not carried into a fork. An editor may keep a review with a saved
+model so it is there when the model is next opened; where is the editor's
+choice, and no client depends on it.
 _Avoid_: chat, annotations
 
 **Thread**:

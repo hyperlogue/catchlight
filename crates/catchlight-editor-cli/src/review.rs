@@ -416,6 +416,13 @@ pub(super) fn describe(body: &ResponseBody, all: bool, saved: Option<&Saved>) ->
                 }
                 None => {}
             }
+            if review.kept == ReviewKept::Unreadable {
+                let _ = writeln!(
+                    out,
+                    "the review kept with this model could not be read ({}); it is left as it is, and comments made now last until the session closes",
+                    review.kept_problem.as_deref().unwrap_or("no reason given")
+                );
+            }
             if shown.is_empty() {
                 let hidden = review.threads.len();
                 let _ = if hidden > 0 {
@@ -644,6 +651,8 @@ mod tests {
                     name: "claude".into(),
                     listening: true,
                 }),
+                kept: ReviewKept::Stored,
+                kept_problem: None,
             },
         };
         let open = describe(&body, false, None).unwrap();

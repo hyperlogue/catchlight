@@ -22,7 +22,9 @@ use catchlight_editor_protocol::{Command, Reply, Request};
 use catchlight_editor_server::connection::{
     default_connection_path, read_connection, Connection, ConnectionFile,
 };
-use catchlight_editor_server::{bind_http, Editor, FileStorage, HttpOptions, UiFiles};
+use catchlight_editor_server::{
+    bind_http, Editor, FileStorage, HttpOptions, SidecarReviewStore, UiFiles,
+};
 
 mod ui {
     include!(concat!(env!("OUT_DIR"), "/ui.rs"));
@@ -157,7 +159,9 @@ fn serve(options: Serve) -> Result<()> {
         Some(dir) => FileStorage::new(dir),
         None => FileStorage::default(),
     };
-    let editor = Arc::new(Editor::with_storage(Arc::new(store)));
+    let reviews = SidecarReviewStore::new(store.root());
+    let editor =
+        Arc::new(Editor::with_storage(Arc::new(store)).with_review_store(Arc::new(reviews)));
     if let Some(model) = model {
         match editor.handle(Request {
             id: 0,
