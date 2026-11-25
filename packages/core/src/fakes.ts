@@ -399,6 +399,11 @@ export class FakeEditor implements WasmEditor {
           return this.#err(id, "bad_request", "an expression needs a name and at least one setting");
         const missing = request.settings.find((s) => s.param != null && !doc.params.some((p) => p.id === s.param));
         if (missing) return this.#err(id, "no_param", `no param ${missing.param}`);
+        const named = request.settings.find(
+          (s) => s.control != null && !request.nonstandard && !FAKE_CONTROLS.some((c) => c.name === s.control),
+        );
+        if (named)
+          return this.#err(id, "nonstandard_control", `${JSON.stringify(named.control)} is not a standard humanoid control`);
         const group = request.group === "viseme" ? "visemes" : "expressions";
         const expression = { name: request.name, settings: request.settings };
         const at = doc[group].findIndex((e) => e.name === request.name);

@@ -17,6 +17,7 @@ import {
   Disclosure,
   EditorProvider,
   EmptyState,
+  ExpressionsPanel,
   ExtensionsPanel,
   FileOpen,
   FileSave,
@@ -390,7 +391,9 @@ function Workspace({
   const [left, setLeft] = useState<"structure" | "assets">("structure");
   const [right, setRight] = useState<"properties" | "model" | "review">("properties");
   const review = useReview();
-  const [dock, setDock] = useState<"params" | "bindings" | "controls">("params");
+  const [dock, setDock] = useState<
+    "params" | "bindings" | "controls" | "expressions"
+  >("params");
   const [dockOpen, setDockOpen] = useState(true);
   const [focus, setFocus] = useState(false);
   const [search, setSearch] = useState("");
@@ -1350,17 +1353,30 @@ function Workspace({
                 {editing.mode === "record" ? "Keypoints" : "Bindings"}
               </button>
               {editing.mode !== "record" && (
-                <button
-                  type="button"
-                  data-active={dock === "controls" ? "" : undefined}
-                  onClick={() => {
-                    setDock("controls");
-                    setDockOpen(true);
-                  }}
-                >
-                  <Icon name="control" width="14" height="14" />
-                  Controls
-                </button>
+                <>
+                  <button
+                    type="button"
+                    data-active={dock === "controls" ? "" : undefined}
+                    onClick={() => {
+                      setDock("controls");
+                      setDockOpen(true);
+                    }}
+                  >
+                    <Icon name="control" width="14" height="14" />
+                    Controls
+                  </button>
+                  <button
+                    type="button"
+                    data-active={dock === "expressions" ? "" : undefined}
+                    onClick={() => {
+                      setDock("expressions");
+                      setDockOpen(true);
+                    }}
+                  >
+                    <Icon name="face" width="14" height="14" />
+                    Expressions
+                  </button>
+                </>
               )}
             </div>
             <div data-catchlight-dock-actions="">
@@ -1413,6 +1429,8 @@ function Workspace({
                   <RecordingKeys />
                 ) : dock === "controls" ? (
                   <ControlsPanel key={session.id} session={session} onError={onError} />
+                ) : dock === "expressions" ? (
+                  <ExpressionsPanel key={session.id} session={session} onError={onError} />
                 ) : (
                   <BindingsPanel
                     session={session}

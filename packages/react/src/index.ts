@@ -181,6 +181,7 @@ export {
 export type { OfficialRead } from "./official.js";
 export { ControlsPanel, CONTROL_GROUPS, groupControls } from "./controls-panel.js";
 export type { ControlEntry } from "./controls-panel.js";
+export { ExpressionsPanel } from "./expressions-panel.js";
 export {
   ParamsPanel,
   BindingsPanel,

@@ -171,7 +171,7 @@ describe("the assembled editor", () => {
     stop();
   });
 
-  test("the dock's Controls tab maps the humanoid controls", async () => {
+  test("the dock's Controls and Expressions tabs show the official extensions", async () => {
     const stop = stubObservers();
     const editor = await fakeEditor();
     const session = await editor.newSession("akari");
@@ -179,12 +179,17 @@ describe("the assembled editor", () => {
     const { container: view, unmount } = await mount(<CatchlightEditor editor={editor} />);
     await settle();
 
-    expect(dockTabs(view)).toEqual(["Params", "Bindings", "Controls"]);
+    expect(dockTabs(view)).toEqual(["Params", "Bindings", "Controls", "Expressions"]);
     await run(() => dockTab(view, "Controls").click());
     await settle();
     expect(dockTab(view, "Controls").hasAttribute("data-active")).toBe(true);
     expect(view.querySelector("[data-catchlight-dock-body] [data-catchlight-controls-panel]")).not.toBeNull();
     expect(view.querySelectorAll("[data-catchlight-control-card]").length).toBeGreaterThan(0);
+
+    await run(() => dockTab(view, "Expressions").click());
+    await settle();
+    expect(view.querySelector("[data-catchlight-controls-panel]")).toBeNull();
+    expect(view.querySelector("[data-catchlight-dock-body] [data-catchlight-expressions-panel]")).not.toBeNull();
 
     await unmount();
     editor.close();
