@@ -59,6 +59,7 @@ from .protocol_gen import (
     ResponseBodyTexture,
     ResponseBodyReview,
     ResponseBodyReviewFetched,
+    ResponseBodyReviewImage,
     ResponseBodyReviewPending,
     ResponseBodyReviewThread,
     Review,
@@ -68,6 +69,8 @@ from .protocol_gen import (
     ReviewCommentAdd,
     ReviewFetch,
     ReviewGet,
+    ReviewImageAdd,
+    ReviewImageGet,
     ReviewPoll,
     ReviewSubmit,
     ReviewTarget,
@@ -458,15 +461,18 @@ class Client:
     def review_open(
         self,
         session: SessionId,
-        body: str,
+        body: str = "",
         *,
         target: ReviewTarget | None = None,
         agent: str | None = "agent",
         pose: Sequence[ParamPose] = (),
+        attach: Sequence[ReviewAttachment] = (),
     ) -> ReviewThread:
         """Start a thread, on the whole model unless `target` names something.
 
         `agent=None` writes as the person, whose comments wait for `review_send`.
+        `attach` is up to four PNG, JPEG or WebP images, each a path or the
+        file's bytes; with one, `body` may be empty.
         """
         return _thread(
             self.send(
@@ -476,6 +482,7 @@ class Client:
                     author=_author(agent),
                     body=body,
                     pose=list(pose),
+                    images=self._review_images(session, attach),
                 )
             )
         )
@@ -484,18 +491,51 @@ class Client:
         self,
         session: SessionId,
         thread: ThreadId,
-        body: str,
+        body: str = "",
         *,
         agent: str | None = "agent",
+        attach: Sequence[ReviewAttachment] = (),
     ) -> ReviewThread:
-        """An agent's reply ends its work on the thread."""
+        """An agent's reply ends its work on the thread.
+
+        `attach` is as for `review_open`.
+        """
         return _thread(
             self.send(
                 ReviewCommentAdd(
-                    session=session, thread=thread, author=_author(agent), body=body
+                    session=session,
+                    thread=thread,
+                    author=_author(agent),
+                    body=body,
+                    images=self._review_images(session, attach),
                 )
             )
         )
+
+    def _review_images(
+        self, session: SessionId, attach: Sequence[ReviewAttachment]
+    ) -> list[int]:
+        images: list[int] = []
+        for source in attach:
+            data = (
+                bytes(source)
+                if isinstance(source, (bytes, bytearray))
+                else Path(_absolute(source)).read_bytes()
+            )
+            body, _ = self.send_with(ReviewImageAdd(session=session), {"image": data})
+            if not isinstance(body, ResponseBodyReviewImage):
+                raise ProtocolError(ErrorCode.BAD_REQUEST, f"review_image_add answered {body!r}")
+            images.append(body.image.image)
+        return images
+
+    def review_image(self, session: SessionId, image: int) -> bytes:
+        """The bytes of an image a comment lists."""
+        _, payload = self.send_with(ReviewImageGet(session=session, image=image))
+        if payload is None:
+            raise ProtocolError(
+                ErrorCode.BAD_REQUEST, f"review image {image} came back with no bytes"
+            )
+        return payload
 
     def review_send(self, session: SessionId) -> None:
         """Hand the person's unsent comments to the agent."""
@@ -526,6 +566,9 @@ class Client:
         return _thread(
             self.send(ReviewThreadSet(session=session, thread=thread, status=status))
         )
+
+
+ReviewAttachment = bytes | bytearray | str | os.PathLike[str]
 
 
 def _author(agent: str | None) -> ReviewAuthor:

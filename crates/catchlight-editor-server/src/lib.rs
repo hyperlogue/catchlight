@@ -127,6 +127,8 @@ pub enum EditorError {
     NoThread(ThreadId),
     #[error("no comment {0} on that thread")]
     NoComment(u64),
+    #[error("no review image {0}")]
+    NoImage(u64),
 }
 
 impl EditorError {
@@ -193,6 +195,7 @@ impl EditorError {
             Self::NoExtension(_) => ErrorCode::NoExtension,
             Self::NoThread(_) => ErrorCode::NoThread,
             Self::NoComment(_) => ErrorCode::NoComment,
+            Self::NoImage(_) => ErrorCode::NoImage,
             // Install's refusals answer with the codes the equivalent edit gets.
             Self::Install(e) => match e {
                 InstallError::Collision { .. } => ErrorCode::DuplicateId,
@@ -1526,9 +1529,11 @@ impl Editor {
             | Command::ReviewThreadDelete { .. }
             | Command::ReviewCommentAdd { .. }
             | Command::ReviewCommentDelete { .. }
+            | Command::ReviewImageAdd { .. }
+            | Command::ReviewImageGet { .. }
             | Command::ReviewSubmit { .. }
             | Command::ReviewPoll { .. }
-            | Command::ReviewFetch { .. }) => self.review(command),
+            | Command::ReviewFetch { .. }) => self.review(command, attachments, payload),
             Command::PresenceGet { session } => self.with_session_captured(session, |s| {
                 Ok(ResponseBody::Presence {
                     presence: s.presence.clone(),

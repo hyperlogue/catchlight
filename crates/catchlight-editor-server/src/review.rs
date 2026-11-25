@@ -1,12 +1,13 @@
 //! A session's review threads. Kept beside the model, never in it: no
 //! revision, no history entry, nothing saved.
 
+use std::collections::{BTreeMap, VecDeque};
 use std::time::Duration;
 
 use catchlight_core::{Model, ModelError};
 use catchlight_editor_protocol::*;
 
-use crate::{Captured, Editor, EditorError};
+use crate::{Attachments, Captured, Editor, EditorError, Payload};
 
 /// A `review watch` polls about once a second; a few missed beats is a gone
 /// agent, not a slow one.
@@ -15,6 +16,12 @@ const LISTENING_FOR: Duration = Duration::from_secs(5);
 const WORKING_FOR: Duration = Duration::from_secs(30 * 60);
 const MAX_AGENT_NAME_BYTES: usize = 64;
 const MAX_RENAMES: usize = 256;
+const MAX_IMAGE_BYTES: usize = 8 * 1024 * 1024;
+const MAX_SESSION_IMAGE_BYTES: usize = 128 * 1024 * 1024;
+const MAX_COMMENT_IMAGES: usize = 4;
+/// An upload whose comment never came must not pin memory for the session's
+/// life.
+const MAX_HELD_IMAGES: usize = 16;
 
 /// `Instant` panics on wasm32-unknown-unknown, where no agent can attach
 /// anyway: there nothing is ever recent and nothing ever lapses.
@@ -102,11 +109,34 @@ impl Agent {
     }
 }
 
+#[derive(Debug)]
+struct Image {
+    media_type: &'static str,
+    bytes: Vec<u8>,
+}
+
+/// Read from the magic bytes alone; the image is never decoded here.
+fn media_type(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+        Some("image/jpeg")
+    } else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        Some("image/webp")
+    } else {
+        None
+    }
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct ReviewState {
     threads: Vec<Thread>,
     last_thread: u64,
     last_comment: u64,
+    last_image: u64,
+    images: BTreeMap<u64, Image>,
+    /// Uploaded and not yet on a comment, oldest first.
+    held: VecDeque<u64>,
     agent: Option<Agent>,
     /// What [`Self::follow_model`] walks to find where a renamed target went
     /// once history navigation moves the model under the threads.
@@ -201,10 +231,19 @@ fn renamed(target: &ReviewTarget, rename: &Rename, back: bool) -> Option<ReviewT
     }
 }
 
-fn body_of(body: String) -> Result<String, EditorError> {
+/// A comment as its author sent it.
+struct Draft {
+    author: ReviewAuthor,
+    body: String,
+    images: Vec<u64>,
+}
+
+fn body_of(body: String, images: &[u64]) -> Result<String, EditorError> {
     let body = body.trim();
-    if body.is_empty() {
-        return Err(EditorError::BadRequest("a comment needs a body".into()));
+    if body.is_empty() && images.is_empty() {
+        return Err(EditorError::BadRequest(
+            "a comment needs a body or an image".into(),
+        ));
     }
     Ok(body.to_owned())
 }
@@ -255,7 +294,84 @@ impl ReviewState {
             .ok_or(EditorError::NoThread(id))
     }
 
-    fn comment(&mut self, author: ReviewAuthor, body: String, rev: u64) -> ReviewComment {
+    fn image_info(&self, id: u64) -> Result<ReviewImage, EditorError> {
+        let image = self.images.get(&id).ok_or(EditorError::NoImage(id))?;
+        Ok(ReviewImage {
+            image: id,
+            media_type: image.media_type.to_owned(),
+            byte_length: u32::try_from(image.bytes.len()).unwrap_or(u32::MAX),
+        })
+    }
+
+    fn hold_image(&mut self, bytes: Vec<u8>) -> Result<ReviewImage, EditorError> {
+        let media_type = media_type(&bytes).ok_or_else(|| {
+            EditorError::BadRequest("a review image is a PNG, JPEG or WebP file".into())
+        })?;
+        if bytes.len() > MAX_IMAGE_BYTES {
+            return Err(EditorError::Limit {
+                resource: "review_image_bytes",
+                limit: MAX_IMAGE_BYTES as u64,
+                requested: bytes.len() as u64,
+            });
+        }
+        if self.held.len() == MAX_HELD_IMAGES {
+            if let Some(oldest) = self.held.pop_front() {
+                self.images.remove(&oldest);
+            }
+        }
+        let total: usize = self.images.values().map(|i| i.bytes.len()).sum();
+        if total + bytes.len() > MAX_SESSION_IMAGE_BYTES {
+            return Err(EditorError::Limit {
+                resource: "review_session_image_bytes",
+                limit: MAX_SESSION_IMAGE_BYTES as u64,
+                requested: (total + bytes.len()) as u64,
+            });
+        }
+        self.last_image += 1;
+        let id = self.last_image;
+        self.images.insert(id, Image { media_type, bytes });
+        self.held.push_back(id);
+        self.image_info(id)
+    }
+
+    /// Refuses without changing anything; [`Self::claim`] cannot then fail.
+    fn check_images(&self, images: &[u64]) -> Result<(), EditorError> {
+        if images.len() > MAX_COMMENT_IMAGES {
+            return Err(EditorError::Limit {
+                resource: "review_comment_images",
+                limit: MAX_COMMENT_IMAGES as u64,
+                requested: images.len() as u64,
+            });
+        }
+        for (at, id) in images.iter().enumerate() {
+            if !self.held.contains(id) || images[..at].contains(id) {
+                return Err(EditorError::NoImage(*id));
+            }
+        }
+        Ok(())
+    }
+
+    fn claim(&mut self, images: &[u64]) -> Vec<ReviewImage> {
+        self.held.retain(|id| !images.contains(id));
+        images
+            .iter()
+            .filter_map(|id| self.image_info(*id).ok())
+            .collect()
+    }
+
+    fn free(&mut self, comments: &[ReviewComment]) {
+        for image in comments.iter().flat_map(|c| &c.images) {
+            self.images.remove(&image.image);
+        }
+    }
+
+    fn comment(
+        &mut self,
+        author: ReviewAuthor,
+        body: String,
+        rev: u64,
+        images: &[u64],
+    ) -> ReviewComment {
         self.last_comment += 1;
         ReviewComment {
             comment: self.last_comment,
@@ -266,6 +382,7 @@ impl ReviewState {
             author,
             body,
             rev,
+            images: self.claim(images),
         }
     }
 
@@ -274,14 +391,14 @@ impl ReviewState {
         model: &Model,
         rev: u64,
         target: ReviewTarget,
-        author: ReviewAuthor,
-        body: String,
+        draft: Draft,
         pose: Vec<ParamPose>,
     ) -> Result<ReviewThread, EditorError> {
-        let body = body_of(body)?;
-        let author = author_of(author)?;
+        let body = body_of(draft.body, &draft.images)?;
+        let author = author_of(draft.author)?;
         require(model, &target)?;
-        let comment = self.comment(author, body, rev);
+        self.check_images(&draft.images)?;
+        let comment = self.comment(author, body, rev, &draft.images);
         self.last_thread += 1;
         let thread = Thread {
             id: ThreadId(self.last_thread),
@@ -301,14 +418,14 @@ impl ReviewState {
         model: &Model,
         rev: u64,
         id: ThreadId,
-        author: ReviewAuthor,
-        body: String,
+        draft: Draft,
     ) -> Result<ReviewThread, EditorError> {
-        let body = body_of(body)?;
-        let author = author_of(author)?;
+        let body = body_of(draft.body, &draft.images)?;
+        let author = author_of(draft.author)?;
         self.thread_mut(id)?;
+        self.check_images(&draft.images)?;
         let human = author == ReviewAuthor::Human;
-        let comment = self.comment(author, body, rev);
+        let comment = self.comment(author, body, rev, &draft.images);
         let thread = self.thread_mut(id)?;
         thread.comments.push(comment);
         if human {
@@ -341,7 +458,8 @@ impl ReviewState {
             .iter()
             .position(|t| t.id == id)
             .ok_or(EditorError::NoThread(id))?;
-        self.threads.remove(at);
+        let thread = self.threads.remove(at);
+        self.free(&thread.comments);
         Ok(())
     }
 
@@ -352,8 +470,10 @@ impl ReviewState {
             .iter()
             .position(|c| c.comment == comment)
             .ok_or(EditorError::NoComment(comment))?;
-        thread.comments.remove(at);
-        if thread.comments.is_empty() {
+        let removed = thread.comments.remove(at);
+        let emptied = thread.comments.is_empty();
+        self.free(&[removed]);
+        if emptied {
             self.delete_thread(id)?;
         }
         Ok(())
@@ -499,8 +619,44 @@ impl Editor {
         })
     }
 
-    pub(crate) fn review(&self, command: Command) -> Result<Captured<ResponseBody>, EditorError> {
+    pub(crate) fn review(
+        &self,
+        command: Command,
+        attachments: &mut Attachments,
+        payload: &mut Option<Payload>,
+    ) -> Result<Captured<ResponseBody>, EditorError> {
         match command {
+            Command::ReviewImageAdd { session } => {
+                let bytes = attachments.take("image").ok_or_else(|| {
+                    EditorError::BadRequest(
+                        "review_image_add needs the attachment \"image\"".into(),
+                    )
+                })?;
+                self.review_session(session, |review, _, _| {
+                    let image = review.hold_image(bytes)?;
+                    Ok((ResponseBody::ReviewImage { image }, false))
+                })
+            }
+            Command::ReviewImageGet { session, image } => {
+                let captured = self.with_session_captured(session, |s| {
+                    let info = s.review.image_info(image)?;
+                    let stored = s
+                        .review
+                        .images
+                        .get(&image)
+                        .ok_or(EditorError::NoImage(image))?;
+                    Ok((info, stored.media_type, stored.bytes.clone()))
+                })?;
+                let (image, content_type, bytes) = captured.value;
+                *payload = Some(Payload {
+                    content_type,
+                    bytes,
+                });
+                Ok(Captured {
+                    value: ResponseBody::ReviewImage { image },
+                    rev: captured.rev,
+                })
+            }
             Command::ReviewGet { session } => self.review_session(session, |review, model, _| {
                 Ok((
                     ResponseBody::Review {
@@ -515,8 +671,19 @@ impl Editor {
                 author,
                 body,
                 pose,
+                images,
             } => self.review_session(session, |review, model, rev| {
-                let thread = review.open(model, rev, target, author, body, pose)?;
+                let thread = review.open(
+                    model,
+                    rev,
+                    target,
+                    Draft {
+                        author,
+                        body,
+                        images,
+                    },
+                    pose,
+                )?;
                 Ok((ResponseBody::ReviewThread { thread }, true))
             }),
             Command::ReviewThreadSet {
@@ -538,8 +705,18 @@ impl Editor {
                 thread,
                 author,
                 body,
+                images,
             } => self.review_session(session, |review, model, rev| {
-                let thread = review.reply(model, rev, thread, author, body)?;
+                let thread = review.reply(
+                    model,
+                    rev,
+                    thread,
+                    Draft {
+                        author,
+                        body,
+                        images,
+                    },
+                )?;
                 Ok((ResponseBody::ReviewThread { thread }, true))
             }),
             Command::ReviewCommentDelete {
@@ -691,6 +868,7 @@ mod tests {
                 author,
                 body: "  look here \n".into(),
                 pose: Vec::new(),
+                images: Vec::new(),
             }) {
                 ResponseBody::ReviewThread { thread } => thread,
                 other => panic!("{other:?}"),
@@ -776,6 +954,7 @@ mod tests {
             thread: ThreadId(1),
             author: agent("claude"),
             body: "done".into(),
+            images: Vec::new(),
         }) {
             ResponseBody::ReviewThread { thread } => thread,
             other => panic!("{other:?}"),
@@ -854,6 +1033,7 @@ mod tests {
             author: ReviewAuthor::Human,
             body: "x".into(),
             pose: Vec::new(),
+            images: Vec::new(),
         };
         let node = NodeId::new("nope").unwrap();
         assert_eq!(
@@ -887,6 +1067,7 @@ mod tests {
                 author: ReviewAuthor::Human,
                 body: " \n".into(),
                 pose: Vec::new(),
+                images: Vec::new(),
             }),
             ErrorCode::BadRequest
         );
@@ -896,6 +1077,7 @@ mod tests {
                 thread: ThreadId(9),
                 author: ReviewAuthor::Human,
                 body: "x".into(),
+                images: Vec::new(),
             }),
             ErrorCode::NoThread
         );
@@ -959,6 +1141,7 @@ mod tests {
             thread: ThreadId(1),
             author: ReviewAuthor::Human,
             body: "still wrong".into(),
+            images: Vec::new(),
         }) {
             ResponseBody::ReviewThread { thread } => thread,
             other => panic!("{other:?}"),
@@ -1076,8 +1259,11 @@ mod tests {
                 &model,
                 0,
                 ReviewTarget::Model,
-                ReviewAuthor::Human,
-                "x".into(),
+                Draft {
+                    author: ReviewAuthor::Human,
+                    body: "x".into(),
+                    images: Vec::new(),
+                },
                 Vec::new(),
             )
             .unwrap();
@@ -1095,5 +1281,232 @@ mod tests {
         assert!(state.wire(&model).threads[0].working.is_some());
         state.threads[0].working.as_mut().unwrap().since = Stamp(long_ago);
         assert_eq!(state.wire(&model).threads[0].working, None);
+    }
+
+    const PNG: &[u8] = b"\x89PNG\r\n\x1a\n-not-really-a-png";
+
+    impl Fixture {
+        fn with(&mut self, command: Command, name: &str, bytes: &[u8]) -> (Reply, Option<Payload>) {
+            self.next += 1;
+            let mut attachments = Attachments::none();
+            attachments.insert(name, bytes.to_vec());
+            self.editor.handle_with(
+                Request {
+                    id: self.next,
+                    command,
+                },
+                attachments,
+            )
+        }
+
+        fn upload(&mut self, bytes: &[u8]) -> Reply {
+            let session = self.session;
+            self.with(Command::ReviewImageAdd { session }, "image", bytes)
+                .0
+        }
+
+        fn image(&mut self, bytes: &[u8]) -> ReviewImage {
+            match self.upload(bytes) {
+                Reply::Ok {
+                    body: ResponseBody::ReviewImage { image },
+                    ..
+                } => image,
+                other => panic!("{other:?}"),
+            }
+        }
+
+        fn bytes(&mut self, image: u64) -> Result<Payload, ErrorCode> {
+            self.next += 1;
+            let session = self.session;
+            match self.editor.handle_with(
+                Request {
+                    id: self.next,
+                    command: Command::ReviewImageGet { session, image },
+                },
+                Attachments::none(),
+            ) {
+                (Reply::Ok { .. }, Some(payload)) => Ok(payload),
+                (Reply::Err { code, .. }, None) => Err(code),
+                other => panic!("{other:?}"),
+            }
+        }
+
+        fn say(&mut self, images: Vec<u64>, body: &str) -> Reply {
+            let session = self.session;
+            self.send(Command::ReviewThreadAdd {
+                session,
+                target: ReviewTarget::Model,
+                author: ReviewAuthor::Human,
+                body: body.into(),
+                pose: Vec::new(),
+                images,
+            })
+        }
+    }
+
+    fn limit(reply: Reply) -> String {
+        match reply {
+            Reply::Err {
+                code: ErrorCode::LimitExceeded,
+                limit: Some(limit),
+                ..
+            } => limit.resource,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_image_is_typed_by_its_bytes_and_anything_else_is_refused() {
+        let mut f = Fixture::new();
+        assert_eq!(f.image(PNG).media_type, "image/png");
+        assert_eq!(
+            f.image(&[0xff, 0xd8, 0xff, 0xe0, 1]).media_type,
+            "image/jpeg"
+        );
+        let webp = f.image(b"RIFF\x04\0\0\0WEBPVP8 ");
+        assert_eq!((webp.image, webp.media_type.as_str()), (3, "image/webp"));
+        assert!(matches!(
+            f.upload(b"GIF89a"),
+            Reply::Err {
+                code: ErrorCode::BadRequest,
+                ..
+            }
+        ));
+        assert_eq!(f.review_events(), 0, "a held image is nobody's news yet");
+        assert_eq!(f.rev(), 0);
+    }
+
+    #[test]
+    fn an_image_rides_on_one_comment_and_reads_back_byte_for_byte() {
+        let mut f = Fixture::new();
+        let image = f.image(PNG);
+        assert_eq!(image.byte_length as usize, PNG.len());
+        let thread = match f.say(vec![image.image], "  ") {
+            Reply::Ok {
+                body: ResponseBody::ReviewThread { thread },
+                ..
+            } => thread,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(thread.comments[0].body, "");
+        assert_eq!(thread.comments[0].images, vec![image.clone()]);
+        let payload = f.bytes(image.image).unwrap();
+        assert_eq!(
+            (payload.content_type, payload.bytes.as_slice()),
+            ("image/png", PNG)
+        );
+
+        assert!(matches!(
+            f.say(vec![image.image], "again"),
+            Reply::Err {
+                code: ErrorCode::NoImage,
+                ..
+            }
+        ));
+        assert!(matches!(
+            f.say(Vec::new(), " "),
+            Reply::Err {
+                code: ErrorCode::BadRequest,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn a_refused_comment_leaves_its_images_held() {
+        let mut f = Fixture::new();
+        let image = f.image(PNG).image;
+        assert!(matches!(
+            f.say(vec![image, 99], "x"),
+            Reply::Err {
+                code: ErrorCode::NoImage,
+                ..
+            }
+        ));
+        assert!(matches!(
+            f.say(vec![image, image], "x"),
+            Reply::Err {
+                code: ErrorCode::NoImage,
+                ..
+            }
+        ));
+        let session = f.session;
+        assert_eq!(
+            f.refused(Command::ReviewCommentAdd {
+                session,
+                thread: ThreadId(9),
+                author: ReviewAuthor::Human,
+                body: "x".into(),
+                images: vec![image],
+            }),
+            ErrorCode::NoThread
+        );
+        assert!(matches!(f.say(vec![image], "x"), Reply::Ok { .. }));
+    }
+
+    #[test]
+    fn image_limits_name_their_budget() {
+        let mut f = Fixture::new();
+        let mut big = PNG.to_vec();
+        big.resize(MAX_IMAGE_BYTES + 1, 0);
+        assert_eq!(limit(f.upload(&big)), "review_image_bytes");
+        let five: Vec<u64> = (0..5).map(|_| f.image(PNG).image).collect();
+        assert_eq!(limit(f.say(five, "x")), "review_comment_images");
+
+        big.truncate(MAX_IMAGE_BYTES);
+        let mut state = ReviewState::default();
+        let fits = MAX_SESSION_IMAGE_BYTES / MAX_IMAGE_BYTES;
+        for _ in 0..fits {
+            let id = state.hold_image(big.clone()).unwrap().image;
+            // Claimed, so the held-image cap does not make room.
+            state.claim(&[id]);
+        }
+        assert!(matches!(
+            state.hold_image(big),
+            Err(EditorError::Limit {
+                resource: "review_session_image_bytes",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn deleting_a_comment_or_thread_frees_its_images() {
+        let mut f = Fixture::new();
+        let session = f.session;
+        let first = f.image(PNG).image;
+        let second = f.image(PNG).image;
+        assert!(matches!(f.say(vec![first], "one"), Reply::Ok { .. }));
+        f.ok(Command::ReviewCommentAdd {
+            session,
+            thread: ThreadId(1),
+            author: ReviewAuthor::Human,
+            body: "two".into(),
+            images: vec![second],
+        });
+        f.ok(Command::ReviewCommentDelete {
+            session,
+            thread: ThreadId(1),
+            comment: 2,
+        });
+        assert_eq!(f.bytes(second).unwrap_err(), ErrorCode::NoImage);
+        assert!(f.bytes(first).is_ok());
+        f.ok(Command::ReviewThreadDelete {
+            session,
+            thread: ThreadId(1),
+        });
+        assert_eq!(f.bytes(first).unwrap_err(), ErrorCode::NoImage);
+    }
+
+    #[test]
+    fn an_image_nobody_claims_is_dropped_as_newer_ones_arrive() {
+        let mut f = Fixture::new();
+        let kept = f.image(PNG).image;
+        assert!(matches!(f.say(vec![kept], "x"), Reply::Ok { .. }));
+        let ids: Vec<u64> = (0..=MAX_HELD_IMAGES).map(|_| f.image(PNG).image).collect();
+        assert_eq!(f.bytes(ids[0]).unwrap_err(), ErrorCode::NoImage);
+        assert!(f.bytes(ids[1]).is_ok());
+        assert!(f.bytes(kept).is_ok(), "a claimed image is not held");
+        assert_eq!(*ids.last().unwrap(), kept + MAX_HELD_IMAGES as u64 + 1);
     }
 }

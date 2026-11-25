@@ -1533,6 +1533,8 @@ class ReviewThreadAdd:
     author: ReviewAuthor
     body: str
     pose: list[ParamPose] = field(default_factory=list)
+    # Images from [`Command::ReviewImageAdd`], each usable once.
+    images: list[int] = field(default_factory=list)
 
     def to_wire(self) -> dict[str, Any]:
         """This value, as one JSON object: its tag, then every field it set."""
@@ -1583,6 +1585,8 @@ class ReviewCommentAdd:
     thread: ThreadId
     author: ReviewAuthor
     body: str
+    # Images from [`Command::ReviewImageAdd`], each usable once.
+    images: list[int] = field(default_factory=list)
 
     def to_wire(self) -> dict[str, Any]:
         """This value, as one JSON object: its tag, then every field it set."""
@@ -1601,6 +1605,41 @@ class ReviewCommentDelete:
     session: SessionId
     thread: ThreadId
     comment: int
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReviewImageAdd:
+    """Hold attachment `image` (PNG, JPEG or WebP) for a comment about to be
+    written. One no comment claims is dropped as newer ones arrive.
+    """
+
+    TAG_FIELD: ClassVar[str] = "cmd"
+    TAG: ClassVar[str] = "review_image_add"
+    CMD: ClassVar[str] = TAG
+    KIND: ClassVar[CommandKind] = CommandKind.REVIEW
+
+    session: SessionId
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReviewImageGet:
+    """An image's bytes, as the reply's payload."""
+
+    TAG_FIELD: ClassVar[str] = "cmd"
+    TAG: ClassVar[str] = "review_image_get"
+    CMD: ClassVar[str] = TAG
+    KIND: ClassVar[CommandKind] = CommandKind.SERVER_QUERY
+
+    session: SessionId
+    image: int
 
     def to_wire(self) -> dict[str, Any]:
         """This value, as one JSON object: its tag, then every field it set."""
@@ -1738,6 +1777,8 @@ Command = (
     | ReviewThreadDelete
     | ReviewCommentAdd
     | ReviewCommentDelete
+    | ReviewImageAdd
+    | ReviewImageGet
     | ReviewSubmit
     | ReviewPoll
     | ReviewFetch
@@ -1818,6 +1859,8 @@ COMMAND_VARIANTS: dict[str, type[Command]] = {
     "review_thread_delete": ReviewThreadDelete,
     "review_comment_add": ReviewCommentAdd,
     "review_comment_delete": ReviewCommentDelete,
+    "review_image_add": ReviewImageAdd,
+    "review_image_get": ReviewImageGet,
     "review_submit": ReviewSubmit,
     "review_poll": ReviewPoll,
     "review_fetch": ReviewFetch,
@@ -1911,6 +1954,8 @@ COMMAND_KINDS: dict[str, CommandKind] = {
     "review_thread_delete": CommandKind.REVIEW,
     "review_comment_add": CommandKind.REVIEW,
     "review_comment_delete": CommandKind.REVIEW,
+    "review_image_add": CommandKind.REVIEW,
+    "review_image_get": CommandKind.SERVER_QUERY,
     "review_submit": CommandKind.REVIEW,
     "review_poll": CommandKind.REVIEW,
     "review_fetch": CommandKind.REVIEW,
@@ -1925,6 +1970,16 @@ COMMAND_KINDS: dict[str, CommandKind] = {
 # and a `family` admits any number of `<name>:<suffix>` attachments.
 # `payload` says the reply carries bytes back.
 COMMAND_BYTES: dict[str, CommandBytes] = {
+    "review_image_add": CommandBytes(
+        (
+            Attachment(AttachmentKind.FIXED, "image"),
+        ),
+        False,
+    ),
+    "review_image_get": CommandBytes(
+        (),
+        True,
+    ),
     "texture_add": CommandBytes(
         (
             Attachment(AttachmentKind.FIXED, "texture"),
@@ -2036,6 +2091,7 @@ ReviewCommand = (
     | ReviewThreadDelete
     | ReviewCommentAdd
     | ReviewCommentDelete
+    | ReviewImageAdd
     | ReviewSubmit
     | ReviewPoll
     | ReviewFetch
@@ -2076,6 +2132,7 @@ ServerQueryCommand = (
     | Preview
     | ExtensionGet
     | ReviewGet
+    | ReviewImageGet
 )
 
 # A command that reads, whoever answers it.
@@ -3168,6 +3225,20 @@ class ReviewComment:
     delivery: ReviewDelivery
     # The session revision the author was looking at.
     rev: int
+    images: list[ReviewImage] = field(default_factory=list)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReviewImage:
+    """An image on a review comment; its bytes come from
+    [`Command::ReviewImageGet`].
+    """
+
+    # Unique within the session.
+    image: int
+    # `image/png`, `image/jpeg` or `image/webp`, read from the bytes.
+    media_type: str
+    byte_length: int
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -3436,6 +3507,8 @@ class ErrorCode(StrEnum):
     NO_EXTENSION = "no_extension"
     NO_THREAD = "no_thread"
     NO_COMMENT = "no_comment"
+    # No such review image, or a comment already holds it.
+    NO_IMAGE = "no_image"
     # `catchlight.` is the format's own prefix: a reader accepts a key under
     # it, and nothing outside the format may author one.
     RESERVED_EXTENSION = "reserved_extension"
@@ -3872,6 +3945,22 @@ class ResponseBodyReviewThread:
 
 
 @dataclass(frozen=True, kw_only=True)
+class ResponseBodyReviewImage:
+    """The image a [`Command::ReviewImageAdd`] holds, or the one whose bytes
+    are this reply's payload.
+    """
+
+    TAG_FIELD: ClassVar[str] = "result"
+    TAG: ClassVar[str] = "review_image"
+
+    image: ReviewImage
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
 class ResponseBodyReviewPending:
     """How many threads hold comments handed to the agent and not yet taken."""
 
@@ -3933,6 +4022,7 @@ ResponseBody = (
     | ResponseBodyExtension
     | ResponseBodyReview
     | ResponseBodyReviewThread
+    | ResponseBodyReviewImage
     | ResponseBodyReviewPending
     | ResponseBodyReviewFetched
 )
@@ -3971,6 +4061,7 @@ RESPONSE_BODY_VARIANTS: dict[str, type[ResponseBody]] = {
     "extension": ResponseBodyExtension,
     "review": ResponseBodyReview,
     "review_thread": ResponseBodyReviewThread,
+    "review_image": ResponseBodyReviewImage,
     "review_pending": ResponseBodyReviewPending,
     "review_fetched": ResponseBodyReviewFetched,
 }
@@ -4378,6 +4469,8 @@ __all__ = [
     "ReviewThreadDelete",
     "ReviewCommentAdd",
     "ReviewCommentDelete",
+    "ReviewImageAdd",
+    "ReviewImageGet",
     "ReviewSubmit",
     "ReviewPoll",
     "ReviewFetch",
@@ -4484,6 +4577,7 @@ __all__ = [
     "ReviewDelivery",
     "ThreadStatus",
     "ReviewComment",
+    "ReviewImage",
     "ReviewThread",
     "ReviewAgent",
     "Review",
@@ -4540,6 +4634,7 @@ __all__ = [
     "ResponseBodyExtension",
     "ResponseBodyReview",
     "ResponseBodyReviewThread",
+    "ResponseBodyReviewImage",
     "ResponseBodyReviewPending",
     "ResponseBodyReviewFetched",
     "ResponseBody",

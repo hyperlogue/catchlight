@@ -23,12 +23,14 @@ async function review(): Promise<{
   view: Mounted;
   selection: () => Selection;
   attention: () => number;
+  problems: () => unknown[];
 }> {
   const { editor, wasm } = await harness();
   const session = await editor.newSession();
   await run(() => session.send({ cmd: "node_add", parent: "root", kind: "part", name: "hair" }));
   let selection: Selection | undefined;
   let attention = 0;
+  const problems: unknown[] = [];
   function Watch() {
     selection = useSelection();
     return null;
@@ -39,7 +41,7 @@ async function review(): Promise<{
         <ReviewProvider
           session={session}
           onError={(cause) => {
-            throw cause;
+            problems.push(cause);
           }}
           onAttention={() => {
             attention += 1;
@@ -53,7 +55,15 @@ async function review(): Promise<{
     </EditorProvider>,
   );
   await settle();
-  return { editor, wasm, session, view, selection: () => selection!, attention: () => attention };
+  return {
+    editor,
+    wasm,
+    session,
+    view,
+    selection: () => selection!,
+    attention: () => attention,
+    problems: () => problems,
+  };
 }
 
 function button(view: Mounted, selector: string): HTMLButtonElement {
@@ -142,6 +152,7 @@ describe("the review panel", () => {
         thread: 1,
         author: { role: "agent", name: "claude" },
         body: "raised it 12px",
+        images: [],
       }),
     );
     await settle();
@@ -161,6 +172,48 @@ describe("the review panel", () => {
     await settle();
 
     expect(view.container.querySelector("[data-connect]")).toBeNull();
+    await view.unmount();
+  });
+
+  test("a pasted image goes up first and rides on the comment, which may then have no text", async () => {
+    const { view, wasm } = await review();
+    await run(() => button(view, "[data-catchlight-review-new]").click());
+    const area = view.container.querySelector("[data-catchlight-review-composer] textarea")!;
+    const submit = () => button(view, "[data-catchlight-review-composer] button[type=submit]");
+    expect(submit().disabled).toBe(true);
+
+    const paste = new Event("paste", { bubbles: true, cancelable: true });
+    Object.assign(paste, {
+      clipboardData: { files: [new File([new Uint8Array([1, 2, 3])], "shot.png", { type: "image/png" })] },
+    });
+    await run(() => area.dispatchEvent(paste));
+    expect(view.container.querySelectorAll("[data-catchlight-review-attachments] img")).toHaveLength(1);
+    expect(submit().disabled).toBe(false);
+
+    await run(() => submit().click());
+    await settle();
+    await settle();
+
+    const comment = wasm.reviews.get(1)?.threads[0]?.comments[0];
+    expect(comment?.body).toBe("");
+    expect(comment?.images).toHaveLength(1);
+    expect([...(wasm.reviewImages.get(comment!.images![0]!.image) ?? [])]).toEqual([1, 2, 3]);
+    expect(view.container.querySelector("[data-catchlight-review-image]")).not.toBeNull();
+    await view.unmount();
+  });
+
+  test("an image the editor cannot store is refused before it is attached", async () => {
+    const { view, problems } = await review();
+    await run(() => button(view, "[data-catchlight-review-new]").click());
+    const area = view.container.querySelector("[data-catchlight-review-composer] textarea")!;
+    const paste = new Event("paste", { bubbles: true, cancelable: true });
+    Object.assign(paste, {
+      clipboardData: { files: [new File([new Uint8Array([1])], "anim.gif", { type: "image/gif" })] },
+    });
+    await run(() => area.dispatchEvent(paste));
+
+    expect(view.container.querySelector("[data-catchlight-review-attachments]")).toBeNull();
+    expect(problems()).toHaveLength(1);
     await view.unmount();
   });
 

@@ -187,6 +187,7 @@ export {
   usePanelSize,
   useDismissMenus,
   usePreviewExport,
+  captureCanvas,
 } from "./workspace-layout.js";
 export { SelectionOverlay } from "./gizmo.js";
 

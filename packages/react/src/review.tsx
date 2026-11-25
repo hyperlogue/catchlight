@@ -9,6 +9,7 @@ import type {
   Review,
   ReviewAgent,
   ReviewComment,
+  ReviewImage,
   ReviewTarget,
   ReviewThread,
   Session,
@@ -26,14 +27,15 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import type { KeyboardEvent, ReactNode } from "react";
+import type { ClipboardEvent, DragEvent, KeyboardEvent, ReactNode } from "react";
 
 import { kindIcons } from "./authoring.js";
 import { useLatest } from "./latest.js";
 import type { ErrorHandler } from "./authoring.js";
-import { Icon, IconButton } from "./controls.js";
+import { Icon, IconButton, Modal } from "./controls.js";
 import type { IconName } from "./controls.js";
 import { useEditing } from "./editing.js";
+import { ImageMarkup } from "./image-markup.js";
 import { findNode } from "./node-actions.js";
 import { readPose } from "./pose.js";
 import { useSelection } from "./presence.js";
@@ -66,8 +68,10 @@ export interface ReviewState {
   compose(target: ReviewTarget | undefined): void;
   focused: ThreadId | undefined;
   focus(thread: ThreadId | undefined): void;
-  open(target: ReviewTarget, body: string): Promise<boolean>;
-  reply(thread: ThreadId, body: string): Promise<boolean>;
+  open(target: ReviewTarget, body: string, images?: readonly Blob[]): Promise<boolean>;
+  reply(thread: ThreadId, body: string, images?: readonly Blob[]): Promise<boolean>;
+  /** Reports a failure the way a failed command is reported. */
+  fail(cause: unknown): void;
   setStatus(thread: ThreadId, status: ThreadStatus): Promise<boolean>;
   removeThread(thread: ThreadId): Promise<boolean>;
   removeComment(thread: ThreadId, comment: number): Promise<boolean>;
@@ -115,6 +119,9 @@ export function ReviewProvider({ session, onError, onAttention, children }: Revi
 
   const actions = useMemo(
     () => ({
+      fail(cause: unknown): void {
+        live.current.onError(cause);
+      },
       compose(target: ReviewTarget | undefined): void {
         setAim((was) => ({
           session: live.current.session,
@@ -131,7 +138,7 @@ export function ReviewProvider({ session, onError, onAttention, children }: Revi
         }));
         if (thread !== undefined) live.current.onAttention?.();
       },
-      open: (target: ReviewTarget, body: string) =>
+      open: (target: ReviewTarget, body: string, images: readonly Blob[] = []) =>
         run(async (session) => {
           const reply = await session.sendReview({
             cmd: "review_thread_add",
@@ -139,15 +146,22 @@ export function ReviewProvider({ session, onError, onAttention, children }: Revi
             author: { role: "human" },
             body,
             pose: readPose(session),
+            images: await upload(session, images),
           });
           setAim({
             session,
             ...(reply.result === "review_thread" ? { thread: reply.thread.thread } : {}),
           });
         }),
-      reply: (thread: ThreadId, body: string) =>
-        run((session) =>
-          session.sendReview({ cmd: "review_comment_add", thread, author: { role: "human" }, body }),
+      reply: (thread: ThreadId, body: string, images: readonly Blob[] = []) =>
+        run(async (session) =>
+          session.sendReview({
+            cmd: "review_comment_add",
+            thread,
+            author: { role: "human" },
+            body,
+            images: await upload(session, images),
+          }),
         ),
       setStatus: (thread: ThreadId, status: ThreadStatus) =>
         run((session) => session.sendReview({ cmd: "review_thread_set", thread, status })),
@@ -185,6 +199,16 @@ export function ReviewProvider({ session, onError, onAttention, children }: Revi
   }, [session, review, pending, here.target, here.thread, actions]);
 
   return <ReviewContext.Provider value={value}>{children}</ReviewContext.Provider>;
+}
+
+async function upload(session: Session, images: readonly Blob[]): Promise<number[]> {
+  const ids: number[] = [];
+  // In order: a comment shows its images as they were attached.
+  for (const image of images) {
+    const held = await session.addReviewImage(new Uint8Array(await image.arrayBuffer()));
+    ids.push(held.image);
+  }
+  return ids;
 }
 
 /** `undefined` outside a [`ReviewProvider`], so a part can be used without review. */
@@ -365,9 +389,11 @@ export interface ReviewPanelProps {
    * hosted one, or both. How an agent reaches the editor is the host's to know.
    */
   connect?: ReactNode;
+  /** A picture of what the person is looking at, offered as an attachment. */
+  capture?: () => Promise<Blob>;
 }
 
-export function ReviewPanel({ session, connect }: ReviewPanelProps) {
+export function ReviewPanel({ session, connect, capture }: ReviewPanelProps) {
   const review = useReview();
   const { node, select } = useSelection();
   const editing = useEditing();
@@ -476,9 +502,11 @@ export function ReviewPanel({ session, connect }: ReviewPanelProps) {
           offers={offers}
           label={label}
           busy={review.busy}
+          capture={capture}
+          onError={review.fail}
           onTarget={review.compose}
           onCancel={() => review.compose(undefined)}
-          onSubmit={(body) => review.open(review.composing!, body)}
+          onSubmit={(body, images) => review.open(review.composing!, body, images)}
         />
       ) : (
         <button
@@ -499,11 +527,14 @@ export function ReviewPanel({ session, connect }: ReviewPanelProps) {
             key={thread.thread}
             thread={thread}
             label={label(thread.target)}
+            session={session}
             focused={thread.thread === focused}
             busy={review.busy}
+            capture={capture}
+            onError={review.fail}
             onLocate={() => locate(thread)}
             onPose={thread.pose.length ? () => restorePose(thread) : undefined}
-            onReply={(body) => review.reply(thread.thread, body)}
+            onReply={(body, images) => review.reply(thread.thread, body, images)}
             onStatus={(status) => void review.setStatus(thread.thread, status)}
             onDelete={() => void review.removeThread(thread.thread)}
             onDeleteComment={(comment) => void review.removeComment(thread.thread, comment)}
@@ -561,6 +592,8 @@ function ReviewComposer({
   offers,
   label,
   busy,
+  capture,
+  onError,
   onTarget,
   onCancel,
   onSubmit,
@@ -569,19 +602,25 @@ function ReviewComposer({
   offers: ReviewTarget[];
   label: (target: ReviewTarget) => TargetLabel;
   busy: boolean;
+  capture: (() => Promise<Blob>) | undefined;
+  onError: (cause: unknown) => void;
   onTarget: (target: ReviewTarget) => void;
   onCancel: () => void;
-  onSubmit: (body: string) => Promise<boolean>;
+  onSubmit: (body: string, images: readonly Blob[]) => Promise<boolean>;
 }) {
   const [body, setBody] = useState("");
+  const attached = useAttachments(capture, onError);
   const choices = offers.some((offer) => sameTarget(offer, target)) ? offers : [target, ...offers];
+  const empty = body.trim() === "" && attached.blobs.length === 0;
   const submit = (): void => {
-    if (body.trim() === "" || busy) return;
-    void onSubmit(body.trim());
+    if (empty || busy) return;
+    void onSubmit(body.trim(), attached.blobs);
   };
   return (
     <form
       data-catchlight-review-composer=""
+      onDrop={attached.onDrop}
+      onDragOver={allowImageDrop}
       onSubmit={(event) => {
         event.preventDefault();
         submit();
@@ -615,6 +654,7 @@ function ReviewComposer({
         value={body}
         onInput={(event) => setBody(event.currentTarget.value)}
         onChange={noop}
+        onPaste={attached.onPaste}
         onKeyDown={(event) => {
           if (event.key === "Escape") {
             event.preventDefault();
@@ -623,14 +663,13 @@ function ReviewComposer({
           } else submitOnModEnter(event, submit);
         }}
       />
+      <AttachmentStrip attached={attached} />
       <div data-catchlight-review-composer-actions="">
-        <small>
-          <kbd>⌘ ↵</kbd> to add
-        </small>
+        <AttachButtons attached={attached} />
         <button type="button" onClick={onCancel}>
           Cancel
         </button>
-        <button type="submit" data-primary="" disabled={body.trim() === "" || busy}>
+        <button type="submit" data-primary="" disabled={empty || busy}>
           Comment
         </button>
       </div>
@@ -643,8 +682,11 @@ const DELIVERY_TEXT = { unsent: "Not sent", sent: "Sent", delivered: "Seen" } as
 function ReviewThreadCard({
   thread,
   label,
+  session,
   focused,
   busy,
+  capture,
+  onError,
   onLocate,
   onPose,
   onReply,
@@ -654,23 +696,29 @@ function ReviewThreadCard({
 }: {
   thread: ReviewThread;
   label: TargetLabel;
+  session: Session;
   focused: boolean;
   busy: boolean;
+  capture: (() => Promise<Blob>) | undefined;
+  onError: (cause: unknown) => void;
   onLocate: () => void;
   onPose: (() => void) | undefined;
-  onReply: (body: string) => Promise<boolean>;
+  onReply: (body: string, images: readonly Blob[]) => Promise<boolean>;
   onStatus: (status: ThreadStatus) => void;
   onDelete: () => void;
   onDeleteComment: (comment: number) => void;
 }) {
   const [reply, setReply] = useState("");
   const [replying, setReplying] = useState(false);
+  const attached = useAttachments(capture, onError);
   const resolved = thread.status === "resolved";
+  const empty = reply.trim() === "" && attached.blobs.length === 0;
   const submit = (): void => {
-    if (reply.trim() === "" || busy) return;
-    void onReply(reply.trim()).then((sent) => {
+    if (empty || busy) return;
+    void onReply(reply.trim(), attached.blobs).then((sent) => {
       if (!sent) return;
       setReply("");
+      attached.clear();
       setReplying(false);
     });
   };
@@ -728,7 +776,8 @@ function ReviewThreadCard({
               />
             )}
           </header>
-          <p>{comment.body}</p>
+          {comment.body && <p>{comment.body}</p>}
+          {!!comment.images?.length && <ReviewImages session={session} images={comment.images} />}
         </article>
       ))}
       {thread.working && (
@@ -740,6 +789,8 @@ function ReviewThreadCard({
       {replying ? (
         <form
           data-catchlight-review-reply=""
+          onDrop={attached.onDrop}
+          onDragOver={allowImageDrop}
           onSubmit={(event) => {
             event.preventDefault();
             submit();
@@ -753,6 +804,7 @@ function ReviewThreadCard({
             value={reply}
             onInput={(event) => setReply(event.currentTarget.value)}
             onChange={noop}
+            onPaste={attached.onPaste}
             onKeyDown={(event) => {
               if (event.key === "Escape") {
                 event.preventDefault();
@@ -761,11 +813,13 @@ function ReviewThreadCard({
               } else submitOnModEnter(event, submit);
             }}
           />
+          <AttachmentStrip attached={attached} />
           <div data-catchlight-review-composer-actions="">
+            <AttachButtons attached={attached} />
             <button type="button" onClick={() => setReplying(false)}>
               Cancel
             </button>
-            <button type="submit" data-primary="" disabled={reply.trim() === "" || busy}>
+            <button type="submit" data-primary="" disabled={empty || busy}>
               Reply
             </button>
           </div>
@@ -787,5 +841,234 @@ function ReviewThreadCard({
         </footer>
       )}
     </li>
+  );
+}
+
+/** What the editor stores; anything else a clipboard offers is refused. */
+const IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp"];
+export const MAX_COMMENT_IMAGES = 4;
+
+interface Attachments {
+  blobs: readonly Blob[];
+  urls: readonly string[];
+  full: boolean;
+  add(files: Iterable<Blob>): void;
+  replace(index: number, blob: Blob): void;
+  remove(index: number): void;
+  fail(cause: unknown): void;
+  clear(): void;
+  capture: (() => void) | undefined;
+  onPaste(event: ClipboardEvent<HTMLElement>): void;
+  onDrop(event: DragEvent<HTMLElement>): void;
+}
+
+function useAttachments(
+  capture: (() => Promise<Blob>) | undefined,
+  onError: (cause: unknown) => void,
+): Attachments {
+  const [held, setHeld] = useState<{ blob: Blob; url: string }[]>([]);
+  const latest = useLatest(held);
+  useEffect(
+    () => () => {
+      for (const { url } of latest.current) URL.revokeObjectURL(url);
+    },
+    [latest],
+  );
+  return useMemo<Attachments>(() => {
+    const add = (files: Iterable<Blob>): void => {
+      const images = [...files];
+      const usable = images.filter((file) => IMAGE_TYPES.includes(file.type));
+      if (usable.length < images.length) onError(new Error("Attach PNG, JPEG or WebP images."));
+      const room = MAX_COMMENT_IMAGES - latest.current.length;
+      if (usable.length > room)
+        onError(new Error(`A comment holds up to ${MAX_COMMENT_IMAGES} images.`));
+      const taken = usable.slice(0, Math.max(0, room));
+      if (taken.length === 0) return;
+      setHeld((was) => [
+        ...was,
+        ...taken.map((blob) => ({ blob, url: URL.createObjectURL(blob) })),
+      ]);
+    };
+    return {
+      blobs: held.map((each) => each.blob),
+      urls: held.map((each) => each.url),
+      full: held.length >= MAX_COMMENT_IMAGES,
+      add,
+      fail: onError,
+      replace(index, blob) {
+        setHeld((was) =>
+          was.map((each, at) => {
+            if (at !== index) return each;
+            URL.revokeObjectURL(each.url);
+            return { blob, url: URL.createObjectURL(blob) };
+          }),
+        );
+      },
+      remove(index) {
+        setHeld((was) => {
+          const gone = was[index];
+          if (gone) URL.revokeObjectURL(gone.url);
+          return was.filter((_, at) => at !== index);
+        });
+      },
+      clear() {
+        setHeld((was) => {
+          for (const { url } of was) URL.revokeObjectURL(url);
+          return [];
+        });
+      },
+      capture: capture && (() => void capture().then((blob) => add([blob]), onError)),
+      onPaste(event) {
+        const files = [...event.clipboardData.files].filter((file) => file.type.startsWith("image/"));
+        if (files.length === 0) return;
+        event.preventDefault();
+        add(files);
+      },
+      onDrop(event) {
+        const files = [...event.dataTransfer.files].filter((file) => file.type.startsWith("image/"));
+        if (files.length === 0) return;
+        event.preventDefault();
+        event.stopPropagation();
+        add(files);
+      },
+    };
+  }, [held, latest, capture, onError]);
+}
+
+function allowImageDrop(event: DragEvent<HTMLElement>): void {
+  if (!event.dataTransfer.types.includes("Files")) return;
+  event.preventDefault();
+  event.stopPropagation();
+}
+
+function AttachmentStrip({ attached }: { attached: Attachments }) {
+  const [marking, setMarking] = useState<number>();
+  const blob = marking === undefined ? undefined : attached.blobs[marking];
+  if (attached.urls.length === 0) return null;
+  return (
+    <ul data-catchlight-review-attachments="">
+      {attached.urls.map((url, index) => (
+        <li key={url}>
+          <button
+            type="button"
+            data-catchlight-review-markup-open=""
+            title="Mark up: box, arrow, draw or crop"
+            aria-label={`Mark up attachment ${index + 1}`}
+            onClick={() => setMarking(index)}
+          >
+            <img src={url} alt="" />
+          </button>
+          <IconButton
+            icon="close"
+            label={`Remove attachment ${index + 1}`}
+            onClick={() => attached.remove(index)}
+          />
+        </li>
+      ))}
+      {blob && marking !== undefined && (
+        <ImageMarkup
+          image={blob}
+          onCancel={() => setMarking(undefined)}
+          onError={attached.fail}
+          onDone={(marked) => {
+            attached.replace(marking, marked);
+            setMarking(undefined);
+          }}
+        />
+      )}
+    </ul>
+  );
+}
+
+function AttachButtons({ attached }: { attached: Attachments }) {
+  const file = useRef<HTMLInputElement>(null);
+  return (
+    <span data-catchlight-review-attach="">
+      <input
+        ref={file}
+        type="file"
+        hidden
+        multiple
+        accept={IMAGE_TYPES.join(",")}
+        aria-label="Attach images"
+        onChange={(event) => {
+          attached.add(event.currentTarget.files ?? []);
+          event.currentTarget.value = "";
+        }}
+      />
+      <IconButton
+        icon="part"
+        label="Attach an image (or paste one)"
+        disabled={attached.full}
+        onClick={() => file.current?.click()}
+      />
+      {attached.capture && (
+        <IconButton
+          icon="fit"
+          label="Attach a capture of the canvas"
+          data-catchlight-review-capture=""
+          disabled={attached.full}
+          onClick={attached.capture}
+        />
+      )}
+    </span>
+  );
+}
+
+function ReviewImages({ session, images }: { session: Session; images: readonly ReviewImage[] }) {
+  const [open, setOpen] = useState<string>();
+  return (
+    <ul data-catchlight-review-images="">
+      {images.map((image) => (
+        <li key={image.image}>
+          <ReviewImageThumb session={session} image={image} onOpen={setOpen} />
+        </li>
+      ))}
+      {open && (
+        <Modal title="Attached image" wide onClose={() => setOpen(undefined)}>
+          <img data-catchlight-review-image-full="" src={open} alt="Attached image, full size" />
+        </Modal>
+      )}
+    </ul>
+  );
+}
+
+function ReviewImageThumb({
+  session,
+  image,
+  onOpen,
+}: {
+  session: Session;
+  image: ReviewImage;
+  onOpen: (url: string) => void;
+}) {
+  const [url, setUrl] = useState<string>();
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let live = true;
+    session.reviewImageUrl(image).then(
+      (made) => {
+        if (live) setUrl(made);
+      },
+      () => {
+        if (live) setFailed(true);
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, [session, image]);
+  if (failed) return <small data-catchlight-review-image-missing="">Image unavailable</small>;
+  return (
+    <button
+      type="button"
+      data-catchlight-review-image=""
+      data-image={image.image}
+      disabled={!url}
+      aria-label="Open attached image"
+      onClick={() => url && onOpen(url)}
+    >
+      {url && <img src={url} alt="" />}
+    </button>
   );
 }

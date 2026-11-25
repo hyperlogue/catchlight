@@ -568,6 +568,9 @@ pub enum Command {
         body: String,
         #[serde(default)]
         pose: Vec<ParamPose>,
+        /// Images from [`Command::ReviewImageAdd`], each usable once.
+        #[serde(default)]
+        images: Vec<u64>,
     },
     ReviewThreadSet {
         session: SessionId,
@@ -584,12 +587,25 @@ pub enum Command {
         thread: ThreadId,
         author: ReviewAuthor,
         body: String,
+        /// Images from [`Command::ReviewImageAdd`], each usable once.
+        #[serde(default)]
+        images: Vec<u64>,
     },
     /// Removing a thread's only comment removes the thread.
     ReviewCommentDelete {
         session: SessionId,
         thread: ThreadId,
         comment: u64,
+    },
+    /// Hold attachment `image` (PNG, JPEG or WebP) for a comment about to be
+    /// written. One no comment claims is dropped as newer ones arrive.
+    ReviewImageAdd {
+        session: SessionId,
+    },
+    /// An image's bytes, as the reply's payload.
+    ReviewImageGet {
+        session: SessionId,
+        image: u64,
     },
     /// Hand every unsent human comment on an open thread to the agent.
     ReviewSubmit {
@@ -704,6 +720,8 @@ pub const COMMAND_KINDS: &[(&str, CommandKind)] = &[
     ("review_thread_delete", CommandKind::Review),
     ("review_comment_add", CommandKind::Review),
     ("review_comment_delete", CommandKind::Review),
+    ("review_image_add", CommandKind::Review),
+    ("review_image_get", CommandKind::ServerQuery),
     ("review_submit", CommandKind::Review),
     ("review_poll", CommandKind::Review),
     ("review_fetch", CommandKind::Review),
@@ -738,6 +756,20 @@ pub struct Bytes {
 
 /// Every command that carries bytes; a command absent here carries none.
 pub const COMMAND_BYTES: &[(&str, Bytes)] = &[
+    (
+        "review_image_add",
+        Bytes {
+            attachments: &[Attachment::Fixed("image")],
+            payload: false,
+        },
+    ),
+    (
+        "review_image_get",
+        Bytes {
+            attachments: &[],
+            payload: true,
+        },
+    ),
     (
         "texture_add",
         Bytes {
@@ -875,6 +907,8 @@ impl Command {
             Command::ReviewThreadDelete { .. } => "review_thread_delete",
             Command::ReviewCommentAdd { .. } => "review_comment_add",
             Command::ReviewCommentDelete { .. } => "review_comment_delete",
+            Command::ReviewImageAdd { .. } => "review_image_add",
+            Command::ReviewImageGet { .. } => "review_image_get",
             Command::ReviewSubmit { .. } => "review_submit",
             Command::ReviewPoll { .. } => "review_poll",
             Command::ReviewFetch { .. } => "review_fetch",
@@ -988,6 +1022,8 @@ impl Command {
             | Command::ReviewThreadDelete { session, .. }
             | Command::ReviewCommentAdd { session, .. }
             | Command::ReviewCommentDelete { session, .. }
+            | Command::ReviewImageAdd { session }
+            | Command::ReviewImageGet { session, .. }
             | Command::ReviewSubmit { session }
             | Command::ReviewPoll { session, .. }
             | Command::ReviewFetch { session, .. } => Some(*session),
@@ -1992,6 +2028,8 @@ pub enum ErrorCode {
     NoExtension,
     NoThread,
     NoComment,
+    /// No such review image, or a comment already holds it.
+    NoImage,
     /// `catchlight.` is the format's own prefix: a reader accepts a key under
     /// it, and nothing outside the format may author one.
     ReservedExtension,
@@ -2135,6 +2173,11 @@ pub enum ResponseBody {
     ReviewThread {
         thread: ReviewThread,
     },
+    /// The image a [`Command::ReviewImageAdd`] holds, or the one whose bytes
+    /// are this reply's payload.
+    ReviewImage {
+        image: ReviewImage,
+    },
     /// How many threads hold comments handed to the agent and not yet taken.
     ReviewPending {
         pending: u32,
@@ -2234,6 +2277,20 @@ pub struct ReviewComment {
     pub delivery: ReviewDelivery,
     /// The session revision the author was looking at.
     pub rev: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<ReviewImage>,
+}
+
+/// An image on a review comment; its bytes come from
+/// [`Command::ReviewImageGet`].
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ReviewImage {
+    /// Unique within the session.
+    pub image: u64,
+    /// `image/png`, `image/jpeg` or `image/webp`, read from the bytes.
+    pub media_type: String,
+    pub byte_length: u32,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]

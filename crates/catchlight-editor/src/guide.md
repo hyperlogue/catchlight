@@ -119,6 +119,25 @@ open threads at any time, and `review open --node <id> -m "…"` (or `--param`,
 need to ask about something. Set `CATCHLIGHT_AGENT` (or pass `--agent`) to the
 name the user should see on your comments.
 
+A comment can carry images: a screenshot, or one the user drew on to point at
+the problem. Such a comment lists `image <id> (…)` and may have no text at
+all, so always ask for the files:
+
+```sh
+catchlight-editor review watch --attachments-dir review-images
+```
+
+Each image is then saved and printed under its comment as `image: <path>`
+(`review fetch` and `review list` take the same flag). Open every one of those
+files with a tool that shows you the picture before you answer; a reply written
+without looking misses what the user pointed at. Show your own evidence the
+same way, up to four images a comment:
+
+```sh
+catchlight-editor preview --out after.png
+catchlight-editor review reply <thread> -m "Ear now draws above the hair." --attach after.png
+```
+
 ## 7. Report
 
 Tell the user what you changed in their terms (which parts, params or

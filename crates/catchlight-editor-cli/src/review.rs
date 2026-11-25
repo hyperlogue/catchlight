@@ -1,7 +1,12 @@
 //! `review`: the thread a person and an agent keep about a session's model.
 
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
+use std::path::Path;
 use std::time::{Duration, Instant};
+
+use anyhow::Context as _;
+use serde_json::Value;
 
 use super::*;
 
@@ -26,6 +31,9 @@ enum ReviewCmd {
     List {
         #[arg(long)]
         all: bool,
+        /// Save the threads' images here and print each one's path.
+        #[arg(long, value_name = "DIR")]
+        attachments_dir: Option<PathBuf>,
     },
     /// Wait until the person sends comments, then take and print them.
     /// Exits 3 if `--timeout` passes first.
@@ -33,14 +41,25 @@ enum ReviewCmd {
         /// Give up after this many seconds; without it, wait indefinitely.
         #[arg(long)]
         timeout: Option<u64>,
+        /// Save the threads' images here and print each one's path.
+        #[arg(long, value_name = "DIR")]
+        attachments_dir: Option<PathBuf>,
     },
     /// Take and print the comments sent so far, without waiting.
-    Fetch,
-    /// Reply on a thread. The message is read from stdin when `-m` is absent.
+    Fetch {
+        /// Save the threads' images here and print each one's path.
+        #[arg(long, value_name = "DIR")]
+        attachments_dir: Option<PathBuf>,
+    },
+    /// Reply on a thread. The message is read from stdin when `-m` is absent
+    /// and nothing is attached.
     Reply {
         thread: u64,
         #[arg(short, long)]
         message: Option<String>,
+        /// A PNG, JPEG or WebP to show with the comment; up to four.
+        #[arg(long, value_name = "IMAGE")]
+        attach: Vec<PathBuf>,
         /// Write as the person rather than as the agent.
         #[arg(long)]
         human: bool,
@@ -51,6 +70,9 @@ enum ReviewCmd {
         target: TargetArg,
         #[arg(short, long)]
         message: Option<String>,
+        /// A PNG, JPEG or WebP to show with the comment; up to four.
+        #[arg(long, value_name = "IMAGE")]
+        attach: Vec<PathBuf>,
         /// Write as the person rather than as the agent.
         #[arg(long)]
         human: bool,
@@ -123,7 +145,88 @@ impl Client<'_> {
         self.stream
             .call(Request { id, command }, serde_json::Map::new())
     }
+
+    fn send_with(&mut self, command: Command, sibling: &str, value: Value) -> Result<Reply> {
+        let id = self.next_id;
+        self.next_id += 1;
+        let mut siblings = serde_json::Map::new();
+        siblings.insert(sibling.into(), value);
+        self.stream.call(Request { id, command }, siblings)
+    }
+
+    /// The images' ids, or the reply that refused one.
+    fn upload(
+        &mut self,
+        session: SessionId,
+        paths: &[PathBuf],
+    ) -> Result<std::result::Result<Vec<u64>, Reply>> {
+        let mut ids = Vec::new();
+        for path in paths {
+            let path = path
+                .to_str()
+                .ok_or_else(|| anyhow!("{}: not a UTF-8 path", path.display()))?;
+            let files = serde_json::json!({ "image": absolute(path)? });
+            match self.send_with(Command::ReviewImageAdd { session }, "files", files)? {
+                Reply::Ok {
+                    body: ResponseBody::ReviewImage { image },
+                    ..
+                } => ids.push(image.image),
+                other => return Ok(Err(other)),
+            }
+        }
+        Ok(Ok(ids))
+    }
+
+    /// Saves every image on `threads` under `dir`.
+    fn download(
+        &mut self,
+        session: SessionId,
+        dir: &Path,
+        threads: &[&ReviewThread],
+    ) -> Result<Saved> {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+        let dir = dir
+            .to_str()
+            .ok_or_else(|| anyhow!("{}: not a UTF-8 path", dir.display()))?;
+        let dir = PathBuf::from(absolute(dir)?);
+        let mut saved = Saved::new();
+        for thread in threads {
+            for comment in &thread.comments {
+                for image in &comment.images {
+                    let ext = match image.media_type.as_str() {
+                        "image/png" => "png",
+                        "image/jpeg" => "jpg",
+                        "image/webp" => "webp",
+                        _ => "bin",
+                    };
+                    let path = dir.join(format!(
+                        "thread-{}-comment-{}-{}.{ext}",
+                        thread.thread.0, comment.comment, image.image
+                    ));
+                    let out = Value::String(path.to_string_lossy().into_owned());
+                    let get = Command::ReviewImageGet {
+                        session,
+                        image: image.image,
+                    };
+                    match self.send_with(get, "out", out)? {
+                        Reply::Ok { .. } => {}
+                        Reply::Err { message, .. } => bail!(
+                            "image {} on thread {}: {message}",
+                            image.image,
+                            thread.thread.0
+                        ),
+                        Reply::Event(_) => bail!("image {}: no reply", image.image),
+                    }
+                    saved.insert(image.image, path);
+                }
+            }
+        }
+        Ok(saved)
+    }
 }
+
+/// Where each downloaded image landed.
+type Saved = BTreeMap<u64, PathBuf>;
 
 fn author(args: &ReviewArgs, human: bool) -> ReviewAuthor {
     if human {
@@ -135,9 +238,10 @@ fn author(args: &ReviewArgs, human: bool) -> ReviewAuthor {
     }
 }
 
-fn message(given: &Option<String>) -> Result<String> {
+fn message(given: &Option<String>, attach: &[PathBuf]) -> Result<String> {
     match given {
         Some(text) => Ok(text.clone()),
+        None if !attach.is_empty() => Ok(String::new()),
         None => {
             let mut text = String::new();
             std::io::stdin()
@@ -154,12 +258,21 @@ pub(super) fn run(cli: &Cli, args: &ReviewArgs, stream: &mut transport::Transpor
     let session = resolve_session(cli)?;
     let mut client = Client { stream, next_id: 1 };
     let mut all = true;
+    let mut save_to = None;
     let command = match &args.action {
-        ReviewCmd::List { all: resolved } => {
+        ReviewCmd::List {
+            all: resolved,
+            attachments_dir,
+        } => {
             all = *resolved;
+            save_to = attachments_dir.as_deref();
             Command::ReviewGet { session }
         }
-        ReviewCmd::Watch { timeout } => {
+        ReviewCmd::Watch {
+            timeout,
+            attachments_dir,
+        } => {
+            save_to = attachments_dir.as_deref();
             let deadline = timeout.map(|s| Instant::now() + Duration::from_secs(s));
             loop {
                 let reply = client.send(Command::ReviewPoll {
@@ -175,7 +288,7 @@ pub(super) fn run(cli: &Cli, args: &ReviewArgs, stream: &mut transport::Transpor
                             break;
                         }
                     }
-                    other => return Ok(finish(cli, &other, all)),
+                    other => return Ok(finish(cli, &other, all, None)),
                 }
                 if deadline.is_some_and(|at| Instant::now() >= at) {
                     eprintln!("no comments were sent before the timeout; run `review watch` again to keep waiting");
@@ -188,31 +301,53 @@ pub(super) fn run(cli: &Cli, args: &ReviewArgs, stream: &mut transport::Transpor
                 agent: args.agent.clone(),
             }
         }
-        ReviewCmd::Fetch => Command::ReviewFetch {
-            session,
-            agent: args.agent.clone(),
-        },
+        ReviewCmd::Fetch { attachments_dir } => {
+            save_to = attachments_dir.as_deref();
+            Command::ReviewFetch {
+                session,
+                agent: args.agent.clone(),
+            }
+        }
         ReviewCmd::Reply {
             thread,
             message: text,
+            attach,
             human,
-        } => Command::ReviewCommentAdd {
-            session,
-            thread: ThreadId(*thread),
-            author: author(args, *human),
-            body: message(text)?,
-        },
+        } => {
+            let body = message(text, attach)?;
+            let images = match client.upload(session, attach)? {
+                Ok(images) => images,
+                Err(refused) => return Ok(finish(cli, &refused, all, None)),
+            };
+            Command::ReviewCommentAdd {
+                session,
+                thread: ThreadId(*thread),
+                author: author(args, *human),
+                body,
+                images,
+            }
+        }
         ReviewCmd::Open {
             target,
             message: text,
+            attach,
             human,
-        } => Command::ReviewThreadAdd {
-            session,
-            target: target.target()?,
-            author: author(args, *human),
-            body: message(text)?,
-            pose: Vec::new(),
-        },
+        } => {
+            let target = target.target()?;
+            let body = message(text, attach)?;
+            let images = match client.upload(session, attach)? {
+                Ok(images) => images,
+                Err(refused) => return Ok(finish(cli, &refused, all, None)),
+            };
+            Command::ReviewThreadAdd {
+                session,
+                target,
+                author: author(args, *human),
+                body,
+                pose: Vec::new(),
+                images,
+            }
+        }
         ReviewCmd::Send => Command::ReviewSubmit { session },
         ReviewCmd::Resolve { thread } => Command::ReviewThreadSet {
             session,
@@ -230,13 +365,33 @@ pub(super) fn run(cli: &Cli, args: &ReviewArgs, stream: &mut transport::Transpor
         },
     };
     let reply = client.send(command)?;
-    Ok(finish(cli, &reply, all))
+    let saved = match (save_to, &reply) {
+        (Some(dir), Reply::Ok { body, .. }) => {
+            Some(client.download(session, dir, &shown(body, all))?)
+        }
+        _ => None,
+    };
+    Ok(finish(cli, &reply, all, saved.as_ref()))
 }
 
-fn finish(cli: &Cli, reply: &Reply, all: bool) -> i32 {
+/// The threads [`describe`] prints for `body`.
+fn shown(body: &ResponseBody, all: bool) -> Vec<&ReviewThread> {
+    match body {
+        ResponseBody::Review { review } => review
+            .threads
+            .iter()
+            .filter(|t| all || t.status == ThreadStatus::Open)
+            .collect(),
+        ResponseBody::ReviewThread { thread } => vec![thread],
+        ResponseBody::ReviewFetched { threads } => threads.iter().collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn finish(cli: &Cli, reply: &Reply, all: bool, saved: Option<&Saved>) -> i32 {
     let failed = matches!(reply, Reply::Err { .. });
     match reply {
-        Reply::Ok { body, .. } if !cli.json => match describe(body, all) {
+        Reply::Ok { body, .. } if !cli.json => match describe(body, all, saved) {
             Some(text) => print!("{text}"),
             None => print_body(body),
         },
@@ -245,16 +400,13 @@ fn finish(cli: &Cli, reply: &Reply, all: bool) -> i32 {
     i32::from(failed)
 }
 
-/// `None` for a body that is not a review's.
-pub(super) fn describe(body: &ResponseBody, all: bool) -> Option<String> {
+/// `None` for a body that is not a review's. `saved` is `None` when no
+/// `--attachments-dir` was given.
+pub(super) fn describe(body: &ResponseBody, all: bool, saved: Option<&Saved>) -> Option<String> {
     let mut out = String::new();
     match body {
         ResponseBody::Review { review } => {
-            let shown: Vec<&ReviewThread> = review
-                .threads
-                .iter()
-                .filter(|t| all || t.status == ThreadStatus::Open)
-                .collect();
+            let shown = shown(body, all);
             match &review.agent {
                 Some(agent) if agent.listening => {
                     let _ = writeln!(out, "agent {} is listening", agent.name);
@@ -273,16 +425,16 @@ pub(super) fn describe(body: &ResponseBody, all: bool) -> Option<String> {
                 };
             }
             for thread in shown {
-                describe_thread(&mut out, thread, false);
+                describe_thread(&mut out, thread, false, saved);
             }
         }
-        ResponseBody::ReviewThread { thread } => describe_thread(&mut out, thread, false),
+        ResponseBody::ReviewThread { thread } => describe_thread(&mut out, thread, false, saved),
         ResponseBody::ReviewFetched { threads } => {
             if threads.is_empty() {
                 let _ = writeln!(out, "(nothing sent to you)");
             }
             for thread in threads {
-                describe_thread(&mut out, thread, true);
+                describe_thread(&mut out, thread, true, saved);
             }
             if !threads.is_empty() {
                 let _ = writeln!(
@@ -291,7 +443,28 @@ pub(super) fn describe(body: &ResponseBody, all: bool) -> Option<String> {
                      `review reply <thread> -m \"<what changed, or your question>\"`. Resolving is\n\
                      the person's call. Run `review watch` again to wait for more."
                 );
+                if threads
+                    .iter()
+                    .flat_map(|t| &t.comments)
+                    .any(|c| !c.images.is_empty())
+                {
+                    let _ = match saved {
+                        Some(_) => writeln!(
+                            out,
+                            "Open each image file listed above before answering: the comment is about\n\
+                             what it shows."
+                        ),
+                        None => writeln!(
+                            out,
+                            "Some comments carry images. Save them with `review list --attachments-dir\n\
+                             <dir>` and open each file before answering."
+                        ),
+                    };
+                }
             }
+        }
+        ResponseBody::ReviewImage { image } => {
+            let _ = writeln!(out, "image {}", describe_image(image));
         }
         ResponseBody::ReviewPending { pending } => {
             let _ = writeln!(
@@ -314,8 +487,16 @@ fn describe_target(target: &ReviewTarget) -> String {
     }
 }
 
+fn describe_image(image: &ReviewImage) -> String {
+    let size = match image.byte_length {
+        bytes if bytes < 1024 => format!("{bytes} B"),
+        bytes => format!("{} KiB", bytes.div_ceil(1024)),
+    };
+    format!("{} ({}, {size})", image.image, image.media_type)
+}
+
 /// `fetched`: the comments this fetch delivered still read `sent`.
-fn describe_thread(out: &mut String, thread: &ReviewThread, fetched: bool) {
+fn describe_thread(out: &mut String, thread: &ReviewThread, fetched: bool, saved: Option<&Saved>) {
     let status = match thread.status {
         ThreadStatus::Open => "open",
         ThreadStatus::Resolved => "resolved",
@@ -356,6 +537,16 @@ fn describe_thread(out: &mut String, thread: &ReviewThread, fetched: bool) {
         for line in comment.body.lines() {
             let _ = writeln!(out, "    {line}");
         }
+        for image in &comment.images {
+            let _ = match saved.and_then(|s| s.get(&image.image)) {
+                Some(path) => writeln!(out, "    image: {}", path.display()),
+                None => writeln!(
+                    out,
+                    "    image {}: fetch with --attachments-dir <dir>",
+                    describe_image(image)
+                ),
+            };
+        }
     }
     let _ = writeln!(out);
 }
@@ -376,6 +567,7 @@ mod tests {
             body: body.into(),
             delivery,
             rev: 4,
+            images: Vec::new(),
         }
     }
 
@@ -419,6 +611,7 @@ mod tests {
                 threads: vec![thread()],
             },
             false,
+            None,
         )
         .unwrap();
         assert_eq!(
@@ -453,18 +646,92 @@ mod tests {
                 }),
             },
         };
-        let open = describe(&body, false).unwrap();
+        let open = describe(&body, false, None).unwrap();
         assert!(open.contains("agent claude is listening"), "{open}");
         assert!(
             open.contains("(no open threads; 1 resolved, shown by --all)"),
             "{open}"
         );
-        let all = describe(&body, true).unwrap();
+        let all = describe(&body, true, None).unwrap();
         assert!(
             all.contains("thread 3 on node head/part-1 [resolved]"),
             "{all}"
         );
         assert!(all.contains("(sent, not yet taken)"), "{all}");
+    }
+
+    #[test]
+    fn an_image_prints_its_saved_path_or_how_to_get_it() {
+        let mut thread = thread();
+        thread.comments.truncate(1);
+        thread.comments[0].body.clear();
+        thread.comments[0].images = vec![
+            ReviewImage {
+                image: 7,
+                media_type: "image/png".into(),
+                byte_length: 2049,
+            },
+            ReviewImage {
+                image: 8,
+                media_type: "image/webp".into(),
+                byte_length: 900,
+            },
+        ];
+        let body = ResponseBody::ReviewFetched {
+            threads: vec![thread],
+        };
+        let bare = describe(&body, false, None).unwrap();
+        assert!(
+            bare.contains(
+                "\x20 [human] at rev 4:\n\
+                 \x20   image 7 (image/png, 3 KiB): fetch with --attachments-dir <dir>\n\
+                 \x20   image 8 (image/webp, 900 B): fetch with --attachments-dir <dir>\n"
+            ),
+            "{bare}"
+        );
+        let saved = Saved::from([(7, PathBuf::from("/shots/thread-3-comment-1-7.png"))]);
+        let fetched = describe(&body, false, Some(&saved)).unwrap();
+        assert!(
+            fetched.contains("\x20   image: /shots/thread-3-comment-1-7.png\n"),
+            "{fetched}"
+        );
+        assert!(fetched.contains("Open each image file"), "{fetched}");
+        assert!(bare.contains("review list --attachments-dir"), "{bare}");
+    }
+
+    #[test]
+    fn an_attachment_stands_in_for_the_message() {
+        let parse = |args: &[&str]| {
+            let mut full = vec!["cli", "--session", "1", "review"];
+            full.extend_from_slice(args);
+            Cli::try_parse_from(full).map(|cli| cli.cmd)
+        };
+        let Ok(Cmd::Review(ReviewArgs {
+            action:
+                ReviewCmd::Reply {
+                    message: text,
+                    attach,
+                    ..
+                },
+            ..
+        })) = parse(&["reply", "2", "--attach", "a.png", "--attach", "b.jpg"])
+        else {
+            panic!("--attach repeats");
+        };
+        assert_eq!(attach.len(), 2);
+        assert_eq!(message(&text, &attach).unwrap(), "");
+        assert!(matches!(
+            parse(&["watch", "--attachments-dir", "shots"]),
+            Ok(Cmd::Review(ReviewArgs {
+                action: ReviewCmd::Watch {
+                    attachments_dir: Some(_),
+                    ..
+                },
+                ..
+            }))
+        ));
+        assert!(parse(&["fetch", "--attachments-dir", "shots"]).is_ok());
+        assert!(parse(&["list", "--all", "--attachments-dir", "shots"]).is_ok());
     }
 
     #[test]

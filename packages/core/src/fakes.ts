@@ -106,19 +106,25 @@ export class FakeEditor implements WasmEditor {
   presence = new Map<number, Presence>();
   /** Tests set `agent` directly; no fake command moves it but a fetch. */
   reviews = new Map<number, Review>();
+  reviewImages = new Map<number, Uint8Array>();
   freed = false;
 
   #events: string[] = [];
   #nextSession = 1;
   #nextNode = 1;
   #nextReviewId = 1;
+  #payload: Uint8Array | undefined;
 
   handleWith(
     requestJson: string,
     attachments: Attachment[],
   ): { reply: string; payload?: Uint8Array } {
     this.attached.push(Object.fromEntries(attachments));
-    return { reply: this.handle(requestJson) };
+    this.#payload = undefined;
+    const reply = this.handle(requestJson);
+    const payload = this.#payload;
+    this.#payload = undefined;
+    return payload ? { reply, payload } : { reply };
   }
 
   handle(requestJson: string): string {
@@ -340,6 +346,8 @@ export class FakeEditor implements WasmEditor {
         return this.#ok(id, { result: "presence", presence }, doc.rev);
       }
       case "review_get":
+      case "review_image_add":
+      case "review_image_get":
       case "review_thread_add":
       case "review_thread_set":
       case "review_thread_delete":
@@ -353,7 +361,7 @@ export class FakeEditor implements WasmEditor {
         const body = this.#review(request, doc.rev);
         if (!body)
           return JSON.stringify({ reply: "err", id, code: "no_thread", message: "no such thread" });
-        if (request.cmd !== "review_get" && request.cmd !== "review_poll")
+        if (!["review_get", "review_poll", "review_image_add", "review_image_get"].includes(request.cmd))
           this.#emit({ event: "review_changed", session: request.session });
         return this.#ok(id, body, doc.rev);
       }
@@ -425,9 +433,33 @@ export class FakeEditor implements WasmEditor {
       review.threads.find((t) => t.thread === thread);
     const sent = (t: ReviewThread): boolean =>
       t.status === "open" && t.comments.some((c) => c.delivery === "sent");
+    const claim = (ids: number[] | undefined) =>
+      (ids ?? []).map((image) => ({
+        image,
+        media_type: "image/png",
+        byte_length: this.reviewImages.get(image)?.length ?? 0,
+      }));
     switch (request.cmd) {
       case "review_get":
         return { result: "review", review: structuredClone(review) };
+      case "review_image_add": {
+        const bytes = this.attached[this.attached.length - 1]?.image ?? new Uint8Array();
+        const image = this.#nextReviewId++;
+        this.reviewImages.set(image, bytes);
+        return {
+          result: "review_image",
+          image: { image, media_type: "image/png", byte_length: bytes.length },
+        };
+      }
+      case "review_image_get": {
+        const bytes = this.reviewImages.get(request.image);
+        if (!bytes) return undefined;
+        this.#payload = bytes;
+        return {
+          result: "review_image",
+          image: { image: request.image, media_type: "image/png", byte_length: bytes.length },
+        };
+      }
       case "review_thread_add": {
         const thread: ReviewThread = {
           thread: this.#nextReviewId++,
@@ -441,6 +473,7 @@ export class FakeEditor implements WasmEditor {
             body: request.body,
             delivery: request.author.role === "human" ? "unsent" : "delivered",
             rev,
+            images: claim(request.images),
           }],
         };
         review.threads.push(thread);
@@ -455,6 +488,7 @@ export class FakeEditor implements WasmEditor {
           body: request.body,
           delivery: request.author.role === "human" ? "unsent" : "delivered",
           rev,
+          images: claim(request.images),
         });
         if (request.author.role === "agent") delete thread.working;
         else thread.status = "open";

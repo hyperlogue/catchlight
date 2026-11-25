@@ -543,6 +543,10 @@ export type Command =
     author: ReviewAuthor,
     body: string,
     pose: Array<ParamPose>,
+    /**
+     * Images from [`Command::ReviewImageAdd`], each usable once.
+     */
+    images: Array<number>,
   }
   | {
     "cmd": "review_thread_set",
@@ -561,12 +565,25 @@ export type Command =
     thread: ThreadId,
     author: ReviewAuthor,
     body: string,
+    /**
+     * Images from [`Command::ReviewImageAdd`], each usable once.
+     */
+    images: Array<number>,
   }
   | {
     "cmd": "review_comment_delete",
     session: SessionId,
     thread: ThreadId,
     comment: number,
+  }
+  | {
+    "cmd": "review_image_add",
+    session: SessionId,
+  }
+  | {
+    "cmd": "review_image_get",
+    session: SessionId,
+    image: number,
   }
   | {
     "cmd": "review_submit",
@@ -1214,6 +1231,23 @@ export type ReviewComment = {
    * The session revision the author was looking at.
    */
   rev: number,
+  images?: Array<ReviewImage>,
+};
+
+/**
+ * An image on a review comment; its bytes come from
+ * [`Command::ReviewImageGet`].
+ */
+export type ReviewImage = {
+  /**
+   * Unique within the session.
+   */
+  image: number,
+  /**
+   * `image/png`, `image/jpeg` or `image/webp`, read from the bytes.
+   */
+  media_type: string,
+  byte_length: number,
 };
 
 export type ReviewThread = {
@@ -1375,6 +1409,7 @@ export type ErrorCode =
   | "no_extension"
   | "no_thread"
   | "no_comment"
+  | "no_image"
   | "reserved_extension";
 
 export type ResponseBody =
@@ -1544,6 +1579,10 @@ export type ResponseBody =
   | {
     "result": "review_thread",
     thread: ReviewThread,
+  }
+  | {
+    "result": "review_image",
+    image: ReviewImage,
   }
   | {
     "result": "review_pending",
@@ -1848,6 +1887,7 @@ export type ReviewCommandTag =
   | "review_thread_delete"
   | "review_comment_add"
   | "review_comment_delete"
+  | "review_image_add"
   | "review_submit"
   | "review_poll"
   | "review_fetch";
@@ -1891,7 +1931,8 @@ export type ServerQueryCommandTag =
   | "presence_get"
   | "preview_render"
   | "extension_get"
-  | "review_get";
+  | "review_get"
+  | "review_image_get";
 export type ServerQueryCommand = Extract<Command, { cmd: ServerQueryCommandTag }>;
 
 /**
@@ -1922,6 +1963,16 @@ export const COMMAND_BYTES: Record<
     payload: boolean;
   }
 > = {
+  review_image_add: {
+    attachments: [
+      { kind: "fixed", name: "image" },
+    ],
+    payload: false,
+  },
+  review_image_get: {
+    attachments: [],
+    payload: true,
+  },
   texture_add: {
     attachments: [
       { kind: "fixed", name: "texture" },

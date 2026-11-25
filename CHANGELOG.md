@@ -14,7 +14,10 @@ next release is 0.3.0.
   session and answers on each thread with `review reply`; the tab shows it
   listening, working and replying. Threads follow renames, flag a target that
   was deleted, and remember the pose they were written at. Python sessions get
-  the same calls (`Client.review_*`). Review is session state: it is not saved
+  the same calls (`Client.review_*`). A comment can carry images: paste,
+  drop or capture the canvas in the tab and mark it up, `review watch
+  --attachments-dir` hands them to the agent as files, and `review reply
+  --attach` sends one back. Review is session state: it is not saved
   with the model. A host says how an agent joins through `CatchlightEditor`'s
   `agentConnect` prop, so the same editor serves a local process or a hosted
   one that offers its own agent.

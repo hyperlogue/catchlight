@@ -19,6 +19,7 @@ import type {
   ResponseBody,
   Review,
   ReviewCommand,
+  ReviewImage,
   ServerQueryCommand,
   SessionId,
   TexInfo,
@@ -103,6 +104,7 @@ export class Session {
   #reviewListeners = new Set<() => void>();
   #reviewRead = 0;
   #reviewTimer: ReturnType<typeof setTimeout> | undefined;
+  #reviewImages = new Map<number, Promise<string>>();
   #closed = false;
   #freed = false;
   #timeout: number;
@@ -149,11 +151,47 @@ export class Session {
   }
 
   /** Moves no revision; the review follows from its `review_changed` event. */
-  async sendReview(command: SessionReviewCommand): Promise<ResponseBody> {
+  async sendReview(
+    // An image carries bytes, so it goes up through `addReviewImage` first.
+    command: Exclude<SessionReviewCommand, { cmd: "review_image_add" }>,
+  ): Promise<ResponseBody> {
     const reply = await this.#backend.send(this.#address(command));
     // Not every transport pushes events back to the sender before the reply.
     await this.refreshReview();
     return reply.body;
+  }
+
+  /** Holds an image for the next comment to claim by its id. */
+  async addReviewImage(bytes: Uint8Array): Promise<ReviewImage> {
+    const reply = await this.#backend.sendWith(
+      this.#address({ cmd: "review_image_add" }),
+      [["image", bytes]],
+    );
+    return expectResult(reply.body, "review_image").image;
+  }
+
+  /** An object URL for the image, fetched once and revoked on [`close`]. */
+  reviewImageUrl(image: ReviewImage): Promise<string> {
+    let url = this.#reviewImages.get(image.image);
+    if (!url) {
+      url = this.#backend
+        .sendWith(this.#address({ cmd: "review_image_get", image: image.image }), [])
+        .then((reply) => {
+          if (!reply.payload)
+            throw new ProtocolError({
+              code: "bad_reply",
+              message: `review image ${image.image} came back without bytes`,
+            });
+          const blob = new Blob([reply.payload as BlobPart], { type: image.media_type });
+          const made = URL.createObjectURL(blob);
+          if (this.#closed) URL.revokeObjectURL(made);
+          return made;
+        });
+      this.#reviewImages.set(image.image, url);
+      // A failed read may be retried.
+      url.catch(() => this.#reviewImages.delete(image.image));
+    }
+    return url;
   }
 
   /** Empty until the first subscriber's read lands. */
@@ -495,6 +533,9 @@ export class Session {
     this.#errors.clear();
     this.#reviewListeners.clear();
     this.#stopReviewTimer();
+    for (const url of this.#reviewImages.values())
+      void url.then((made) => URL.revokeObjectURL(made)).catch(() => undefined);
+    this.#reviewImages.clear();
     this.#free();
   }
 

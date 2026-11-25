@@ -569,7 +569,9 @@ _Avoid_: anchor
 One message on a thread, from the person or from an agent, stamped with the
 revision its author was looking at. A person's comment is **unsent** when
 written, **sent** once they hand the review to the agent, and **delivered**
-when an agent takes it; an agent's comment is delivered as written.
+when an agent takes it; an agent's comment is delivered as written. A comment
+may carry a few images in place of or beside its text, kept with the review
+and never in the model.
 _Avoid_: note, message
 
 **Listening**:

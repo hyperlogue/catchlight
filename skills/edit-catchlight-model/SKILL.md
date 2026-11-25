@@ -28,10 +28,13 @@ release with `irm … | iex`):
 curl -fsSL https://github.com/hyperlogue/catchlight/releases/latest/download/install.sh | sh
 ```
 
-Once you are on a session, run `catchlight-editor review watch` in the
-background: it returns with the comments the user sends from their tab. Change
-the model, answer each thread with `catchlight-editor review reply <thread> -m
-"…"`, and watch again. Leave resolving to the user.
+Once you are on a session, run `catchlight-editor review watch
+--attachments-dir <dir>` in the background: it returns with the comments the
+user sends from their tab, and saves their images to `<dir>`. Open every image
+it lists before acting. Change the model, answer each thread with
+`catchlight-editor review reply <thread> -m "…"`, adding `--attach <image>`
+when a `preview --out` render shows the result, and watch again. Leave
+resolving to the user.
 
 Use `catchlight-editor help <command>` for a command's flags. Give the user the
 editor URL when you start one, so they can watch your edits land.

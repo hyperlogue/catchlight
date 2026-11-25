@@ -597,6 +597,7 @@ fn a_comment_made_over_post_reaches_a_websocket_subscriber() {
                 },
                 body: "which ear?".into(),
                 pose: Vec::new(),
+                images: Vec::new(),
             },
         },
     ));

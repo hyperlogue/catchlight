@@ -35,6 +35,11 @@ Working with a running editor (a person may be watching the same session):
      sends from the browser and prints them. Change the model, answer each
      thread with `review reply <thread> -m <text>`, then watch again. Never
      resolve a thread: that is the person's call.
+  7. A comment may carry images. Pass `--attachments-dir <dir>` to `review
+     watch`, `fetch` or `list`, and open every file it prints with a tool
+     that shows you the image before you answer. Show your own evidence the
+     same way: `preview --out after.png`, then
+     `review reply <thread> -m <text> --attach after.png`.
 Edits appear in the browser as they land. The editor is found through the
 connection file it writes; --server/--token name one explicitly.";
 
@@ -1647,8 +1652,9 @@ fn print_body(body: &ResponseBody) {
         ResponseBody::Review { .. }
         | ResponseBody::ReviewThread { .. }
         | ResponseBody::ReviewPending { .. }
+        | ResponseBody::ReviewImage { .. }
         | ResponseBody::ReviewFetched { .. } => {
-            print!("{}", review::describe(body, true).unwrap_or_default());
+            print!("{}", review::describe(body, true, None).unwrap_or_default());
         }
         ResponseBody::SpineFit { node, params } => {
             println!("spine {node}");

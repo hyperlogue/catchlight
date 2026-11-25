@@ -117,33 +117,37 @@ export function useDismissMenus(root: RefObject<HTMLElement | null>) {
   }, [root]);
 }
 
-/** A WebGPU canvas's toDataURL can be blank, so this exports the renderer's readback. */
+/** A WebGPU canvas's toDataURL can be blank, so this reads the renderer's readback. */
+export async function captureCanvas(canvas: HTMLCanvasElement | null): Promise<Blob> {
+  const capture =
+    canvas &&
+    (
+      canvas as unknown as Record<
+        string,
+        () => Promise<{ width: number; height: number; rgba: Uint8Array }>
+      >
+    ).__catchlightReadback;
+  if (!capture) throw new Error("The canvas is still starting. Try again in a moment.");
+  const frame = await capture();
+  const image = document.createElement("canvas");
+  image.width = frame.width;
+  image.height = frame.height;
+  image
+    .getContext("2d")
+    ?.putImageData(
+      new ImageData(new Uint8ClampedArray(frame.rgba), frame.width, frame.height),
+      0,
+      0,
+    );
+  const blob = await new Promise<Blob | null>((resolve) => image.toBlob(resolve, "image/png"));
+  if (!blob) throw new Error("The canvas could not be captured.");
+  return blob;
+}
+
 export function usePreviewExport(canvas: RefObject<HTMLCanvasElement | null>) {
   return useCallback(
     async (name: string) => {
-      const capture =
-        canvas.current &&
-        (
-          canvas.current as unknown as Record<
-            string,
-            () => Promise<{ width: number; height: number; rgba: Uint8Array }>
-          >
-        ).__catchlightReadback;
-      if (!capture)
-        throw new Error("The canvas is still starting. Try exporting again in a moment.");
-      const frame = await capture();
-      const image = document.createElement("canvas");
-      image.width = frame.width;
-      image.height = frame.height;
-      image
-        .getContext("2d")
-        ?.putImageData(
-          new ImageData(new Uint8ClampedArray(frame.rgba), frame.width, frame.height),
-          0,
-          0,
-        );
-      const blob = await new Promise<Blob | null>((resolve) => image.toBlob(resolve, "image/png"));
-      if (!blob) throw new Error("The preview could not be exported.");
+      const blob = await captureCanvas(canvas.current);
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;

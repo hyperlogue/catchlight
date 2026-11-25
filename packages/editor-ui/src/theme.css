@@ -2997,6 +2997,128 @@
   .catchlight [data-catchlight-review-composer-actions] > small {
     margin-right: auto;
   }
+  .catchlight [data-catchlight-review-attachments],
+  .catchlight [data-catchlight-review-images] {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .catchlight [data-catchlight-review-images] {
+    margin-top: 6px;
+  }
+  .catchlight [data-catchlight-review-attachments] > li {
+    position: relative;
+  }
+  .catchlight [data-catchlight-review-markup-open] {
+    display: block;
+    width: 64px;
+    height: 64px;
+    min-height: 0;
+    padding: 0;
+    border: 1px solid var(--cl-border-strong);
+    border-radius: 6px;
+    background: var(--cl-well);
+    overflow: hidden;
+    cursor: crosshair;
+  }
+  .catchlight [data-catchlight-review-markup-open]:hover {
+    border-color: var(--cl-accent);
+  }
+  .catchlight [data-catchlight-review-markup-open] > img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+  .catchlight [data-catchlight-markup-tools] {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-bottom: 10px;
+  }
+  .catchlight [data-catchlight-markup-tools] button {
+    font-size: 12px;
+  }
+  .catchlight [data-catchlight-markup-undo] {
+    margin-left: auto;
+  }
+  .catchlight [data-catchlight-markup-stage] {
+    position: relative;
+    box-sizing: border-box;
+    width: fit-content;
+    max-width: 100%;
+    margin: 0 auto;
+    line-height: 0;
+    border: 1px solid var(--cl-border-strong);
+    border-radius: 6px;
+    overflow: hidden;
+    background: var(--cl-well);
+  }
+  .catchlight [data-catchlight-markup-stage] > img {
+    display: block;
+    max-width: 100%;
+    max-height: 62dvh;
+    user-select: none;
+  }
+  .catchlight [data-catchlight-markup-surface] {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    touch-action: none;
+    cursor: crosshair;
+  }
+  .catchlight [data-catchlight-review-image] {
+    display: block;
+    min-height: 0;
+    padding: 0;
+    border: 1px solid var(--cl-border-strong);
+    border-radius: 6px;
+    background: var(--cl-well);
+    object-fit: cover;
+    overflow: hidden;
+  }
+  .catchlight [data-catchlight-review-image] {
+    width: 96px;
+    height: 72px;
+    cursor: zoom-in;
+  }
+  .catchlight [data-catchlight-review-image] > img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+  .catchlight [data-catchlight-review-image]:hover {
+    border-color: var(--cl-accent);
+  }
+  .catchlight [data-catchlight-review-attachments] [data-catchlight-icon-button] {
+    position: absolute;
+    top: -6px;
+    right: -6px;
+    width: 18px;
+    height: 18px;
+    flex-basis: 18px;
+    min-height: 18px;
+    padding: 2px;
+    border-radius: 50%;
+    background: var(--cl-surface-active);
+    color: var(--cl-text);
+  }
+  .catchlight [data-catchlight-review-attach] {
+    display: flex;
+    gap: 2px;
+    margin-right: auto;
+  }
+  .catchlight [data-catchlight-review-image-full] {
+    display: block;
+    max-width: 100%;
+    max-height: 70dvh;
+    margin: 0 auto;
+    border-radius: 6px;
+  }
   .catchlight [data-catchlight-review-threads] {
     margin: 0;
     padding: 0;

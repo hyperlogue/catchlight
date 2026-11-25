@@ -48,6 +48,7 @@ import {
   usePanelSize,
   useDismissMenus,
   usePreviewExport,
+  captureCanvas,
 } from "@catchlight/react";
 import type { IconName, SaveOutcome } from "@catchlight/react";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
@@ -438,6 +439,7 @@ function Workspace({
   const propertiesSize = usePanelSize("properties", 304, 256, 460, "x", -1);
   const dockSize = usePanelSize("posing tools", 220, 110, 420, "y", -1);
   const capture = usePreviewExport(canvas);
+  const captureStage = useCallback(() => captureCanvas(canvas.current), []);
   const sweep = usePoseSweep(session, param);
   const fit = useCallback(() => {
     if (editing.mesh) {
@@ -1362,7 +1364,11 @@ function Workspace({
         <div data-catchlight-panel-scroll="">
           {session ? (
             right === "review" ? (
-              <ReviewPanel session={session} connect={agentConnect?.(session)} />
+              <ReviewPanel
+                session={session}
+                connect={agentConnect?.(session)}
+                capture={captureStage}
+              />
             ) : mesh ? (
               <MeshInspector />
             ) : editing.mode === "record" ? (
