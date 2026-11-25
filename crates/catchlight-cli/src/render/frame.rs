@@ -2,8 +2,11 @@
 //! observe the same evaluated frame; capture decimation never changes ticks.
 use super::spec::{bad, MotionResponseMode, ResolvedRequest};
 use crate::Error;
+use catchlight_core::extension::ExtensionError;
 use catchlight_core::{Model, NodeId, Pose, Puppet};
 use catchlight_extension_animations::AnimationPlayer;
+use catchlight_extension_expressions::{ExpressionWeights, Expressions};
+use catchlight_extension_humanoid::{ControlValues, Humanoid};
 use std::collections::BTreeMap;
 
 pub struct FrameRuntime {
@@ -15,6 +18,15 @@ pub struct FrameRuntime {
 impl FrameRuntime {
     pub fn new(model: &Model, request: &ResolvedRequest) -> Result<Self, Error> {
         let mut puppet = Puppet::new(model);
+        // Before the controls and expressions, which skip a param a running
+        // motion response drives.
+        if let MotionResponseMode::On { response_clock } = request.motion_responses {
+            puppet.set_response_clock(response_clock);
+        }
+        puppet.set_motion_responses_enabled(!matches!(
+            request.motion_responses,
+            MotionResponseMode::Off {}
+        ));
         puppet.apply_pose(
             &request
                 .pose
@@ -22,6 +34,7 @@ impl FrameRuntime {
                 .map(|(id, v)| (id.clone(), *v))
                 .collect::<Pose>(),
         );
+        pose_controls(model, request, &mut puppet)?;
         let timestep = request
             .animation
             .as_ref()
@@ -31,13 +44,6 @@ impl FrameRuntime {
                 puppet.set_param_value(&lane.param, lane.value_at(0.0));
             }
         }
-        if let MotionResponseMode::On { response_clock } = request.motion_responses {
-            puppet.set_response_clock(response_clock);
-        }
-        puppet.set_motion_responses_enabled(!matches!(
-            request.motion_responses,
-            MotionResponseMode::Off {}
-        ));
         let mut player = AnimationPlayer::default();
         if let Some(animation) = &request.animation {
             player.set_clips(vec![animation.clip.0.clone()]);
@@ -62,6 +68,54 @@ impl FrameRuntime {
     pub fn timestep(&self) -> f32 {
         self.timestep
     }
+}
+
+/// The order the expressions crate gives a host: control values, the
+/// expressions' control settings, the control mappings, then the
+/// expressions' param settings. Validation already found every name.
+fn pose_controls(
+    model: &Model,
+    request: &ResolvedRequest,
+    puppet: &mut Puppet,
+) -> Result<(), Error> {
+    if request.controls.is_empty() && request.expressions.is_empty() {
+        return Ok(());
+    }
+    let mut controls: ControlValues = request
+        .controls
+        .iter()
+        .map(|(name, value)| (name.as_str(), *value))
+        .collect();
+    let weights: ExpressionWeights = request
+        .expressions
+        .iter()
+        .map(|(name, weight)| (name.as_str(), *weight))
+        .collect();
+    let expressions = if request.expressions.is_empty() {
+        None
+    } else {
+        Some(
+            model
+                .extension::<Expressions>()
+                .map_err(|e| bad(format!("the model's expressions cannot be read: {e}")))?,
+        )
+    };
+    if let Some(expressions) = expressions {
+        expressions.blend_controls(&weights, &mut controls);
+    }
+    match model.extension::<Humanoid>() {
+        Ok(humanoid) => humanoid.pose(&controls, puppet),
+        Err(ExtensionError::Missing) => {}
+        Err(e) => {
+            return Err(bad(format!(
+                "the model's control mappings cannot be read: {e}"
+            )))
+        }
+    }
+    if let Some(expressions) = expressions {
+        expressions.blend_params(&weights, puppet);
+    }
+    Ok(())
 }
 
 pub fn color_retained(request: &ResolvedRequest, id: &NodeId) -> bool {

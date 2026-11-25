@@ -35,6 +35,13 @@
       "motion_responses": {"mode": "off"},
       "pose": {"closure": 1}
     },
+    "open": {
+      "rect": [-500, -500, 1000, 1000],
+      "scale": 0.512,
+      "motion_responses": {"mode": "off"},
+      "controls": {"mouth_open": 0.5},
+      "expressions": {"happy": 0.5}
+    },
     "closed-hidden": {
       "extends": "closed",
       "hide_color": ["interior-a", "interior-b"]

@@ -8,9 +8,11 @@ pub use catchlight_core::ResponseClock;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use catchlight_core::extension::ExtensionError;
+use catchlight_core::extension::{Extension, ExtensionError};
 use catchlight_core::{Model, ModelNodeKind, NodeId, ParamId};
 use catchlight_extension_animations::{Animations, Clip};
+use catchlight_extension_expressions::Expressions;
+use catchlight_extension_humanoid::{control, Humanoid};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -169,7 +171,8 @@ pub struct Document {
 }
 
 /// A request's top-level settings. Omitted fields inherit; null resets the
-/// whole setting. In particular pose, frames, motion responses and arrays never merge.
+/// whole setting. In particular pose, controls, expressions, frames, motion
+/// responses and arrays never merge.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
@@ -196,6 +199,16 @@ pub struct Request {
     #[serde(default, skip_serializing_if = "Setting::is_inherit")]
     #[schemars(with = "Setting<BTreeMap<ModelIdSchema, f32>>")]
     pub pose: Setting<BTreeMap<ParamId, f32>>,
+    /// Humanoid control values by name, each within the control's range.
+    /// Every control must be one the model maps onto a param; the mappings
+    /// pose the model after the param overrides.
+    #[serde(default, skip_serializing_if = "Setting::is_inherit")]
+    pub controls: Setting<BTreeMap<String, f32>>,
+    /// Expression weights by name, each in 0..1. Every expression must be
+    /// one the model has. Its control settings blend into the controls
+    /// before the mappings pose the model, its param settings after.
+    #[serde(default, skip_serializing_if = "Setting::is_inherit")]
+    pub expressions: Setting<BTreeMap<String, f32>>,
     #[serde(default, skip_serializing_if = "Setting::is_inherit")]
     pub animation: Setting<AnimationRef>,
     #[serde(default, skip_serializing_if = "Setting::is_inherit")]
@@ -246,6 +259,8 @@ impl Request {
             background,
             motion_responses,
             pose,
+            controls,
+            expressions,
             animation,
             frames,
             camera,
@@ -549,6 +564,12 @@ pub struct ResolvedRequest {
     /// Base controls after applying pose overrides and before advancing animation or motion responses.
     #[schemars(with = "BTreeMap<ModelIdSchema, f32>")]
     pub pose: BTreeMap<ParamId, f32>,
+    /// Humanoid control values, applied after the pose overrides.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub controls: BTreeMap<String, f32>,
+    /// Expression weights, blended around the control mappings.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub expressions: BTreeMap<String, f32>,
     pub animation: Option<ResolvedAnimation>,
     /// Strictly increasing keys; empty keeps the static framing.
     pub camera: Vec<CameraKey>,
@@ -947,6 +968,10 @@ impl Document {
             .filter_map(|id| model.param(id).map(|p| (id.clone(), p.default)))
             .collect();
         pose.extend(overrides);
+        let controls = request.controls.value().unwrap_or_default();
+        validate_controls(model, &controls)?;
+        let expressions = request.expressions.value().unwrap_or_default();
+        validate_expressions(model, &expressions)?;
         let animation = request
             .animation
             .value()
@@ -1088,6 +1113,8 @@ impl Document {
             background,
             motion_responses,
             pose,
+            controls,
+            expressions,
             animation,
             camera,
             video,
@@ -1183,6 +1210,91 @@ pub fn validate_pose(model: &Model, pose: &BTreeMap<ParamId, f32>) -> Result<(),
         }
     }
     Ok(())
+}
+/// Controls need the model's mappings: a control it does not map moves
+/// nothing, so naming one is a mistake.
+pub fn validate_controls(model: &Model, controls: &BTreeMap<String, f32>) -> Result<(), Error> {
+    if controls.is_empty() {
+        return Ok(());
+    }
+    let humanoid = match model.extension::<Humanoid>() {
+        Ok(humanoid) => humanoid,
+        Err(ExtensionError::Missing) => {
+            return Err(bad(format!(
+                "controls need the model's {} control mappings, and it has none; map one with \
+                 `catchlight-cli humanoid map`",
+                Humanoid::KEY
+            )))
+        }
+        Err(e) => {
+            return Err(bad(format!(
+                "the model's control mappings cannot be read: {e}"
+            )))
+        }
+    };
+    for (name, value) in controls {
+        if humanoid.mapping(name).is_none() {
+            let mapped: Vec<&str> = humanoid.mappings().map(|(name, _)| name).collect();
+            return Err(bad(format!(
+                "control {name} is not mapped by the model; it maps: {}",
+                mapped.join(", ")
+            )));
+        }
+        let (min, max) = control(name).map_or((-1.0, 1.0), |c| (c.min(), c.max()));
+        if !value.is_finite() || *value < min || *value > max {
+            return Err(bad(format!(
+                "control {name} must be finite in {min}..{max}"
+            )));
+        }
+    }
+    Ok(())
+}
+pub fn validate_expressions(
+    model: &Model,
+    expressions: &BTreeMap<String, f32>,
+) -> Result<(), Error> {
+    if expressions.is_empty() {
+        return Ok(());
+    }
+    let available = match model.extension::<Expressions>() {
+        Ok(available) => available,
+        Err(ExtensionError::Missing) => {
+            return Err(bad(format!(
+                "expressions need the model's {} extension, and it has none; add one with \
+                 `catchlight-cli expression set`",
+                Expressions::KEY
+            )))
+        }
+        Err(e) => return Err(bad(format!("the model's expressions cannot be read: {e}"))),
+    };
+    for (name, weight) in expressions {
+        if !available.contains(name) {
+            let names: Vec<&str> = available.names().collect();
+            return Err(bad(format!(
+                "unknown expression {name}; the model has: {}",
+                names.join(", ")
+            )));
+        }
+        if !unit(*weight) {
+            return Err(bad(format!(
+                "expression {name} weight must be finite in 0..1"
+            )));
+        }
+    }
+    Ok(())
+}
+/// `name=value` for `--control` and `--expression`.
+pub fn parse_named(flag: &str, text: &str) -> Result<(String, f32), Error> {
+    let (name, value) = text
+        .rsplit_once('=')
+        .ok_or_else(|| bad(format!("--{flag} takes name=value")))?;
+    let value = value
+        .parse::<f32>()
+        .map_err(|_| bad(format!("--{flag} takes a numeric value")))?;
+    if !value.is_finite() {
+        return Err(bad(format!("--{flag} takes a finite numeric value")));
+    }
+    Ok((name.to_string(), value))
 }
 pub fn parse_set(text: &str) -> Result<(ParamId, f32), Error> {
     let (id, value) = text

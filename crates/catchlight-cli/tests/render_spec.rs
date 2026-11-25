@@ -10,10 +10,33 @@ use catchlight_core::{
     MaskMode, Model, ModelNode, ModelNodeKind, ModelParam, ModelPart, Name, NodeId, ParamId,
 };
 use catchlight_extension_animations::{Animations, Clip};
+use catchlight_extension_expressions::{Expression, Expressions, Setting as ExpressionSetting};
+use catchlight_extension_humanoid::{ControlMapping, Humanoid};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
+/// Maps `mouth_open` onto `closure`, and has a `happy` expression that sets
+/// that control and `drive`.
 fn model() -> Model {
+    let mut m = bare_model();
+    m.extension_or_default::<Humanoid>().unwrap().set(
+        "mouth_open",
+        ControlMapping {
+            param: ParamId::new("closure").unwrap(),
+            stops: [0.25, 0.25, 1.0],
+        },
+    );
+    *m.extension_or_default::<Expressions>().unwrap() =
+        Expressions::from_expressions([Expression::new(
+            "happy",
+            vec![
+                ExpressionSetting::control("mouth_open", 1.0),
+                ExpressionSetting::param(ParamId::new("drive").unwrap(), 1.0),
+            ],
+        )]);
+    m
+}
+fn bare_model() -> Model {
     let mut m = Model::new();
     let root = m.root().unwrap().clone();
     for name in ["panel-a", "panel-b", "mask-a", "interior-a", "interior-b"] {
@@ -497,6 +520,8 @@ fn documented_shortcuts_and_specs_normalize_identically_without_mutation() {
         rect: Some("-500,-500,1000,1000".into()),
         scale: Some(0.512),
         set: vec!["drive=0.5".into()],
+        control: Vec::new(),
+        expression: Vec::new(),
         background: Some(catchlight_cli::render::args::BackgroundArg::Transparent),
         motion_responses: Some(catchlight_cli::render::args::MotionResponsesArg::Off),
     };
@@ -757,4 +782,146 @@ fn video_replaces_clean_frames_unless_kept() {
     );
     assert_eq!(r.output_files, 5);
     assert!((r.requests["pulse"].frame_interval().unwrap() - 0.016666667).abs() < 1e-7);
+}
+
+#[test]
+fn controls_and_expressions_pose_in_the_host_order_and_flags_match_the_spec() {
+    let m = model();
+    let doc = Document::parse(include_bytes!("fixtures/render-spec.json")).unwrap();
+    let open = doc.resolve(&m).unwrap().requests.remove("open").unwrap();
+    assert_eq!(open.controls, BTreeMap::from([("mouth_open".into(), 0.5)]));
+    assert_eq!(open.expressions, BTreeMap::from([("happy".into(), 0.5)]));
+
+    let flags = ImageArgs {
+        rect: Some("-500,-500,1000,1000".into()),
+        scale: Some(0.512),
+        motion_responses: Some(catchlight_cli::render::args::MotionResponsesArg::Off),
+        control: vec!["mouth_open=0.5".into()],
+        expression: vec!["happy=0.5".into()],
+        ..ImageArgs::default()
+    };
+    let from_flags = Document::single(flags.request(&m).unwrap())
+        .resolve(&m)
+        .unwrap()
+        .requests
+        .remove("default")
+        .unwrap();
+    let mut a = serde_json::to_value(&from_flags).unwrap();
+    let mut b = serde_json::to_value(&open).unwrap();
+    a.as_object_mut().unwrap().remove("outputs");
+    b.as_object_mut().unwrap().remove("outputs");
+    assert_eq!(a, b);
+
+    let value = |request: &ResolvedRequest, id: &str| {
+        let runtime = catchlight_cli::render::frame::FrameRuntime::new(&m, request).unwrap();
+        runtime
+            .puppet
+            .param_value(&ParamId::new(id).unwrap())
+            .unwrap()
+    };
+    let closed = request(json!({"motion_responses":{"mode":"off"}}));
+    assert_eq!(value(&closed, "closure"), 0.25);
+    assert_eq!(value(&closed, "drive"), 0.25);
+    // The expression pulls mouth_open from 0.5 halfway to 1 before the
+    // mapping turns 0.75 into closure; its drive setting blends from rest.
+    assert_eq!(value(&open, "closure"), 0.25 + 0.75 * 0.75);
+    assert_eq!(value(&open, "drive"), 0.25 + 0.75 * 0.5);
+    let controls_only = request(json!({"controls":{"mouth_open":1}}));
+    assert_eq!(value(&controls_only, "closure"), 1.0);
+    assert_eq!(value(&controls_only, "drive"), 0.25);
+}
+
+#[test]
+fn controls_and_expressions_must_name_what_the_model_has() {
+    let spec = |settings: Value| json!({"schema":1,"requests":{"default":settings}});
+    for (settings, want) in [
+        (
+            json!({"controls":{"mouth_smile":0.5}}),
+            "control mouth_smile is not mapped by the model; it maps: mouth_open",
+        ),
+        (
+            json!({"controls":{"mouth_open":-0.5}}),
+            "control mouth_open must be finite in 0..1",
+        ),
+        (
+            json!({"expressions":{"sad":1}}),
+            "unknown expression sad; the model has: happy",
+        ),
+        (
+            json!({"expressions":{"happy":1.5}}),
+            "expression happy weight must be finite in 0..1",
+        ),
+    ] {
+        assert_bad(spec(settings), want);
+    }
+    let bare = bare_model();
+    for (settings, want) in [
+        (json!({"controls":{"mouth_open":1}}), "catchlight.humanoid"),
+        (json!({"expressions":{"happy":1}}), "catchlight.expressions"),
+    ] {
+        let error = parse(spec(settings))
+            .resolve(&bare)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(want), "wanted {want}, got {error}");
+        assert!(error.contains("has none"), "{error}");
+    }
+    let duplicate = ImageArgs {
+        control: vec!["mouth_open=0.5".into(), "mouth_open=1".into()],
+        ..ImageArgs::default()
+    };
+    let error = duplicate.request(&model()).unwrap_err().to_string();
+    assert!(error.contains("duplicate --control mouth_open"), "{error}");
+    for text in ["mouth_open", "mouth_open=x", "mouth_open=inf"] {
+        let flags = ImageArgs {
+            control: vec![text.into()],
+            ..ImageArgs::default()
+        };
+        assert!(flags.request(&model()).is_err(), "{text}");
+    }
+}
+
+/// `bounds` evaluates the same request a render draws, without a GPU.
+#[test]
+fn a_control_and_an_expression_move_the_evaluated_model() {
+    let dir = common::tmp("render-controls-bounds");
+    let path = common::copy_fixture("two_param_grid", &dir);
+    let p = path.to_str().unwrap();
+    let run = |args: &[&str]| {
+        let (code, stdout, stderr) = common::run(args);
+        assert_eq!(code, 0, "{args:?}: {stderr}");
+        stdout
+    };
+    run(&["humanoid", "map", p, "mouth_open", "param-0"]);
+    run(&["expression", "set", p, "aa", "--control", "mouth_open=1"]);
+    let bounds = |extra: &[&str]| -> Value {
+        let mut args = vec!["bounds", p, "--motion-responses", "off"];
+        args.extend(extra);
+        serde_json::from_str(&run(&args)).unwrap()
+    };
+    let rest = bounds(&[]);
+    assert_eq!(rest["pose"]["param-0"], 0.0);
+    for extra in [["--control", "mouth_open=1"], ["--expression", "aa=1"]] {
+        let posed = bounds(&extra);
+        assert_eq!(posed["pose"]["param-0"], 1.0, "{extra:?}");
+        assert_ne!(posed["overall"], rest["overall"], "{extra:?}");
+        assert_eq!(posed["overall"], bounds(&["--set", "param-0=1"])["overall"]);
+    }
+
+    let (code, stdout, stderr) =
+        common::run(&["render", p, "--validate", "--control", "mouth_smile=1"]);
+    assert_eq!(code, 2);
+    assert!(stdout.is_empty());
+    assert!(
+        stderr.contains("control mouth_smile is not mapped by the model"),
+        "{stderr}"
+    );
+    let (code, stdout, stderr) =
+        common::run(&["render", p, "--validate", "--expression", "aa=0.5"]);
+    assert_eq!(code, 0, "{stderr}");
+    let plan: Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(
+        plan["requests"]["default"]["expressions"],
+        json!({"aa": 0.5})
+    );
 }

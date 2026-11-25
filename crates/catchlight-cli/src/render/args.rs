@@ -50,6 +50,12 @@ pub struct ImageArgs {
     /// Repeatable param=value overrides over model defaults.
     #[arg(long, allow_hyphen_values = true, value_name = "param=value")]
     pub set: Vec<String>,
+    /// Repeatable humanoid control values over the model's control mappings.
+    #[arg(long, allow_hyphen_values = true, value_name = "name=value")]
+    pub control: Vec<String>,
+    /// Repeatable weights, 0..1, of the model's expressions.
+    #[arg(long, value_name = "name=weight")]
+    pub expression: Vec<String>,
     /// Opaque white (default) or transparent black.
     #[arg(long, value_enum)]
     pub background: Option<BackgroundArg>,
@@ -90,6 +96,21 @@ impl ImageArgs {
         }
         if !pose.is_empty() {
             request.pose = Setting::Value(pose);
+        }
+        for (flag, values, setting) in [
+            ("control", &self.control, &mut request.controls),
+            ("expression", &self.expression, &mut request.expressions),
+        ] {
+            let mut named = BTreeMap::new();
+            for text in values {
+                let (name, value) = spec::parse_named(flag, text)?;
+                if named.insert(name.clone(), value).is_some() {
+                    return Err(spec::bad(format!("duplicate --{flag} {name}")));
+                }
+            }
+            if !named.is_empty() {
+                *setting = Setting::Value(named);
+            }
         }
         let only_parts = self
             .keep
