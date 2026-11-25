@@ -3595,10 +3595,46 @@
   .catchlight [data-catchlight-extension-unread] {
     padding: 0 10px;
   }
+  .catchlight [data-catchlight-extension-warnings] > summary {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: max-content;
+    margin-bottom: 6px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--cl-warn);
+    cursor: pointer;
+  }
+  .catchlight [data-catchlight-extension-warnings] > summary::-webkit-details-marker {
+    display: none;
+  }
+  .catchlight [data-catchlight-extension-warnings][open] > summary > [data-catchlight-chevron] {
+    transform: rotate(90deg);
+  }
+  .catchlight [data-catchlight-extension-warning-list] {
+    max-height: 120px;
+    overflow-y: auto;
+  }
   .catchlight [data-catchlight-extension-warnings] [data-catchlight-warning] {
     margin: 0 0 6px;
     line-height: 1.5;
     padding: 5px 10px;
+  }
+  /* Five tabs outgrow a narrow dock; the strip scrolls rather than clipping. */
+  .catchlight [data-catchlight-dock-header] {
+    gap: 8px;
+  }
+  .catchlight [data-catchlight-dock-header] > [data-catchlight-panel-tabs] {
+    min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .catchlight [data-catchlight-dock-header] > [data-catchlight-panel-tabs] > button {
+    flex: none;
+  }
+  .catchlight [data-catchlight-dock-actions] {
+    flex: none;
   }
   .catchlight [data-catchlight-warning-mark] {
     display: inline-flex;

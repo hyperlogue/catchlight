@@ -188,11 +188,31 @@ describe("the animations panel", () => {
         },
       ];
     });
-    expect(view.container.querySelector("[data-catchlight-extension-warnings]")?.textContent).toBe(
+    const warnings = view.container.querySelector<HTMLDetailsElement>("[data-catchlight-extension-warnings]")!;
+    expect(warnings.open).toBe(true);
+    expect(warnings.querySelector("summary")?.textContent).toBe("1 warning");
+    expect(warnings.querySelector("[data-catchlight-warning]")?.textContent).toBe(
       "Clip \"walk\" has a lane on a removed param",
     );
     expect(clip(view.container, "walk").hasAttribute("data-warned")).toBe(true);
     expect(clip(view.container, "idle").hasAttribute("data-warned")).toBe(false);
+    await view.unmount();
+  });
+
+  test("more than two warnings start folded, so the clips stay in view", async () => {
+    const { view } = await seeded((doc) => {
+      doc.clips = [walk];
+      doc.extensionWarnings = ["a", "b", "c"].map((message) => ({
+        key: "catchlight.animations",
+        code: "catchlight.animations/missing-viseme",
+        message,
+        subjects: [],
+      }));
+    });
+    const warnings = view.container.querySelector<HTMLDetailsElement>("[data-catchlight-extension-warnings]")!;
+    expect(warnings.open).toBe(false);
+    expect(warnings.querySelector("summary")?.textContent).toBe("3 warnings");
+    expect(warnings.querySelectorAll("[data-catchlight-warning]")).toHaveLength(3);
     await view.unmount();
   });
 

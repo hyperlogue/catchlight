@@ -218,18 +218,28 @@ export function NonstandardDialog({
   );
 }
 
-/** In the style of the Model tab's health list. */
+/**
+ * In the style of the Model tab's health list. Folded when there are more
+ * than two, so a model with many findings still shows its rows.
+ */
 export function ExtensionWarnings({ warnings }: { warnings: ExtensionWarningInfo[] }) {
   if (!warnings.length) return null;
   return (
-    <div data-catchlight-extension-warnings="">
-      {warnings.map((w, i) => (
-        <p key={i} data-catchlight-warning="" data-code={w.code}>
-          <Icon name="warning" />
-          {capitalize(w.message)}
-        </p>
-      ))}
-    </div>
+    <details data-catchlight-extension-warnings="" open={warnings.length <= 2}>
+      <summary>
+        <Icon name="warning" width="13" height="13" />
+        {plural(warnings.length, "warning")}
+        <Icon name="chevron" width="12" height="12" data-catchlight-chevron="" />
+      </summary>
+      <div data-catchlight-extension-warning-list="">
+        {warnings.map((w, i) => (
+          <p key={i} data-catchlight-warning="" data-code={w.code}>
+            <Icon name="warning" />
+            {capitalize(w.message)}
+          </p>
+        ))}
+      </div>
+    </details>
   );
 }
 
