@@ -152,3 +152,21 @@ export async function fire(target: EventTarget, event: Event): Promise<void> {
     target.dispatchEvent(event);
   });
 }
+
+/** Types `value` into a `NumberField` or text input and commits it on blur. */
+export async function enter(input: HTMLInputElement, value: string): Promise<void> {
+  // IE methods react-dom's pre-`input` fallback calls under happy-dom.
+  const proto = HTMLElement.prototype as unknown as Record<string, unknown>;
+  proto["attachEvent"] ??= () => {};
+  proto["detachEvent"] ??= () => {};
+  await fire(input, new FocusEvent("focusin", { bubbles: true }));
+  await act(async () => {
+    // Through the prototype's setter, so React sees a change to report.
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  // That fallback notices a changed value on a key event, not on `input`.
+  await fire(input, new KeyboardEvent("keyup", { key: "0", bubbles: true }));
+  // `focusout` because it bubbles; React's `onBlur` listens for it.
+  await fire(input, new FocusEvent("focusout", { bubbles: true }));
+}

@@ -171,6 +171,26 @@ describe("the assembled editor", () => {
     stop();
   });
 
+  test("the dock's Controls tab maps the humanoid controls", async () => {
+    const stop = stubObservers();
+    const editor = await fakeEditor();
+    const session = await editor.newSession("akari");
+    await session.send({ cmd: "param_add", name: "Jaw", min: 0, max: 1, default: 0 });
+    const { container: view, unmount } = await mount(<CatchlightEditor editor={editor} />);
+    await settle();
+
+    expect(dockTabs(view)).toEqual(["Params", "Bindings", "Controls"]);
+    await run(() => dockTab(view, "Controls").click());
+    await settle();
+    expect(dockTab(view, "Controls").hasAttribute("data-active")).toBe(true);
+    expect(view.querySelector("[data-catchlight-dock-body] [data-catchlight-controls-panel]")).not.toBeNull();
+    expect(view.querySelectorAll("[data-catchlight-control-card]").length).toBeGreaterThan(0);
+
+    await unmount();
+    editor.close();
+    stop();
+  });
+
   test("the toolbar frames the model, and the status line says where this is", async () => {
     const stop = stubObservers();
     const { editor, viewports } = await fakeStack();
@@ -531,6 +551,20 @@ function fit(view: HTMLElement): HTMLButtonElement {
 function button(view: HTMLElement, selector: string): HTMLButtonElement {
   const found = view.querySelector<HTMLButtonElement>(selector);
   if (!found) throw new Error(`no ${selector} button`);
+  return found;
+}
+
+function dockTabs(view: HTMLElement): string[] {
+  return [...view.querySelectorAll("[data-catchlight-dock-header] [data-catchlight-panel-tabs] > button")].map(
+    (b) => b.textContent?.trim() ?? "",
+  );
+}
+
+function dockTab(view: HTMLElement, name: string): HTMLButtonElement {
+  const found = [...view.querySelectorAll<HTMLButtonElement>("[data-catchlight-dock-header] [data-catchlight-panel-tabs] > button")].find(
+    (b) => b.textContent?.trim() === name,
+  );
+  if (!found) throw new Error(`no ${name} dock tab`);
   return found;
 }
 

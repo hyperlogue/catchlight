@@ -13,6 +13,7 @@ import {
   meshBounds,
   fitCamera,
   BindingsPanel,
+  ControlsPanel,
   Disclosure,
   EditorProvider,
   EmptyState,
@@ -389,7 +390,7 @@ function Workspace({
   const [left, setLeft] = useState<"structure" | "assets">("structure");
   const [right, setRight] = useState<"properties" | "model" | "review">("properties");
   const review = useReview();
-  const [dock, setDock] = useState<"params" | "bindings">("params");
+  const [dock, setDock] = useState<"params" | "bindings" | "controls">("params");
   const [dockOpen, setDockOpen] = useState(true);
   const [focus, setFocus] = useState(false);
   const [search, setSearch] = useState("");
@@ -1348,6 +1349,19 @@ function Workspace({
                 <Icon name="link" width="14" height="14" />
                 {editing.mode === "record" ? "Keypoints" : "Bindings"}
               </button>
+              {editing.mode !== "record" && (
+                <button
+                  type="button"
+                  data-active={dock === "controls" ? "" : undefined}
+                  onClick={() => {
+                    setDock("controls");
+                    setDockOpen(true);
+                  }}
+                >
+                  <Icon name="control" width="14" height="14" />
+                  Controls
+                </button>
+              )}
             </div>
             <div data-catchlight-dock-actions="">
               <button
@@ -1397,6 +1411,8 @@ function Workspace({
                   />
                 ) : editing.mode === "record" ? (
                   <RecordingKeys />
+                ) : dock === "controls" ? (
+                  <ControlsPanel key={session.id} session={session} onError={onError} />
                 ) : (
                   <BindingsPanel
                     session={session}

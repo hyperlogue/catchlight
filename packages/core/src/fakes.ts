@@ -68,6 +68,8 @@ export interface FakeDoc {
   extensionWarnings: ExtensionWarningInfo[];
   /** `catchlight.animations`' clips, as `clip_list` answers; tests set them. */
   clips: ClipInfo[];
+  /** Keys of official extensions this build cannot read; their reads and edits answer `extension_unread`. */
+  unread: string[];
 }
 
 /** A few of the standard controls, enough to tell the two kinds apart. */
@@ -135,6 +137,7 @@ export function emptyDoc(title: string): FakeDoc {
     visemes: [],
     extensionWarnings: [],
     clips: [],
+    unread: [],
   };
 }
 
@@ -192,6 +195,9 @@ export class FakeEditor implements WasmEditor {
     const id = request.id;
     const refusal = this.refuse.get(request.cmd);
     if (refusal) return JSON.stringify({ reply: "err", id, ...refusal });
+    const unread = officialKey(request.cmd);
+    if (unread && "session" in request && this.docs.get(request.session as number)?.unread.includes(unread))
+      return this.#err(id, "extension_unread", `extension "${unread}" cannot be read by this editor: a newer version`);
     const viewed = "session" in request ? this.viewing.get(request.session as number) : undefined;
     if (viewed && READ_ONLY_REFUSES.has(request.cmd))
       return JSON.stringify({
@@ -859,6 +865,13 @@ export class FakeEditor implements WasmEditor {
 }
 
 /** What a fake read-only session refuses; the real editor refuses every edit. */
+function officialKey(cmd: string): string | undefined {
+  if (cmd.startsWith("humanoid_")) return "catchlight.humanoid";
+  if (cmd.startsWith("expression_") || cmd === "viseme_add_standard") return "catchlight.expressions";
+  if (cmd === "clip_list") return "catchlight.animations";
+  return undefined;
+}
+
 const READ_ONLY_REFUSES = new Set([
   "node_add", "node_set", "node_delete", "param_add", "param_set", "param_delete", "texture_add",
   "edit_apply", "session_save", "binding_add", "review_thread_add", "review_comment_add", "version_save",
@@ -1001,6 +1014,14 @@ export class FakeReplica implements WasmReplica {
         message: "nothing fed yet",
       });
     }
+    const unread = officialKey(request.cmd);
+    if (unread && doc.unread.includes(unread))
+      return JSON.stringify({
+        reply: "err",
+        id,
+        code: "extension_unread",
+        message: `extension "${unread}" cannot be read by this editor: a newer version`,
+      });
     switch (request.cmd) {
       case "slot_list":
         return JSON.stringify({

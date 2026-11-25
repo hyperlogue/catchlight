@@ -168,6 +168,20 @@ export {
   ExtensionsPanel,
 } from "./model-panels.js";
 export {
+  useOfficialRead,
+  useHumanoid,
+  useExpressions,
+  useClips,
+  useExtensionWarnings,
+  usePreviewInputs,
+  usePlayingClip,
+  usePlayhead,
+  ExtensionWarnings,
+} from "./official.js";
+export type { OfficialRead } from "./official.js";
+export { ControlsPanel, CONTROL_GROUPS, groupControls } from "./controls-panel.js";
+export type { ControlEntry } from "./controls-panel.js";
+export {
   ParamsPanel,
   BindingsPanel,
   usePoseSweep,

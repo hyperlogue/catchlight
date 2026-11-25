@@ -46,6 +46,10 @@ const paths = {
   send: "M4 12 21 4l-6 17-3-7Zm8 2 4-5",
   spark: "M12 3l2 6 6 3-6 3-2 6-2-6-6-3 6-3Z",
   history: "M3 12a9 9 0 1 0 3-6.7L3 8m0-5v5h5m4-1v5l3 2",
+  control: "M12 2v4m0 12v4M2 12h4m12 0h4m-10 0a2 2 0 1 0 4 0 2 2 0 0 0-4 0",
+  face: "M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0M8 14s1.5 2 4 2 4-2 4-2M9 9h.01M15 9h.01",
+  film: "M3 4h18v16H3ZM7 4v16M17 4v16M3 9h4m-4 6h4m10-6h4m-4 6h4",
+  stop: "M6 6h12v12H6Z",
 } as const;
 export type IconName = keyof typeof paths;
 export function Icon({ name, ...props }: { name: IconName } & ComponentProps<"svg">) {

@@ -3574,6 +3574,141 @@
       padding-inline: 12px;
     }
   }
+  /* Dock: humanoid controls, expressions and visemes, animations. */
+  .catchlight [data-catchlight-controls-panel],
+  .catchlight [data-catchlight-expressions-panel],
+  .catchlight [data-catchlight-animations-panel] {
+    padding-bottom: 10px;
+  }
+  .catchlight [data-catchlight-controls-panel] [data-catchlight-panel-tools] {
+    align-items: center;
+  }
+  .catchlight [data-catchlight-controls-panel] [data-catchlight-toggle] {
+    margin: 0;
+  }
+  .catchlight [data-catchlight-control-count] {
+    font-size: 11px;
+    color: var(--cl-text-dim);
+    font-variant-numeric: tabular-nums;
+  }
+  .catchlight [data-catchlight-extension-warnings],
+  .catchlight [data-catchlight-extension-unread] {
+    padding: 0 10px;
+  }
+  .catchlight [data-catchlight-extension-warnings] [data-catchlight-warning] {
+    margin: 0 0 6px;
+    line-height: 1.5;
+    padding: 5px 10px;
+  }
+  .catchlight [data-catchlight-warning-mark] {
+    display: inline-flex;
+    flex: none;
+    color: var(--cl-warn);
+  }
+  .catchlight [data-catchlight-control-cards] {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+    gap: 2px 10px;
+    padding: 0 8px;
+  }
+  .catchlight [data-catchlight-control-group] {
+    display: contents;
+  }
+  .catchlight [data-catchlight-control-group] > h3 {
+    grid-column: 1 / -1;
+    margin: 8px 2px 2px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--cl-text-dim);
+  }
+  .catchlight [data-catchlight-control-group]:first-child > h3 {
+    margin-top: 0;
+  }
+  .catchlight [data-catchlight-control-card] {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+    padding: 4px 6px 6px 8px;
+    border-radius: 6px;
+    border: 1px solid transparent;
+  }
+  .catchlight [data-catchlight-control-card]:hover {
+    background: #ffffff05;
+  }
+  .catchlight [data-catchlight-control-card][data-previewing] {
+    background: var(--cl-accent-soft);
+  }
+  .catchlight [data-catchlight-control-card][data-warned] {
+    border-color: color-mix(in srgb, var(--cl-warn) 35%, transparent);
+  }
+  .catchlight [data-catchlight-control-head] {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    min-height: 26px;
+  }
+  .catchlight [data-catchlight-control-name] {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font: 12px var(--cl-font-mono);
+  }
+  .catchlight [data-catchlight-control-card]:not([data-mapped]) [data-catchlight-control-name] {
+    color: var(--cl-text-dim);
+  }
+  .catchlight [data-catchlight-control-head] select {
+    flex: 0 1 120px;
+    min-width: 0;
+    font-size: 11px;
+    min-height: 24px;
+  }
+  .catchlight [data-catchlight-control-value-row] {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+  .catchlight [data-catchlight-control-slider]:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+  }
+  .catchlight [data-catchlight-control-value] {
+    flex: 0 0 34px;
+    text-align: right;
+    font-size: 11px;
+    color: var(--cl-text-secondary);
+    font-variant-numeric: tabular-nums;
+  }
+  .catchlight [data-catchlight-control-value-row] > [data-catchlight-icon-button] {
+    width: 22px;
+    height: 22px;
+    min-height: 22px;
+    flex: 0 0 22px;
+    background: transparent;
+  }
+  .catchlight [data-catchlight-control-value-row] > [data-catchlight-icon-button] svg {
+    width: 12px;
+    height: 12px;
+  }
+  .catchlight [data-catchlight-control-stops] {
+    display: flex;
+    gap: 4px;
+    min-width: 0;
+  }
+  .catchlight [data-catchlight-control-stops] [data-catchlight-number] {
+    height: 24px;
+  }
+  .catchlight [data-catchlight-control-stops] [data-catchlight-number] > span {
+    margin-inline: 6px 0;
+  }
+  .catchlight [data-catchlight-control-stops] input[type="number"] {
+    font-size: 11px;
+    min-height: 22px;
+    padding: 2px 6px 2px 2px;
+  }
   @media (max-width: 1150px) {
     .catchlight [data-catchlight-save-state],
     .catchlight [data-catchlight-command-trigger] span,
