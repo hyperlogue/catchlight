@@ -196,10 +196,14 @@ pub enum Error {
     )]
     NotMapped { path: PathBuf, control: String },
     #[error(
-        "{} has no expression {name:?}; `catchlight-cli expression list` shows its expressions",
+        "{} has no {noun} {name:?}; `catchlight-cli {noun} list` shows its {noun}s",
         .path.display()
     )]
-    NoSuchExpression { path: PathBuf, name: String },
+    NoSuchExpression {
+        path: PathBuf,
+        noun: &'static str,
+        name: String,
+    },
     #[error(
         "{name:?} is not a standard humanoid control{}; `catchlight-cli humanoid controls` \
          lists them, and --nonstandard keeps a name outside the list",

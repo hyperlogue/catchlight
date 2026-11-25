@@ -11,7 +11,7 @@ use std::path::Path;
 use catchlight_core::extension::{Extension, ExtensionError};
 use catchlight_core::{Model, ModelNodeKind, NodeId, ParamId};
 use catchlight_extension_animations::{Animations, Clip};
-use catchlight_extension_expressions::Expressions;
+use catchlight_extension_expressions::{Expressions, Group};
 use catchlight_extension_humanoid::{control, Humanoid};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -171,8 +171,8 @@ pub struct Document {
 }
 
 /// A request's top-level settings. Omitted fields inherit; null resets the
-/// whole setting. In particular pose, controls, expressions, frames, motion
-/// responses and arrays never merge.
+/// whole setting. In particular pose, controls, expressions, visemes,
+/// frames, motion responses and arrays never merge.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
@@ -209,6 +209,10 @@ pub struct Request {
     /// before the mappings pose the model, its param settings after.
     #[serde(default, skip_serializing_if = "Setting::is_inherit")]
     pub expressions: Setting<BTreeMap<String, f32>>,
+    /// Viseme weights by name, each in 0..1. Every viseme must be one the
+    /// model has. Visemes blend over the expressions, the same way.
+    #[serde(default, skip_serializing_if = "Setting::is_inherit")]
+    pub visemes: Setting<BTreeMap<String, f32>>,
     #[serde(default, skip_serializing_if = "Setting::is_inherit")]
     pub animation: Setting<AnimationRef>,
     #[serde(default, skip_serializing_if = "Setting::is_inherit")]
@@ -261,6 +265,7 @@ impl Request {
             pose,
             controls,
             expressions,
+            visemes,
             animation,
             frames,
             camera,
@@ -570,6 +575,9 @@ pub struct ResolvedRequest {
     /// Expression weights, blended around the control mappings.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub expressions: BTreeMap<String, f32>,
+    /// Viseme weights, blended over the expressions.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub visemes: BTreeMap<String, f32>,
     pub animation: Option<ResolvedAnimation>,
     /// Strictly increasing keys; empty keeps the static framing.
     pub camera: Vec<CameraKey>,
@@ -971,7 +979,9 @@ impl Document {
         let controls = request.controls.value().unwrap_or_default();
         validate_controls(model, &controls)?;
         let expressions = request.expressions.value().unwrap_or_default();
-        validate_expressions(model, &expressions)?;
+        validate_weights(model, Group::Expression, &expressions)?;
+        let visemes = request.visemes.value().unwrap_or_default();
+        validate_weights(model, Group::Viseme, &visemes)?;
         let animation = request
             .animation
             .value()
@@ -1115,6 +1125,7 @@ impl Document {
             pose,
             controls,
             expressions,
+            visemes,
             animation,
             camera,
             video,
@@ -1249,41 +1260,42 @@ pub fn validate_controls(model: &Model, controls: &BTreeMap<String, f32>) -> Res
     }
     Ok(())
 }
-pub fn validate_expressions(
+/// Weights for the expressions or the visemes, as `group` says.
+pub fn validate_weights(
     model: &Model,
-    expressions: &BTreeMap<String, f32>,
+    group: Group,
+    weights: &BTreeMap<String, f32>,
 ) -> Result<(), Error> {
-    if expressions.is_empty() {
+    if weights.is_empty() {
         return Ok(());
     }
+    let noun = group.noun();
     let available = match model.extension::<Expressions>() {
         Ok(available) => available,
         Err(ExtensionError::Missing) => {
             return Err(bad(format!(
-                "expressions need the model's {} extension, and it has none; add one with \
-                 `catchlight-cli expression set`",
+                "{noun}s need the model's {} extension, and it has none; add one with \
+                 `catchlight-cli {noun} set`",
                 Expressions::KEY
             )))
         }
-        Err(e) => return Err(bad(format!("the model's expressions cannot be read: {e}"))),
+        Err(e) => return Err(bad(format!("the model's {noun}s cannot be read: {e}"))),
     };
-    for (name, weight) in expressions {
-        if !available.contains(name) {
-            let names: Vec<&str> = available.names().collect();
+    for (name, weight) in weights {
+        if !available.contains(group, name) {
+            let names: Vec<&str> = available.names(group).collect();
             return Err(bad(format!(
-                "unknown expression {name}; the model has: {}",
+                "unknown {noun} {name}; the model has: {}",
                 names.join(", ")
             )));
         }
         if !unit(*weight) {
-            return Err(bad(format!(
-                "expression {name} weight must be finite in 0..1"
-            )));
+            return Err(bad(format!("{noun} {name} weight must be finite in 0..1")));
         }
     }
     Ok(())
 }
-/// `name=value` for `--control` and `--expression`.
+/// `name=value` for `--control`, `--expression` and `--viseme`.
 pub fn parse_named(flag: &str, text: &str) -> Result<(String, f32), Error> {
     let (name, value) = text
         .rsplit_once('=')

@@ -16,7 +16,7 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
 /// Maps `mouth_open` onto `closure`, and has a `happy` expression that sets
-/// that control and `drive`.
+/// that control and `drive`, and a `pp` viseme that closes the mouth.
 fn model() -> Model {
     let mut m = bare_model();
     m.extension_or_default::<Humanoid>().unwrap().set(
@@ -26,14 +26,19 @@ fn model() -> Model {
             stops: [0.25, 0.25, 1.0],
         },
     );
-    *m.extension_or_default::<Expressions>().unwrap() =
-        Expressions::from_expressions([Expression::new(
+    *m.extension_or_default::<Expressions>().unwrap() = Expressions::from_groups(
+        [Expression::new(
             "happy",
             vec![
                 ExpressionSetting::control("mouth_open", 1.0),
                 ExpressionSetting::param(ParamId::new("drive").unwrap(), 1.0),
             ],
-        )]);
+        )],
+        [Expression::new(
+            "pp",
+            vec![ExpressionSetting::control("mouth_open", 0.0)],
+        )],
+    );
     m
 }
 fn bare_model() -> Model {
@@ -522,6 +527,7 @@ fn documented_shortcuts_and_specs_normalize_identically_without_mutation() {
         set: vec!["drive=0.5".into()],
         control: Vec::new(),
         expression: Vec::new(),
+        viseme: Vec::new(),
         background: Some(catchlight_cli::render::args::BackgroundArg::Transparent),
         motion_responses: Some(catchlight_cli::render::args::MotionResponsesArg::Off),
     };
@@ -829,6 +835,30 @@ fn controls_and_expressions_pose_in_the_host_order_and_flags_match_the_spec() {
     let controls_only = request(json!({"controls":{"mouth_open":1}}));
     assert_eq!(value(&controls_only, "closure"), 1.0);
     assert_eq!(value(&controls_only, "drive"), 0.25);
+
+    // The viseme closes the mouth over the expression, and at half weight
+    // lands halfway from the expression's mouth_open of 1.
+    let speaking = |pp: f32| {
+        request(json!({"motion_responses":{"mode":"off"},
+            "expressions":{"happy":1},"visemes":{"pp":pp}}))
+    };
+    assert_eq!(value(&speaking(1.0), "closure"), 0.25);
+    assert_eq!(value(&speaking(0.5), "closure"), 0.25 + 0.75 * 0.5);
+    assert_eq!(value(&speaking(1.0), "drive"), 1.0);
+    let flags = ImageArgs {
+        motion_responses: Some(catchlight_cli::render::args::MotionResponsesArg::Off),
+        expression: vec!["happy=1".into()],
+        viseme: vec!["pp=0.5".into()],
+        ..ImageArgs::default()
+    };
+    let from_flags = Document::single(flags.request(&m).unwrap())
+        .resolve(&m)
+        .unwrap()
+        .requests
+        .remove("default")
+        .unwrap();
+    assert_eq!(from_flags.visemes, BTreeMap::from([("pp".into(), 0.5)]));
+    assert_eq!(value(&from_flags, "closure"), 0.25 + 0.75 * 0.5);
 }
 
 #[test]
@@ -851,6 +881,18 @@ fn controls_and_expressions_must_name_what_the_model_has() {
             json!({"expressions":{"happy":1.5}}),
             "expression happy weight must be finite in 0..1",
         ),
+        (
+            json!({"visemes":{"happy":1}}),
+            "unknown viseme happy; the model has: pp",
+        ),
+        (
+            json!({"expressions":{"pp":1}}),
+            "unknown expression pp; the model has: happy",
+        ),
+        (
+            json!({"visemes":{"pp":-0.5}}),
+            "viseme pp weight must be finite in 0..1",
+        ),
     ] {
         assert_bad(spec(settings), want);
     }
@@ -858,6 +900,7 @@ fn controls_and_expressions_must_name_what_the_model_has() {
     for (settings, want) in [
         (json!({"controls":{"mouth_open":1}}), "catchlight.humanoid"),
         (json!({"expressions":{"happy":1}}), "catchlight.expressions"),
+        (json!({"visemes":{"pp":1}}), "catchlight.expressions"),
     ] {
         let error = parse(spec(settings))
             .resolve(&bare)
@@ -894,6 +937,7 @@ fn a_control_and_an_expression_move_the_evaluated_model() {
     };
     run(&["humanoid", "map", p, "mouth_open", "param-0"]);
     run(&["expression", "set", p, "aa", "--control", "mouth_open=1"]);
+    run(&["viseme", "set", p, "aa", "--control", "mouth_open=1"]);
     let bounds = |extra: &[&str]| -> Value {
         let mut args = vec!["bounds", p, "--motion-responses", "off"];
         args.extend(extra);
@@ -901,7 +945,11 @@ fn a_control_and_an_expression_move_the_evaluated_model() {
     };
     let rest = bounds(&[]);
     assert_eq!(rest["pose"]["param-0"], 0.0);
-    for extra in [["--control", "mouth_open=1"], ["--expression", "aa=1"]] {
+    for extra in [
+        ["--control", "mouth_open=1"],
+        ["--expression", "aa=1"],
+        ["--viseme", "aa=1"],
+    ] {
         let posed = bounds(&extra);
         assert_eq!(posed["pose"]["param-0"], 1.0, "{extra:?}");
         assert_ne!(posed["overall"], rest["overall"], "{extra:?}");
@@ -923,5 +971,11 @@ fn a_control_and_an_expression_move_the_evaluated_model() {
     assert_eq!(
         plan["requests"]["default"]["expressions"],
         json!({"aa": 0.5})
+    );
+    let (code, _, stderr) = common::run(&["bounds", p, "--viseme", "oh=1"]);
+    assert_eq!(code, 2);
+    assert!(
+        stderr.contains("unknown viseme oh; the model has: aa"),
+        "{stderr}"
     );
 }

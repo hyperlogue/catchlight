@@ -88,22 +88,26 @@ next release is 0.3.0.
   source of tracking can pose any model that maps them. `Humanoid::pose`
   applies `ControlValues`, and `controls_from_arkit` turns ARKit blend shapes
   into control values.
-- **Expressions.** The official `catchlight.expressions` extension
-  (`catchlight-extension-expressions`) names expressions, such as the five
-  standard emotions and 21 visemes, by values for humanoid controls or the
-  model's own params, and blends them by weight around the control mappings
-  (`blend_controls`, `blend_params`). `standard_visemes()` offers default
-  viseme settings.
+- **Expressions and visemes.** The official `catchlight.expressions`
+  extension (`catchlight-extension-expressions`) names expressions, such as
+  the five standard emotions, and beside them visemes, such as the 21
+  standard mouth shapes of speech, each by values for humanoid controls or
+  the model's own params. The two groups keep separate names and take
+  separate weights, and blend around the control mappings (`blend_controls`,
+  `blend_params`) with visemes over expressions, so speech takes the mouth
+  while a sound plays and the expression returns between sounds.
+  `standard_visemes()` offers default viseme settings.
 - **Rig controls and expressions from the command line.** `catchlight-cli
   humanoid` lists the standard controls and maps, lists and unmaps a model's
-  controls; `catchlight-cli expression` lists the standard names, and sets,
-  lists and removes a model's expressions, or adds the standard visemes.
-  Output is JSON, a typo in a control name is refused with the nearest
-  standard name, and each edit prints the extension's warnings for the
-  edited model. Texture bytes and other extensions are kept byte for byte.
-  `render` and `bounds` take `--control name=value` and `--expression
-  name=weight`, and a render spec request takes `controls` and
-  `expressions`.
+  controls; `catchlight-cli expression` and `catchlight-cli viseme` each
+  list their standard names, and set, list and remove a model's expressions
+  or visemes, and `viseme add-standard` adds the standard visemes. Output is
+  JSON, a typo in a control name is refused with the nearest standard name,
+  and each edit prints the warnings about its group for the edited model.
+  Texture bytes and other extensions are kept byte for byte. `render` and
+  `bounds` take `--control name=value`, `--expression name=weight` and
+  `--viseme name=weight`, and a render spec request takes `controls`,
+  `expressions` and `visemes`.
 
 ### Fixed
 

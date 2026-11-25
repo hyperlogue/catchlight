@@ -8,7 +8,7 @@ use catchlight_cli::{
 };
 use catchlight_core::formats::clm::TextureAlpha;
 use catchlight_extension_animations::Animations;
-use catchlight_extension_expressions::Expressions;
+use catchlight_extension_expressions::{Expressions, Group};
 use catchlight_extension_humanoid::Humanoid;
 use clap::{ArgMatches, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 
@@ -148,10 +148,14 @@ enum Cmd {
     /// Map the standard humanoid controls onto the model's params.
     #[command(subcommand)]
     Humanoid(HumanoidCmd),
-    /// Name expressions, such as emotions and visemes, by the controls and
-    /// params they set.
+    /// Name expressions, such as emotions, by the controls and params they
+    /// set.
     #[command(subcommand)]
     Expression(ExpressionCmd),
+    /// Name visemes, the mouth shapes of speech, by the controls and params
+    /// they set. Visemes play over expressions.
+    #[command(subcommand)]
+    Viseme(VisemeCmd),
     /// Render to a PNG, inspect a render plan, or discover its JSON schema.
     Render(render::args::RenderArgs),
     /// Inspect overall and per-Part evaluated world bounds without a GPU.
@@ -240,51 +244,79 @@ enum HumanoidCmd {
 }
 
 /// The named expressions of `catchlight.expressions`. Each edit prints its
-/// result as JSON, then the extension's warnings for the edited model on
-/// stderr; warnings never fail the command.
+/// result as JSON, then the warnings about expressions on stderr; warnings
+/// never fail the command.
 #[derive(Subcommand)]
 enum ExpressionCmd {
-    /// Print the standard emotion and viseme names as JSON.
+    /// Print the standard expression names, the emotions, as JSON.
     Names,
-    /// Print every expression with its settings, and the extension's
-    /// warnings for the model, as JSON.
+    /// Print every expression with its settings, and the warnings about
+    /// expressions, as JSON.
     List {
         /// The .clm to read.
         file: PathBuf,
     },
     /// Create or replace one expression from its settings, kept in the order
     /// given.
-    Set {
-        /// The .clm to edit, in place.
+    Set(SetArgs),
+    /// Remove one expression. Removing the last expression or viseme drops
+    /// the extension.
+    Remove(RemoveArgs),
+}
+
+/// The visemes of `catchlight.expressions`, kept beside its expressions under
+/// their own names. Each edit prints its result as JSON, then the warnings
+/// about visemes on stderr; warnings never fail the command.
+#[derive(Subcommand)]
+enum VisemeCmd {
+    /// Print the standard viseme names as JSON.
+    Names,
+    /// Print every viseme with its settings, and the warnings about visemes,
+    /// as JSON.
+    List {
+        /// The .clm to read.
         file: PathBuf,
-        /// The expression name, standard or not.
-        name: String,
-        /// A humanoid control and its value, within the control's range.
-        #[arg(long, allow_hyphen_values = true, value_name = "name=value")]
-        control: Vec<String>,
-        /// A param id and its raw value.
-        #[arg(long, allow_hyphen_values = true, value_name = "id=value")]
-        param: Vec<String>,
-        /// Keep a control name outside the standard list, valued in -1..1.
-        #[arg(long)]
-        nonstandard: bool,
     },
-    /// Remove one expression. Removing the last drops the extension.
-    Remove {
-        /// The .clm to edit, in place.
-        file: PathBuf,
-        /// The expression name.
-        name: String,
-    },
+    /// Create or replace one viseme from its settings, kept in the order
+    /// given.
+    Set(SetArgs),
+    /// Remove one viseme. Removing the last expression or viseme drops the
+    /// extension.
+    Remove(RemoveArgs),
     /// Add the standard visemes with their default control settings, after
-    /// the existing expressions, and report which were added and skipped.
-    AddVisemes {
+    /// the existing visemes, and report which were added and skipped.
+    AddStandard {
         /// The .clm to edit, in place.
         file: PathBuf,
-        /// Replace an existing expression of a viseme's name rather than skip it.
+        /// Replace an existing viseme of a standard name rather than skip it.
         #[arg(long)]
         replace: bool,
     },
+}
+
+#[derive(clap::Args)]
+struct SetArgs {
+    /// The .clm to edit, in place.
+    file: PathBuf,
+    /// The name, standard or not.
+    name: String,
+    /// A humanoid control and its value, within the control's range.
+    #[arg(long, allow_hyphen_values = true, value_name = "name=value")]
+    control: Vec<String>,
+    /// A param id and its raw value.
+    #[arg(long, allow_hyphen_values = true, value_name = "id=value")]
+    param: Vec<String>,
+    /// Keep a control name outside the standard list, valued in -1..1.
+    #[arg(long)]
+    nonstandard: bool,
+}
+
+#[derive(clap::Args)]
+struct RemoveArgs {
+    /// The .clm to edit, in place.
+    file: PathBuf,
+    /// The name.
+    name: String,
 }
 
 fn main() {
@@ -372,46 +404,70 @@ fn run_humanoid(cmd: HumanoidCmd) -> Result<(), Error> {
     }
 }
 
-/// `matches` are the `expression set` arguments, which say where each
-/// `--control` and `--param` stood so the settings keep their given order.
 fn run_expression(cmd: ExpressionCmd, matches: Option<&ArgMatches>) -> Result<(), Error> {
+    let group = Group::Expression;
     match cmd {
-        ExpressionCmd::Names => print_json(&expression::names()),
-        ExpressionCmd::List { file } => print_json(&expression::list(&file)?),
-        ExpressionCmd::Set {
-            file,
-            name,
-            control,
-            param,
-            nonstandard,
-        } => {
-            let at = |flag: &str| -> Vec<usize> {
-                matches
-                    .and_then(|m| m.indices_of(flag))
-                    .map(Iterator::collect)
-                    .unwrap_or_default()
-            };
-            let (controls, params) = (at("control"), at("param"));
-            let mut settings = Vec::with_capacity(control.len() + param.len());
-            for (i, text) in control.iter().enumerate() {
-                let (name, value) = humanoid::parse_assignment("--control", text)?;
-                let index = controls.get(i).copied().unwrap_or(usize::MAX);
-                settings.push((index, expression::SettingArg::Control(name, value)));
-            }
-            for (i, text) in param.iter().enumerate() {
-                let (id, value) = humanoid::parse_assignment("--param", text)?;
-                let index = params.get(i).copied().unwrap_or(usize::MAX);
-                settings.push((index, expression::SettingArg::Param(id, value)));
-            }
-            settings.sort_by_key(|(index, _)| *index);
-            let settings: Vec<_> = settings.into_iter().map(|(_, s)| s).collect();
-            print_edit(expression::set(&file, &name, &settings, nonstandard)?)
-        }
-        ExpressionCmd::Remove { file, name } => print_edit(expression::remove(&file, &name)?),
-        ExpressionCmd::AddVisemes { file, replace } => {
-            print_edit(expression::add_visemes(&file, replace)?)
+        ExpressionCmd::Names => print_json(&expression::names(group)),
+        ExpressionCmd::List { file } => print_json(&expression::list(&file, group)?),
+        ExpressionCmd::Set(args) => set_member(group, args, matches),
+        ExpressionCmd::Remove(RemoveArgs { file, name }) => {
+            print_edit(expression::remove(&file, group, &name)?)
         }
     }
+}
+
+fn run_viseme(cmd: VisemeCmd, matches: Option<&ArgMatches>) -> Result<(), Error> {
+    let group = Group::Viseme;
+    match cmd {
+        VisemeCmd::Names => print_json(&expression::names(group)),
+        VisemeCmd::List { file } => print_json(&expression::list(&file, group)?),
+        VisemeCmd::Set(args) => set_member(group, args, matches),
+        VisemeCmd::Remove(RemoveArgs { file, name }) => {
+            print_edit(expression::remove(&file, group, &name)?)
+        }
+        VisemeCmd::AddStandard { file, replace } => {
+            print_edit(expression::add_standard_visemes(&file, replace)?)
+        }
+    }
+}
+
+/// `matches` are the `set` arguments, which say where each `--control` and
+/// `--param` stood so the settings keep their given order.
+fn set_member(group: Group, args: SetArgs, matches: Option<&ArgMatches>) -> Result<(), Error> {
+    let SetArgs {
+        file,
+        name,
+        control,
+        param,
+        nonstandard,
+    } = args;
+    let at = |flag: &str| -> Vec<usize> {
+        matches
+            .and_then(|m| m.indices_of(flag))
+            .map(Iterator::collect)
+            .unwrap_or_default()
+    };
+    let (controls, params) = (at("control"), at("param"));
+    let mut settings = Vec::with_capacity(control.len() + param.len());
+    for (i, text) in control.iter().enumerate() {
+        let (name, value) = humanoid::parse_assignment("--control", text)?;
+        let index = controls.get(i).copied().unwrap_or(usize::MAX);
+        settings.push((index, expression::SettingArg::Control(name, value)));
+    }
+    for (i, text) in param.iter().enumerate() {
+        let (id, value) = humanoid::parse_assignment("--param", text)?;
+        let index = params.get(i).copied().unwrap_or(usize::MAX);
+        settings.push((index, expression::SettingArg::Param(id, value)));
+    }
+    settings.sort_by_key(|(index, _)| *index);
+    let settings: Vec<_> = settings.into_iter().map(|(_, s)| s).collect();
+    print_edit(expression::set(
+        &file,
+        group,
+        &name,
+        &settings,
+        nonstandard,
+    )?)
 }
 
 fn run() -> Result<i32, Error> {
@@ -489,6 +545,12 @@ fn run() -> Result<i32, Error> {
                 .subcommand_matches("expression")
                 .and_then(|m| m.subcommand_matches("set"));
             run_expression(cmd, set)?
+        }
+        Cmd::Viseme(cmd) => {
+            let set = matches
+                .subcommand_matches("viseme")
+                .and_then(|m| m.subcommand_matches("set"));
+            run_viseme(cmd, set)?
         }
         Cmd::Diff { a, b } => {
             let lines = diff::run(&a, &b)?;

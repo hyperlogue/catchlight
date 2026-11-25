@@ -5,7 +5,7 @@ use crate::Error;
 use catchlight_core::extension::ExtensionError;
 use catchlight_core::{Model, NodeId, Pose, Puppet};
 use catchlight_extension_animations::AnimationPlayer;
-use catchlight_extension_expressions::{ExpressionWeights, Expressions};
+use catchlight_extension_expressions::{Expressions, Weights};
 use catchlight_extension_humanoid::{ControlValues, Humanoid};
 use std::collections::BTreeMap;
 
@@ -71,14 +71,14 @@ impl FrameRuntime {
 }
 
 /// The order the expressions crate gives a host: control values, the
-/// expressions' control settings, the control mappings, then the
-/// expressions' param settings. Validation already found every name.
+/// control settings, the control mappings, then the param settings, visemes
+/// over expressions each time. Validation already found every name.
 fn pose_controls(
     model: &Model,
     request: &ResolvedRequest,
     puppet: &mut Puppet,
 ) -> Result<(), Error> {
-    if request.controls.is_empty() && request.expressions.is_empty() {
+    if request.controls.is_empty() && request.expressions.is_empty() && request.visemes.is_empty() {
         return Ok(());
     }
     let mut controls: ControlValues = request
@@ -86,12 +86,14 @@ fn pose_controls(
         .iter()
         .map(|(name, value)| (name.as_str(), *value))
         .collect();
-    let weights: ExpressionWeights = request
-        .expressions
-        .iter()
-        .map(|(name, weight)| (name.as_str(), *weight))
-        .collect();
-    let expressions = if request.expressions.is_empty() {
+    let weights = |named: &BTreeMap<String, f32>| -> Weights {
+        named
+            .iter()
+            .map(|(name, weight)| (name.as_str(), *weight))
+            .collect()
+    };
+    let (emotions, visemes) = (weights(&request.expressions), weights(&request.visemes));
+    let expressions = if emotions.is_empty() && visemes.is_empty() {
         None
     } else {
         Some(
@@ -101,7 +103,7 @@ fn pose_controls(
         )
     };
     if let Some(expressions) = expressions {
-        expressions.blend_controls(&weights, &mut controls);
+        expressions.blend_controls(&emotions, &visemes, &mut controls);
     }
     match model.extension::<Humanoid>() {
         Ok(humanoid) => humanoid.pose(&controls, puppet),
@@ -113,7 +115,7 @@ fn pose_controls(
         }
     }
     if let Some(expressions) = expressions {
-        expressions.blend_params(&weights, puppet);
+        expressions.blend_params(&emotions, &visemes, puppet);
     }
     Ok(())
 }

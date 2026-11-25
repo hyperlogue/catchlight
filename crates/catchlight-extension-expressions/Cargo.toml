@@ -13,8 +13,5 @@ catchlight-extension-humanoid = { workspace = true }
 serde.workspace = true
 serde_json.workspace = true
 
-[dev-dependencies]
-catchlight-extension-animations = { workspace = true }
-
 [lints]
 workspace = true

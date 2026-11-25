@@ -1,26 +1,21 @@
-//! `expression`: the named expressions of the official
+//! `expression` and `viseme`: the two groups of the official
 //! `catchlight.expressions` extension, edited in the file's structure
-//! section. No image is decoded.
+//! section. Each command acts on one group and reports only its warnings. No
+//! image is decoded.
 
 use std::path::Path;
 
-use catchlight_core::extension::Extension;
+use catchlight_core::extension::{Extension, Warning};
 use catchlight_core::formats::clm::ClmFile;
 use catchlight_extension_expressions::{
-    standard_visemes, Expression, Expressions, Setting, Target, EMOTIONS, VISEMES,
+    standard_visemes, Expression, Expressions, Group, Setting, Target, EMOTIONS, VISEMES,
 };
-use serde::Serialize;
+use serde::ser::{Serialize, SerializeMap, Serializer};
 
 use crate::humanoid::{find_param, standard_control, warning_lines, Edited, WarningLine};
 use crate::{extension, file, Error};
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct StandardNames {
-    pub emotions: &'static [&'static str],
-    pub visemes: &'static [&'static str],
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct SettingLine {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub control: Option<String>,
@@ -29,7 +24,8 @@ pub struct SettingLine {
     pub value: f32,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+/// One expression or viseme.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct ExpressionLine {
     pub name: String,
     pub settings: Vec<SettingLine>,
@@ -59,25 +55,47 @@ impl From<Expression> for ExpressionLine {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+/// Prints as `{"expressions": [...], "warnings": [...]}`, or `visemes`.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Listing {
-    pub expressions: Vec<ExpressionLine>,
+    pub group: Group,
+    pub members: Vec<ExpressionLine>,
     pub warnings: Vec<WarningLine>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+impl Serialize for Listing {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        let mut map = s.serialize_map(Some(2))?;
+        map.serialize_entry(&format!("{}s", self.group.noun()), &self.members)?;
+        map.serialize_entry("warnings", &self.warnings)?;
+        map.end()
+    }
+}
+
+/// Prints as `{"expression": ..., "replaced": ...}`, or `viseme`.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Set {
-    pub expression: ExpressionLine,
-    /// The expression this one replaced.
+    pub group: Group,
+    pub member: ExpressionLine,
+    /// The member of the same name this one replaced.
     pub replaced: Option<ExpressionLine>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct VisemesAdded {
+impl Serialize for Set {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        let mut map = s.serialize_map(Some(2))?;
+        map.serialize_entry(self.group.noun(), &self.member)?;
+        map.serialize_entry("replaced", &self.replaced)?;
+        map.end()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct StandardAdded {
     pub added: Vec<String>,
-    /// Existing expressions replaced with the defaults, under `--replace`.
+    /// Existing visemes replaced with the defaults, under `--replace`.
     pub replaced: Vec<String>,
-    /// Existing expressions left as they were.
+    /// Existing visemes left as they were.
     pub skipped: Vec<String>,
 }
 
@@ -88,23 +106,25 @@ pub enum SettingArg {
     Param(String, f32),
 }
 
-pub fn names() -> StandardNames {
-    StandardNames {
-        emotions: &EMOTIONS,
-        visemes: &VISEMES,
+/// The group's standard names: the emotions, or the visemes.
+pub fn names(group: Group) -> &'static [&'static str] {
+    match group {
+        Group::Expression => &EMOTIONS,
+        Group::Viseme => &VISEMES,
     }
 }
 
-pub fn list(path: &Path) -> Result<Listing, Error> {
+pub fn list(path: &Path, group: Group) -> Result<Listing, Error> {
     let clm = file::read(path)?;
     let expressions: Expressions = extension::for_edit(&clm, path)?;
     Ok(Listing {
-        expressions: expressions
-            .expressions()
+        group,
+        members: expressions
+            .all(group)
             .into_iter()
             .map(ExpressionLine::from)
             .collect(),
-        warnings: warning_lines(extension::warnings(&clm, path, Expressions::KEY)?),
+        warnings: warnings(&clm, path, &expressions, group)?,
     })
 }
 
@@ -112,20 +132,22 @@ pub fn list(path: &Path) -> Result<Listing, Error> {
 /// own, -1..1 for a name kept with `nonstandard`.
 pub fn set(
     path: &Path,
+    group: Group,
     name: &str,
     settings: &[SettingArg],
     nonstandard: bool,
 ) -> Result<Edited<Set>, Error> {
+    let noun = group.noun();
     if name.is_empty() {
         return Err(Error::BadValue {
-            field: "the expression name".into(),
+            field: format!("the {noun} name"),
             expected: "a non-empty name".into(),
             value: String::new(),
         });
     }
     if settings.is_empty() {
         return Err(Error::BadValue {
-            field: format!("expression {name:?}"),
+            field: format!("{noun} {name:?}"),
             expected: "at least one --control name=value or --param id=value".into(),
             value: String::new(),
         });
@@ -160,51 +182,53 @@ pub fn set(
         });
     }
     let mut expressions: Expressions = extension::for_edit(&clm, path)?;
-    let expression = Expression::new(name, out);
+    let member = Expression::new(name, out);
     let replaced = expressions
-        .insert(expression.clone())
+        .insert(group, member.clone())
         .map(ExpressionLine::from);
-    let warnings = save(&mut clm, path, &expressions)?;
+    let warnings = save(&mut clm, path, &expressions, group)?;
     Ok(Edited {
         result: Set {
-            expression: expression.into(),
+            group,
+            member: member.into(),
             replaced,
         },
         warnings,
     })
 }
 
-/// Removing the last expression drops the extension from the file.
-pub fn remove(path: &Path, name: &str) -> Result<Edited<ExpressionLine>, Error> {
+/// Removing the last expression or viseme drops the extension.
+pub fn remove(path: &Path, group: Group, name: &str) -> Result<Edited<ExpressionLine>, Error> {
     let mut clm = file::read(path)?;
     file::load(&clm, path)?;
     let mut expressions: Expressions = extension::for_edit(&clm, path)?;
     let removed = expressions
-        .remove(name)
+        .remove(group, name)
         .ok_or_else(|| Error::NoSuchExpression {
             path: path.to_path_buf(),
+            noun: group.noun(),
             name: name.to_string(),
         })?;
-    let warnings = save(&mut clm, path, &expressions)?;
+    let warnings = save(&mut clm, path, &expressions, group)?;
     Ok(Edited {
         result: removed.into(),
         warnings,
     })
 }
 
-/// New visemes go after the existing expressions, in the standard order.
-pub fn add_visemes(path: &Path, replace: bool) -> Result<Edited<VisemesAdded>, Error> {
+/// New visemes go after the existing ones, in the standard order.
+pub fn add_standard_visemes(path: &Path, replace: bool) -> Result<Edited<StandardAdded>, Error> {
     let mut clm = file::read(path)?;
     file::load(&clm, path)?;
     let mut expressions: Expressions = extension::for_edit(&clm, path)?;
-    let mut report = VisemesAdded {
+    let mut report = StandardAdded {
         added: Vec::new(),
         replaced: Vec::new(),
         skipped: Vec::new(),
     };
     for viseme in standard_visemes() {
         let name = viseme.name.clone();
-        if !expressions.contains(&name) {
+        if !expressions.contains(Group::Viseme, &name) {
             report.added.push(name);
         } else if replace {
             report.replaced.push(name);
@@ -212,9 +236,9 @@ pub fn add_visemes(path: &Path, replace: bool) -> Result<Edited<VisemesAdded>, E
             report.skipped.push(name);
             continue;
         }
-        expressions.insert(viseme);
+        expressions.insert(Group::Viseme, viseme);
     }
-    let warnings = save(&mut clm, path, &expressions)?;
+    let warnings = save(&mut clm, path, &expressions, Group::Viseme)?;
     Ok(Edited {
         result: report,
         warnings,
@@ -225,10 +249,34 @@ fn save(
     clm: &mut ClmFile,
     path: &Path,
     expressions: &Expressions,
+    group: Group,
 ) -> Result<Vec<WarningLine>, Error> {
     extension::store(clm, expressions, expressions.is_empty())?;
     let bytes = file::encode(clm, path)?;
-    let warnings = extension::warnings(clm, path, Expressions::KEY)?;
+    let warnings = warnings(clm, path, expressions, group)?;
     file::write(path, &bytes)?;
-    Ok(warning_lines(warnings))
+    Ok(warnings)
+}
+
+/// The extension's warnings that concern `group`: the core's about a
+/// reference the group uses or about the data as a whole, then the
+/// extension's own check of the group.
+fn warnings(
+    clm: &ClmFile,
+    path: &Path,
+    expressions: &Expressions,
+    group: Group,
+) -> Result<Vec<WarningLine>, Error> {
+    let own = format!("{}/", Expressions::KEY);
+    let (model, _) = file::load(clm, path)?;
+    let mut out: Vec<Warning> = model
+        .extension_warnings()
+        .into_iter()
+        .filter(|w| w.key.as_str() == Expressions::KEY)
+        .map(|w| w.warning)
+        .filter(|w| !w.code.starts_with(&own))
+        .filter(|w| w.subjects.is_empty() || w.subjects.iter().any(|r| expressions.uses(group, r)))
+        .collect();
+    out.extend(expressions.check_group(group, &model));
+    Ok(warning_lines(out))
 }

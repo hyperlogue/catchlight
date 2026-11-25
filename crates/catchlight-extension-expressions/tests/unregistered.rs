@@ -4,7 +4,7 @@
 
 use catchlight_core::extension::{self, Extension, IdRef, RemovedRef};
 use catchlight_core::{Model, ModelParam, Name, ParamId};
-use catchlight_extension_expressions::{Expression, Expressions, Setting};
+use catchlight_extension_expressions::{Expression, Expressions, Group, Setting};
 
 fn pid(s: &str) -> ParamId {
     ParamId::new(s).unwrap()
@@ -45,7 +45,10 @@ fn an_unregistered_program_carries_the_expressions_unchanged() {
         codes,
         [extension::codes::REMOVED, extension::codes::NOT_CHECKED]
     );
-    let crying = model.extension_mut::<Expressions>().unwrap().get("crying");
+    let crying = model
+        .extension_mut::<Expressions>()
+        .unwrap()
+        .get(Group::Expression, "crying");
     assert_eq!(
         crying.unwrap().settings,
         [Setting::control("ear_droop", 0.5)]

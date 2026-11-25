@@ -1,9 +1,11 @@
 use crate::{Expression, Setting};
 
-/// The standard emotion names. A model may add any other name.
+/// The standard expression names, each an emotion. A model may add any other
+/// name.
 pub const EMOTIONS: [&str; 5] = ["happy", "angry", "sad", "relaxed", "surprised"];
 
-/// The standard viseme names, each for the group of sounds it shows.
+/// The standard viseme names, each for the group of sounds it shows. A model
+/// may add any other name.
 pub const VISEMES: [&str; 21] = [
     "ae", // cat, about, cut
     "aa", // father
@@ -65,9 +67,9 @@ const VISEME_VALUES: [[f32; 7]; 21] = [
     [0.00, 0.05, 0.00, 0.00, 0.00, 0.00, 0.00],
 ];
 
-/// The standard visemes as control settings, for a tool to offer as
-/// defaults; never written into a model on its own. Zeros are settings too,
-/// so a viseme fully replaces the tracked mouth.
+/// The standard visemes as control settings, for a tool to offer as the
+/// viseme group's defaults; never written into a model on its own. Zeros are
+/// settings too, so a viseme fully replaces the tracked mouth.
 pub fn standard_visemes() -> Vec<Expression> {
     VISEMES
         .iter()

@@ -1,36 +1,28 @@
 //! The official `catchlight.expressions` extension: a model's named
-//! expressions, such as emotions and visemes. Each gives values to humanoid
-//! controls or to the model's own params, and plays by weight.
+//! expressions, such as emotions, and beside them its visemes. Each gives
+//! values to humanoid controls or to the model's own params, and plays by
+//! weight; visemes blend over expressions.
 //!
 //! Control settings act before the control mappings, param settings after:
 //!
 //! ```no_run
 //! # use catchlight_core::{Model, Puppet};
-//! # use catchlight_extension_animations::AnimationPlayer;
-//! # use catchlight_extension_expressions::{ExpressionWeights, Expressions};
+//! # use catchlight_extension_expressions::{Expressions, Weights};
 //! # use catchlight_extension_humanoid::{controls_from_arkit, Humanoid};
-//! # fn frame(
-//! #     model: &Model,
-//! #     puppet: &mut Puppet,
-//! #     player: &mut AnimationPlayer,
-//! #     tracking: impl Fn(&str) -> f32,
-//! #     dt: f32,
-//! # ) {
+//! # fn frame(model: &Model, puppet: &mut Puppet, tracking: impl Fn(&str) -> f32, dt: f32) {
 //! let mut controls = controls_from_arkit(tracking);
-//! let mut weights = ExpressionWeights::new();
-//! weights.set("happy", 0.6);
-//! weights.set("aa", 1.0);
-//! let expressions = model.extension::<Expressions>().ok();
-//! if let Some(expressions) = expressions {
-//!     expressions.blend_controls(&weights, &mut controls);
+//! let expressions: Weights = [("happy", 0.6)].into_iter().collect();
+//! let visemes: Weights = [("aa", 1.0)].into_iter().collect();
+//! let data = model.extension::<Expressions>().ok();
+//! if let Some(data) = data {
+//!     data.blend_controls(&expressions, &visemes, &mut controls);
 //! }
 //! if let Ok(humanoid) = model.extension::<Humanoid>() {
 //!     humanoid.pose(&controls, puppet);
 //! }
-//! if let Some(expressions) = expressions {
-//!     expressions.blend_params(&weights, puppet);
+//! if let Some(data) = data {
+//!     data.blend_params(&expressions, &visemes, puppet);
 //! }
-//! player.advance(puppet, dt);
 //! puppet.tick(model, dt);
 //! # }
 //! ```
@@ -48,7 +40,7 @@ use catchlight_core::extension::{
 use catchlight_core::{Model, ParamId, Puppet};
 use catchlight_extension_humanoid::{control, ControlValues, Humanoid};
 
-/// The warning codes [`Expressions`] raises from its check.
+/// The warning codes [`Expressions`] raises from its check, for either group.
 pub mod codes {
     pub const MAPPED_PARAM: &str = "catchlight.expressions/mapped-param";
     pub const UNMAPPED_CONTROL: &str = "catchlight.expressions/unmapped-control";
@@ -56,6 +48,31 @@ pub mod codes {
     pub const VALUE_OUT_OF_RANGE: &str = "catchlight.expressions/value-out-of-range";
     pub const NON_FINITE_VALUE: &str = "catchlight.expressions/non-finite-value";
     pub const DUPLICATE_TARGET: &str = "catchlight.expressions/duplicate-target";
+}
+
+/// Which of the two groups an expression belongs to. Each group has its own
+/// names, and visemes blend over expressions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Group {
+    Expression,
+    Viseme,
+}
+
+impl Group {
+    /// In blending order.
+    pub const ALL: [Group; 2] = [Group::Expression, Group::Viseme];
+
+    /// What one member is called: `expression` or `viseme`.
+    pub fn noun(self) -> &'static str {
+        match self {
+            Self::Expression => "expression",
+            Self::Viseme => "viseme",
+        }
+    }
+
+    fn index(self) -> usize {
+        self as usize
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -88,6 +105,8 @@ impl Setting {
     }
 }
 
+/// A named set of settings: an expression, or a viseme, which is made the
+/// same way.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Expression {
     pub name: String,
@@ -103,13 +122,14 @@ impl Expression {
     }
 }
 
-/// How strongly each expression plays, by name; a sparse map onto 0..1.
+/// How strongly each member of one group plays, by name; a sparse map onto
+/// 0..1.
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct ExpressionWeights {
+pub struct Weights {
     weights: BTreeMap<String, f32>,
 }
 
-impl ExpressionWeights {
+impl Weights {
     pub fn new() -> Self {
         Self::default()
     }
@@ -140,12 +160,20 @@ impl ExpressionWeights {
         self.weights.clear();
     }
 
+    pub fn len(&self) -> usize {
+        self.weights.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.weights.is_empty()
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = (&str, f32)> {
         self.weights.iter().map(|(k, &v)| (k.as_str(), v))
     }
 }
 
-impl<'a> FromIterator<(&'a str, f32)> for ExpressionWeights {
+impl<'a> FromIterator<(&'a str, f32)> for Weights {
     fn from_iter<I: IntoIterator<Item = (&'a str, f32)>>(iter: I) -> Self {
         let mut out = Self::new();
         for (name, weight) in iter {
@@ -155,12 +183,14 @@ impl<'a> FromIterator<(&'a str, f32)> for ExpressionWeights {
     }
 }
 
-/// A model's expressions in author order, no two sharing a name. Param
-/// settings name their param only through the reference table.
+/// A model's expressions and visemes, each group in author order with no two
+/// members sharing a name. Param settings name their param only through the
+/// reference table, which both groups share.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Expressions {
     refs: Vec<IdRef>,
-    expressions: Vec<stored::Expression>,
+    /// Indexed by [`Group::index`].
+    groups: [Vec<stored::Expression>; 2],
 }
 
 mod stored {
@@ -169,7 +199,10 @@ mod stored {
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
     #[serde(deny_unknown_fields)]
     pub(crate) struct Expressions {
+        #[serde(default)]
         pub(crate) expressions: Vec<Expression>,
+        #[serde(default)]
+        pub(crate) visemes: Vec<Expression>,
     }
 
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -252,46 +285,61 @@ impl Mix {
     }
 }
 
+/// What [`Expressions::merge_addon`] added to each group.
+struct Added([Vec<String>; 2]);
+
 impl Expressions {
-    pub fn from_expressions(expressions: impl IntoIterator<Item = Expression>) -> Self {
+    pub fn from_groups(
+        expressions: impl IntoIterator<Item = Expression>,
+        visemes: impl IntoIterator<Item = Expression>,
+    ) -> Self {
         let mut out = Self::default();
         for expression in expressions {
-            out.insert(expression);
+            out.insert(Group::Expression, expression);
+        }
+        for viseme in visemes {
+            out.insert(Group::Viseme, viseme);
         }
         out
     }
 
-    pub fn len(&self) -> usize {
-        self.expressions.len()
+    /// Expressions only, no visemes.
+    pub fn from_expressions(expressions: impl IntoIterator<Item = Expression>) -> Self {
+        Self::from_groups(expressions, [])
     }
 
+    pub fn len(&self, group: Group) -> usize {
+        self.group(group).len()
+    }
+
+    /// Whether both groups are empty.
     pub fn is_empty(&self) -> bool {
-        self.expressions.is_empty()
+        self.groups.iter().all(Vec::is_empty)
     }
 
-    pub fn names(&self) -> impl Iterator<Item = &str> {
-        self.expressions.iter().map(|e| e.name.as_str())
+    pub fn names(&self, group: Group) -> impl Iterator<Item = &str> {
+        self.group(group).iter().map(|e| e.name.as_str())
     }
 
-    pub fn contains(&self, name: &str) -> bool {
-        self.position(name).is_some()
+    pub fn contains(&self, group: Group, name: &str) -> bool {
+        self.position(group, name).is_some()
     }
 
     /// A param setting whose param was removed is left out until reconcile
     /// drops it.
-    pub fn get(&self, name: &str) -> Option<Expression> {
-        self.position(name)
-            .map(|i| self.resolve(&self.expressions[i]))
+    pub fn get(&self, group: Group, name: &str) -> Option<Expression> {
+        self.position(group, name)
+            .map(|i| self.resolve(&self.group(group)[i]))
     }
 
-    /// Every expression in author order, as [`Self::get`] reads it.
-    pub fn expressions(&self) -> Vec<Expression> {
-        self.expressions.iter().map(|e| self.resolve(e)).collect()
+    /// Every member of `group` in author order, as [`Self::get`] reads it.
+    pub fn all(&self, group: Group) -> Vec<Expression> {
+        self.group(group).iter().map(|e| self.resolve(e)).collect()
     }
 
-    /// Adds `expression`, or replaces the one of the same name in place and
-    /// returns it.
-    pub fn insert(&mut self, expression: Expression) -> Option<Expression> {
+    /// Adds `expression` to `group`, or replaces the member of the same name
+    /// in place and returns it.
+    pub fn insert(&mut self, group: Group, expression: Expression) -> Option<Expression> {
         let stored = stored::Expression {
             name: expression.name,
             settings: expression
@@ -309,13 +357,13 @@ impl Expressions {
                 })
                 .collect(),
         };
-        let previous = match self.position(&stored.name) {
+        let previous = match self.position(group, &stored.name) {
             Some(i) => {
-                let old = std::mem::replace(&mut self.expressions[i], stored);
+                let old = std::mem::replace(&mut self.groups[group.index()][i], stored);
                 Some(self.resolve(&old))
             }
             None => {
-                self.expressions.push(stored);
+                self.groups[group.index()].push(stored);
                 None
             }
         };
@@ -323,94 +371,135 @@ impl Expressions {
         previous
     }
 
-    pub fn remove(&mut self, name: &str) -> Option<Expression> {
-        let i = self.position(name)?;
-        let expression = self.expressions.remove(i);
+    pub fn remove(&mut self, group: Group, name: &str) -> Option<Expression> {
+        let i = self.position(group, name)?;
+        let expression = self.groups[group.index()].remove(i);
         let out = self.resolve(&expression);
         self.compact();
         Some(out)
     }
 
-    /// Blends the weighted expressions' control settings into `controls`. A
-    /// control with no value yet counts as 0.
-    pub fn blend_controls(&self, weights: &ExpressionWeights, controls: &mut ControlValues) {
-        let mut mixes: Vec<(&str, Mix)> = Vec::new();
-        for (expression, weight) in self.weighted(weights) {
-            for (i, setting) in expression.settings.iter().enumerate() {
-                let stored::Setting::Control(s) = setting else {
-                    continue;
-                };
-                if !playable(&expression.settings, i) {
-                    continue;
-                }
-                let at = match mixes.iter().position(|(name, _)| *name == s.control) {
-                    Some(at) => at,
-                    None => {
-                        mixes.push((s.control.as_str(), Mix::default()));
-                        mixes.len() - 1
-                    }
-                };
-                mixes[at].1.add(weight, s.value);
+    /// Blends the weighted control settings into `controls`: the expressions
+    /// onto what was there, then the visemes onto that. A control with no
+    /// value yet counts as 0.
+    pub fn blend_controls(
+        &self,
+        expressions: &Weights,
+        visemes: &Weights,
+        controls: &mut ControlValues,
+    ) {
+        for (group, weights) in Group::ALL.into_iter().zip([expressions, visemes]) {
+            let mixes = self.mixes(group, weights, |s| match s {
+                stored::Setting::Control(s) => Some(s.control.as_str()),
+                stored::Setting::Param(_) => None,
+            });
+            for (name, mix) in mixes {
+                let current = controls.get(name).unwrap_or(0.0);
+                controls.set(name, mix.onto(current));
             }
-        }
-        for (name, mix) in mixes {
-            let current = controls.get(name).unwrap_or(0.0);
-            controls.set(name, mix.onto(current));
         }
     }
 
-    /// Blends the weighted expressions' param settings onto `puppet`, from
-    /// each param's posed value. A param a motion response drives is skipped.
-    pub fn blend_params(&self, weights: &ExpressionWeights, puppet: &mut Puppet) {
-        let mut mixes: Vec<(u32, Mix)> = Vec::new();
-        for (expression, weight) in self.weighted(weights) {
-            for (i, setting) in expression.settings.iter().enumerate() {
-                let stored::Setting::Param(s) = setting else {
-                    continue;
-                };
-                if !playable(&expression.settings, i) {
-                    continue;
-                }
-                let at = match mixes.iter().position(|(param, _)| *param == s.param) {
+    /// Blends the weighted param settings onto `puppet`, from each param's
+    /// posed value or else its default: expressions, then visemes over them.
+    /// A param a motion response drives is skipped.
+    pub fn blend_params(&self, expressions: &Weights, visemes: &Weights, puppet: &mut Puppet) {
+        let values = self.param_values(expressions, visemes, |param| {
+            if puppet.is_driven(param) {
+                return None;
+            }
+            Some(
+                puppet
+                    .param_value_posed(param)
+                    .or_else(|| puppet.param_limits(param).map(|l| l.default))
+                    .unwrap_or(0.0),
+            )
+        });
+        for (param, value) in values {
+            puppet.set_param_value(&param, value);
+        }
+    }
+
+    /// The value each param the weighted param settings reach blends to, from
+    /// the value `base` gives it, in two layers as [`Self::blend_params`]
+    /// does. A param `base` gives no value for is left out.
+    pub fn param_values(
+        &self,
+        expressions: &Weights,
+        visemes: &Weights,
+        mut base: impl FnMut(&ParamId) -> Option<f32>,
+    ) -> Vec<(ParamId, f32)> {
+        let mut out: Vec<(u32, Option<f32>)> = Vec::new();
+        for (group, weights) in Group::ALL.into_iter().zip([expressions, visemes]) {
+            let mixes = self.mixes(group, weights, |s| match s {
+                stored::Setting::Param(s) => Some(s.param),
+                stored::Setting::Control(_) => None,
+            });
+            for (index, mix) in mixes {
+                let at = match out.iter().position(|(i, _)| *i == index) {
                     Some(at) => at,
                     None => {
-                        mixes.push((s.param, Mix::default()));
-                        mixes.len() - 1
+                        let value = match &self.refs[index as usize] {
+                            IdRef::Param(param) => base(param),
+                            _ => None,
+                        };
+                        out.push((index, value));
+                        out.len() - 1
                     }
                 };
-                mixes[at].1.add(weight, s.value);
+                if let Some(value) = &mut out[at].1 {
+                    *value = mix.onto(*value);
+                }
             }
         }
-        for (index, mix) in mixes {
-            let IdRef::Param(param) = &self.refs[index as usize] else {
+        out.into_iter()
+            .filter_map(|(index, value)| match (&self.refs[index as usize], value) {
+                (IdRef::Param(param), Some(value)) => Some((param.clone(), value)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// One mix per target the weighted members of `group` reach, in first-use
+    /// order. `key` names a setting's target, or `None` to skip it.
+    fn mixes<'a, K: PartialEq + 'a>(
+        &'a self,
+        group: Group,
+        weights: &'a Weights,
+        key: impl Fn(&'a stored::Setting) -> Option<K>,
+    ) -> Vec<(K, Mix)> {
+        let mut mixes: Vec<(K, Mix)> = Vec::new();
+        for (name, weight) in weights.iter().filter(|(_, w)| *w > 0.0) {
+            let Some(i) = self.position(group, name) else {
                 continue;
             };
-            if puppet.is_driven(param) {
-                continue;
+            let settings = &self.group(group)[i].settings;
+            for (i, setting) in settings.iter().enumerate() {
+                let Some(k) = key(setting) else {
+                    continue;
+                };
+                if !playable(settings, i) {
+                    continue;
+                }
+                let at = match mixes.iter().position(|(m, _)| *m == k) {
+                    Some(at) => at,
+                    None => {
+                        mixes.push((k, Mix::default()));
+                        mixes.len() - 1
+                    }
+                };
+                mixes[at].1.add(weight, setting.value());
             }
-            let current = puppet
-                .param_value_posed(param)
-                .or_else(|| puppet.param_limits(param).map(|l| l.default))
-                .unwrap_or(0.0);
-            puppet.set_param_value(param, mix.onto(current));
         }
+        mixes
     }
 
-    fn weighted<'a>(
-        &'a self,
-        weights: &'a ExpressionWeights,
-    ) -> impl Iterator<Item = (&'a stored::Expression, f32)> + 'a {
-        weights
-            .iter()
-            .filter(|(_, w)| *w > 0.0)
-            .filter_map(|(name, w)| {
-                let i = self.position(name)?;
-                Some((&self.expressions[i], w))
-            })
+    fn group(&self, group: Group) -> &[stored::Expression] {
+        &self.groups[group.index()]
     }
 
-    fn position(&self, name: &str) -> Option<usize> {
-        self.expressions.iter().position(|e| e.name == name)
+    fn position(&self, group: Group, name: &str) -> Option<usize> {
+        self.group(group).iter().position(|e| e.name == name)
     }
 
     fn resolve(&self, expression: &stored::Expression) -> Expression {
@@ -438,91 +527,21 @@ impl Expressions {
         at as u32
     }
 
-    /// Keeps exactly the references some setting uses, in first-use order.
+    /// Keeps exactly the references some setting uses, in first-use order:
+    /// expressions first, then visemes.
     fn compact(&mut self) {
         let old = std::mem::take(&mut self.refs);
-        let mut expressions = std::mem::take(&mut self.expressions);
-        for setting in expressions.iter_mut().flat_map(|e| &mut e.settings) {
+        let mut groups = std::mem::take(&mut self.groups);
+        for setting in groups.iter_mut().flatten().flat_map(|e| &mut e.settings) {
             if let stored::Setting::Param(s) = setting {
                 s.param = self.intern(old[s.param as usize].clone());
             }
         }
-        self.expressions = expressions;
-    }
-}
-
-/// Whether the setting at `i` takes part in blending: its value is finite,
-/// and no later setting in the expression has the same target.
-fn playable(settings: &[stored::Setting], i: usize) -> bool {
-    settings[i].value().is_finite()
-        && !settings[i + 1..]
-            .iter()
-            .any(|s| s.same_target(&settings[i]))
-}
-
-impl Extension for Expressions {
-    const KEY: &'static str = "catchlight.expressions";
-    const VERSION: u32 = 1;
-
-    fn decode(raw: RawExtension) -> Result<Self, DecodeError> {
-        let Payload::Json(value) = raw.payload else {
-            return Err(DecodeError::new("the payload is bytes, not JSON"));
-        };
-        let stored: stored::Expressions =
-            serde_json::from_value(value).map_err(DecodeError::new)?;
-        for (i, expression) in stored.expressions.iter().enumerate() {
-            if stored.expressions[..i]
-                .iter()
-                .any(|e| e.name == expression.name)
-            {
-                return Err(DecodeError::new(format!(
-                    "two expressions are named {:?}",
-                    expression.name
-                )));
-            }
-            for setting in &expression.settings {
-                let stored::Setting::Param(s) = setting else {
-                    continue;
-                };
-                match raw.refs.get(s.param as usize) {
-                    Some(IdRef::Param(_) | IdRef::Removed(RemovedRef::Param(_))) => {}
-                    _ => {
-                        return Err(DecodeError::new(format!(
-                            "a setting of expression {:?} names reference {}, which is not a \
-                             param",
-                            expression.name, s.param
-                        )))
-                    }
-                }
-            }
-        }
-        Ok(Self {
-            refs: raw.refs,
-            expressions: stored.expressions,
-        })
+        self.groups = groups;
     }
 
-    fn encode(&self) -> RawExtension {
-        let stored = stored::Expressions {
-            expressions: self.expressions.clone(),
-        };
-        RawExtension {
-            version: Self::VERSION,
-            refs: self.refs.clone(),
-            // Every field is a string, an integer or a float.
-            payload: Payload::Json(serde_json::to_value(stored).unwrap_or_default()),
-        }
-    }
-
-    fn refs(&self) -> &[IdRef] {
-        &self.refs
-    }
-
-    fn refs_mut(&mut self) -> &mut Vec<IdRef> {
-        &mut self.refs
-    }
-
-    fn check(&self, model: &Model) -> Vec<Warning> {
+    /// What [`Extension::check`] finds in `group` alone.
+    pub fn check_group(&self, group: Group, model: &Model) -> Vec<Warning> {
         // `None` when the humanoid data cannot be read, so mappings are unknown.
         let humanoid = match model.extension::<Humanoid>() {
             Ok(humanoid) => Some(Some(humanoid)),
@@ -531,7 +550,8 @@ impl Extension for Expressions {
         };
         let mut out = Vec::new();
         let mut unmapped_without_humanoid = false;
-        for expression in &self.expressions {
+        let noun = group.noun();
+        for expression in self.group(group) {
             let name = &expression.name;
             let mut unmapped: Vec<&str> = Vec::new();
             for (i, setting) in expression.settings.iter().enumerate() {
@@ -542,7 +562,7 @@ impl Extension for Expressions {
                     out.push(Warning::new(
                         codes::DUPLICATE_TARGET,
                         format!(
-                            "expression {name:?} sets {} twice; the last setting wins",
+                            "{noun} {name:?} sets {} twice; the last setting wins",
                             self.describe(setting)
                         ),
                     ));
@@ -552,8 +572,8 @@ impl Extension for Expressions {
                     out.push(Warning::new(
                         codes::NON_FINITE_VALUE,
                         format!(
-                            "expression {name:?} gives {} a value that is not finite, so it \
-                             does not play",
+                            "{noun} {name:?} gives {} a value that is not finite, so it \
+                                 does not play",
                             self.describe(setting)
                         ),
                     ));
@@ -565,8 +585,8 @@ impl Extension for Expressions {
                             out.push(Warning::new(
                                 codes::NONSTANDARD_CONTROL,
                                 format!(
-                                    "expression {name:?} sets {:?}, which is not a standard \
-                                     humanoid control",
+                                    "{noun} {name:?} sets {:?}, which is not a standard \
+                                         humanoid control",
                                     s.control
                                 ),
                             ));
@@ -576,8 +596,8 @@ impl Extension for Expressions {
                             out.push(Warning::new(
                                 codes::VALUE_OUT_OF_RANGE,
                                 format!(
-                                    "expression {name:?} sets control {:?} to {value}, outside \
-                                     its range {min}..{max}",
+                                    "{noun} {name:?} sets control {:?} to {value}, outside \
+                                         its range {min}..{max}",
                                     s.control
                                 ),
                             ));
@@ -603,8 +623,8 @@ impl Extension for Expressions {
                                 Warning::new(
                                     codes::MAPPED_PARAM,
                                     format!(
-                                        "expression {name:?} sets {r}, which control {} maps; \
-                                         set the control instead",
+                                        "{noun} {name:?} sets {r}, which control {} maps; \
+                                             set the control instead",
                                         controls.join(", ")
                                     ),
                                 )
@@ -618,8 +638,8 @@ impl Extension for Expressions {
                 out.push(Warning::new(
                     codes::UNMAPPED_CONTROL,
                     format!(
-                        "expression {name:?} sets {}, which the model maps onto no param, so \
-                         those settings do nothing",
+                        "{noun} {name:?} sets {}, which the model maps onto no param, so \
+                             those settings do nothing",
                         unmapped.join(", ")
                     ),
                 ));
@@ -628,16 +648,115 @@ impl Extension for Expressions {
         if unmapped_without_humanoid {
             out.push(Warning::new(
                 codes::UNMAPPED_CONTROL,
-                "expressions set humanoid controls, but the model maps no control onto a param, \
-                 so those settings do nothing",
+                format!(
+                    "{noun}s set humanoid controls, but the model maps no control onto a \
+                     param, so those settings do nothing"
+                ),
             ));
         }
         out
     }
 
+    /// Whether a setting in `group` names `r`, removed or not.
+    pub fn uses(&self, group: Group, r: &IdRef) -> bool {
+        self.group(group)
+            .iter()
+            .flat_map(|e| &e.settings)
+            .any(|s| matches!(s, stored::Setting::Param(s) if self.refs[s.param as usize] == *r))
+    }
+
+    fn describe(&self, setting: &stored::Setting) -> String {
+        match setting {
+            stored::Setting::Control(s) => format!("control {:?}", s.control),
+            stored::Setting::Param(s) => self.refs[s.param as usize].to_string(),
+        }
+    }
+}
+
+/// Whether the setting at `i` takes part in blending: its value is finite,
+/// and no later setting in the expression has the same target.
+fn playable(settings: &[stored::Setting], i: usize) -> bool {
+    settings[i].value().is_finite()
+        && !settings[i + 1..]
+            .iter()
+            .any(|s| s.same_target(&settings[i]))
+}
+
+impl Extension for Expressions {
+    const KEY: &'static str = "catchlight.expressions";
+    const VERSION: u32 = 1;
+
+    fn decode(raw: RawExtension) -> Result<Self, DecodeError> {
+        let Payload::Json(value) = raw.payload else {
+            return Err(DecodeError::new("the payload is bytes, not JSON"));
+        };
+        let stored: stored::Expressions =
+            serde_json::from_value(value).map_err(DecodeError::new)?;
+        let groups = [stored.expressions, stored.visemes];
+        for (group, members) in Group::ALL.into_iter().zip(&groups) {
+            let noun = group.noun();
+            for (i, expression) in members.iter().enumerate() {
+                if members[..i].iter().any(|e| e.name == expression.name) {
+                    return Err(DecodeError::new(format!(
+                        "two {noun}s are named {:?}",
+                        expression.name
+                    )));
+                }
+                for setting in &expression.settings {
+                    let stored::Setting::Param(s) = setting else {
+                        continue;
+                    };
+                    match raw.refs.get(s.param as usize) {
+                        Some(IdRef::Param(_) | IdRef::Removed(RemovedRef::Param(_))) => {}
+                        _ => {
+                            return Err(DecodeError::new(format!(
+                                "a setting of {noun} {:?} names reference {}, which is not a \
+                                 param",
+                                expression.name, s.param
+                            )))
+                        }
+                    }
+                }
+            }
+        }
+        Ok(Self {
+            refs: raw.refs,
+            groups,
+        })
+    }
+
+    fn encode(&self) -> RawExtension {
+        let [expressions, visemes] = self.groups.clone();
+        let stored = stored::Expressions {
+            expressions,
+            visemes,
+        };
+        RawExtension {
+            version: Self::VERSION,
+            refs: self.refs.clone(),
+            // Every field is a string, an integer or a float.
+            payload: Payload::Json(serde_json::to_value(stored).unwrap_or_default()),
+        }
+    }
+
+    fn refs(&self) -> &[IdRef] {
+        &self.refs
+    }
+
+    fn refs_mut(&mut self) -> &mut Vec<IdRef> {
+        &mut self.refs
+    }
+
+    fn check(&self, model: &Model) -> Vec<Warning> {
+        Group::ALL
+            .into_iter()
+            .flat_map(|group| self.check_group(group, model))
+            .collect()
+    }
+
     fn reconcile(&mut self, _model: &Model) {
         let refs = &self.refs;
-        for expression in &mut self.expressions {
+        for expression in self.groups.iter_mut().flatten() {
             expression.settings.retain(|s| match s {
                 stored::Setting::Param(s) => !refs[s.param as usize].is_removed(),
                 stored::Setting::Control(_) => true,
@@ -648,41 +767,38 @@ impl Extension for Expressions {
 
     fn merge_addon(&self, addon: &Self) -> Result<(Self, Receipt), MergeRefused> {
         let mut merged = self.clone();
-        let mut added = Vec::with_capacity(addon.expressions.len());
-        for expression in &addon.expressions {
-            if self.contains(&expression.name) {
-                return Err(MergeRefused::Conflict(format!(
-                    "the model already has an expression named {:?}",
-                    expression.name
-                )));
-            }
-            let mut expression = expression.clone();
-            for setting in &mut expression.settings {
-                if let stored::Setting::Param(s) = setting {
-                    s.param = merged.intern(addon.refs[s.param as usize].clone());
+        let mut added: [Vec<String>; 2] = Default::default();
+        for group in Group::ALL {
+            for expression in addon.group(group) {
+                if self.contains(group, &expression.name) {
+                    return Err(MergeRefused::Conflict(format!(
+                        "the model already has a{} {} named {:?}",
+                        if group == Group::Expression { "n" } else { "" },
+                        group.noun(),
+                        expression.name
+                    )));
                 }
+                let mut expression = expression.clone();
+                for setting in &mut expression.settings {
+                    if let stored::Setting::Param(s) = setting {
+                        s.param = merged.intern(addon.refs[s.param as usize].clone());
+                    }
+                }
+                added[group.index()].push(expression.name.clone());
+                merged.groups[group.index()].push(expression);
             }
-            added.push(expression.name.clone());
-            merged.expressions.push(expression);
         }
         merged.compact();
-        Ok((merged, Receipt::new(added)))
+        Ok((merged, Receipt::new(Added(added))))
     }
 
     fn unmerge_addon(&mut self, receipt: &Receipt) {
-        let Some(added) = receipt.get::<Vec<String>>() else {
+        let Some(Added(added)) = receipt.get::<Added>() else {
             return;
         };
-        self.expressions.retain(|e| !added.contains(&e.name));
-        self.compact();
-    }
-}
-
-impl Expressions {
-    fn describe(&self, setting: &stored::Setting) -> String {
-        match setting {
-            stored::Setting::Control(s) => format!("control {:?}", s.control),
-            stored::Setting::Param(s) => self.refs[s.param as usize].to_string(),
+        for (members, added) in self.groups.iter_mut().zip(added) {
+            members.retain(|e| !added.contains(&e.name));
         }
+        self.compact();
     }
 }

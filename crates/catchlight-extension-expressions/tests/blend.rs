@@ -5,20 +5,24 @@ use catchlight_core::{
     Model, ModelNode, ModelNodeKind, ModelParam, MotionResponse, Name, NodeId, ParamId, Puppet,
     ResponseInput, ResponseSource,
 };
-use catchlight_extension_expressions::{Expression, ExpressionWeights, Expressions, Setting};
+use catchlight_extension_expressions::{Expression, Expressions, Setting, Weights};
 use catchlight_extension_humanoid::ControlValues;
 
 fn pid(s: &str) -> ParamId {
     ParamId::new(s).unwrap()
 }
 
-fn weights(pairs: &[(&str, f32)]) -> ExpressionWeights {
+fn weights(pairs: &[(&str, f32)]) -> Weights {
     pairs.iter().copied().collect()
+}
+
+fn none() -> Weights {
+    Weights::new()
 }
 
 fn controls(expressions: &Expressions, w: &[(&str, f32)], start: &[(&str, f32)]) -> ControlValues {
     let mut controls: ControlValues = start.iter().copied().collect();
-    expressions.blend_controls(&weights(w), &mut controls);
+    expressions.blend_controls(&weights(w), &none(), &mut controls);
     controls
 }
 
@@ -78,7 +82,7 @@ fn weights_clamp_to_zero_through_one_and_a_zero_weight_changes_nothing() {
     assert_eq!(w.get("aa"), Some(1.0));
     assert_eq!(w.get("uw"), Some(0.0));
     let mut c: ControlValues = [("mouth_open", 0.3)].into_iter().collect();
-    visemes().blend_controls(&w, &mut c);
+    visemes().blend_controls(&w, &none(), &mut c);
     assert_eq!(c.get("mouth_open"), Some(1.0));
     assert_eq!(c.get("mouth_width"), Some(0.5));
 }
@@ -150,11 +154,15 @@ fn weepy() -> Expressions {
 fn param_settings_blend_from_the_posed_value_or_the_default() {
     let model = rig();
     let mut puppet = Puppet::new(&model);
-    weepy().blend_params(&weights(&[("sad", 0.5)]), &mut puppet);
+    weepy().blend_params(&weights(&[("sad", 0.5)]), &none(), &mut puppet);
     assert_eq!(puppet.param_value_posed(&pid("tears")), Some(0.625));
 
     puppet.set_param_value(&pid("tears"), 0.5);
-    weepy().blend_params(&weights(&[("sad", 0.25), ("dry", 0.75)]), &mut puppet);
+    weepy().blend_params(
+        &weights(&[("sad", 0.25), ("dry", 0.75)]),
+        &none(),
+        &mut puppet,
+    );
     assert_eq!(puppet.param_value_posed(&pid("tears")), Some(0.25));
 }
 
@@ -163,7 +171,7 @@ fn param_settings_skip_a_driven_param_and_leave_controls_alone() {
     let model = rig();
     let mut puppet = Puppet::new(&model);
     assert!(puppet.is_driven(&pid("sway")));
-    weepy().blend_params(&weights(&[("sad", 1.0)]), &mut puppet);
+    weepy().blend_params(&weights(&[("sad", 1.0)]), &none(), &mut puppet);
     assert_eq!(puppet.param_value_posed(&pid("tears")), Some(1.0));
     assert_eq!(puppet.param_value_posed(&pid("sway")), None);
 
@@ -182,4 +190,83 @@ fn a_target_set_twice_in_one_expression_plays_its_last_setting() {
     )]);
     let c = controls(&expressions, &[("twice", 1.0)], &[]);
     assert_eq!(c.get("mouth_open"), Some(0.8));
+}
+
+/// `happy` and the viseme `aa` share a control and a param; `aa` also has
+/// an expression namesake that sets something else.
+fn speaking() -> Expressions {
+    Expressions::from_groups(
+        [
+            Expression::new(
+                "happy",
+                vec![
+                    Setting::control("mouth_open", 0.2),
+                    Setting::control("mouth_smile", 1.0),
+                    Setting::param(pid("tears"), 0.5),
+                ],
+            ),
+            Expression::new("aa", vec![Setting::control("mouth_smile", -1.0)]),
+        ],
+        [Expression::new(
+            "aa",
+            vec![
+                Setting::control("mouth_open", 1.0),
+                Setting::param(pid("tears"), 1.0),
+            ],
+        )],
+    )
+}
+
+#[test]
+fn visemes_blend_over_expressions_on_controls() {
+    let blend = |aa: f32| {
+        let mut c = ControlValues::new();
+        speaking().blend_controls(&weights(&[("happy", 1.0)]), &weights(&[("aa", aa)]), &mut c);
+        c
+    };
+    let full = blend(1.0);
+    assert_eq!(full.get("mouth_open"), Some(1.0), "the viseme's value");
+    assert_eq!(
+        full.get("mouth_smile"),
+        Some(1.0),
+        "the expression aa plays no part"
+    );
+    let half = blend(0.5);
+    assert_eq!(half.get("mouth_open"), Some(0.2 + (1.0 - 0.2) * 0.5));
+    let silent = blend(0.0);
+    assert_eq!(silent.get("mouth_open"), Some(0.2));
+}
+
+#[test]
+fn visemes_blend_over_expressions_on_params() {
+    let model = rig();
+    let blend = |aa: f32| {
+        let mut puppet = Puppet::new(&model);
+        speaking().blend_params(
+            &weights(&[("happy", 1.0)]),
+            &weights(&[("aa", aa)]),
+            &mut puppet,
+        );
+        puppet.param_value_posed(&pid("tears")).unwrap()
+    };
+    assert_eq!(blend(1.0), 1.0);
+    assert_eq!(blend(0.5), 0.5 + (1.0 - 0.5) * 0.5);
+    assert_eq!(blend(0.0), 0.5);
+
+    // The viseme alone fades from the posed value.
+    let mut puppet = Puppet::new(&model);
+    speaking().blend_params(&none(), &weights(&[("aa", 0.5)]), &mut puppet);
+    assert_eq!(puppet.param_value_posed(&pid("tears")), Some(0.625));
+}
+
+#[test]
+fn param_values_blend_from_the_base_given_and_leave_out_what_it_withholds() {
+    let values = speaking().param_values(
+        &weights(&[("happy", 0.5)]),
+        &weights(&[("aa", 0.5)]),
+        |_| Some(0.0),
+    );
+    assert_eq!(values, [(pid("tears"), 0.25 + (1.0 - 0.25) * 0.5)]);
+    let values = speaking().param_values(&weights(&[("happy", 1.0)]), &none(), |_| None);
+    assert!(values.is_empty());
 }

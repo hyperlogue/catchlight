@@ -56,6 +56,10 @@ pub struct ImageArgs {
     /// Repeatable weights, 0..1, of the model's expressions.
     #[arg(long, value_name = "name=weight")]
     pub expression: Vec<String>,
+    /// Repeatable weights, 0..1, of the model's visemes, which play over the
+    /// expressions.
+    #[arg(long, value_name = "name=weight")]
+    pub viseme: Vec<String>,
     /// Opaque white (default) or transparent black.
     #[arg(long, value_enum)]
     pub background: Option<BackgroundArg>,
@@ -100,6 +104,7 @@ impl ImageArgs {
         for (flag, values, setting) in [
             ("control", &self.control, &mut request.controls),
             ("expression", &self.expression, &mut request.expressions),
+            ("viseme", &self.viseme, &mut request.visemes),
         ] {
             let mut named = BTreeMap::new();
             for text in values {
