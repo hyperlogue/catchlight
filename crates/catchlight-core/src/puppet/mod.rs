@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use glam::{Mat4, Vec2, Vec3};
 
-use crate::animation::AnimationPlayState;
+use crate::animation::{AnimationPlayer, AnimationSample};
 use crate::components::{Node, NodeIdx, NodeKind};
 use crate::deform::DeformSource;
 use crate::formats::clm::ClmAnimation;
@@ -148,10 +148,10 @@ pub struct Puppet {
     motion_responses_enabled: bool,
     spine_targets: Arc<Vec<Vec<Option<u32>>>>,
 
-    animations: Arc<Vec<ClmAnimation>>,
-    wrap_cuts: Vec<ParamId>,
-    play_state: Option<AnimationPlayState>,
-    sampled_animation: Option<(AnimationPlayState, f32)>,
+    animation: AnimationPlayer,
+    /// Params whose last change was a discontinuity, consumed by the next
+    /// tick after it syncs.
+    jumps: Vec<ParamId>,
 
     /// Sparse: a drag holds one or two entries.
     scratch_transforms: HashMap<NodeIdx, ScratchTransform>,
@@ -159,16 +159,12 @@ pub struct Puppet {
     located: Vec<Located>,
 }
 
-/// `time` is the runtime's f32 playback clock in seconds and can wrap while
-/// an export frame index keeps increasing.
+/// A param's range and default as the puppet's bake holds them.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct AnimationSample<'a> {
-    pub index: usize,
-    pub name: &'a str,
-    pub timestep: f32,
-    pub time: f32,
-    pub frame: f32,
-    pub looping: bool,
+pub struct ParamLimits {
+    pub min: f32,
+    pub max: f32,
+    pub default: f32,
 }
 
 impl Puppet {
@@ -196,10 +192,8 @@ impl Puppet {
             responses: response::Responses::default(),
             motion_responses_enabled: true,
             spine_targets: Arc::default(),
-            animations: Arc::default(),
-            wrap_cuts: Vec::new(),
-            play_state: None,
-            sampled_animation: None,
+            animation: AnimationPlayer::default(),
+            jumps: Vec::new(),
             scratch_transforms: HashMap::new(),
             located: Vec::new(),
         };
@@ -748,13 +742,11 @@ impl Puppet {
     }
 
     pub fn animations(&self) -> &[ClmAnimation] {
-        &self.animations
+        self.animation.clips()
     }
 
     pub fn set_animations(&mut self, animations: Vec<ClmAnimation>) {
-        self.animations = Arc::new(animations);
-        self.play_state = None;
-        self.sampled_animation = None;
+        self.animation.set_clips(animations);
     }
 
     /// A rebake does not do this: a caller may be playing clips the model does
@@ -764,135 +756,67 @@ impl Puppet {
     }
 
     pub fn play_animation(&mut self, name: &str) -> bool {
-        if let Some(index) = self.animations.iter().position(|a| a.name == name) {
-            // Store Ids so a rebake can reassign param slots during playback.
-            self.wrap_cuts.clear();
-            let clip = &self.animations[index];
-            if clip.length > 0 {
-                let (begin, end) = clip.loop_region();
-                self.wrap_cuts.extend(
-                    clip.lanes
-                        .iter()
-                        .filter(|lane| lane.jumps_at_wrap(begin, end))
-                        .map(|lane| lane.param.clone()),
-                );
-            }
-            self.sampled_animation = None;
-            self.play_state = Some(AnimationPlayState {
-                index,
-                time: 0.0,
-                looping: true,
-            });
-            true
-        } else {
-            false
-        }
+        self.animation.play(name)
     }
 
     pub fn stop_animation(&mut self) {
-        self.play_state = None;
-        self.sampled_animation = None;
+        self.animation.stop();
     }
 
-    /// The clip sample used by the most recent animation tick, after wrapping
-    /// and clamping. Cleared by start, stop or replace until the next tick.
     pub fn animation_sample(&self) -> Option<AnimationSample<'_>> {
-        let (state, frame) = self.sampled_animation?;
-        let clip = self.animations.get(state.index)?;
-        Some(AnimationSample {
-            index: state.index,
-            name: &clip.name,
-            timestep: clip.timestep,
-            time: state.time,
-            frame,
-            looping: state.looping,
-        })
+        self.animation.sample()
     }
 
     pub fn has_playing_animation(&self) -> bool {
-        self.play_state.is_some()
+        self.animation.is_playing()
     }
 
     pub fn playing_animation(&self) -> Option<&str> {
-        let state = self.play_state?;
-        Some(self.animations.get(state.index)?.name.as_str())
+        self.animation.playing()
     }
 
     /// `dt` is in seconds. Returns whether any param moved.
     pub fn tick_animations(&mut self, dt: f32) -> bool {
-        let _span = tracing::trace_span!("tick_animations").entered();
-        if !dt.is_finite() {
-            return false;
+        let mut animation = std::mem::take(&mut self.animation);
+        let moved = animation.advance(self, dt);
+        self.animation = animation;
+        moved
+    }
+
+    /// Marks a change to `param` as a discontinuity, such as a loop wrap, so
+    /// motion responses reading it restart there instead of springing across
+    /// it. Taken by the next tick.
+    pub fn mark_jump(&mut self, param: &ParamId) {
+        if !self.jumps.contains(param) {
+            self.jumps.push(param.clone());
         }
-        let Some(mut state) = self.play_state else {
-            return false;
-        };
-        let Some(anim) = self.animations.get(state.index) else {
-            self.play_state = None;
-            return false;
-        };
-        if dt < 0. {
-            self.responses.reset();
+    }
+
+    /// Whether a motion response owns `param`, so a pose written to it would
+    /// be overridden.
+    pub fn is_driven(&self, param: &ParamId) -> bool {
+        self.motion_responses_enabled && self.reserved_output(param)
+    }
+
+    pub fn param_limits(&self, param: &ParamId) -> Option<ParamLimits> {
+        let p = self.params.get(*self.slot_of_param.get(param)? as usize)?;
+        Some(ParamLimits {
+            min: p.min,
+            max: p.max,
+            default: p.default,
+        })
+    }
+
+    fn take_jumps(&mut self) {
+        if self.jumps.is_empty() {
+            return;
         }
-        let mut jumps = smallvec::SmallVec::<[u32; 4]>::new();
-        // Start after sync so a binding edit just before play uses the new slots.
-        if self.sampled_animation.is_none() {
-            jumps = anim
-                .lanes
-                .iter()
-                .filter_map(|lane| {
-                    let &slot = self.slot_of_param.get(&lane.param)?;
-                    let p = self.params.get(slot as usize)?;
-                    (!crate::animation::same_sample(
-                        self.param_base(slot)?,
-                        lane.value_at(0.),
-                        p.min.abs().max(p.max.abs()),
-                    ))
-                    .then_some(slot)
-                })
-                .collect();
-        }
-        state.time += dt;
-        // The lead-in plays once; a loop snaps back to the loop region's start.
-        if anim.length > 0 && anim.timestep > 0.0 {
-            let (loop_begin, loop_end) = anim.loop_region();
-            let frame = (state.time / anim.timestep).round() as i64;
-            if state.looping && frame >= loop_end as i64 {
-                jumps.extend(
-                    self.wrap_cuts
-                        .iter()
-                        .filter_map(|p| self.slot_of_param.get(p).copied()),
-                );
-                state.time = loop_begin as f32 * anim.timestep;
-            }
-            let frame = (state.time / anim.timestep).round() as i64;
-            if frame + 1 >= anim.length as i64 {
-                state.time = (anim.length - 1) as f32 * anim.timestep;
-            }
-        }
-        let frame = if anim.timestep > 0.0 {
-            state.time / anim.timestep
-        } else {
-            0.0
-        };
-        self.responses.reset_changed_inputs(&jumps);
-        self.sampled_animation = Some((state, frame));
-        let animations = Arc::clone(&self.animations);
-        let mut changed = false;
-        if let Some(anim) = animations.get(state.index) {
-            for lane in &anim.lanes {
-                if self.motion_responses_enabled && self.reserved_output(&lane.param) {
-                    continue;
-                }
-                let value = lane.value_at(frame);
-                if self.param_value_posed(&lane.param) != Some(value) {
-                    self.set_param_value(&lane.param, value);
-                    changed = true;
-                }
-            }
-        }
-        self.play_state = Some(state);
-        changed
+        let slots: smallvec::SmallVec<[u32; 4]> = self
+            .jumps
+            .drain(..)
+            .filter_map(|p| self.slot_of_param.get(&p).copied())
+            .collect();
+        self.responses.reset_changed_inputs(&slots);
     }
 
     /// The posed value, ignoring driver claims. `None` means the model default.
@@ -924,10 +848,12 @@ impl Puppet {
     /// Drivers still sample the model-local pose, independent of `root`.
     pub fn tick_with_root(&mut self, model: &Model, root: Mat4, dt: f32) -> Motion {
         let _span = tracing::trace_span!("tick").entered();
+        let animation = self.tick_animations(dt);
         self.sync(model);
+        self.take_jumps();
         let mut out = std::mem::take(&mut self.transforms);
         let motion = Motion {
-            animation: self.tick_animations(dt),
+            animation,
             motion_responses: self.advance_responses(model, dt, false),
         };
         let params_changed = self.last_tick_folded_param_generation != Some(self.param_generation);

@@ -4,11 +4,15 @@
 //! lie strictly inside the clip, and a lead-out before the lead-in falls back
 //! to the whole length.
 
+use std::sync::Arc;
+
 use crate::formats::clm::{ClmAnimation, ClmKeyframe, ClmLane};
+use crate::id::ParamId;
 use crate::interpolate::InterpolateMode;
+use crate::puppet::Puppet;
 
 /// Scale comparisons to the authored units and allow for f32 sampling error.
-pub(crate) fn same_sample(a: f32, b: f32, scale: f32) -> bool {
+fn same_sample(a: f32, b: f32, scale: f32) -> bool {
     (a - b).abs() <= 8. * f32::EPSILON * a.abs().max(b.abs()).max(scale.abs())
 }
 
@@ -146,11 +150,174 @@ fn loop_region(length: i32, lead_in: i32, lead_out: i32) -> (i32, i32) {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct AnimationPlayState {
-    pub index: usize,
+struct PlayState {
+    index: usize,
     /// Seconds from the start of the clip.
+    time: f32,
+    looping: bool,
+}
+
+/// `time` is the runtime's f32 playback clock in seconds and can wrap while
+/// an export frame index keeps increasing.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AnimationSample<'a> {
+    pub index: usize,
+    pub name: &'a str,
+    pub timestep: f32,
     pub time: f32,
+    pub frame: f32,
     pub looping: bool,
+}
+
+/// Plays clips on a puppet through its public API alone: the host advances
+/// the player, then ticks the puppet.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct AnimationPlayer {
+    clips: Arc<Vec<ClmAnimation>>,
+    /// Params whose lane jumps where the loop wraps, by Id so a rebake can
+    /// reassign slots during playback.
+    wrap_cuts: Vec<ParamId>,
+    state: Option<PlayState>,
+    sampled: Option<(PlayState, f32)>,
+}
+
+impl AnimationPlayer {
+    pub(crate) fn clips(&self) -> &[ClmAnimation] {
+        &self.clips
+    }
+
+    pub(crate) fn set_clips(&mut self, clips: Vec<ClmAnimation>) {
+        self.clips = Arc::new(clips);
+        self.state = None;
+        self.sampled = None;
+    }
+
+    pub(crate) fn play(&mut self, name: &str) -> bool {
+        let Some(index) = self.clips.iter().position(|a| a.name == name) else {
+            return false;
+        };
+        self.wrap_cuts.clear();
+        let clip = &self.clips[index];
+        if clip.length > 0 {
+            let (begin, end) = clip.loop_region();
+            self.wrap_cuts.extend(
+                clip.lanes
+                    .iter()
+                    .filter(|lane| lane.jumps_at_wrap(begin, end))
+                    .map(|lane| lane.param.clone()),
+            );
+        }
+        self.sampled = None;
+        self.state = Some(PlayState {
+            index,
+            time: 0.0,
+            looping: true,
+        });
+        true
+    }
+
+    pub(crate) fn stop(&mut self) {
+        self.state = None;
+        self.sampled = None;
+    }
+
+    /// The clip sample the most recent advance used, after wrapping and
+    /// clamping. Cleared by play, stop or replacing the clips until the next
+    /// advance.
+    pub(crate) fn sample(&self) -> Option<AnimationSample<'_>> {
+        let (state, frame) = self.sampled?;
+        let clip = self.clips.get(state.index)?;
+        Some(AnimationSample {
+            index: state.index,
+            name: &clip.name,
+            timestep: clip.timestep,
+            time: state.time,
+            frame,
+            looping: state.looping,
+        })
+    }
+
+    pub(crate) fn is_playing(&self) -> bool {
+        self.state.is_some()
+    }
+
+    pub(crate) fn playing(&self) -> Option<&str> {
+        let state = self.state?;
+        Some(self.clips.get(state.index)?.name.as_str())
+    }
+
+    /// `dt` is in seconds. Returns whether any param moved.
+    pub(crate) fn advance(&mut self, puppet: &mut Puppet, dt: f32) -> bool {
+        let _span = tracing::trace_span!("advance_animation").entered();
+        if !dt.is_finite() {
+            return false;
+        }
+        let Some(mut state) = self.state else {
+            return false;
+        };
+        let clips = Arc::clone(&self.clips);
+        let Some(clip) = clips.get(state.index) else {
+            self.state = None;
+            return false;
+        };
+        if dt < 0. {
+            // Played backwards: every lane is a discontinuity.
+            for lane in &clip.lanes {
+                puppet.mark_jump(&lane.param);
+            }
+        } else if self.sampled.is_none() {
+            for lane in &clip.lanes {
+                let Some(limits) = puppet.param_limits(&lane.param) else {
+                    continue;
+                };
+                let base = puppet
+                    .param_value_posed(&lane.param)
+                    .unwrap_or(limits.default);
+                if !same_sample(
+                    base,
+                    lane.value_at(0.),
+                    limits.min.abs().max(limits.max.abs()),
+                ) {
+                    puppet.mark_jump(&lane.param);
+                }
+            }
+        }
+        state.time += dt;
+        // The lead-in plays once; a loop snaps back to the loop region's start.
+        if clip.length > 0 && clip.timestep > 0.0 {
+            let (loop_begin, loop_end) = clip.loop_region();
+            let frame = (state.time / clip.timestep).round() as i64;
+            if state.looping && frame >= loop_end as i64 {
+                for param in &self.wrap_cuts {
+                    puppet.mark_jump(param);
+                }
+                state.time = loop_begin as f32 * clip.timestep;
+            }
+            let frame = (state.time / clip.timestep).round() as i64;
+            if frame + 1 >= clip.length as i64 {
+                state.time = (clip.length - 1) as f32 * clip.timestep;
+            }
+        }
+        let frame = if clip.timestep > 0.0 {
+            state.time / clip.timestep
+        } else {
+            0.0
+        };
+        self.sampled = Some((state, frame));
+        let mut changed = false;
+        for lane in &clip.lanes {
+            if puppet.is_driven(&lane.param) {
+                continue;
+            }
+            let value = lane.value_at(frame);
+            if puppet.param_value_posed(&lane.param) != Some(value) {
+                puppet.set_param_value(&lane.param, value);
+                changed = true;
+            }
+        }
+        self.state = Some(state);
+        changed
+    }
 }
 
 #[cfg(test)]

@@ -18,6 +18,7 @@ pub mod spine;
 pub mod texture;
 pub mod weld;
 
+pub use animation::AnimationSample;
 pub use components::{
     BlendMode, CompositeData, DecodedTexture, Mask, MaskMode, Mesh, MeshGroupData, MeshIndices,
     Node, NodeIdx, NodeKind, PartData, TextureIdx, Transform,
@@ -44,7 +45,7 @@ pub use model::{
 pub use motion_response::{MotionResponse, ResponseInput, ResponseSource};
 pub use node::{NodeTree, NodeTreeError};
 pub use puppet::{
-    AnimationSample, GlobalTransforms, Motion, Puppet, ResponseClock, ResponseInputSample,
+    GlobalTransforms, Motion, ParamLimits, Puppet, ResponseClock, ResponseInputSample,
     ResponseTrace, ScratchTransform,
 };
 pub use spine::SpineData;
