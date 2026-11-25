@@ -123,11 +123,11 @@ pub fn controls_from_arkit(shape: impl Fn(&str) -> f32) -> ControlValues {
     set("mouth_funnel", shape("mouthFunnel"));
     set("mouth_press", mean("mouthPressLeft", "mouthPressRight"));
     set(
-        "teeth_upper_height",
+        "teeth_upper_raise",
         mean("mouthUpperUpLeft", "mouthUpperUpRight"),
     );
     set(
-        "lip_lower_height",
+        "lip_lower_drop",
         mean("mouthLowerDownLeft", "mouthLowerDownRight"),
     );
     set("tongue_out", shape("tongueOut"));

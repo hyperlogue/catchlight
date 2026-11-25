@@ -140,8 +140,8 @@ fn mouth() {
     approx(&v, "mouth_x", 0.0);
     approx(&v, "mouth_funnel", 0.35);
     approx(&v, "mouth_press", 0.4);
-    approx(&v, "teeth_upper_height", 0.2);
-    approx(&v, "lip_lower_height", 0.6);
+    approx(&v, "teeth_upper_raise", 0.2);
+    approx(&v, "lip_lower_drop", 0.6);
     approx(&v, "tongue_out", 0.8);
 }
 

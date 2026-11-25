@@ -36,9 +36,9 @@ pub const VISEME_CONTROLS: [&str; 7] = [
     "mouth_open",
     "mouth_smile",
     "mouth_width",
-    "teeth_upper_height",
+    "teeth_upper_raise",
     "mouth_funnel",
-    "lip_lower_height",
+    "lip_lower_drop",
     "tongue_out",
 ];
 

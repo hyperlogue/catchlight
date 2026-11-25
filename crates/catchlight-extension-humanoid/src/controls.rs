@@ -75,8 +75,8 @@ pub const CONTROLS: [Control; 35] = [
     one("mouth_open"),
     one("mouth_funnel"),
     one("mouth_press"),
-    one("teeth_upper_height"),
-    one("lip_lower_height"),
+    one("teeth_upper_raise"),
+    one("lip_lower_drop"),
     one("tongue_out"),
     one("blush"),
 ];
