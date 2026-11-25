@@ -1508,6 +1508,163 @@ class ExtensionGet:
 
 
 @dataclass(frozen=True, kw_only=True)
+class ExtensionWarnings:
+    """Every finding about the model's maintained extensions: references
+    that no longer resolve, each extension's own check, and data this
+    editor cannot read or check.
+    """
+
+    TAG_FIELD: ClassVar[str] = "cmd"
+    TAG: ClassVar[str] = "extension_warnings"
+    CMD: ClassVar[str] = TAG
+    KIND: ClassVar[CommandKind] = CommandKind.REPLICA_QUERY
+
+    session: SessionId
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class HumanoidMap:
+    """Map a humanoid control onto a param, replacing its mapping. Without
+    `stops`, a two-sided control spans the param's min, default and max,
+    and a one-sided control rests at the default and reaches the max. A
+    control outside the standard list is
+    [`ErrorCode::NonstandardControl`] unless `nonstandard`.
+    """
+
+    TAG_FIELD: ClassVar[str] = "cmd"
+    TAG: ClassVar[str] = "humanoid_map"
+    CMD: ClassVar[str] = TAG
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
+
+    session: SessionId
+    control: str
+    param: ParamId
+    # The param values the control's -1, 0 and +1 land on.
+    stops: tuple[float, float, float] | None = None
+    nonstandard: bool = False
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class HumanoidUnmap:
+    """Remove a control's mapping; removing the last removes the extension."""
+
+    TAG_FIELD: ClassVar[str] = "cmd"
+    TAG: ClassVar[str] = "humanoid_unmap"
+    CMD: ClassVar[str] = TAG
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
+
+    session: SessionId
+    control: str
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class HumanoidGet:
+    """The control mappings, and the standard controls."""
+
+    TAG_FIELD: ClassVar[str] = "cmd"
+    TAG: ClassVar[str] = "humanoid_get"
+    CMD: ClassVar[str] = TAG
+    KIND: ClassVar[CommandKind] = CommandKind.REPLICA_QUERY
+
+    session: SessionId
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ExpressionSet:
+    """Create or replace an expression or viseme from its settings, kept in
+    the order given. A control value must lie in its control's range.
+    """
+
+    TAG_FIELD: ClassVar[str] = "cmd"
+    TAG: ClassVar[str] = "expression_set"
+    CMD: ClassVar[str] = TAG
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
+
+    session: SessionId
+    group: ExpressionGroup
+    name: str
+    settings: list[ExpressionSetting]
+    # Keep a control name outside the standard list.
+    nonstandard: bool = False
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ExpressionDelete:
+    """Remove an expression or viseme; removing the last of both groups
+    removes the extension.
+    """
+
+    TAG_FIELD: ClassVar[str] = "cmd"
+    TAG: ClassVar[str] = "expression_delete"
+    CMD: ClassVar[str] = TAG
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
+
+    session: SessionId
+    group: ExpressionGroup
+    name: str
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ExpressionList:
+    """Both groups with their settings, and the standard names."""
+
+    TAG_FIELD: ClassVar[str] = "cmd"
+    TAG: ClassVar[str] = "expression_list"
+    CMD: ClassVar[str] = TAG
+    KIND: ClassVar[CommandKind] = CommandKind.REPLICA_QUERY
+
+    session: SessionId
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class VisemeAddStandard:
+    """Add the standard visemes with their default settings after the
+    existing ones. An existing viseme of a standard name is skipped, or
+    replaced in place when `replace`.
+    """
+
+    TAG_FIELD: ClassVar[str] = "cmd"
+    TAG: ClassVar[str] = "viseme_add_standard"
+    CMD: ClassVar[str] = TAG
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
+
+    session: SessionId
+    replace: bool = False
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
 class ReviewGet:
     """The session's review: every thread, and the agents attending to it."""
 
@@ -1947,6 +2104,14 @@ Command = (
     | ExtensionDelete
     | Extensions
     | ExtensionGet
+    | ExtensionWarnings
+    | HumanoidMap
+    | HumanoidUnmap
+    | HumanoidGet
+    | ExpressionSet
+    | ExpressionDelete
+    | ExpressionList
+    | VisemeAddStandard
     | ReviewGet
     | ReviewThreadAdd
     | ReviewThreadSet
@@ -2037,6 +2202,14 @@ COMMAND_VARIANTS: dict[str, type[Command]] = {
     "extension_delete": ExtensionDelete,
     "extension_list": Extensions,
     "extension_get": ExtensionGet,
+    "extension_warnings": ExtensionWarnings,
+    "humanoid_map": HumanoidMap,
+    "humanoid_unmap": HumanoidUnmap,
+    "humanoid_get": HumanoidGet,
+    "expression_set": ExpressionSet,
+    "expression_delete": ExpressionDelete,
+    "expression_list": ExpressionList,
+    "viseme_add_standard": VisemeAddStandard,
     "review_get": ReviewGet,
     "review_thread_add": ReviewThreadAdd,
     "review_thread_set": ReviewThreadSet,
@@ -2140,6 +2313,14 @@ COMMAND_KINDS: dict[str, CommandKind] = {
     "extension_delete": CommandKind.EDIT,
     "extension_list": CommandKind.REPLICA_QUERY,
     "extension_get": CommandKind.SERVER_QUERY,
+    "extension_warnings": CommandKind.REPLICA_QUERY,
+    "humanoid_map": CommandKind.EDIT,
+    "humanoid_unmap": CommandKind.EDIT,
+    "humanoid_get": CommandKind.REPLICA_QUERY,
+    "expression_set": CommandKind.EDIT,
+    "expression_delete": CommandKind.EDIT,
+    "expression_list": CommandKind.REPLICA_QUERY,
+    "viseme_add_standard": CommandKind.EDIT,
     "review_get": CommandKind.SERVER_QUERY,
     "review_thread_add": CommandKind.REVIEW,
     "review_thread_set": CommandKind.REVIEW,
@@ -2277,6 +2458,11 @@ EditCommand = (
     | ImportJson
     | CommandExtensionSet
     | ExtensionDelete
+    | HumanoidMap
+    | HumanoidUnmap
+    | ExpressionSet
+    | ExpressionDelete
+    | VisemeAddStandard
     | VersionRestore
     | VersionOpen
 )
@@ -2330,6 +2516,9 @@ ReplicaQueryCommand = (
     | Slots
     | Welds
     | Extensions
+    | ExtensionWarnings
+    | HumanoidGet
+    | ExpressionList
 )
 
 # A read that needs the editor itself: its session bookkeeping, its store or
@@ -3606,7 +3795,7 @@ class ExtensionSetBytes:
 class ExtensionSetMaintained:
     """A maintained value: its payload is `value` inline, or the `value`
     attachment when `value` is absent. A reference the model lacks is kept
-    and warned about, never refused.
+    and reported by [`Command::ExtensionWarnings`], never refused.
     """
 
     TAG_FIELD: ClassVar[str] = "kind"
@@ -3764,6 +3953,59 @@ class ExtensionInfo:
 
 
 @dataclass(frozen=True, kw_only=True)
+class ExtensionWarningInfo:
+    """A finding about one extension, never a reason to refuse anything."""
+
+    key: ExtensionKey
+    # Namespaced by its owner, as in `catchlight/dangling-reference` or
+    # `catchlight.humanoid/shared-param`.
+    code: str
+    message: str
+    # The references the finding concerns; may be empty.
+    subjects: list[ExtensionRef]
+
+
+class ExpressionGroup(StrEnum):
+    """Which of the two groups of the official expressions extension."""
+
+    EXPRESSION = "expression"
+    VISEME = "viseme"
+
+
+@dataclass(frozen=True, kw_only=True)
+class ExpressionSetting:
+    """One setting of an expression or viseme: a value for a humanoid `control`,
+    in the control's range, or a raw value for one of the model's own params.
+    Exactly one of `control` and `param`.
+    """
+
+    control: str | None = None
+    param: ParamId | None = None
+    value: float
+
+
+@dataclass(frozen=True, kw_only=True)
+class ExpressionInfo:
+    name: str
+    settings: list[ExpressionSetting]
+
+
+@dataclass(frozen=True, kw_only=True)
+class ControlMappingInfo:
+    control: str
+    param: ParamId
+    # The param values the control's -1, 0 and +1 land on.
+    stops: tuple[float, float, float]
+
+
+@dataclass(frozen=True, kw_only=True)
+class StandardControlInfo:
+    name: str
+    # Runs 0..1 rather than -1..1.
+    one_sided: bool
+
+
+@dataclass(frozen=True, kw_only=True)
 class ReplyOk:
     TAG_FIELD: ClassVar[str] = "reply"
     TAG: ClassVar[str] = "ok"
@@ -3900,6 +4142,13 @@ class ErrorCode(StrEnum):
     NO_VERSION = "no_version"
     # The session shows a saved version and takes no edits.
     READ_ONLY = "read_only"
+    # A control name outside the humanoid standard; the command takes
+    # `nonstandard` to keep it anyway.
+    NONSTANDARD_CONTROL = "nonstandard_control"
+    # An official extension's data cannot be read by this editor: written
+    # by a newer version, failing to decode, or a plain value under its
+    # key. It is kept as stored, so it is neither shown nor edited.
+    EXTENSION_UNREAD = "extension_unread"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -4307,6 +4556,126 @@ class ResponseBodyExtension:
 
 
 @dataclass(frozen=True, kw_only=True)
+class ResponseBodyExtensionWarnings:
+    TAG_FIELD: ClassVar[str] = "result"
+    TAG: ClassVar[str] = "extension_warnings"
+
+    warnings: list[ExtensionWarningInfo]
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ResponseBodyHumanoidMapped:
+    TAG_FIELD: ClassVar[str] = "result"
+    TAG: ClassVar[str] = "humanoid_mapped"
+
+    mapping: ControlMappingInfo
+    # The mapping this one replaced.
+    replaced: ControlMappingInfo | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ResponseBodyHumanoidUnmapped:
+    """The mapping a [`Command::HumanoidUnmap`] removed."""
+
+    TAG_FIELD: ClassVar[str] = "result"
+    TAG: ClassVar[str] = "humanoid_unmapped"
+
+    mapping: ControlMappingInfo
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ResponseBodyHumanoid:
+    TAG_FIELD: ClassVar[str] = "result"
+    TAG: ClassVar[str] = "humanoid"
+
+    # In control name order.
+    mappings: list[ControlMappingInfo]
+    # Every standard control, in the standard's order.
+    controls: list[StandardControlInfo]
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ResponseBodyExpression:
+    """What a [`Command::ExpressionSet`] stored."""
+
+    TAG_FIELD: ClassVar[str] = "result"
+    TAG: ClassVar[str] = "expression"
+
+    group: ExpressionGroup
+    expression: ExpressionInfo
+    # The member of the same name this one replaced.
+    replaced: ExpressionInfo | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ResponseBodyExpressionDeleted:
+    """What a [`Command::ExpressionDelete`] removed."""
+
+    TAG_FIELD: ClassVar[str] = "result"
+    TAG: ClassVar[str] = "expression_deleted"
+
+    group: ExpressionGroup
+    expression: ExpressionInfo
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ResponseBodyExpressions:
+    TAG_FIELD: ClassVar[str] = "result"
+    TAG: ClassVar[str] = "expressions"
+
+    # In author order, as are the visemes.
+    expressions: list[ExpressionInfo]
+    visemes: list[ExpressionInfo]
+    # The standard expression names, each an emotion.
+    emotion_names: list[str]
+    viseme_names: list[str]
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ResponseBodyVisemesAdded:
+    """By viseme name, in the standard order."""
+
+    TAG_FIELD: ClassVar[str] = "result"
+    TAG: ClassVar[str] = "visemes_added"
+
+    added: list[str]
+    replaced: list[str]
+    skipped: list[str]
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
 class ResponseBodyReview:
     TAG_FIELD: ClassVar[str] = "result"
     TAG: ClassVar[str] = "review"
@@ -4477,6 +4846,14 @@ ResponseBody = (
     | ResponseBodySpineFit
     | ResponseBodyExtensions
     | ResponseBodyExtension
+    | ResponseBodyExtensionWarnings
+    | ResponseBodyHumanoidMapped
+    | ResponseBodyHumanoidUnmapped
+    | ResponseBodyHumanoid
+    | ResponseBodyExpression
+    | ResponseBodyExpressionDeleted
+    | ResponseBodyExpressions
+    | ResponseBodyVisemesAdded
     | ResponseBodyReview
     | ResponseBodyReviewThread
     | ResponseBodyReviewImage
@@ -4520,6 +4897,14 @@ RESPONSE_BODY_VARIANTS: dict[str, type[ResponseBody]] = {
     "spine_fit": ResponseBodySpineFit,
     "extensions": ResponseBodyExtensions,
     "extension": ResponseBodyExtension,
+    "extension_warnings": ResponseBodyExtensionWarnings,
+    "humanoid_mapped": ResponseBodyHumanoidMapped,
+    "humanoid_unmapped": ResponseBodyHumanoidUnmapped,
+    "humanoid": ResponseBodyHumanoid,
+    "expression": ResponseBodyExpression,
+    "expression_deleted": ResponseBodyExpressionDeleted,
+    "expressions": ResponseBodyExpressions,
+    "visemes_added": ResponseBodyVisemesAdded,
     "review": ResponseBodyReview,
     "review_thread": ResponseBodyReviewThread,
     "review_image": ResponseBodyReviewImage,
@@ -4946,6 +5331,14 @@ __all__ = [
     "ExtensionDelete",
     "Extensions",
     "ExtensionGet",
+    "ExtensionWarnings",
+    "HumanoidMap",
+    "HumanoidUnmap",
+    "HumanoidGet",
+    "ExpressionSet",
+    "ExpressionDelete",
+    "ExpressionList",
+    "VisemeAddStandard",
     "ReviewGet",
     "ReviewThreadAdd",
     "ReviewThreadSet",
@@ -5099,6 +5492,12 @@ __all__ = [
     "EXTENSION_VALUE_INFO_VARIANTS",
     "parse_extension_value_info",
     "ExtensionInfo",
+    "ExtensionWarningInfo",
+    "ExpressionGroup",
+    "ExpressionSetting",
+    "ExpressionInfo",
+    "ControlMappingInfo",
+    "StandardControlInfo",
     "ReplyOk",
     "ReplyErr",
     "ReplyEvent",
@@ -5137,6 +5536,14 @@ __all__ = [
     "ResponseBodySpineFit",
     "ResponseBodyExtensions",
     "ResponseBodyExtension",
+    "ResponseBodyExtensionWarnings",
+    "ResponseBodyHumanoidMapped",
+    "ResponseBodyHumanoidUnmapped",
+    "ResponseBodyHumanoid",
+    "ResponseBodyExpression",
+    "ResponseBodyExpressionDeleted",
+    "ResponseBodyExpressions",
+    "ResponseBodyVisemesAdded",
     "ResponseBodyReview",
     "ResponseBodyReviewThread",
     "ResponseBodyReviewImage",

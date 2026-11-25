@@ -555,6 +555,67 @@ pub enum Command {
         session: SessionId,
         key: ExtensionKey,
     },
+    /// Every finding about the model's maintained extensions: references
+    /// that no longer resolve, each extension's own check, and data this
+    /// editor cannot read or check.
+    ExtensionWarnings {
+        session: SessionId,
+    },
+
+    /// Map a humanoid control onto a param, replacing its mapping. Without
+    /// `stops`, a two-sided control spans the param's min, default and max,
+    /// and a one-sided control rests at the default and reaches the max. A
+    /// control outside the standard list is
+    /// [`ErrorCode::NonstandardControl`] unless `nonstandard`.
+    HumanoidMap {
+        session: SessionId,
+        control: String,
+        param: ParamId,
+        /// The param values the control's -1, 0 and +1 land on.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stops: Option<[f32; 3]>,
+        #[serde(default)]
+        nonstandard: bool,
+    },
+    /// Remove a control's mapping; removing the last removes the extension.
+    HumanoidUnmap {
+        session: SessionId,
+        control: String,
+    },
+    /// The control mappings, and the standard controls.
+    HumanoidGet {
+        session: SessionId,
+    },
+    /// Create or replace an expression or viseme from its settings, kept in
+    /// the order given. A control value must lie in its control's range.
+    ExpressionSet {
+        session: SessionId,
+        group: ExpressionGroup,
+        name: String,
+        settings: Vec<ExpressionSetting>,
+        /// Keep a control name outside the standard list.
+        #[serde(default)]
+        nonstandard: bool,
+    },
+    /// Remove an expression or viseme; removing the last of both groups
+    /// removes the extension.
+    ExpressionDelete {
+        session: SessionId,
+        group: ExpressionGroup,
+        name: String,
+    },
+    /// Both groups with their settings, and the standard names.
+    ExpressionList {
+        session: SessionId,
+    },
+    /// Add the standard visemes with their default settings after the
+    /// existing ones. An existing viseme of a standard name is skipped, or
+    /// replaced in place when `replace`.
+    VisemeAddStandard {
+        session: SessionId,
+        #[serde(default)]
+        replace: bool,
+    },
 
     /// The session's review: every thread, and the agents attending to it.
     ReviewGet {
@@ -795,6 +856,14 @@ pub const COMMAND_KINDS: &[(&str, CommandKind)] = &[
     ("extension_delete", CommandKind::Edit),
     ("extension_list", CommandKind::ReplicaQuery),
     ("extension_get", CommandKind::ServerQuery),
+    ("extension_warnings", CommandKind::ReplicaQuery),
+    ("humanoid_map", CommandKind::Edit),
+    ("humanoid_unmap", CommandKind::Edit),
+    ("humanoid_get", CommandKind::ReplicaQuery),
+    ("expression_set", CommandKind::Edit),
+    ("expression_delete", CommandKind::Edit),
+    ("expression_list", CommandKind::ReplicaQuery),
+    ("viseme_add_standard", CommandKind::Edit),
     ("review_get", CommandKind::ServerQuery),
     ("review_thread_add", CommandKind::Review),
     ("review_thread_set", CommandKind::Review),
@@ -997,6 +1066,14 @@ impl Command {
             Command::ExtensionDelete { .. } => "extension_delete",
             Command::Extensions { .. } => "extension_list",
             Command::ExtensionGet { .. } => "extension_get",
+            Command::ExtensionWarnings { .. } => "extension_warnings",
+            Command::HumanoidMap { .. } => "humanoid_map",
+            Command::HumanoidUnmap { .. } => "humanoid_unmap",
+            Command::HumanoidGet { .. } => "humanoid_get",
+            Command::ExpressionSet { .. } => "expression_set",
+            Command::ExpressionDelete { .. } => "expression_delete",
+            Command::ExpressionList { .. } => "expression_list",
+            Command::VisemeAddStandard { .. } => "viseme_add_standard",
             Command::ReviewGet { .. } => "review_get",
             Command::ReviewThreadAdd { .. } => "review_thread_add",
             Command::ReviewThreadSet { .. } => "review_thread_set",
@@ -1123,6 +1200,14 @@ impl Command {
             | Command::ExtensionDelete { session, .. }
             | Command::Extensions { session }
             | Command::ExtensionGet { session, .. }
+            | Command::ExtensionWarnings { session }
+            | Command::HumanoidMap { session, .. }
+            | Command::HumanoidUnmap { session, .. }
+            | Command::HumanoidGet { session }
+            | Command::ExpressionSet { session, .. }
+            | Command::ExpressionDelete { session, .. }
+            | Command::ExpressionList { session }
+            | Command::VisemeAddStandard { session, .. }
             | Command::ReviewGet { session }
             | Command::ReviewThreadAdd { session, .. }
             | Command::ReviewThreadSet { session, .. }
@@ -2157,6 +2242,13 @@ pub enum ErrorCode {
     NoVersion,
     /// The session shows a saved version and takes no edits.
     ReadOnly,
+    /// A control name outside the humanoid standard; the command takes
+    /// `nonstandard` to keep it anyway.
+    NonstandardControl,
+    /// An official extension's data cannot be read by this editor: written
+    /// by a newer version, failing to decode, or a plain value under its
+    /// key. It is kept as stored, so it is neither shown nor edited.
+    ExtensionUnread,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -2289,6 +2381,50 @@ pub enum ResponseBody {
     Extension {
         key: ExtensionKey,
         value: ExtensionValueInfo,
+    },
+    ExtensionWarnings {
+        warnings: Vec<ExtensionWarningInfo>,
+    },
+    HumanoidMapped {
+        mapping: ControlMappingInfo,
+        /// The mapping this one replaced.
+        replaced: Option<ControlMappingInfo>,
+    },
+    /// The mapping a [`Command::HumanoidUnmap`] removed.
+    HumanoidUnmapped {
+        mapping: ControlMappingInfo,
+    },
+    Humanoid {
+        /// In control name order.
+        mappings: Vec<ControlMappingInfo>,
+        /// Every standard control, in the standard's order.
+        controls: Vec<StandardControlInfo>,
+    },
+    /// What a [`Command::ExpressionSet`] stored.
+    Expression {
+        group: ExpressionGroup,
+        expression: ExpressionInfo,
+        /// The member of the same name this one replaced.
+        replaced: Option<ExpressionInfo>,
+    },
+    /// What a [`Command::ExpressionDelete`] removed.
+    ExpressionDeleted {
+        group: ExpressionGroup,
+        expression: ExpressionInfo,
+    },
+    Expressions {
+        /// In author order, as are the visemes.
+        expressions: Vec<ExpressionInfo>,
+        visemes: Vec<ExpressionInfo>,
+        /// The standard expression names, each an emotion.
+        emotion_names: Vec<String>,
+        viseme_names: Vec<String>,
+    },
+    /// By viseme name, in the standard order.
+    VisemesAdded {
+        added: Vec<String>,
+        replaced: Vec<String>,
+        skipped: Vec<String>,
     },
     Review {
         review: Review,
@@ -2585,7 +2721,7 @@ pub enum ExtensionSet {
     Bytes,
     /// A maintained value: its payload is `value` inline, or the `value`
     /// attachment when `value` is absent. A reference the model lacks is kept
-    /// and warned about, never refused.
+    /// and reported by [`Command::ExtensionWarnings`], never refused.
     Maintained {
         version: u32,
         #[serde(default)]
@@ -2672,6 +2808,65 @@ pub enum ExtensionValueInfo {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         hash: Option<String>,
     },
+}
+
+/// Which of the two groups of the official expressions extension.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub enum ExpressionGroup {
+    Expression,
+    Viseme,
+}
+
+/// One setting of an expression or viseme: a value for a humanoid `control`,
+/// in the control's range, or a raw value for one of the model's own params.
+/// Exactly one of `control` and `param`.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ExpressionSetting {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub control: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub param: Option<ParamId>,
+    pub value: f32,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ExpressionInfo {
+    pub name: String,
+    pub settings: Vec<ExpressionSetting>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ControlMappingInfo {
+    pub control: String,
+    pub param: ParamId,
+    /// The param values the control's -1, 0 and +1 land on.
+    pub stops: [f32; 3],
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct StandardControlInfo {
+    pub name: String,
+    /// Runs 0..1 rather than -1..1.
+    pub one_sided: bool,
+}
+
+/// A finding about one extension, never a reason to refuse anything.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ExtensionWarningInfo {
+    pub key: ExtensionKey,
+    /// Namespaced by its owner, as in `catchlight/dangling-reference` or
+    /// `catchlight.humanoid/shared-param`.
+    pub code: String,
+    pub message: String,
+    /// The references the finding concerns; may be empty.
+    pub subjects: Vec<ExtensionRef>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

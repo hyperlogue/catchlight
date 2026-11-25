@@ -17,6 +17,10 @@ catchlight-core = { workspace = true }
 catchlight-editor-core = { workspace = true }
 catchlight-editor-server = { workspace = true }
 catchlight-editor-protocol = { workspace = true }
+# Registered where a replica is built, so the tab checks them as the editor does.
+catchlight-extension-animations = { workspace = true }
+catchlight-extension-expressions = { workspace = true }
+catchlight-extension-humanoid = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 

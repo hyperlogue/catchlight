@@ -10,6 +10,7 @@ mod http;
 mod kept_store;
 mod lifecycle;
 mod limits;
+mod official;
 #[cfg(not(target_arch = "wasm32"))]
 mod preview;
 mod query;
@@ -148,6 +149,12 @@ pub enum EditorError {
     NoVersion(u64),
     #[error("this session shows version {} of session {} and takes no edits; restore the version in that session, or fork this one to edit it", .0.version, .0.session.0)]
     ReadOnly(VersionViewing),
+    #[error("{0}")]
+    Humanoid(catchlight_extension_humanoid::authoring::AuthoringError),
+    #[error("{0}")]
+    Expressions(catchlight_extension_expressions::authoring::AuthoringError),
+    #[error("extension {key:?} cannot be read by this editor: {why}")]
+    ExtensionUnread { key: &'static str, why: String },
 }
 
 impl EditorError {
@@ -220,6 +227,9 @@ impl EditorError {
             Self::KeyConflict(_) => ErrorCode::KeyConflict,
             Self::NoVersion(_) => ErrorCode::NoVersion,
             Self::ReadOnly(_) => ErrorCode::ReadOnly,
+            Self::Humanoid(e) => official::humanoid_code(e),
+            Self::Expressions(e) => official::expressions_code(e),
+            Self::ExtensionUnread { .. } => ErrorCode::ExtensionUnread,
             // Install's refusals answer with the codes the equivalent edit gets.
             Self::Install(e) => match e {
                 InstallError::Collision { .. } => ErrorCode::DuplicateId,
@@ -1134,7 +1144,10 @@ impl Editor {
             | Command::BindingList { session, .. }
             | Command::Slots { session, .. }
             | Command::Welds { session }
-            | Command::Extensions { session } => {
+            | Command::Extensions { session }
+            | Command::ExtensionWarnings { session }
+            | Command::HumanoidGet { session }
+            | Command::ExpressionList { session } => {
                 let captured = self.with_session_captured(session, |s| {
                     query::check_revision(&cmd, s.rev)?;
                     Ok(s.model.clone())
@@ -1760,6 +1773,39 @@ impl Editor {
                     Ok(ResponseBody::Empty)
                 })
             }
+            Command::HumanoidMap {
+                session,
+                control,
+                param,
+                stops,
+                nonstandard,
+            } => self.edit_session_captured(session, |s| {
+                official::humanoid_map(&mut s.model, &control, &param, stops, nonstandard)
+            }),
+            Command::HumanoidUnmap { session, control } => self
+                .edit_session_captured(session, |s| {
+                    official::humanoid_unmap(&mut s.model, &control)
+                }),
+            Command::ExpressionSet {
+                session,
+                group,
+                name,
+                settings,
+                nonstandard,
+            } => self.edit_session_captured(session, |s| {
+                official::expression_set(&mut s.model, group, &name, settings, nonstandard)
+            }),
+            Command::ExpressionDelete {
+                session,
+                group,
+                name,
+            } => self.edit_session_captured(session, |s| {
+                official::expression_delete(&mut s.model, group, &name)
+            }),
+            Command::VisemeAddStandard { session, replace } => self
+                .edit_session_captured(session, |s| {
+                    official::viseme_add_standard(&mut s.model, replace)
+                }),
             Command::ExtensionDelete { session, key } => {
                 self.edit_session_captured(session, move |s| {
                     s.model.delete_extension(&key)?;

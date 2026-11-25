@@ -19,6 +19,9 @@ use catchlight_core::{
 };
 use catchlight_editor_protocol::{ErrorCode, Reply, Request, RequestId, SessionId};
 use catchlight_editor_server::{replica_reply, Editor};
+use catchlight_extension_animations::Animations;
+use catchlight_extension_expressions::Expressions;
+use catchlight_extension_humanoid::Humanoid;
 use serde::{Deserialize, Serialize};
 
 /// One byte extension a structure names and the replica has yet to fetch.
@@ -53,6 +56,12 @@ impl Default for ReplicaState {
 
 impl ReplicaState {
     pub fn new() -> Self {
+        // A connected tab builds only replicas, and must check the official
+        // extensions as the editor does. Registering the same types again is
+        // a no-op, and no other type takes these keys.
+        let _ = catchlight_core::extension::register::<Animations>()
+            .and_then(|()| catchlight_core::extension::register::<Humanoid>())
+            .and_then(|()| catchlight_core::extension::register::<Expressions>());
         let model = Model::new();
         let puppet = Puppet::new(&model);
         Self {

@@ -6,6 +6,7 @@ mod compose;
 mod extension;
 #[cfg(unix)]
 mod listen;
+mod official;
 mod review;
 mod transport;
 mod version;
@@ -204,10 +205,26 @@ enum Cmd {
     /// Saved versions: numbered snapshots of the model to compare, restore or
     /// point a reply at.
     Version(version::VersionArgs),
-    /// Vendor data the model carries under its own key.
+    /// Vendor data the model carries under its own key, and every
+    /// extension's warnings.
     Extension {
         #[command(subcommand)]
         action: extension::ExtensionCmd,
+    },
+    /// The control mappings of `catchlight.humanoid`.
+    Humanoid {
+        #[command(subcommand)]
+        action: official::HumanoidCmd,
+    },
+    /// The named expressions of `catchlight.expressions`.
+    Expression {
+        #[command(subcommand)]
+        action: official::ExpressionCmd,
+    },
+    /// The visemes of `catchlight.expressions`, kept beside its expressions.
+    Viseme {
+        #[command(subcommand)]
+        action: official::VisemeCmd,
     },
     /// Render a preview to a PNG.
     Preview {
@@ -843,8 +860,30 @@ where
         }
         return Ok(());
     }
-    if let Cmd::Extension { action } = &cli.cmd {
-        let code = extension::run(&cli, action, &mut transport)?;
+    let set_matches = |group: &str| {
+        matches
+            .subcommand_matches(group)
+            .and_then(|m| m.subcommand_matches("set"))
+    };
+    let typed = match &cli.cmd {
+        Cmd::Extension { action } => Some(extension::run(&cli, action, &mut transport)?),
+        Cmd::Humanoid { action } => Some(official::humanoid(&cli, action, &mut transport)?),
+        Cmd::Expression { action } => Some(official::expression(
+            &cli,
+            ExpressionGroup::Expression,
+            action,
+            set_matches("expression"),
+            &mut transport,
+        )?),
+        Cmd::Viseme { action } => Some(official::viseme(
+            &cli,
+            action,
+            set_matches("viseme"),
+            &mut transport,
+        )?),
+        _ => None,
+    };
+    if let Some(code) = typed {
         if code != 0 {
             std::process::exit(code);
         }
@@ -1200,9 +1239,12 @@ fn build_command(cli: &Cli) -> Result<Command> {
             }
         }
         Cmd::Undo | Cmd::Redo => unreachable!("composed before building"),
-        Cmd::Review(_) | Cmd::Version(_) | Cmd::Extension { .. } => {
-            unreachable!("handled in run")
-        }
+        Cmd::Review(_)
+        | Cmd::Version(_)
+        | Cmd::Extension { .. }
+        | Cmd::Humanoid { .. }
+        | Cmd::Expression { .. }
+        | Cmd::Viseme { .. } => unreachable!("handled in run"),
         Cmd::Texture { action } => match action {
             TextureCmd::Add { node, path, id } => Command::TextureAdd {
                 session: resolve_session(cli)?,
@@ -1569,9 +1611,17 @@ fn print_body(body: &ResponseBody) {
         | ResponseBody::SessionFork { .. }
         | ResponseBody::ModelExport { .. }
         | ResponseBody::Version { .. }
-        | ResponseBody::Versions { .. } => {
+        | ResponseBody::Versions { .. }
+        | ResponseBody::HumanoidMapped { .. }
+        | ResponseBody::HumanoidUnmapped { .. }
+        | ResponseBody::Humanoid { .. }
+        | ResponseBody::Expression { .. }
+        | ResponseBody::ExpressionDeleted { .. }
+        | ResponseBody::Expressions { .. }
+        | ResponseBody::VisemesAdded { .. } => {
             println!("{}", serde_json::to_string_pretty(body).unwrap_or_default());
         }
+        ResponseBody::ExtensionWarnings { warnings } => official::print_warnings(warnings),
         ResponseBody::Empty => println!("ok"),
         ResponseBody::Session { session } => println!("session {}", session.0),
         ResponseBody::Sessions { sessions } => {

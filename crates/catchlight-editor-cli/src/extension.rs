@@ -44,6 +44,10 @@ pub(super) enum ExtensionCmd {
         /// The extension key.
         key: ExtensionKey,
     },
+    /// Print every finding about the maintained extensions: references the
+    /// model lacks, each extension's own check, and data this editor cannot
+    /// read or check.
+    Warnings,
 }
 
 pub(super) fn run(
@@ -125,6 +129,7 @@ pub(super) fn run(
             session,
             key: key.clone(),
         },
+        ExtensionCmd::Warnings => Command::ExtensionWarnings { session },
     };
     let reply = stream.call(Request { id: 1, command }, siblings);
     let wrote_bytes = scratch.as_ref().is_some_and(|path| {
@@ -150,6 +155,13 @@ pub(super) fn run(
         }
         (Reply::Ok { .. }, ExtensionCmd::Set { key, .. }) => println!("extension {key} set"),
         (Reply::Ok { .. }, ExtensionCmd::Delete { key }) => println!("extension {key} deleted"),
+        (
+            Reply::Ok {
+                body: ResponseBody::ExtensionWarnings { warnings },
+                ..
+            },
+            ExtensionCmd::Warnings,
+        ) => official::print_warnings(warnings),
         _ => print_reply(cli, &reply),
     }
     Ok(i32::from(matches!(reply, Reply::Err { .. })))

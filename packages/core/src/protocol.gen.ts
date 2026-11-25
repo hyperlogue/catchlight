@@ -533,6 +533,56 @@ export type Command =
     key: ExtensionKey,
   }
   | {
+    "cmd": "extension_warnings",
+    session: SessionId,
+  }
+  | {
+    "cmd": "humanoid_map",
+    session: SessionId,
+    control: string,
+    param: ParamId,
+    /**
+     * The param values the control's -1, 0 and +1 land on.
+     */
+    stops?: [number, number, number] | null,
+    nonstandard: boolean,
+  }
+  | {
+    "cmd": "humanoid_unmap",
+    session: SessionId,
+    control: string,
+  }
+  | {
+    "cmd": "humanoid_get",
+    session: SessionId,
+  }
+  | {
+    "cmd": "expression_set",
+    session: SessionId,
+    group: ExpressionGroup,
+    name: string,
+    settings: Array<ExpressionSetting>,
+    /**
+     * Keep a control name outside the standard list.
+     */
+    nonstandard: boolean,
+  }
+  | {
+    "cmd": "expression_delete",
+    session: SessionId,
+    group: ExpressionGroup,
+    name: string,
+  }
+  | {
+    "cmd": "expression_list",
+    session: SessionId,
+  }
+  | {
+    "cmd": "viseme_add_standard",
+    session: SessionId,
+    replace: boolean,
+  }
+  | {
     "cmd": "review_get",
     session: SessionId,
   }
@@ -1537,6 +1587,63 @@ export type ExtensionInfo = {
 };
 
 /**
+ * A finding about one extension, never a reason to refuse anything.
+ */
+export type ExtensionWarningInfo = {
+  key: ExtensionKey,
+  /**
+   * Namespaced by its owner, as in `catchlight/dangling-reference` or
+   * `catchlight.humanoid/shared-param`.
+   */
+  code: string,
+  message: string,
+  /**
+   * The references the finding concerns; may be empty.
+   */
+  subjects: Array<ExtensionRef>,
+};
+
+/**
+ * Which of the two groups of the official expressions extension.
+ */
+export type ExpressionGroup =
+  | "expression"
+  | "viseme";
+
+/**
+ * One setting of an expression or viseme: a value for a humanoid `control`,
+ * in the control's range, or a raw value for one of the model's own params.
+ * Exactly one of `control` and `param`.
+ */
+export type ExpressionSetting = {
+  control?: string | null,
+  param?: ParamId | null,
+  value: number,
+};
+
+export type ExpressionInfo = {
+  name: string,
+  settings: Array<ExpressionSetting>,
+};
+
+export type ControlMappingInfo = {
+  control: string,
+  param: ParamId,
+  /**
+   * The param values the control's -1, 0 and +1 land on.
+   */
+  stops: [number, number, number],
+};
+
+export type StandardControlInfo = {
+  name: string,
+  /**
+   * Runs 0..1 rather than -1..1.
+   */
+  one_sided: boolean,
+};
+
+/**
  * The server's answer. `Ok`/`Err` carry the request's `id`; `Event` is
  * unsolicited (a model changed on a session this client observes).
  */
@@ -1607,7 +1714,9 @@ export type ErrorCode =
   | "key_conflict"
   | "reserved_extension"
   | "no_version"
-  | "read_only";
+  | "read_only"
+  | "nonstandard_control"
+  | "extension_unread";
 
 export type ResponseBody =
   | {
@@ -1768,6 +1877,66 @@ export type ResponseBody =
     "result": "extension",
     key: ExtensionKey,
     value: ExtensionValueInfo,
+  }
+  | {
+    "result": "extension_warnings",
+    warnings: Array<ExtensionWarningInfo>,
+  }
+  | {
+    "result": "humanoid_mapped",
+    mapping: ControlMappingInfo,
+    /**
+     * The mapping this one replaced.
+     */
+    replaced: ControlMappingInfo | null,
+  }
+  | {
+    "result": "humanoid_unmapped",
+    mapping: ControlMappingInfo,
+  }
+  | {
+    "result": "humanoid",
+    /**
+     * In control name order.
+     */
+    mappings: Array<ControlMappingInfo>,
+    /**
+     * Every standard control, in the standard's order.
+     */
+    controls: Array<StandardControlInfo>,
+  }
+  | {
+    "result": "expression",
+    group: ExpressionGroup,
+    expression: ExpressionInfo,
+    /**
+     * The member of the same name this one replaced.
+     */
+    replaced: ExpressionInfo | null,
+  }
+  | {
+    "result": "expression_deleted",
+    group: ExpressionGroup,
+    expression: ExpressionInfo,
+  }
+  | {
+    "result": "expressions",
+    /**
+     * In author order, as are the visemes.
+     */
+    expressions: Array<ExpressionInfo>,
+    visemes: Array<ExpressionInfo>,
+    /**
+     * The standard expression names, each an emotion.
+     */
+    emotion_names: Array<string>,
+    viseme_names: Array<string>,
+  }
+  | {
+    "result": "visemes_added",
+    added: Array<string>,
+    replaced: Array<string>,
+    skipped: Array<string>,
   }
   | {
     "result": "review",
@@ -2109,6 +2278,11 @@ export type EditCommandTag =
   | "structure_json_import"
   | "extension_set"
   | "extension_delete"
+  | "humanoid_map"
+  | "humanoid_unmap"
+  | "expression_set"
+  | "expression_delete"
+  | "viseme_add_standard"
   | "version_restore"
   | "version_open";
 export type EditCommand = Extract<Command, { cmd: EditCommandTag }>;
@@ -2173,7 +2347,10 @@ export type ReplicaQueryCommandTag =
   | "binding_list"
   | "slot_list"
   | "weld_list"
-  | "extension_list";
+  | "extension_list"
+  | "extension_warnings"
+  | "humanoid_get"
+  | "expression_list";
 export type ReplicaQueryCommand = Extract<Command, { cmd: ReplicaQueryCommandTag }>;
 
 /**

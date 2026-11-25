@@ -72,6 +72,26 @@ Operation names follow the commands. A shape the editor does not accept is
 refused before anything changes, with the reason. `request -` sends any
 protocol command as JSON on stdin when no typed command fits.
 
+A model can map the standard humanoid controls onto its params and carry
+named expressions and visemes. Each of these edits is one undo step, prints
+its result as JSON and then the extension's warnings:
+
+```sh
+catchlight-editor humanoid controls             # the standard controls
+catchlight-editor humanoid map mouth_open <param> [--stops 0,0.2,1]
+catchlight-editor humanoid list                 # mappings, unmapped controls, warnings
+catchlight-editor humanoid unmap mouth_open
+catchlight-editor expression set happy --control mouth_smile=0.8 --param <param>=0.3
+catchlight-editor expression list
+catchlight-editor viseme add-standard           # then tune with `viseme set`
+catchlight-editor extension warnings            # every extension's findings
+```
+
+A typo in a control name is refused with the nearest standard name;
+`--nonstandard` keeps a name of your own. `extension list|get|set|delete`
+edits the data a vendor's tool keeps under its own key, such as `acme.camera`;
+`catchlight.` keys are edited only through the commands above.
+
 ## 5. Share the session safely
 
 The user may edit while you work. Each reply that changes the model carries

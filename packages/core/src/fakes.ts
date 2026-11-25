@@ -4,8 +4,12 @@ import type {
   BindingInfo,
   EditOp,
   BindingTarget,
+  ControlMappingInfo,
+  ExpressionInfo,
   ExtensionInfo,
   ExtensionRef,
+  ExtensionWarningInfo,
+  StandardControlInfo,
   Command,
   Event,
   Interpolate,
@@ -53,7 +57,23 @@ export interface FakeDoc {
   bindings: FakeBinding[];
   /** A byte extension holds only the marker a feed compares. */
   extensions: FakeExtension[];
+  /** `catchlight.humanoid`'s mappings, in control name order. */
+  humanoid: ControlMappingInfo[];
+  /** `catchlight.expressions`' two groups, in author order. */
+  expressions: ExpressionInfo[];
+  visemes: ExpressionInfo[];
+  /** What `extension_warnings` answers; tests set it. */
+  extensionWarnings: ExtensionWarningInfo[];
 }
+
+/** A few of the standard controls, enough to tell the two kinds apart. */
+export const FAKE_CONTROLS: StandardControlInfo[] = [
+  { name: "head_yaw", one_sided: false },
+  { name: "mouth_smile", one_sided: false },
+  { name: "mouth_open", one_sided: true },
+];
+export const FAKE_EMOTIONS = ["happy", "angry", "sad", "relaxed", "surprised"];
+export const FAKE_VISEMES = ["aa", "ee", "oh"];
 
 export type FakeExtension =
   | { key: string; kind: "json"; value: unknown }
@@ -101,6 +121,10 @@ export function emptyDoc(title: string): FakeDoc {
     albedo: {},
     bindings: [],
     extensions: [],
+    humanoid: [],
+    expressions: [],
+    visemes: [],
+    extensionWarnings: [],
   };
 }
 
@@ -324,6 +348,83 @@ export class FakeEditor implements WasmEditor {
         doc.extensions = doc.extensions.filter((e) => e.key !== request.key);
         return this.#changed(id, request.session, doc);
       }
+      case "humanoid_map": {
+        const doc = this.docs.get(request.session);
+        if (!doc) return this.#noSession(id, request.session);
+        const param = doc.params.find((p) => p.id === request.param);
+        if (!param) return this.#err(id, "no_param", `no param ${request.param}`);
+        const standard = FAKE_CONTROLS.find((c) => c.name === request.control);
+        if (!standard && !request.nonstandard)
+          return this.#err(id, "nonstandard_control", `${JSON.stringify(request.control)} is not a standard humanoid control`);
+        const stops: [number, number, number] =
+          request.stops ??
+          (standard?.one_sided
+            ? [param.default, param.default, param.max]
+            : [param.min, param.default, param.max]);
+        const mapping = { control: request.control, param: request.param, stops };
+        const replaced = doc.humanoid.find((m) => m.control === request.control) ?? null;
+        doc.humanoid = [...doc.humanoid.filter((m) => m.control !== request.control), mapping].sort(
+          (a, b) => (a.control < b.control ? -1 : a.control > b.control ? 1 : 0),
+        );
+        return this.#changed(id, request.session, doc, { result: "humanoid_mapped", mapping, replaced });
+      }
+      case "humanoid_unmap": {
+        const doc = this.docs.get(request.session);
+        if (!doc) return this.#noSession(id, request.session);
+        const mapping = doc.humanoid.find((m) => m.control === request.control);
+        if (!mapping) return this.#err(id, "edit", `no control ${JSON.stringify(request.control)} is mapped`);
+        doc.humanoid = doc.humanoid.filter((m) => m !== mapping);
+        return this.#changed(id, request.session, doc, { result: "humanoid_unmapped", mapping });
+      }
+      case "expression_set": {
+        const doc = this.docs.get(request.session);
+        if (!doc) return this.#noSession(id, request.session);
+        if (!request.name || request.settings.length === 0)
+          return this.#err(id, "bad_request", "an expression needs a name and at least one setting");
+        const missing = request.settings.find((s) => s.param != null && !doc.params.some((p) => p.id === s.param));
+        if (missing) return this.#err(id, "no_param", `no param ${missing.param}`);
+        const group = request.group === "viseme" ? "visemes" : "expressions";
+        const expression = { name: request.name, settings: request.settings };
+        const at = doc[group].findIndex((e) => e.name === request.name);
+        const replaced = at < 0 ? null : doc[group][at]!;
+        if (at < 0) doc[group].push(expression);
+        else doc[group][at] = expression;
+        return this.#changed(id, request.session, doc, {
+          result: "expression",
+          group: request.group,
+          expression,
+          replaced,
+        });
+      }
+      case "expression_delete": {
+        const doc = this.docs.get(request.session);
+        if (!doc) return this.#noSession(id, request.session);
+        const group = request.group === "viseme" ? "visemes" : "expressions";
+        const expression = doc[group].find((e) => e.name === request.name);
+        if (!expression) return this.#err(id, "edit", `there is no ${request.group} ${JSON.stringify(request.name)}`);
+        doc[group] = doc[group].filter((e) => e !== expression);
+        return this.#changed(id, request.session, doc, { result: "expression_deleted", group: request.group, expression });
+      }
+      case "viseme_add_standard": {
+        const doc = this.docs.get(request.session);
+        if (!doc) return this.#noSession(id, request.session);
+        const report = { added: [] as string[], replaced: [] as string[], skipped: [] as string[] };
+        for (const name of FAKE_VISEMES) {
+          const at = doc.visemes.findIndex((v) => v.name === name);
+          const viseme = { name, settings: [{ control: "mouth_open", value: 0.5 }] };
+          if (at < 0) {
+            report.added.push(name);
+            doc.visemes.push(viseme);
+          } else if (request.replace) {
+            report.replaced.push(name);
+            doc.visemes[at] = viseme;
+          } else report.skipped.push(name);
+        }
+        const body = { result: "visemes_added" as const, ...report };
+        return report.added.length + report.replaced.length === 0
+          ? this.#ok(id, body, doc.rev)
+          : this.#changed(id, request.session, doc, body);
+      }
       case "binding_add": {
         const doc = this.docs.get(request.session);
         if (!doc) return this.#noSession(id, request.session);
@@ -506,6 +607,10 @@ export class FakeEditor implements WasmEditor {
     doc.rev += 1;
     this.#emit({ event: "model_changed", session, rev: doc.rev });
     return this.#ok(id, body, doc.rev);
+  }
+
+  #err(id: number, code: string, message: string): string {
+    return JSON.stringify({ reply: "err", id, code, message });
   }
 
   #reserved(id: number, key: string): string {
@@ -747,7 +852,8 @@ export class FakeEditor implements WasmEditor {
 const READ_ONLY_REFUSES = new Set([
   "node_add", "node_set", "node_delete", "param_add", "param_set", "param_delete", "texture_add",
   "edit_apply", "session_save", "binding_add", "review_thread_add", "review_comment_add", "version_save",
-  "extension_set", "extension_delete",
+  "extension_set", "extension_delete", "humanoid_map", "humanoid_unmap", "expression_set",
+  "expression_delete", "viseme_add_standard",
 ]);
 
 /** Reports a small limit so the clamp is testable. */
@@ -901,6 +1007,33 @@ export class FakeReplica implements WasmReplica {
           id,
           rev: this.#rev,
           body: { result: "params", params: doc.params },
+        });
+      case "humanoid_get":
+        return JSON.stringify({
+          reply: "ok",
+          id,
+          rev: this.#rev,
+          body: { result: "humanoid", mappings: doc.humanoid, controls: FAKE_CONTROLS },
+        });
+      case "expression_list":
+        return JSON.stringify({
+          reply: "ok",
+          id,
+          rev: this.#rev,
+          body: {
+            result: "expressions",
+            expressions: doc.expressions,
+            visemes: doc.visemes,
+            emotion_names: FAKE_EMOTIONS,
+            viseme_names: FAKE_VISEMES,
+          },
+        });
+      case "extension_warnings":
+        return JSON.stringify({
+          reply: "ok",
+          id,
+          rev: this.#rev,
+          body: { result: "extension_warnings", warnings: doc.extensionWarnings },
         });
       case "extension_list":
         return JSON.stringify({

@@ -198,3 +198,89 @@ fn the_extension_group_sets_lists_gets_and_deletes_vendor_values() {
         .collect();
     assert_eq!(keys, ["acme.cache", "acme.framing"]);
 }
+
+#[test]
+fn the_typed_commands_print_what_the_file_cli_prints() {
+    let s = serve("typed");
+    let controls: Value = serde_json::from_str(&s.ok(&["humanoid", "controls"])).unwrap();
+    assert_eq!(controls[0], json!({"name": "head_yaw", "one_sided": false}));
+
+    let mapped: Value =
+        serde_json::from_str(&s.ok(&["humanoid", "map", "mouth_open", "jaw"])).unwrap();
+    assert_eq!(
+        mapped,
+        json!({"control": "mouth_open", "param": "jaw", "stops": [0.2, 0.2, 1.0], "replaced": null})
+    );
+    let out = s.run(&["humanoid", "map", "head_yaw", "jaw", "--stops", "1,0,-1"]);
+    assert!(out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("warning: catchlight.humanoid/shared-param"),
+        "an edit prints the extension's warnings: {stderr}"
+    );
+    let why = s.refused(&["humanoid", "map", "mouth_opn", "jaw"]);
+    assert!(
+        why.contains("nonstandard_control") && why.contains("mouth_open"),
+        "{why}"
+    );
+
+    let listed: Value = serde_json::from_str(&s.ok(&["humanoid", "list"])).unwrap();
+    assert_eq!(listed["mappings"].as_array().unwrap().len(), 2);
+    assert!(!listed["unmapped"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("mouth_open")));
+    assert_eq!(
+        listed["warnings"][0]["code"],
+        "catchlight.humanoid/shared-param"
+    );
+    let removed: Value = serde_json::from_str(&s.ok(&["humanoid", "unmap", "head_yaw"])).unwrap();
+    assert_eq!(
+        removed,
+        json!({"control": "head_yaw", "param": "jaw", "stops": [1.0, 0.0, -1.0]})
+    );
+
+    let set: Value = serde_json::from_str(&s.ok(&[
+        "expression",
+        "set",
+        "sad",
+        "--param",
+        "turn=0.5",
+        "--control",
+        "mouth_smile=-0.5",
+    ]))
+    .unwrap();
+    assert_eq!(
+        set,
+        json!({
+            "expression": {"name": "sad", "settings": [
+                {"param": "turn", "value": 0.5},
+                {"control": "mouth_smile", "value": -0.5},
+            ]},
+            "replaced": null,
+        }),
+        "settings keep the order they were given in"
+    );
+    let names: Value = serde_json::from_str(&s.ok(&["expression", "names"])).unwrap();
+    assert!(names.as_array().unwrap().contains(&json!("happy")));
+    let listed: Value = serde_json::from_str(&s.ok(&["expression", "list"])).unwrap();
+    assert_eq!(listed["expressions"][0]["name"], "sad");
+
+    let added: Value = serde_json::from_str(&s.ok(&["viseme", "add-standard"])).unwrap();
+    assert!(added["added"].as_array().unwrap().contains(&json!("aa")));
+    let listed: Value = serde_json::from_str(&s.ok(&["viseme", "list"])).unwrap();
+    assert_eq!(listed["visemes"][1]["name"], "aa");
+    let removed: Value = serde_json::from_str(&s.ok(&["viseme", "remove", "aa"])).unwrap();
+    assert_eq!(removed["name"], "aa");
+
+    let why = s.refused(&["expression", "set", "x", "--control", "mouth_open=-1"]);
+    assert!(why.contains("bad_request"), "{why}");
+
+    let warnings = s.ok(&["extension", "warnings"]);
+    assert!(
+        warnings.contains("warning: catchlight.expressions: catchlight.expressions/"),
+        "{warnings}"
+    );
+    let raw = s.json(&["extension", "warnings"]);
+    assert_eq!(raw["body"]["result"], "extension_warnings");
+}

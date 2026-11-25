@@ -306,6 +306,9 @@ fn replica_commands(session: SessionId, node: NodeId) -> Vec<Command> {
             vertices: None,
         },
         Command::Extensions { session },
+        Command::ExtensionWarnings { session },
+        Command::HumanoidGet { session },
+        Command::ExpressionList { session },
     ]
 }
 
@@ -336,6 +339,14 @@ fn other_commands(session: SessionId, node: NodeId) -> Vec<Command> {
         Command::Save {
             session,
             path: None,
+        },
+        Command::HumanoidUnmap {
+            session,
+            control: "head_yaw".into(),
+        },
+        Command::VisemeAddStandard {
+            session,
+            replace: false,
         },
     ]
 }

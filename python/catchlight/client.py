@@ -11,7 +11,7 @@ import os
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from .protocol_gen import (
     Camera,
@@ -32,6 +32,27 @@ from .protocol_gen import (
     ExtensionInfo,
     ExtensionKey,
     ExtensionRef,
+    ExtensionWarningInfo,
+    ExtensionWarnings,
+    ControlMappingInfo,
+    ExpressionDelete,
+    ExpressionGroup,
+    ExpressionInfo,
+    ExpressionList,
+    ExpressionSet,
+    ExpressionSetting,
+    HumanoidGet,
+    HumanoidMap,
+    HumanoidUnmap,
+    VisemeAddStandard,
+    ResponseBodyExpression,
+    ResponseBodyExpressionDeleted,
+    ResponseBodyExpressions,
+    ResponseBodyExtensionWarnings,
+    ResponseBodyHumanoid,
+    ResponseBodyHumanoidMapped,
+    ResponseBodyHumanoidUnmapped,
+    ResponseBodyVisemesAdded,
     ExtensionSetBytes,
     ExtensionSetJson,
     ExtensionSetMaintained,
@@ -116,6 +137,8 @@ from .protocol_gen import (
 from .transport import ByteTransport, Transport
 
 __all__ = ["AGENT", "Client", "Maintained", "ProtocolError"]
+
+_Body = TypeVar("_Body")
 
 AGENT = ReviewIdentity(id="agent", name="agent")
 """The agent a review call acts as unless told otherwise."""
@@ -509,6 +532,105 @@ class Client:
         if not isinstance(body, ResponseBodyExtensions):
             raise ProtocolError(ErrorCode.BAD_REQUEST, f"extensions answered {body!r}")
         return body.extensions
+
+    def extension_warnings(self, session: SessionId) -> list[ExtensionWarningInfo]:
+        """Every finding about the maintained extensions; never a refusal."""
+        body = self.send(ExtensionWarnings(session=session))
+        if not isinstance(body, ResponseBodyExtensionWarnings):
+            raise ProtocolError(ErrorCode.BAD_REQUEST, f"extension_warnings answered {body!r}")
+        return body.warnings
+
+    # -- official extensions
+
+    def humanoid(self, session: SessionId) -> ResponseBodyHumanoid:
+        """The control mappings, and every standard control."""
+        return self._expect(HumanoidGet(session=session), ResponseBodyHumanoid)
+
+    def humanoid_map(
+        self,
+        session: SessionId,
+        control: str,
+        param: ParamId,
+        *,
+        stops: tuple[float, float, float] | None = None,
+        nonstandard: bool = False,
+    ) -> ResponseBodyHumanoidMapped:
+        """Without `stops`, a two-sided control spans the param's min, default
+        and max, and a one-sided one rests at the default and reaches the max.
+        A control outside the standard list needs `nonstandard`."""
+        return self._expect(
+            HumanoidMap(
+                session=session,
+                control=control,
+                param=param,
+                stops=stops,
+                nonstandard=nonstandard,
+            ),
+            ResponseBodyHumanoidMapped,
+        )
+
+    def humanoid_unmap(self, session: SessionId, control: str) -> ControlMappingInfo:
+        """Returns the removed mapping; the last one takes the extension."""
+        body = self._expect(
+            HumanoidUnmap(session=session, control=control), ResponseBodyHumanoidUnmapped
+        )
+        return body.mapping
+
+    def expressions(self, session: SessionId) -> ResponseBodyExpressions:
+        """Both groups with their settings, and the standard names."""
+        return self._expect(ExpressionList(session=session), ResponseBodyExpressions)
+
+    def expression_set(
+        self,
+        session: SessionId,
+        name: str,
+        settings: Sequence[ExpressionSetting],
+        *,
+        group: ExpressionGroup = ExpressionGroup.EXPRESSION,
+        nonstandard: bool = False,
+    ) -> ResponseBodyExpression:
+        """Creates or replaces an expression, or a viseme with `group`, its
+        settings kept in the order given."""
+        return self._expect(
+            ExpressionSet(
+                session=session,
+                group=group,
+                name=name,
+                settings=list(settings),
+                nonstandard=nonstandard,
+            ),
+            ResponseBodyExpression,
+        )
+
+    def expression_delete(
+        self,
+        session: SessionId,
+        name: str,
+        *,
+        group: ExpressionGroup = ExpressionGroup.EXPRESSION,
+    ) -> ExpressionInfo:
+        """Returns the removed member; the last of both groups takes the
+        extension."""
+        body = self._expect(
+            ExpressionDelete(session=session, group=group, name=name),
+            ResponseBodyExpressionDeleted,
+        )
+        return body.expression
+
+    def viseme_add_standard(
+        self, session: SessionId, *, replace: bool = False
+    ) -> ResponseBodyVisemesAdded:
+        """Adds the standard visemes after the existing ones; an existing one
+        of a standard name is skipped, or replaced with `replace`."""
+        return self._expect(
+            VisemeAddStandard(session=session, replace=replace), ResponseBodyVisemesAdded
+        )
+
+    def _expect(self, command: Command, kind: type[_Body]) -> _Body:
+        body = self.send(command)
+        if not isinstance(body, kind):
+            raise ProtocolError(ErrorCode.BAD_REQUEST, f"{command.CMD} answered {body!r}")
+        return body
 
     # -- review
 

@@ -84,6 +84,21 @@ next release is 0.3.0.
   uninstall. `catchlight-cli extension set --version <n> --refs <json>`
   writes a vendor's maintained extension with a JSON or byte payload, and
   warns about a reference the model lacks rather than refusing it.
+- **Rig controls and expressions in the editor.** The editor takes typed
+  commands for the official extensions, each one undo step that refuses what
+  the file CLI refuses: `humanoid_map`, `humanoid_unmap`, `expression_set`
+  and `expression_delete` for either group, and `viseme_add_standard`. The
+  reads `humanoid_get`, `expression_list` and `extension_warnings` are
+  answered from the model alone, so a tab answers them too; a connected tab
+  now registers the official extensions and checks them as the editor does.
+  `extension_warnings` reports every finding with its key, code and the
+  references it concerns. `catchlight-editor humanoid`, `expression` and
+  `viseme` mirror the file CLI's groups and output, `catchlight-editor
+  extension warnings` prints the findings, and Python sessions get
+  `Client.humanoid_map`, `expression_set`, `extension_warnings` and the rest.
+  Two error codes are new: `nonstandard_control`, answered by resending with
+  `nonstandard`, and `extension_unread`, for official data written by a newer
+  build or failing to decode.
 - **Vendor extensions in the editor keep their references.**
   `extension_set` takes a maintained value: a version, a reference table and
   a payload, inline JSON or the `value` attachment. `extension_list` and
