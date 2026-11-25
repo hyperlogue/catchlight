@@ -35,6 +35,7 @@ import type {
 } from "./backend.js";
 import { FeedQueue, ProtocolError } from "./backend.js";
 import type { FetchInit, HttpResponse, SocketLike } from "./connected.js";
+import type { Playing, PreviewInputs } from "./session.js";
 import type {
   ExtensionRequest,
   TextureRequest,
@@ -64,6 +65,8 @@ export interface FakeDoc {
   visemes: ExpressionInfo[];
   /** What `extension_warnings` answers; tests set it. */
   extensionWarnings: ExtensionWarningInfo[];
+  /** `catchlight.animations`' clips; only their names play. */
+  clips: { name: string }[];
 }
 
 /** A few of the standard controls, enough to tell the two kinds apart. */
@@ -103,6 +106,11 @@ export interface FakeBinding {
   cells: { x: number; y: number; value: number | null }[];
 }
 
+function preview(values: Record<string, number>, name: string, value: number | undefined): void {
+  if (value === undefined) delete values[name];
+  else values[name] = value;
+}
+
 export function emptyDoc(title: string): FakeDoc {
   return {
     rev: 0,
@@ -125,6 +133,7 @@ export function emptyDoc(title: string): FakeDoc {
     expressions: [],
     visemes: [],
     extensionWarnings: [],
+    clips: [],
   };
 }
 
@@ -878,7 +887,9 @@ export class FakeGpu implements WasmGpu {
 }
 
 export class FakeReplica implements WasmReplica {
-  setEditing(_editing: boolean): void {}
+  setEditing(editing: boolean): void {
+    if (editing) this.clip = undefined;
+  }
   recordingPairs(_node: string, _param: string): string {
     return "[]";
   }
@@ -908,6 +919,9 @@ export class FakeReplica implements WasmReplica {
   translations = new Map<string, [number, number, number]>();
   box: [number, number, number, number] | undefined;
   freed = false;
+  preview: PreviewInputs = { controls: {}, expressions: {}, visemes: {} };
+  /** Stands still: the fake never advances a clip. */
+  clip: Playing | undefined;
 
   #rev = 0;
 
@@ -1109,7 +1123,44 @@ export class FakeReplica implements WasmReplica {
 
   setParam(id: string, value: number): boolean {
     this.pose.set(id, value);
+    for (const mapping of this.doc?.humanoid ?? []) {
+      if (mapping.param === id) delete this.preview.controls[mapping.control];
+    }
     return true;
+  }
+
+  setControl(name: string, value: number | undefined): void {
+    preview(this.preview.controls, name, value);
+  }
+
+  setExpressionWeight(name: string, weight: number | undefined): void {
+    preview(this.preview.expressions, name, weight);
+  }
+
+  setVisemeWeight(name: string, weight: number | undefined): void {
+    preview(this.preview.visemes, name, weight);
+  }
+
+  clearInputs(): void {
+    this.preview = { controls: {}, expressions: {}, visemes: {} };
+  }
+
+  inputs(): string {
+    return JSON.stringify(this.preview);
+  }
+
+  play(clip: string): boolean {
+    if (!this.doc?.clips.some((c) => c.name === clip)) return false;
+    this.clip = { name: clip, time: 0, frame: 0 };
+    return true;
+  }
+
+  stop(): void {
+    this.clip = undefined;
+  }
+
+  playing(): string | undefined {
+    return this.clip && JSON.stringify(this.clip);
   }
 
   paramValue(id: string): number | undefined {

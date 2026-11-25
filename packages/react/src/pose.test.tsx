@@ -81,6 +81,7 @@ describe("publishing the pose", () => {
     const [eye, mouth] = session.params() as [ParamInfo, ParamInfo];
     session.setParam(eye.id, 0.3);
     session.setParam(mouth.id, 0.7);
+    session.setExpressionWeight("happy", 0.5);
 
     let reset: (() => void) | undefined;
     function Host() {
@@ -100,6 +101,7 @@ describe("publishing the pose", () => {
 
     expect(session.paramValue(eye.id)).toBe(1);
     expect(session.paramValue(mouth.id)).toBe(0);
+    expect(session.inputs().expressions).toEqual({});
 
     await run(() => jest.advanceTimersByTime(POSE_INTERVAL_MS));
     expect(published(wasm)).toHaveLength(1);

@@ -233,6 +233,81 @@ describe("the quiet paths", () => {
   });
 });
 
+describe("preview inputs and playback", () => {
+  function rigged() {
+    const opened = open();
+    const doc = emptyDoc("rigged");
+    doc.humanoid = [
+      { control: "mouth_open", param: "jaw", stops: [0, 0, 1] },
+      { control: "mouth_smile", param: "cheek", stops: [-1, 0, 1] },
+    ];
+    doc.clips = [{ name: "wave" }];
+    opened.replica.applyStructure(structureBytes(doc), 1);
+    let repaints = 0;
+    opened.session.onInvalidate(() => {
+      repaints += 1;
+    });
+    let revisions = 0;
+    opened.session.subscribe(() => {
+      revisions += 1;
+    });
+    return { ...opened, repaints: () => repaints, revisions: () => revisions };
+  }
+
+  test("each input reaches the replica and repaints, and is never a revision", () => {
+    const { replica, session, repaints, revisions } = rigged();
+    session.setControl("mouth_open", 0.5);
+    session.setExpressionWeight("happy", 0.25);
+    session.setVisemeWeight("aa", 1);
+    expect(repaints()).toBe(3);
+    expect(replica.preview).toEqual({
+      controls: { mouth_open: 0.5 },
+      expressions: { happy: 0.25 },
+      visemes: { aa: 1 },
+    });
+    expect(session.inputs()).toEqual(replica.preview);
+    expect(session.inputs()).toBe(session.inputs());
+
+    session.setExpressionWeight("happy", undefined);
+    expect(session.inputs().expressions).toEqual({});
+    session.clearInputs();
+    expect(repaints()).toBe(5);
+    expect(session.inputs()).toEqual({ controls: {}, expressions: {}, visemes: {} });
+    expect(revisions()).toBe(0);
+  });
+
+  test("setting a param drops the controls previewed onto it", () => {
+    const { session } = rigged();
+    session.setControl("mouth_open", 0.5);
+    session.setControl("mouth_smile", 0.5);
+    const before = session.inputs();
+    session.setParam("jaw", 0.1);
+    expect(session.inputs()).not.toBe(before);
+    expect(session.inputs().controls).toEqual({ mouth_smile: 0.5 });
+  });
+
+  test("a clip plays by name, reports where it is, and stops", () => {
+    const { session, repaints, revisions } = rigged();
+    expect(session.playing()).toBeUndefined();
+    expect(session.play("nope")).toBe(false);
+    expect(session.play("wave")).toBe(true);
+    expect(session.playing()).toEqual({ name: "wave", time: 0, frame: 0 });
+    session.stop();
+    expect(session.playing()).toBeUndefined();
+    expect(repaints()).toBe(3);
+    expect(revisions()).toBe(0);
+  });
+
+  test("a closed session previews nothing", () => {
+    const { replica, session } = rigged();
+    session.close();
+    session.setControl("mouth_open", 0.5);
+    expect(session.play("wave")).toBe(false);
+    expect(replica.preview.controls).toEqual({});
+    expect(session.inputs()).toEqual({ controls: {}, expressions: {}, visemes: {} });
+  });
+});
+
 describe("reads", () => {
   test("a replica query answers synchronously, with no round trip", async () => {
     const { backend, session } = open();

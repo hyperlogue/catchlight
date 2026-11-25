@@ -12,6 +12,8 @@ export type {
   RecordProperties,
 } from "./authoring.js";
 export type {
+  Playing,
+  PreviewInputs,
   ScratchTransform,
   SessionCommand,
   SessionEditCommand,

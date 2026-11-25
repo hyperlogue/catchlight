@@ -937,6 +937,54 @@ pub(crate) mod browser {
             self.inner.borrow().state.param_value(id)
         }
 
+        /// `undefined` clears the control's preview value.
+        #[wasm_bindgen(js_name = setControl)]
+        pub fn set_control(&self, name: &str, value: Option<f32>) {
+            self.inner.borrow_mut().state.set_control(name, value);
+        }
+
+        #[wasm_bindgen(js_name = setExpressionWeight)]
+        pub fn set_expression_weight(&self, name: &str, weight: Option<f32>) {
+            self.inner
+                .borrow_mut()
+                .state
+                .set_expression_weight(name, weight);
+        }
+
+        #[wasm_bindgen(js_name = setVisemeWeight)]
+        pub fn set_viseme_weight(&self, name: &str, weight: Option<f32>) {
+            self.inner
+                .borrow_mut()
+                .state
+                .set_viseme_weight(name, weight);
+        }
+
+        #[wasm_bindgen(js_name = clearInputs)]
+        pub fn clear_inputs(&self) {
+            self.inner.borrow_mut().state.clear_inputs();
+        }
+
+        /// As JSON `{ controls, expressions, visemes }`, each a map of name to
+        /// value.
+        pub fn inputs(&self) -> String {
+            serde_json::to_string(&self.inner.borrow().state.inputs())
+                .unwrap_or_else(|_| "{}".to_string())
+        }
+
+        pub fn play(&self, name: &str) -> bool {
+            self.inner.borrow_mut().state.play(name)
+        }
+
+        pub fn stop(&self) {
+            self.inner.borrow_mut().state.stop();
+        }
+
+        /// As JSON `{ name, time, frame }`; `undefined` when nothing plays.
+        pub fn playing(&self) -> Option<String> {
+            let playing = self.inner.borrow().state.playing()?;
+            serde_json::to_string(&playing).ok()
+        }
+
         /// Per-vertex offsets as pairs `[dx0, dy0, dx1, dy1, ...]`.
         #[wasm_bindgen(js_name = scratchDeform)]
         pub fn scratch_deform(&self, node: &str, offsets: &[f32]) -> bool {

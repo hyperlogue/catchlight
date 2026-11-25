@@ -86,6 +86,17 @@ export interface WasmReplica extends WasmOwned {
 
   setParam(id: ParamId, value: number): boolean;
   paramValue(id: ParamId): number | undefined;
+  /** `undefined` clears the control's preview value. */
+  setControl(name: string, value: number | undefined): void;
+  setExpressionWeight(name: string, weight: number | undefined): void;
+  setVisemeWeight(name: string, weight: number | undefined): void;
+  clearInputs(): void;
+  /** JSON `PreviewInputs`. */
+  inputs(): string;
+  play(clip: string): boolean;
+  stop(): void;
+  /** JSON `Playing`; `undefined` when nothing plays. */
+  playing(): string | undefined;
   /** Packed `[dx0, dy0, dx1, dy1, ...]`. */
   scratchDeform(node: NodeId, offsets: Float32Array): boolean;
   clearScratchDeform(node: NodeId): boolean;

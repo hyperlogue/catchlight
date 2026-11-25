@@ -78,6 +78,23 @@ export interface ScratchTransform {
  */
 export const REVIEW_LISTENING_POLL_MS = 4000;
 
+/**
+ * A tab's own preview values by name: humanoid controls, and expression and
+ * viseme weights. Never written to the model or published through presence.
+ */
+export interface PreviewInputs {
+  controls: Record<string, number>;
+  expressions: Record<string, number>;
+  visemes: Record<string, number>;
+}
+
+/** The clip a tab plays: seconds from its start, and the fractional frame. */
+export interface Playing {
+  name: string;
+  time: number;
+  frame: number;
+}
+
 const NO_REVIEW: Review = { threads: [], agents: [], kept: "stored" };
 
 /** A session's saved versions, oldest first, and how long they are kept. */
@@ -113,6 +130,7 @@ export class Session {
   #feeding = 0;
   #failure: ProtocolError | undefined;
   #offEvents: Unsubscribe;
+  #inputs: PreviewInputs | undefined;
   #nextQueryId = 1;
   #review: Review = NO_REVIEW;
   #reviewListeners = new Set<() => void>();
@@ -376,11 +394,72 @@ export class Session {
     }
   }
 
-  /** Repaints; authors nothing. */
+  /** Repaints; authors nothing. Clears the controls previewed onto `param`. */
   setParam(param: ParamId, value: number): boolean {
     const moved = this.replica.setParam(param, value);
+    this.#inputs = undefined;
     this.invalidate();
     return moved;
+  }
+
+  /** Previews a humanoid control; `undefined` clears it. Authors nothing. */
+  setControl(control: string, value: number | undefined): void {
+    if (this.#closed) return;
+    this.replica.setControl(control, value);
+    this.#inputsChanged();
+  }
+
+  /** Previews an expression at `weight` (0..1); `undefined` clears it. */
+  setExpressionWeight(expression: string, weight: number | undefined): void {
+    if (this.#closed) return;
+    this.replica.setExpressionWeight(expression, weight);
+    this.#inputsChanged();
+  }
+
+  /** Previews a viseme at `weight` (0..1); `undefined` clears it. */
+  setVisemeWeight(viseme: string, weight: number | undefined): void {
+    if (this.#closed) return;
+    this.replica.setVisemeWeight(viseme, weight);
+    this.#inputsChanged();
+  }
+
+  clearInputs(): void {
+    if (this.#closed) return;
+    this.replica.clearInputs();
+    this.#inputsChanged();
+  }
+
+  /** This tab's preview inputs; the same object until they change. */
+  inputs(): PreviewInputs {
+    if (this.#closed) return NO_INPUTS;
+    this.#inputs ??= JSON.parse(this.replica.inputs()) as PreviewInputs;
+    return this.#inputs;
+  }
+
+  /** Plays the model's clip named `clip` from its start; false when there is none. */
+  play(clip: string): boolean {
+    if (this.#closed) return false;
+    const started = this.replica.play(clip);
+    this.invalidate();
+    return started;
+  }
+
+  stop(): void {
+    if (this.#closed) return;
+    this.replica.stop();
+    this.invalidate();
+  }
+
+  /** Where the playing clip is after the last frame; `undefined` when none plays. */
+  playing(): Playing | undefined {
+    if (this.#closed) return undefined;
+    const playing = this.replica.playing();
+    return playing === undefined ? undefined : (JSON.parse(playing) as Playing);
+  }
+
+  #inputsChanged(): void {
+    this.#inputs = undefined;
+    this.invalidate();
   }
 
   paramValue(param: ParamId): number | undefined {
@@ -717,6 +796,8 @@ export class Session {
     for (const listener of [...this.#errors]) listener(error);
   }
 }
+
+const NO_INPUTS: PreviewInputs = { controls: {}, expressions: {}, visemes: {} };
 
 const NO_VEC3: [number, number, number] = [NaN, NaN, NaN];
 const NO_VEC2: [number, number] = [NaN, NaN];
