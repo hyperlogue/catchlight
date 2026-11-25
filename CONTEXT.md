@@ -337,14 +337,16 @@ order they are drawn, with the masking and compositing each one needs.
 _Avoid_: draw list, scene
 
 **Animation**:
-A named, timed sequence of param values with a length in frames: an optional
+A named, timed sequence of values with a length in frames: an optional
 lead-in played once, then the **loop region** between it and an optional
 lead-out, repeated. A model keeps its animations in the official
 `catchlight.animations` extension, and no two share a name. Playing one
 sets a puppet's pose before each tick.
 
 **Lane**:
-One animation's track over a single param, with its own interpolation mode.
+One animation's track over a single target — a param, a control, or the
+weight of an expression or a viseme — with its own interpolation mode. A
+lane on a control, expression or viseme plays on any model that has it.
 
 **Keyframe**:
 A value the author set on a lane at one frame of an animation. Before the
@@ -454,13 +456,18 @@ _Avoid_: binding (that's a param driving a node)
 A named pose a model carries in the official `catchlight.expressions`
 extension, faded in by a weight from 0 to 1. Each of its **settings** gives
 a value to a control or to one of the model's own params, so an expression
-can reach what the standard does not name. A standard name — an emotion or
-a viseme — means the same on every model; a model may add names of its own.
+can reach what the standard does not name. Expressions layer: several can
+hold a weight at once. A standard name, an emotion such as happy, means the
+same on every model; a model may add names of its own.
 _Avoid_: preset, pose (alone), blendshape
 
 **Viseme**:
-An expression under a standard mouth-shape name, one for each group of
-speech sounds that look alike, which lip sync fades between.
+A mouth pose for one group of speech sounds that look alike, kept beside a
+model's expressions and made of settings like theirs, under a standard name.
+Lip sync fades between visemes, and they apply over the expressions, so
+speech takes the mouth while a sound plays and the expression returns
+between sounds.
+_Avoid_: mouth shape, phoneme (that's the sound, not its look)
 
 ### Editing
 
