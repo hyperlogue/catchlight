@@ -1147,7 +1147,8 @@ impl Editor {
             | Command::Extensions { session }
             | Command::ExtensionWarnings { session }
             | Command::HumanoidGet { session }
-            | Command::ExpressionList { session } => {
+            | Command::ExpressionList { session }
+            | Command::ClipList { session } => {
                 let captured = self.with_session_captured(session, |s| {
                     query::check_revision(&cmd, s.rev)?;
                     Ok(s.model.clone())

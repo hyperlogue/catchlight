@@ -1,5 +1,5 @@
-//! `humanoid`, `expression` and `viseme`: the official extensions' typed
-//! commands, named and printed as the file CLI's are. Each edit prints its
+//! `humanoid`, `expression`, `viseme` and `clip`: the official extensions'
+//! typed commands, named and printed as the file CLI's are. Each edit prints its
 //! result as JSON, then the edited extension's warnings on stderr; warnings
 //! never fail the command.
 
@@ -10,6 +10,7 @@ use super::*;
 
 const HUMANOID: &str = "catchlight.humanoid";
 const EXPRESSIONS: &str = "catchlight.expressions";
+const ANIMATIONS: &str = "catchlight.animations";
 
 #[derive(Subcommand)]
 pub(super) enum HumanoidCmd {
@@ -90,6 +91,13 @@ pub(super) enum VisemeCmd {
         #[arg(long)]
         replace: bool,
     },
+}
+
+#[derive(Subcommand)]
+pub(super) enum ClipCmd {
+    /// Print every clip with its timing and what each lane drives, and the
+    /// extension's warnings, as JSON.
+    List,
 }
 
 /// A read's reply as JSON text, given the warnings it asked for; `None` for
@@ -245,6 +253,24 @@ pub(super) fn viseme(
                 replace: *replace,
             },
             EXPRESSIONS,
+        ),
+    };
+    execute(cli, session, plan, stream)
+}
+
+pub(super) fn clip(cli: &Cli, action: &ClipCmd, stream: &mut transport::Transport) -> Result<i32> {
+    let session = resolve_session(cli)?;
+    let plan = match action {
+        ClipCmd::List => Plan::Read(
+            Command::ClipList { session },
+            |body, warnings| match body {
+                ResponseBody::Clips { clips } => Some(pretty(&Two(
+                    ("clips", clips),
+                    ("warnings", &warning_lines(warnings)),
+                ))),
+                _ => None,
+            },
+            Some(ANIMATIONS),
         ),
     };
     execute(cli, session, plan, stream)

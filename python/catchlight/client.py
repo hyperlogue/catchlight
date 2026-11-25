@@ -34,6 +34,8 @@ from .protocol_gen import (
     ExtensionRef,
     ExtensionWarningInfo,
     ExtensionWarnings,
+    ClipInfo,
+    ClipList,
     ControlMappingInfo,
     ExpressionDelete,
     ExpressionGroup,
@@ -45,6 +47,7 @@ from .protocol_gen import (
     HumanoidMap,
     HumanoidUnmap,
     VisemeAddStandard,
+    ResponseBodyClips,
     ResponseBodyExpression,
     ResponseBodyExpressionDeleted,
     ResponseBodyExpressions,
@@ -575,6 +578,10 @@ class Client:
             HumanoidUnmap(session=session, control=control), ResponseBodyHumanoidUnmapped
         )
         return body.mapping
+
+    def clips(self, session: SessionId) -> list[ClipInfo]:
+        """The model's clips with what each lane drives, in the model's order."""
+        return self._expect(ClipList(session=session), ResponseBodyClips).clips
 
     def expressions(self, session: SessionId) -> ResponseBodyExpressions:
         """Both groups with their settings, and the standard names."""

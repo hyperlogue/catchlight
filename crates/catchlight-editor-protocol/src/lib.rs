@@ -616,6 +616,10 @@ pub enum Command {
         #[serde(default)]
         replace: bool,
     },
+    /// The clips of `catchlight.animations`, with what each lane drives.
+    ClipList {
+        session: SessionId,
+    },
 
     /// The session's review: every thread, and the agents attending to it.
     ReviewGet {
@@ -864,6 +868,7 @@ pub const COMMAND_KINDS: &[(&str, CommandKind)] = &[
     ("expression_delete", CommandKind::Edit),
     ("expression_list", CommandKind::ReplicaQuery),
     ("viseme_add_standard", CommandKind::Edit),
+    ("clip_list", CommandKind::ReplicaQuery),
     ("review_get", CommandKind::ServerQuery),
     ("review_thread_add", CommandKind::Review),
     ("review_thread_set", CommandKind::Review),
@@ -1074,6 +1079,7 @@ impl Command {
             Command::ExpressionDelete { .. } => "expression_delete",
             Command::ExpressionList { .. } => "expression_list",
             Command::VisemeAddStandard { .. } => "viseme_add_standard",
+            Command::ClipList { .. } => "clip_list",
             Command::ReviewGet { .. } => "review_get",
             Command::ReviewThreadAdd { .. } => "review_thread_add",
             Command::ReviewThreadSet { .. } => "review_thread_set",
@@ -1208,6 +1214,7 @@ impl Command {
             | Command::ExpressionDelete { session, .. }
             | Command::ExpressionList { session }
             | Command::VisemeAddStandard { session, .. }
+            | Command::ClipList { session }
             | Command::ReviewGet { session }
             | Command::ReviewThreadAdd { session, .. }
             | Command::ReviewThreadSet { session, .. }
@@ -2426,6 +2433,10 @@ pub enum ResponseBody {
         replaced: Vec<String>,
         skipped: Vec<String>,
     },
+    Clips {
+        /// In the model's order.
+        clips: Vec<ClipInfo>,
+    },
     Review {
         review: Review,
     },
@@ -2854,6 +2865,45 @@ pub struct StandardControlInfo {
     pub name: String,
     /// Runs 0..1 rather than -1..1.
     pub one_sided: bool,
+}
+
+/// One clip of `catchlight.animations`: an optional lead-in played once, then
+/// the loop region up to an optional lead-out, repeated.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ClipInfo {
+    pub name: String,
+    /// Seconds per frame.
+    pub timestep: f32,
+    /// In frames.
+    pub length: u32,
+    /// The frame where the lead-in ends and the loop restarts; ignored unless
+    /// strictly inside the clip.
+    pub lead_in: Option<u32>,
+    /// The frame where the loop wraps and the lead-out starts; ignored unless
+    /// strictly inside the clip.
+    pub lead_out: Option<u32>,
+    /// In the clip's order.
+    pub lanes: Vec<LaneInfo>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct LaneInfo {
+    pub target: LaneTargetInfo,
+    pub keyframes: u32,
+}
+
+/// What a lane drives: one of the model's params by Id, or a humanoid
+/// control, an expression or a viseme by name.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub enum LaneTargetInfo {
+    Param { param: ParamId },
+    Control { name: String },
+    Expression { name: String },
+    Viseme { name: String },
 }
 
 /// A finding about one extension, never a reason to refuse anything.

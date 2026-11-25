@@ -1665,6 +1665,22 @@ class VisemeAddStandard:
 
 
 @dataclass(frozen=True, kw_only=True)
+class ClipList:
+    """The clips of `catchlight.animations`, with what each lane drives."""
+
+    TAG_FIELD: ClassVar[str] = "cmd"
+    TAG: ClassVar[str] = "clip_list"
+    CMD: ClassVar[str] = TAG
+    KIND: ClassVar[CommandKind] = CommandKind.REPLICA_QUERY
+
+    session: SessionId
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
 class ReviewGet:
     """The session's review: every thread, and the agents attending to it."""
 
@@ -2112,6 +2128,7 @@ Command = (
     | ExpressionDelete
     | ExpressionList
     | VisemeAddStandard
+    | ClipList
     | ReviewGet
     | ReviewThreadAdd
     | ReviewThreadSet
@@ -2210,6 +2227,7 @@ COMMAND_VARIANTS: dict[str, type[Command]] = {
     "expression_delete": ExpressionDelete,
     "expression_list": ExpressionList,
     "viseme_add_standard": VisemeAddStandard,
+    "clip_list": ClipList,
     "review_get": ReviewGet,
     "review_thread_add": ReviewThreadAdd,
     "review_thread_set": ReviewThreadSet,
@@ -2321,6 +2339,7 @@ COMMAND_KINDS: dict[str, CommandKind] = {
     "expression_delete": CommandKind.EDIT,
     "expression_list": CommandKind.REPLICA_QUERY,
     "viseme_add_standard": CommandKind.EDIT,
+    "clip_list": CommandKind.REPLICA_QUERY,
     "review_get": CommandKind.SERVER_QUERY,
     "review_thread_add": CommandKind.REVIEW,
     "review_thread_set": CommandKind.REVIEW,
@@ -2519,6 +2538,7 @@ ReplicaQueryCommand = (
     | ExtensionWarnings
     | HumanoidGet
     | ExpressionList
+    | ClipList
 )
 
 # A read that needs the editor itself: its session bookkeeping, its store or
@@ -4006,6 +4026,107 @@ class StandardControlInfo:
 
 
 @dataclass(frozen=True, kw_only=True)
+class ClipInfo:
+    """One clip of `catchlight.animations`: an optional lead-in played once, then
+    the loop region up to an optional lead-out, repeated.
+    """
+
+    name: str
+    # Seconds per frame.
+    timestep: float
+    # In frames.
+    length: int
+    # The frame where the lead-in ends and the loop restarts; ignored unless
+    # strictly inside the clip.
+    lead_in: int | None = None
+    # The frame where the loop wraps and the lead-out starts; ignored unless
+    # strictly inside the clip.
+    lead_out: int | None = None
+    # In the clip's order.
+    lanes: list[LaneInfo]
+
+
+@dataclass(frozen=True, kw_only=True)
+class LaneInfo:
+    target: LaneTargetInfo
+    keyframes: int
+
+
+@dataclass(frozen=True, kw_only=True)
+class LaneTargetInfoParam:
+    TAG_FIELD: ClassVar[str] = "kind"
+    TAG: ClassVar[str] = "param"
+
+    param: ParamId
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class LaneTargetInfoControl:
+    TAG_FIELD: ClassVar[str] = "kind"
+    TAG: ClassVar[str] = "control"
+
+    name: str
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class LaneTargetInfoExpression:
+    TAG_FIELD: ClassVar[str] = "kind"
+    TAG: ClassVar[str] = "expression"
+
+    name: str
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class LaneTargetInfoViseme:
+    TAG_FIELD: ClassVar[str] = "kind"
+    TAG: ClassVar[str] = "viseme"
+
+    name: str
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+# What a lane drives: one of the model's params by Id, or a humanoid
+# control, an expression or a viseme by name.
+LaneTargetInfo = (
+    LaneTargetInfoParam
+    | LaneTargetInfoControl
+    | LaneTargetInfoExpression
+    | LaneTargetInfoViseme
+)
+
+LANE_TARGET_INFO_VARIANTS: dict[str, type[LaneTargetInfo]] = {
+    "param": LaneTargetInfoParam,
+    "control": LaneTargetInfoControl,
+    "expression": LaneTargetInfoExpression,
+    "viseme": LaneTargetInfoViseme,
+}
+
+
+def parse_lane_target_info(message: Mapping[str, Any]) -> LaneTargetInfo:
+    """One JSON object as the LaneTargetInfo it is, by its "kind" tag."""
+    tag = message.get("kind")
+    found = LANE_TARGET_INFO_VARIANTS.get(tag) if isinstance(tag, str) else None
+    if found is None:
+        raise ValueError(f"no LaneTargetInfo carries the kind {tag!r}")
+    return _decode_class(found, message)
+
+
+@dataclass(frozen=True, kw_only=True)
 class ReplyOk:
     TAG_FIELD: ClassVar[str] = "reply"
     TAG: ClassVar[str] = "ok"
@@ -4676,6 +4797,19 @@ class ResponseBodyVisemesAdded:
 
 
 @dataclass(frozen=True, kw_only=True)
+class ResponseBodyClips:
+    TAG_FIELD: ClassVar[str] = "result"
+    TAG: ClassVar[str] = "clips"
+
+    # In the model's order.
+    clips: list[ClipInfo]
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
 class ResponseBodyReview:
     TAG_FIELD: ClassVar[str] = "result"
     TAG: ClassVar[str] = "review"
@@ -4854,6 +4988,7 @@ ResponseBody = (
     | ResponseBodyExpressionDeleted
     | ResponseBodyExpressions
     | ResponseBodyVisemesAdded
+    | ResponseBodyClips
     | ResponseBodyReview
     | ResponseBodyReviewThread
     | ResponseBodyReviewImage
@@ -4905,6 +5040,7 @@ RESPONSE_BODY_VARIANTS: dict[str, type[ResponseBody]] = {
     "expression_deleted": ResponseBodyExpressionDeleted,
     "expressions": ResponseBodyExpressions,
     "visemes_added": ResponseBodyVisemesAdded,
+    "clips": ResponseBodyClips,
     "review": ResponseBodyReview,
     "review_thread": ResponseBodyReviewThread,
     "review_image": ResponseBodyReviewImage,
@@ -5339,6 +5475,7 @@ __all__ = [
     "ExpressionDelete",
     "ExpressionList",
     "VisemeAddStandard",
+    "ClipList",
     "ReviewGet",
     "ReviewThreadAdd",
     "ReviewThreadSet",
@@ -5498,6 +5635,15 @@ __all__ = [
     "ExpressionInfo",
     "ControlMappingInfo",
     "StandardControlInfo",
+    "ClipInfo",
+    "LaneInfo",
+    "LaneTargetInfoParam",
+    "LaneTargetInfoControl",
+    "LaneTargetInfoExpression",
+    "LaneTargetInfoViseme",
+    "LaneTargetInfo",
+    "LANE_TARGET_INFO_VARIANTS",
+    "parse_lane_target_info",
     "ReplyOk",
     "ReplyErr",
     "ReplyEvent",
@@ -5544,6 +5690,7 @@ __all__ = [
     "ResponseBodyExpressionDeleted",
     "ResponseBodyExpressions",
     "ResponseBodyVisemesAdded",
+    "ResponseBodyClips",
     "ResponseBodyReview",
     "ResponseBodyReviewThread",
     "ResponseBodyReviewImage",

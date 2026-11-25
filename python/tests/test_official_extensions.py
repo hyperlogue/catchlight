@@ -6,12 +6,18 @@ import pytest
 
 from catchlight import Client, ErrorCode, LaunchedServer, ProtocolError
 from catchlight.protocol_gen import (
+    ClipInfo,
     ControlMappingInfo,
     ExpressionGroup,
     ExpressionSetting,
     ExtensionRefParam,
+    LaneInfo,
+    LaneTargetInfoControl,
+    LaneTargetInfoParam,
     ParamAdd,
+    ResponseBodyClips,
     ResponseBodyParam,
+    parse_response_body,
 )
 
 
@@ -101,3 +107,44 @@ def test_extension_warnings_name_their_subjects(either: Client) -> None:
     assert len(shared) == 1
     assert shared[0].key == "catchlight.humanoid"
     assert shared[0].subjects == [ExtensionRefParam(param=jaw)]
+
+
+def test_a_model_without_clips_lists_none(either: Client) -> None:
+    session, _ = rig(either)
+    assert either.clips(session) == []
+
+
+def test_a_clip_listing_decodes_each_lane_target() -> None:
+    body = parse_response_body(
+        {
+            "result": "clips",
+            "clips": [
+                {
+                    "name": "talk",
+                    "timestep": 0.1,
+                    "length": 12,
+                    "lead_in": 2,
+                    "lead_out": None,
+                    "lanes": [
+                        {"target": {"kind": "param", "param": "jaw"}, "keyframes": 2},
+                        {"target": {"kind": "control", "name": "mouth_open"}, "keyframes": 1},
+                    ],
+                }
+            ],
+        }
+    )
+    assert body == ResponseBodyClips(
+        clips=[
+            ClipInfo(
+                name="talk",
+                timestep=0.1,
+                length=12,
+                lead_in=2,
+                lead_out=None,
+                lanes=[
+                    LaneInfo(target=LaneTargetInfoParam(param="jaw"), keyframes=2),
+                    LaneInfo(target=LaneTargetInfoControl(name="mouth_open"), keyframes=1),
+                ],
+            )
+        ]
+    )

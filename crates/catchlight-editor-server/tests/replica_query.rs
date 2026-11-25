@@ -309,6 +309,7 @@ fn replica_commands(session: SessionId, node: NodeId) -> Vec<Command> {
         Command::ExtensionWarnings { session },
         Command::HumanoidGet { session },
         Command::ExpressionList { session },
+        Command::ClipList { session },
     ]
 }
 

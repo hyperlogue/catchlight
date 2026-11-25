@@ -284,3 +284,12 @@ fn the_typed_commands_print_what_the_file_cli_prints() {
     let raw = s.json(&["extension", "warnings"]);
     assert_eq!(raw["body"]["result"], "extension_warnings");
 }
+
+#[test]
+fn clip_list_prints_the_clips_and_their_warnings() {
+    let s = serve("clips");
+    let listed: Value = serde_json::from_str(&s.ok(&["clip", "list"])).unwrap();
+    assert_eq!(listed, json!({"clips": [], "warnings": []}));
+    let raw = s.json(&["clip", "list"]);
+    assert_eq!(raw["body"], json!({"result": "clips", "clips": []}));
+}

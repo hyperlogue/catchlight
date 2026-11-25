@@ -84,6 +84,7 @@ catchlight-editor humanoid unmap mouth_open
 catchlight-editor expression set happy --control mouth_smile=0.8 --param <param>=0.3
 catchlight-editor expression list
 catchlight-editor viseme add-standard           # then tune with `viseme set`
+catchlight-editor clip list                     # clips, what each lane drives, warnings
 catchlight-editor extension warnings            # every extension's findings
 ```
 

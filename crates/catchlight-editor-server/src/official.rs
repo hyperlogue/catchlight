@@ -5,6 +5,7 @@
 use catchlight_core::extension::ExtensionError;
 use catchlight_core::Model;
 use catchlight_editor_protocol::*;
+use catchlight_extension_animations::{Animations, LaneTarget};
 use catchlight_extension_expressions::authoring as expressions;
 use catchlight_extension_expressions::{
     Expression, Expressions, Group, Setting, Target, EMOTIONS, VISEMES,
@@ -211,6 +212,46 @@ pub(crate) fn expression_list(model: &Model) -> Result<ResponseBody, EditorError
         visemes: members(Group::Viseme),
         emotion_names: EMOTIONS.iter().map(|n| n.to_string()).collect(),
         viseme_names: VISEMES.iter().map(|n| n.to_string()).collect(),
+    })
+}
+
+/// A lane whose param is gone is left out, as the extension reads it.
+pub(crate) fn clip_list(model: &Model) -> Result<ResponseBody, EditorError> {
+    let clips = read::<Animations>(model)?
+        .map(Animations::clips)
+        .unwrap_or_default();
+    Ok(ResponseBody::Clips {
+        clips: clips
+            .into_iter()
+            .map(|clip| ClipInfo {
+                lanes: clip
+                    .lanes
+                    .iter()
+                    .map(|lane| LaneInfo {
+                        target: match &lane.target {
+                            LaneTarget::Param(param) => LaneTargetInfo::Param {
+                                param: param.clone(),
+                            },
+                            LaneTarget::Control(name) => {
+                                LaneTargetInfo::Control { name: name.clone() }
+                            }
+                            LaneTarget::Expression(name) => {
+                                LaneTargetInfo::Expression { name: name.clone() }
+                            }
+                            LaneTarget::Viseme(name) => {
+                                LaneTargetInfo::Viseme { name: name.clone() }
+                            }
+                        },
+                        keyframes: lane.keyframes.len() as u32,
+                    })
+                    .collect(),
+                name: clip.name,
+                timestep: clip.timestep,
+                length: clip.length,
+                lead_in: clip.lead_in,
+                lead_out: clip.lead_out,
+            })
+            .collect(),
     })
 }
 

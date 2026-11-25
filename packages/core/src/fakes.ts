@@ -2,6 +2,7 @@
 
 import type {
   BindingInfo,
+  ClipInfo,
   EditOp,
   BindingTarget,
   ControlMappingInfo,
@@ -65,8 +66,8 @@ export interface FakeDoc {
   visemes: ExpressionInfo[];
   /** What `extension_warnings` answers; tests set it. */
   extensionWarnings: ExtensionWarningInfo[];
-  /** `catchlight.animations`' clips; only their names play. */
-  clips: { name: string }[];
+  /** `catchlight.animations`' clips, as `clip_list` answers; tests set them. */
+  clips: ClipInfo[];
 }
 
 /** A few of the standard controls, enough to tell the two kinds apart. */
@@ -1041,6 +1042,13 @@ export class FakeReplica implements WasmReplica {
             emotion_names: FAKE_EMOTIONS,
             viseme_names: FAKE_VISEMES,
           },
+        });
+      case "clip_list":
+        return JSON.stringify({
+          reply: "ok",
+          id,
+          rev: this.#rev,
+          body: { result: "clips", clips: doc.clips },
         });
       case "extension_warnings":
         return JSON.stringify({

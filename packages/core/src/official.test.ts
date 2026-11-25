@@ -63,4 +63,22 @@ describe("the fakes' official extension commands", () => {
     const warnings = session.query({ cmd: "extension_warnings" });
     expect(warnings.result === "extension_warnings" && warnings.warnings).toEqual([warning]);
   });
+
+  test("the clips are read through the replica, and one of them plays", async () => {
+    const { wasm, session, jaw } = await opened();
+    expect(session.query({ cmd: "clip_list" })).toEqual({ result: "clips", clips: [] });
+    const talk = {
+      name: "talk",
+      timestep: 0.1,
+      length: 12,
+      lead_in: 2,
+      lead_out: null,
+      lanes: [{ target: { kind: "param" as const, param: jaw }, keyframes: 2 }],
+    };
+    wasm.docs.get(session.id)!.clips.push(talk);
+    await session.send({ cmd: "param_add", name: "brow", min: -1, max: 1, default: 0 });
+    expect(session.query({ cmd: "clip_list" })).toEqual({ result: "clips", clips: [talk] });
+    expect(session.play("talk")).toBe(true);
+    expect(session.playing()?.name).toBe("talk");
+  });
 });

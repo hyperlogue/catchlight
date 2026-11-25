@@ -6,13 +6,14 @@
 
 use catchlight_core::extension::Extension;
 use catchlight_core::formats::clm::{self, ClmExtension, ClmPayload};
-use catchlight_core::{ExtensionKey, Model, ModelParam, Name};
+use catchlight_core::{ExtensionKey, InterpolateMode, Model, ModelParam, Name};
 use catchlight_editor_protocol::{
-    Command, ControlMappingInfo, ErrorCode, ExpressionGroup, ExpressionInfo, ExpressionSetting,
-    ExtensionRef, ExtensionSet, ExtensionWarningInfo, ParamId, Reply, Request, ResponseBody,
-    ReviewAuthor, SessionId, SessionSource,
+    ClipInfo, Command, ControlMappingInfo, ErrorCode, ExpressionGroup, ExpressionInfo,
+    ExpressionSetting, ExtensionRef, ExtensionSet, ExtensionWarningInfo, LaneInfo, LaneTargetInfo,
+    ParamId, Reply, Request, ResponseBody, ReviewAuthor, SessionId, SessionSource,
 };
 use catchlight_editor_server::{replica_query, Attachments, Editor};
+use catchlight_extension_animations::{Animations, Clip, Keyframe, Lane, LaneTarget};
 use catchlight_extension_expressions::{Expressions, EMOTIONS, VISEMES};
 use catchlight_extension_humanoid::{Humanoid, CONTROLS};
 use serde_json::json;
@@ -486,7 +487,7 @@ fn extension_warnings_are_structured_with_their_subjects() {
 #[test]
 fn official_data_this_editor_cannot_read_is_neither_shown_nor_edited() {
     let mut file = clm::decode(&rig().to_clm_bytes().unwrap()).unwrap();
-    for key in [Humanoid::KEY, Expressions::KEY] {
+    for key in [Humanoid::KEY, Expressions::KEY, Animations::KEY] {
         file.doc.extensions.insert(
             ExtensionKey::new(key).unwrap(),
             ClmExtension::Maintained {
@@ -502,6 +503,7 @@ fn official_data_this_editor_cannot_read_is_neither_shown_nor_edited() {
     for command in [
         Command::HumanoidGet { session },
         Command::ExpressionList { session },
+        Command::ClipList { session },
         f.map("head_yaw", "turn"),
         f.set(
             ExpressionGroup::Viseme,
@@ -580,6 +582,7 @@ fn a_replica_answers_the_typed_reads_as_the_editor_does() {
         Command::HumanoidGet { session },
         Command::ExpressionList { session },
         Command::ExtensionWarnings { session },
+        Command::ClipList { session },
     ] {
         let from_editor = f.ok(command.clone());
         let from_replica = replica_query(&f.model(), &command).unwrap();
@@ -590,4 +593,100 @@ fn a_replica_answers_the_typed_reads_as_the_editor_does() {
             command.tag()
         );
     }
+}
+
+fn lane(target: LaneTarget, frames: &[u32]) -> Lane {
+    Lane::new(
+        target,
+        InterpolateMode::Linear,
+        frames
+            .iter()
+            .map(|&frame| Keyframe { frame, value: 0.5 })
+            .collect(),
+    )
+}
+
+#[test]
+fn clip_list_reads_each_clip_with_what_its_lanes_drive() {
+    let mut f = Fixture::new();
+    let session = f.session;
+    let clips = |body: ResponseBody| match body {
+        ResponseBody::Clips { clips } => clips,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(
+        clips(f.ok(Command::ClipList { session })),
+        [],
+        "a model without clips"
+    );
+
+    let mut model = rig();
+    *model.extension_or_default::<Animations>().unwrap() = Animations::from_clips([
+        Clip {
+            timestep: 0.1,
+            length: 12,
+            lead_in: Some(2),
+            lead_out: Some(10),
+            lanes: vec![
+                lane(LaneTarget::Param(pid("jaw")), &[0, 11]),
+                lane(LaneTarget::Control("mouth_open".into()), &[3]),
+                lane(LaneTarget::Expression("happy".into()), &[0, 4, 8]),
+                lane(LaneTarget::Viseme("aa".into()), &[]),
+            ],
+            ..Clip::new("talk")
+        },
+        Clip::new("idle"),
+    ]);
+    let mut f = Fixture::with(&model);
+    let session = f.session;
+    let lanes = |targets: Vec<(LaneTargetInfo, u32)>| {
+        targets
+            .into_iter()
+            .map(|(target, keyframes)| LaneInfo { target, keyframes })
+            .collect()
+    };
+    let name = |s: &str| s.to_string();
+    let want = vec![
+        ClipInfo {
+            name: name("talk"),
+            timestep: 0.1,
+            length: 12,
+            lead_in: Some(2),
+            lead_out: Some(10),
+            lanes: lanes(vec![
+                (LaneTargetInfo::Param { param: pid("jaw") }, 2),
+                (
+                    LaneTargetInfo::Control {
+                        name: name("mouth_open"),
+                    },
+                    1,
+                ),
+                (
+                    LaneTargetInfo::Expression {
+                        name: name("happy"),
+                    },
+                    3,
+                ),
+                (LaneTargetInfo::Viseme { name: name("aa") }, 0),
+            ]),
+        },
+        ClipInfo {
+            name: name("idle"),
+            timestep: 1.0 / 60.0,
+            length: 0,
+            lead_in: None,
+            lead_out: None,
+            lanes: Vec::new(),
+        },
+    ];
+    assert_eq!(clips(f.ok(Command::ClipList { session })), want);
+    assert_eq!(
+        clips(replica_query(&f.model(), &Command::ClipList { session }).unwrap()),
+        want
+    );
+    let wire = serde_json::to_value(&want).unwrap();
+    assert_eq!(
+        wire[0]["lanes"][0],
+        json!({"target": {"kind": "param", "param": "jaw"}, "keyframes": 2})
+    );
 }

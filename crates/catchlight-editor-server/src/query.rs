@@ -109,6 +109,7 @@ pub fn replica_query(model: &Model, command: &Command) -> Result<ResponseBody, E
         Command::ExtensionWarnings { .. } => Ok(crate::official::extension_warnings(model)),
         Command::HumanoidGet { .. } => crate::official::humanoid_get(model),
         Command::ExpressionList { .. } => crate::official::expression_list(model),
+        Command::ClipList { .. } => crate::official::clip_list(model),
         Command::TextureList { .. } => {
             let mut textures = Vec::new();
             for tid in model.texture_ids() {

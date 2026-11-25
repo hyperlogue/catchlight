@@ -583,6 +583,10 @@ export type Command =
     replace: boolean,
   }
   | {
+    "cmd": "clip_list",
+    session: SessionId,
+  }
+  | {
     "cmd": "review_get",
     session: SessionId,
   }
@@ -1644,6 +1648,63 @@ export type StandardControlInfo = {
 };
 
 /**
+ * One clip of `catchlight.animations`: an optional lead-in played once, then
+ * the loop region up to an optional lead-out, repeated.
+ */
+export type ClipInfo = {
+  name: string,
+  /**
+   * Seconds per frame.
+   */
+  timestep: number,
+  /**
+   * In frames.
+   */
+  length: number,
+  /**
+   * The frame where the lead-in ends and the loop restarts; ignored unless
+   * strictly inside the clip.
+   */
+  lead_in: number | null,
+  /**
+   * The frame where the loop wraps and the lead-out starts; ignored unless
+   * strictly inside the clip.
+   */
+  lead_out: number | null,
+  /**
+   * In the clip's order.
+   */
+  lanes: Array<LaneInfo>,
+};
+
+export type LaneInfo = {
+  target: LaneTargetInfo,
+  keyframes: number,
+};
+
+/**
+ * What a lane drives: one of the model's params by Id, or a humanoid
+ * control, an expression or a viseme by name.
+ */
+export type LaneTargetInfo =
+  | {
+    "kind": "param",
+    param: ParamId,
+  }
+  | {
+    "kind": "control",
+    name: string,
+  }
+  | {
+    "kind": "expression",
+    name: string,
+  }
+  | {
+    "kind": "viseme",
+    name: string,
+  };
+
+/**
  * The server's answer. `Ok`/`Err` carry the request's `id`; `Event` is
  * unsolicited (a model changed on a session this client observes).
  */
@@ -1937,6 +1998,13 @@ export type ResponseBody =
     added: Array<string>,
     replaced: Array<string>,
     skipped: Array<string>,
+  }
+  | {
+    "result": "clips",
+    /**
+     * In the model's order.
+     */
+    clips: Array<ClipInfo>,
   }
   | {
     "result": "review",
@@ -2350,7 +2418,8 @@ export type ReplicaQueryCommandTag =
   | "extension_list"
   | "extension_warnings"
   | "humanoid_get"
-  | "expression_list";
+  | "expression_list"
+  | "clip_list";
 export type ReplicaQueryCommand = Extract<Command, { cmd: ReplicaQueryCommandTag }>;
 
 /**

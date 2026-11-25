@@ -241,7 +241,7 @@ describe("preview inputs and playback", () => {
       { control: "mouth_open", param: "jaw", stops: [0, 0, 1] },
       { control: "mouth_smile", param: "cheek", stops: [-1, 0, 1] },
     ];
-    doc.clips = [{ name: "wave" }];
+    doc.clips = [{ name: "wave", timestep: 0.1, length: 10, lead_in: null, lead_out: null, lanes: [] }];
     opened.replica.applyStructure(structureBytes(doc), 1);
     let repaints = 0;
     opened.session.onInvalidate(() => {

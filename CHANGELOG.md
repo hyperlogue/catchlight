@@ -99,6 +99,22 @@ next release is 0.3.0.
   Two error codes are new: `nonstandard_control`, answered by resending with
   `nonstandard`, and `extension_unread`, for official data written by a newer
   build or failing to decode.
+- **Preview controls, expressions, visemes and clips in the viewport.** A
+  `Session` poses its tab's puppet with preview inputs that are never written
+  to the model or shared through presence: `setControl`,
+  `setExpressionWeight` and `setVisemeWeight` set or, given `undefined`,
+  clear one value, `clearInputs` clears them all and `inputs()` reads them
+  back. `play(clip)`, `stop()` and `playing()` play one of the model's clips
+  and report its name, time and frame; the viewport keeps drawing while it
+  plays. Moving a param's slider drops the controls previewed onto it,
+  mesh and record modes stop the clip, and `useResetPose` clears the inputs
+  too. The `clip_list` read, answered by a tab as well, lists each clip's
+  timestep, length, lead-in, lead-out and what each lane drives with its
+  keyframe count; `catchlight-editor clip list` prints it and Python
+  sessions get `Client.clips`. `AnimationPlayer` now returns a param a
+  control mapping set to its base once no control sets it, as it already
+  did for param settings, and `replace_clips` takes a model's new clips
+  while the playing one carries on.
 - **Vendor extensions in the editor keep their references.**
   `extension_set` takes a maintained value: a version, a reference table and
   a payload, inline JSON or the `value` attachment. `extension_list` and

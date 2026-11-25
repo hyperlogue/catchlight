@@ -226,6 +226,11 @@ enum Cmd {
         #[command(subcommand)]
         action: official::VisemeCmd,
     },
+    /// The clips of `catchlight.animations`.
+    Clip {
+        #[command(subcommand)]
+        action: official::ClipCmd,
+    },
     /// Render a preview to a PNG.
     Preview {
         /// Where the PNG is written.
@@ -881,6 +886,7 @@ where
             set_matches("viseme"),
             &mut transport,
         )?),
+        Cmd::Clip { action } => Some(official::clip(&cli, action, &mut transport)?),
         _ => None,
     };
     if let Some(code) = typed {
@@ -1244,7 +1250,8 @@ fn build_command(cli: &Cli) -> Result<Command> {
         | Cmd::Extension { .. }
         | Cmd::Humanoid { .. }
         | Cmd::Expression { .. }
-        | Cmd::Viseme { .. } => unreachable!("handled in run"),
+        | Cmd::Viseme { .. }
+        | Cmd::Clip { .. } => unreachable!("handled in run"),
         Cmd::Texture { action } => match action {
             TextureCmd::Add { node, path, id } => Command::TextureAdd {
                 session: resolve_session(cli)?,
@@ -1618,7 +1625,8 @@ fn print_body(body: &ResponseBody) {
         | ResponseBody::Expression { .. }
         | ResponseBody::ExpressionDeleted { .. }
         | ResponseBody::Expressions { .. }
-        | ResponseBody::VisemesAdded { .. } => {
+        | ResponseBody::VisemesAdded { .. }
+        | ResponseBody::Clips { .. } => {
             println!("{}", serde_json::to_string_pretty(body).unwrap_or_default());
         }
         ResponseBody::ExtensionWarnings { warnings } => official::print_warnings(warnings),
