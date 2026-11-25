@@ -663,7 +663,7 @@ fn install_merges_through_the_extension_and_uninstall_takes_back_its_receipt() {
 }
 
 #[test]
-fn install_adds_an_extension_the_base_lacks_and_uninstall_removes_it() {
+fn install_merges_into_empty_data_when_the_base_lacks_it_and_uninstall_keeps_later_additions() {
     register::<AddonAdded>().unwrap();
     let r = rig();
     let (mut base, mut addon) = base_and_addon(&r);
@@ -674,8 +674,12 @@ fn install_adds_an_extension_the_base_lacks_and_uninstall_removes_it() {
         .add(IdRef::Node(r.part.clone()), "hat");
     let installed = base.install(&addon).unwrap();
     assert_eq!(base.extension::<AddonAdded>().unwrap().0.texts(), ["hat"]);
+    base.extension_mut::<AddonAdded>()
+        .unwrap()
+        .0
+        .add(IdRef::Param(r.param.clone()), "scarf");
     base.uninstall(&installed);
-    assert_eq!(base.extension::<AddonAdded>(), Err(ExtensionError::Missing));
+    assert_eq!(base.extension::<AddonAdded>().unwrap().0.texts(), ["scarf"]);
 }
 
 #[test]
@@ -698,7 +702,7 @@ fn install_refuses_an_unregistered_extension_by_key() {
 }
 
 #[test]
-fn an_addons_requirements_include_what_its_reference_tables_name() {
+fn an_addons_requirements_include_what_its_reference_tables_name_except_textures() {
     let r = rig();
     let (_, mut addon) = base_and_addon(&r);
     let elsewhere = TexId::new("tex-elsewhere").unwrap();
@@ -722,13 +726,150 @@ fn an_addons_requirements_include_what_its_reference_tables_name() {
         .filter(|req| req.field == "extension reference")
         .map(|req| req.id.clone())
         .collect();
+    assert_eq!(from_extensions, [Required::Param(r.param.clone())]);
+    let dangling: Vec<Vec<IdRef>> = addon
+        .extension_warnings()
+        .into_iter()
+        .filter(|w| w.warning.code == codes::DANGLING)
+        .map(|w| w.warning.subjects)
+        .collect();
+    assert_eq!(dangling, [vec![IdRef::Texture(elsewhere)]]);
+}
+
+/// Records, on each reconcile, whether the model still held this extension.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Probe {
+    refs: Vec<IdRef>,
+    saw_itself: Vec<bool>,
+}
+
+impl Extension for Probe {
+    const KEY: &'static str = "test.probe";
+    const VERSION: u32 = 1;
+
+    fn decode(raw: RawExtension) -> Result<Self, DecodeError> {
+        Ok(Self {
+            refs: raw.refs,
+            saw_itself: Vec::new(),
+        })
+    }
+    fn encode(&self) -> RawExtension {
+        RawExtension {
+            version: 1,
+            refs: self.refs.clone(),
+            payload: Payload::Json(json!(null)),
+        }
+    }
+    fn refs(&self) -> &[IdRef] {
+        &self.refs
+    }
+    fn refs_mut(&mut self) -> &mut Vec<IdRef> {
+        &mut self.refs
+    }
+    fn reconcile(&mut self, model: &Model) {
+        self.saw_itself
+            .push(model.extensions().contains_key(Self::KEY));
+    }
+}
+
+#[test]
+fn a_promoted_raw_slot_reconciles_out_of_the_model() {
+    let r = rig();
+    let mut model = r.model.clone();
+    model
+        .set_extension(
+            key(Probe::KEY),
+            ExtensionValue::Maintained(RawExtension {
+                version: 1,
+                refs: vec![IdRef::Param(r.param.clone())],
+                payload: Payload::Json(json!(null)),
+            }),
+        )
+        .unwrap();
+    model.delete_param(&r.param).unwrap();
+    assert_eq!(model.extension_mut::<Probe>().unwrap().saw_itself, [false]);
+}
+
+static COUNTED_DECODES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Counted {
+    refs: Vec<IdRef>,
+    data: Vec<u8>,
+}
+
+impl Extension for Counted {
+    const KEY: &'static str = "test.counted";
+    const VERSION: u32 = 1;
+
+    fn decode(raw: RawExtension) -> Result<Self, DecodeError> {
+        COUNTED_DECODES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let data = raw
+            .payload
+            .bytes()
+            .ok_or_else(|| DecodeError::new("not bytes"))?
+            .to_vec();
+        Ok(Self {
+            refs: raw.refs,
+            data,
+        })
+    }
+    fn encode(&self) -> RawExtension {
+        RawExtension {
+            version: 1,
+            refs: self.refs.clone(),
+            payload: Payload::Bytes(self.data.as_slice().into()),
+        }
+    }
+    fn refs(&self) -> &[IdRef] {
+        &self.refs
+    }
+    fn refs_mut(&mut self) -> &mut Vec<IdRef> {
+        &mut self.refs
+    }
+}
+
+#[test]
+fn replacing_the_structure_decodes_only_extensions_that_changed() {
+    register::<Counted>().unwrap();
+    let r = rig();
+    let mut server = r.model.clone();
+    *server.extension_or_default::<Counted>().unwrap() = Counted {
+        refs: vec![IdRef::Param(r.param.clone())],
+        data: vec![7; 64],
+    };
+    let mut replica = Model::from_clm_bytes(&server.to_clm_bytes().unwrap()).unwrap();
+    let bytes = |server: &Model| {
+        server
+            .extensions()
+            .get(Counted::KEY)
+            .and_then(|v| v.bytes().cloned())
+    };
+    let push = |replica: &mut Model, server: &Model| {
+        let held = bytes(server);
+        replica
+            .replace_structure_with_extensions(
+                &server.to_structure_bytes().unwrap(),
+                |id| server.texture(id).cloned(),
+                |_| held.clone(),
+            )
+            .unwrap();
+    };
+    let decodes = || COUNTED_DECODES.load(std::sync::atomic::Ordering::SeqCst);
+
+    let before = decodes();
+    server.set_param_default(&r.param, 0.5).unwrap();
+    push(&mut replica, &server);
     assert_eq!(
-        from_extensions,
-        [
-            Required::Param(r.param.clone()),
-            Required::Texture(elsewhere)
-        ]
+        decodes(),
+        before,
+        "an unchanged extension is not decoded again"
     );
+
+    server.extension_mut::<Counted>().unwrap().data[0] = 8;
+    push(&mut replica, &server);
+    assert_eq!(decodes(), before + 1);
+    assert_eq!(replica.extension::<Counted>().unwrap().data[0], 8);
 }
 
 #[test]

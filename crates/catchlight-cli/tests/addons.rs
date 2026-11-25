@@ -209,7 +209,11 @@ fn the_file_level_scan_reads_extension_reference_tables_as_the_model_does() {
         .filter(|r| r.field == "extension reference")
         .map(|r| &r.id)
         .collect();
-    assert_eq!(from_table.len(), 4, "{from_table:?}");
+    assert_eq!(
+        from_table.len(),
+        3,
+        "textures are never requirements: {from_table:?}"
+    );
 }
 
 #[test]

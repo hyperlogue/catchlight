@@ -209,7 +209,6 @@ impl EditorError {
                     }
                     Required::Param(_) => ErrorCode::NoParam,
                     Required::Slot(..) => ErrorCode::UnknownSlot,
-                    Required::Texture(_) => ErrorCode::NoTexture,
                 },
                 InstallError::WeldUnknownSlot { .. } => ErrorCode::WeldUnknownSlot,
                 InstallError::WeldSlotPairedTwice { .. } => ErrorCode::WeldSlotPairedTwice,

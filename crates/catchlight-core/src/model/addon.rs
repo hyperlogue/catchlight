@@ -30,9 +30,6 @@ pub enum Required {
     Part(NodeId),
     Param(ParamId),
     Slot(NodeId, SlotId),
-    /// Named only by an extension's reference table: an addon's parts draw
-    /// the textures it carries.
-    Texture(TexId),
 }
 
 impl fmt::Display for Required {
@@ -45,7 +42,6 @@ impl fmt::Display for Required {
             Self::Slot(node, slot) => {
                 write!(f, "slot {:?} on part {:?}", slot.as_str(), node.as_str())
             }
-            Self::Texture(id) => write!(f, "texture {:?}", id.as_str()),
         }
     }
 }
@@ -83,7 +79,7 @@ impl Requirements {
             | Required::Drawable(id)
             | Required::Part(id)
             | Required::Slot(id, _) => Some(id),
-            Required::Param(_) | Required::Texture(_) => None,
+            Required::Param(_) => None,
         }))
     }
 
@@ -197,25 +193,15 @@ pub struct Installed {
     bindings: Vec<BindingKey>,
     welds: Vec<ModelWeld>,
     animations: Vec<ClmAnimation>,
-    extensions: Vec<InstalledExtension>,
-}
-
-/// What an install did to one extension, for its uninstall to undo.
-#[derive(Debug, Clone)]
-enum InstalledExtension {
-    /// The base had none under this key; the addon's became the model's.
-    Added(ExtensionKey),
-    Merged(ExtensionKey, Receipt),
+    /// What each extension merged, for its uninstall to take back.
+    extensions: Vec<(ExtensionKey, Receipt)>,
 }
 
 /// An extension merge worked out before the install touches the base.
-enum Merge {
-    Add(ExtensionKey, Stored),
-    Replace(
-        ExtensionKey,
-        Box<dyn crate::extension::DynExtension>,
-        Receipt,
-    ),
+struct Merge {
+    key: ExtensionKey,
+    merged: Box<dyn crate::extension::DynExtension>,
+    receipt: Receipt,
 }
 
 impl Installed {
@@ -246,9 +232,7 @@ impl Installed {
 
     /// The keys of the extensions the install added or merged into.
     pub fn extensions(&self) -> impl Iterator<Item = &ExtensionKey> {
-        self.extensions.iter().map(|e| match e {
-            InstalledExtension::Added(key) | InstalledExtension::Merged(key, _) => key,
-        })
+        self.extensions.iter().map(|(key, _)| key)
     }
 }
 
@@ -377,9 +361,6 @@ impl Model {
                     IdRef::Param(id) if !self.params.contains_key(id) => {
                         Required::Param(id.clone())
                     }
-                    IdRef::Texture(id) if !self.textures.contains_key(id) => {
-                        Required::Texture(id.clone())
-                    }
                     IdRef::Slot(node, slot) if !self.nodes.contains_key(node) => {
                         Required::Slot(node.clone(), slot.clone())
                     }
@@ -456,20 +437,16 @@ impl Model {
         }
 
         self.welds.extend(addon.welds.iter().cloned());
-        for merge in merges {
-            let done = match merge {
-                Merge::Add(key, stored) => {
-                    self.extensions.map.insert(key.clone(), stored);
-                    InstalledExtension::Added(key)
-                }
-                Merge::Replace(key, merged, receipt) => {
-                    self.extensions
-                        .map
-                        .insert(key.clone(), Stored::typed(merged));
-                    InstalledExtension::Merged(key, receipt)
-                }
-            };
-            installed.extensions.push(done);
+        for Merge {
+            key,
+            merged,
+            receipt,
+        } in merges
+        {
+            self.extensions
+                .map
+                .insert(key.clone(), Stored::typed(merged));
+            installed.extensions.push((key, receipt));
         }
         self.bump();
         Ok(installed)
@@ -493,26 +470,32 @@ impl Model {
                     })
                 }
             };
-            let Some(base) = self.extensions.map.get(key) else {
-                merges.push(Merge::Add(key.clone(), Stored::Typed(theirs)));
-                continue;
-            };
-            let ours: Arc<Typed> = match Self::registered_extension(base, key) {
-                Some(Ok(typed)) => typed,
-                Some(Err(why)) => return Err(refused(why)),
-                None => {
-                    return Err(InstallError::ExtensionNotRegistered {
-                        key: key.to_string(),
-                    })
+            let (merged, receipt) = match self.extensions.map.get(key) {
+                // The same path as a base with data, so uninstall takes back
+                // only what was merged and keeps what was added since.
+                None => theirs.data.dyn_default().dyn_merge_addon(&*theirs.data),
+                Some(base) => {
+                    let ours: Arc<Typed> = match Self::registered_extension(base, key) {
+                        Some(Ok(typed)) => typed,
+                        Some(Err(why)) => return Err(refused(why)),
+                        None => {
+                            return Err(InstallError::ExtensionNotRegistered {
+                                key: key.to_string(),
+                            })
+                        }
+                    };
+                    ours.data.dyn_merge_addon(&*theirs.data)
                 }
-            };
-            let (merged, receipt) = ours.data.dyn_merge_addon(&*theirs.data).map_err(|why| {
-                InstallError::ExtensionRefused {
-                    key: key.to_string(),
-                    why,
-                }
+            }
+            .map_err(|why| InstallError::ExtensionRefused {
+                key: key.to_string(),
+                why,
             })?;
-            merges.push(Merge::Replace(key.clone(), merged, receipt));
+            merges.push(Merge {
+                key: key.clone(),
+                merged,
+                receipt,
+            });
         }
         Ok(merges)
     }
@@ -579,7 +562,6 @@ impl Model {
                 ),
                 Required::Param(id) => self.params.contains_key(id),
                 Required::Slot(node, slot) => self.slot(node, slot).is_some(),
-                Required::Texture(id) => self.textures.contains_key(id),
             };
             if !held {
                 return Err(InstallError::Missing {
@@ -761,29 +743,21 @@ impl Model {
         self.gc_textures();
         retain_less(&mut self.welds, &installed.welds, |_| true);
         retain_less(&mut self.animations, &installed.animations, |_| true);
-        for done in &installed.extensions {
-            match done {
-                InstalledExtension::Added(key) => {
-                    self.extensions.map.remove(key);
-                }
-                InstalledExtension::Merged(key, receipt) => {
-                    let Some(stored) = self.extensions.map.get(key) else {
-                        continue;
-                    };
-                    // Data no registered type reads cannot be unmerged; it
-                    // stays as it is.
-                    let Some(Ok(typed)) = Self::registered_extension(stored, key) else {
-                        continue;
-                    };
-                    let mut typed = typed;
-                    Arc::make_mut(&mut typed)
-                        .data_mut()
-                        .dyn_unmerge_addon(receipt);
-                    self.extensions
-                        .map
-                        .insert(key.clone(), Stored::Typed(typed));
-                }
-            }
+        for (key, receipt) in &installed.extensions {
+            let Some(stored) = self.extensions.map.get(key) else {
+                continue;
+            };
+            // Data no registered type reads cannot be unmerged; it stays as it
+            // is.
+            let Some(Ok(mut typed)) = Self::registered_extension(stored, key) else {
+                continue;
+            };
+            Arc::make_mut(&mut typed)
+                .data_mut()
+                .dyn_unmerge_addon(receipt);
+            self.extensions
+                .map
+                .insert(key.clone(), Stored::Typed(typed));
         }
         self.bump();
     }

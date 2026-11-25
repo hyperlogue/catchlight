@@ -27,7 +27,9 @@ pub(crate) use store::{decode_as, Stored, Typed};
 
 /// Implemented on the data type itself. Typed access needs only the type in
 /// hand; [`register`] is for programs that install addons or check models.
-pub trait Extension: Clone + fmt::Debug + Send + Sync + 'static {
+/// `Default` is the empty data: what an addon's data merges into when the
+/// base has none.
+pub trait Extension: Clone + Default + fmt::Debug + Send + Sync + 'static {
     /// Vendor first, as in `acme.framings`. `catchlight.` is reserved for the
     /// official extensions.
     const KEY: &'static str;
@@ -319,6 +321,8 @@ pub(crate) trait DynExtension: Any + fmt::Debug + Send + Sync {
     ) -> Result<(Box<dyn DynExtension>, Receipt), MergeRefused>;
     fn dyn_unmerge_addon(&mut self, receipt: &Receipt);
     fn dyn_clone(&self) -> Box<dyn DynExtension>;
+    /// An empty instance of this type, for an addon's data to merge into.
+    fn dyn_default(&self) -> Box<dyn DynExtension>;
     fn dyn_as_any(&self) -> &dyn Any;
     fn dyn_as_any_mut(&mut self) -> &mut dyn Any;
 }
@@ -362,6 +366,10 @@ impl<T: Extension> DynExtension for T {
 
     fn dyn_clone(&self) -> Box<dyn DynExtension> {
         Box::new(self.clone())
+    }
+
+    fn dyn_default(&self) -> Box<dyn DynExtension> {
+        Box::new(T::default())
     }
 
     fn dyn_as_any(&self) -> &dyn Any {

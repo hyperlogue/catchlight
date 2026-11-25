@@ -70,9 +70,11 @@ impl Model {
             Stored::Value { .. } => return Err(ExtensionError::NotMaintained),
         };
         if let Some(mut typed) = promoted {
-            // A raw slot keeps its removed references until its first write.
-            typed.data_mut().dyn_reconcile(self);
             let key = self.extension_key::<T>()?;
+            // A raw slot keeps its removed references until its first write.
+            // Out of the map while it reconciles, as in `remove_in_extensions`.
+            self.extensions.map.remove(&key);
+            typed.data_mut().dyn_reconcile(self);
             self.extensions
                 .map
                 .insert(key, Stored::Typed(Arc::new(typed)));
@@ -89,9 +91,7 @@ impl Model {
     }
 
     /// Creates the extension when absent; needs no registry.
-    pub fn extension_or_default<T: Extension + Default>(
-        &mut self,
-    ) -> Result<&mut T, ExtensionError> {
+    pub fn extension_or_default<T: Extension>(&mut self) -> Result<&mut T, ExtensionError> {
         if !self.extensions.map.contains_key(T::KEY) {
             let key = self.extension_key::<T>()?;
             self.extensions
@@ -159,12 +159,15 @@ impl Model {
                 })
             };
             for r in refs {
+                // In a fragment, a missing node, param or slot is a
+                // requirement on the base; a texture never is.
+                let required = fragment && !matches!(r, IdRef::Texture(_));
                 if r.is_removed() {
                     push(
                         Warning::new(codes::REMOVED, format!("refers to {r}"))
                             .with_subjects(vec![r.clone()]),
                     );
-                } else if !fragment && !r.resolves_in(self) {
+                } else if !required && !r.resolves_in(self) {
                     push(
                         Warning::new(
                             codes::DANGLING,

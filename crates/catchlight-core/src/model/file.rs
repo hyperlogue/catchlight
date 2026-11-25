@@ -188,10 +188,12 @@ impl Shape {
 
 /// A byte payload that disagrees with its marker is refused, not trusted. A
 /// maintained extension whose key is registered is decoded now; one that does
-/// not decode is kept as stored, never refused.
+/// not decode is kept as stored, never refused. A value equal to the one
+/// `previous` holds under its key reuses that slot, decoded data and all.
 fn extensions_of(
     doc: &ClmStructure,
     bytes: impl Fn(&ExtensionKey) -> Option<Arc<[u8]>>,
+    previous: Option<&Extensions>,
 ) -> Result<Extensions, ModelError> {
     let checked_bytes = |key: &ExtensionKey, marker: &ClmExtensionMarker| {
         let data = bytes(key).ok_or_else(|| clm::ClmError::ExtensionBytesMissing {
@@ -229,6 +231,13 @@ fn extensions_of(
                 },
             }),
         };
+        if let Some(stored) = previous
+            .and_then(|previous| previous.map.get(key))
+            .filter(|stored| stored.as_value() == &value)
+        {
+            out.map.insert(key.clone(), stored.clone());
+            continue;
+        }
         let stored = match &value {
             ExtensionValue::Maintained(raw) => match decode_registered(key.as_ref(), raw) {
                 Some(Ok(typed)) => Stored::Typed(typed),
@@ -506,7 +515,7 @@ impl Model {
             .iter()
             .map(|blob| (&blob.key, blob.data.as_slice()))
             .collect();
-        let extensions = extensions_of(doc, |key| blobs.get(key).map(|d| Arc::from(*d)))?;
+        let extensions = extensions_of(doc, |key| blobs.get(key).map(|d| Arc::from(*d)), None)?;
         Self::build(doc, textures, texture_order, extensions, shape)
     }
 
@@ -947,7 +956,7 @@ impl Model {
         )?;
         charge_clm_structure(&structure.doc, budget)?;
 
-        let extensions = extensions_of(&structure.doc, extension_bytes)?;
+        let extensions = extensions_of(&structure.doc, extension_bytes, Some(&self.extensions))?;
         let mut next = Self::build(&structure.doc, table, order, extensions, Shape::Base)?;
         next.unknown_sections = std::mem::take(&mut self.unknown_sections);
         self.become_model(next);
