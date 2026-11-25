@@ -1503,7 +1503,7 @@ class ExtensionGet:
 
 @dataclass(frozen=True, kw_only=True)
 class ReviewGet:
-    """The session's review: every thread, and whether an agent is on it."""
+    """The session's review: every thread, and the agents attending to it."""
 
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "review_get"
@@ -1535,6 +1535,9 @@ class ReviewThreadAdd:
     pose: list[ParamPose] = field(default_factory=list)
     # Images from [`Command::ReviewImageAdd`], each usable once.
     images: list[int] = field(default_factory=list)
+    # A retry key: the same author writing again under it gets the
+    # thread it opened back and opens nothing.
+    key: str | None = None
 
     def to_wire(self) -> dict[str, Any]:
         """This value, as one JSON object: its tag, then every field it set."""
@@ -1574,7 +1577,7 @@ class ReviewThreadDelete:
 
 @dataclass(frozen=True, kw_only=True)
 class ReviewCommentAdd:
-    """Reply on a thread. An agent's reply ends its work on the thread."""
+    """Reply on a thread. An agent's reply releases its own claim on it."""
 
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "review_comment_add"
@@ -1587,6 +1590,9 @@ class ReviewCommentAdd:
     body: str
     # Images from [`Command::ReviewImageAdd`], each usable once.
     images: list[int] = field(default_factory=list)
+    # As for [`Command::ReviewThreadAdd`]: a repeat answers with the
+    # thread and adds nothing.
+    key: str | None = None
 
     def to_wire(self) -> dict[str, Any]:
         """This value, as one JSON object: its tag, then every field it set."""
@@ -1665,7 +1671,7 @@ class ReviewSubmit:
 @dataclass(frozen=True, kw_only=True)
 class ReviewPoll:
     """An agent's heartbeat while it waits for comments: keeps it shown as
-    listening and answers how many threads have been handed to it.
+    listening and answers how many threads wait for it.
     """
 
     TAG_FIELD: ClassVar[str] = "cmd"
@@ -1674,7 +1680,7 @@ class ReviewPoll:
     KIND: ClassVar[CommandKind] = CommandKind.REVIEW
 
     session: SessionId
-    agent: str
+    agent: ReviewIdentity
 
     def to_wire(self) -> dict[str, Any]:
         """This value, as one JSON object: its tag, then every field it set."""
@@ -1683,10 +1689,9 @@ class ReviewPoll:
 
 @dataclass(frozen=True, kw_only=True)
 class ReviewFetch:
-    """Take the threads handed to the agent: their sent comments become
-    delivered and `agent` is recorded as working on each. The reply shows
-    them as handed over, the taken comments still `sent`, so the taker can
-    tell which are new.
+    """Read the threads waiting for `agent`: handed over and claimed by no
+    other agent. Changes nothing but presence, so a second fetch before
+    [`Command::ReviewAck`] returns the same comments.
     """
 
     TAG_FIELD: ClassVar[str] = "cmd"
@@ -1695,7 +1700,67 @@ class ReviewFetch:
     KIND: ClassVar[CommandKind] = CommandKind.REVIEW
 
     session: SessionId
-    agent: str
+    agent: ReviewIdentity
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReviewAck:
+    """Mark exactly the comments of a fetched `batch` delivered once the agent
+    has them, and claim their threads for it where nobody else holds them.
+    Refused with `batch_stale`, changing nothing, when any of them was
+    deleted, resolved or delivered since.
+    """
+
+    TAG_FIELD: ClassVar[str] = "cmd"
+    TAG: ClassVar[str] = "review_ack"
+    CMD: ClassVar[str] = TAG
+    KIND: ClassVar[CommandKind] = CommandKind.REVIEW
+
+    session: SessionId
+    agent: ReviewIdentity
+    batch: str
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReviewClaim:
+    """Take or renew a lease on each thread for `agent`; all or none. A thread
+    another agent holds is refused with `thread_claimed`.
+    """
+
+    TAG_FIELD: ClassVar[str] = "cmd"
+    TAG: ClassVar[str] = "review_claim"
+    CMD: ClassVar[str] = TAG
+    KIND: ClassVar[CommandKind] = CommandKind.REVIEW
+
+    session: SessionId
+    agent: ReviewIdentity
+    threads: list[ThreadId]
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReviewRelease:
+    """Give up `agent`'s own claims on the threads; another's are left alone."""
+
+    TAG_FIELD: ClassVar[str] = "cmd"
+    TAG: ClassVar[str] = "review_release"
+    CMD: ClassVar[str] = TAG
+    KIND: ClassVar[CommandKind] = CommandKind.REVIEW
+
+    session: SessionId
+    agent: ReviewIdentity
+    threads: list[ThreadId]
 
     def to_wire(self) -> dict[str, Any]:
         """This value, as one JSON object: its tag, then every field it set."""
@@ -1782,6 +1847,9 @@ Command = (
     | ReviewSubmit
     | ReviewPoll
     | ReviewFetch
+    | ReviewAck
+    | ReviewClaim
+    | ReviewRelease
 )
 
 COMMAND_VARIANTS: dict[str, type[Command]] = {
@@ -1864,6 +1932,9 @@ COMMAND_VARIANTS: dict[str, type[Command]] = {
     "review_submit": ReviewSubmit,
     "review_poll": ReviewPoll,
     "review_fetch": ReviewFetch,
+    "review_ack": ReviewAck,
+    "review_claim": ReviewClaim,
+    "review_release": ReviewRelease,
 }
 
 
@@ -1959,6 +2030,9 @@ COMMAND_KINDS: dict[str, CommandKind] = {
     "review_submit": CommandKind.REVIEW,
     "review_poll": CommandKind.REVIEW,
     "review_fetch": CommandKind.REVIEW,
+    "review_ack": CommandKind.REVIEW,
+    "review_claim": CommandKind.REVIEW,
+    "review_release": CommandKind.REVIEW,
 }
 
 
@@ -2095,6 +2169,9 @@ ReviewCommand = (
     | ReviewSubmit
     | ReviewPoll
     | ReviewFetch
+    | ReviewAck
+    | ReviewClaim
+    | ReviewRelease
 )
 
 # A read that is a pure function of the model.
@@ -3157,8 +3234,13 @@ def parse_review_target(message: Mapping[str, Any]) -> ReviewTarget:
 
 @dataclass(frozen=True, kw_only=True)
 class ReviewAuthorHuman:
+    """Both as the host knows the person, if it does."""
+
     TAG_FIELD: ClassVar[str] = "role"
     TAG: ClassVar[str] = "human"
+
+    id: str | None = None
+    name: str | None = None
 
     def to_wire(self) -> dict[str, Any]:
         """This value, as one JSON object: its tag, then every field it set."""
@@ -3170,6 +3252,7 @@ class ReviewAuthorAgent:
     TAG_FIELD: ClassVar[str] = "role"
     TAG: ClassVar[str] = "agent"
 
+    id: str
     name: str
 
     def to_wire(self) -> dict[str, Any]:
@@ -3268,17 +3351,36 @@ class ReviewThread:
     pose: list[ParamPose]
     # Never empty; the first is the opening comment.
     comments: list[ReviewComment]
-    # The agent that took the thread and has not replied since.
-    working: str | None = None
+    # The agent whose claim on the thread is live: it is working on it.
+    holder: ReviewIdentity | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
 class ReviewAgent:
-    """An agent that polled or fetched this session's review."""
+    """An agent recently heard from on this session's review."""
 
+    id: str
     name: str
     # It polled recently enough to be waiting for comments now.
     listening: bool
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReviewIdentity:
+    """An agent: `id` is stable for as long as it works (one harness session),
+    and is what claims, presence and retry keys go by; `name` is only shown.
+    """
+
+    id: str
+    name: str
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReviewHeld:
+    """A thread another agent holds."""
+
+    thread: ThreadId
+    holder: ReviewIdentity
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -3289,8 +3391,8 @@ class Review:
 
     # Oldest first.
     threads: list[ReviewThread]
-    # The agent last heard from, if any.
-    agent: ReviewAgent | None = None
+    # Every agent recently heard from, most recent last.
+    agents: list[ReviewAgent] = field(default_factory=list)
     kept: ReviewKept | None = None
     # Why, when `kept` is `unreadable`.
     kept_problem: str | None = None
@@ -3551,6 +3653,12 @@ class ErrorCode(StrEnum):
     NO_COMMENT = "no_comment"
     # No such review image, or a comment already holds it.
     NO_IMAGE = "no_image"
+    # A fetched batch changed before it was acknowledged: fetch again.
+    BATCH_STALE = "batch_stale"
+    # Another agent holds a live claim on the thread.
+    THREAD_CLAIMED = "thread_claimed"
+    # A retry key the same author already used for different content.
+    KEY_CONFLICT = "key_conflict"
     # `catchlight.` is the format's own prefix: a reader accepts a key under
     # it, and nothing outside the format may author one.
     RESERVED_EXTENSION = "reserved_extension"
@@ -4004,7 +4112,7 @@ class ResponseBodyReviewImage:
 
 @dataclass(frozen=True, kw_only=True)
 class ResponseBodyReviewPending:
-    """How many threads hold comments handed to the agent and not yet taken."""
+    """How many threads wait for the polling agent."""
 
     TAG_FIELD: ClassVar[str] = "result"
     TAG: ClassVar[str] = "review_pending"
@@ -4018,12 +4126,48 @@ class ResponseBodyReviewPending:
 
 @dataclass(frozen=True, kw_only=True)
 class ResponseBodyReviewFetched:
-    """The threads a [`Command::ReviewFetch`] took, whole, oldest first."""
+    """The threads waiting for the agent, whole, oldest first. The comments
+    handed over read `sent`; `batch` acknowledges exactly those.
+    """
 
     TAG_FIELD: ClassVar[str] = "result"
     TAG: ClassVar[str] = "review_fetched"
 
     threads: list[ReviewThread]
+    # Opaque; absent when nothing waits.
+    batch: str | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ResponseBodyReviewAcked:
+    """What a [`Command::ReviewAck`] delivered and claimed."""
+
+    TAG_FIELD: ClassVar[str] = "result"
+    TAG: ClassVar[str] = "review_acked"
+
+    # Now held by the acknowledging agent.
+    claimed: list[ThreadId]
+    # Delivered, but another agent holds them.
+    held: list[ReviewHeld]
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ResponseBodyReviewClaimed:
+    """Held by the agent for `lease_seconds` unless claimed again."""
+
+    TAG_FIELD: ClassVar[str] = "result"
+    TAG: ClassVar[str] = "review_claimed"
+
+    threads: list[ThreadId]
+    lease_seconds: int
 
     def to_wire(self) -> dict[str, Any]:
         """This value, as one JSON object: its tag, then every field it set."""
@@ -4067,6 +4211,8 @@ ResponseBody = (
     | ResponseBodyReviewImage
     | ResponseBodyReviewPending
     | ResponseBodyReviewFetched
+    | ResponseBodyReviewAcked
+    | ResponseBodyReviewClaimed
 )
 
 RESPONSE_BODY_VARIANTS: dict[str, type[ResponseBody]] = {
@@ -4106,6 +4252,8 @@ RESPONSE_BODY_VARIANTS: dict[str, type[ResponseBody]] = {
     "review_image": ResponseBodyReviewImage,
     "review_pending": ResponseBodyReviewPending,
     "review_fetched": ResponseBodyReviewFetched,
+    "review_acked": ResponseBodyReviewAcked,
+    "review_claimed": ResponseBodyReviewClaimed,
 }
 
 
@@ -4516,6 +4664,9 @@ __all__ = [
     "ReviewSubmit",
     "ReviewPoll",
     "ReviewFetch",
+    "ReviewAck",
+    "ReviewClaim",
+    "ReviewRelease",
     "Command",
     "COMMAND_VARIANTS",
     "parse_command",
@@ -4623,6 +4774,8 @@ __all__ = [
     "ReviewKept",
     "ReviewThread",
     "ReviewAgent",
+    "ReviewIdentity",
+    "ReviewHeld",
     "Review",
     "Camera",
     "ExtensionKey",
@@ -4681,6 +4834,8 @@ __all__ = [
     "ResponseBodyReviewImage",
     "ResponseBodyReviewPending",
     "ResponseBodyReviewFetched",
+    "ResponseBodyReviewAcked",
+    "ResponseBodyReviewClaimed",
     "ResponseBody",
     "RESPONSE_BODY_VARIANTS",
     "parse_response_body",

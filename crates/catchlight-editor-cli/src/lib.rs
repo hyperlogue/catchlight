@@ -32,10 +32,19 @@ Working with a running editor (a person may be watching the same session):
      `request -` sends any protocol command from stdin.
   5. `preview --out view.png` renders the model as it is now; `undo` reverts.
   6. `review watch`, run in the background, waits for the comments the person
-     sends from the browser and prints them. Change the model, answer each
-     thread with `review reply <thread> -m <text>`, then watch again. Never
-     resolve a thread: that is the person's call.
-  7. A comment may carry images. Pass `--attachments-dir <dir>` to `review
+     sends from the browser, prints them, then acknowledges them and claims
+     their threads for you. Exit 0: delivered, act on them; 3: `--timeout`
+     passed; 4: they changed before the acknowledgment, fetch again; 1: they
+     could not be saved, printed or acknowledged and stay pending. Change the
+     model, answer each thread with `review reply <thread> -m <text>` (which
+     ends your claim), then watch again. Never resolve a thread: that is the
+     person's call.
+  7. You are your harness session (`CATCHLIGHT_AGENT_SESSION` overrides it);
+     `--name` is only what the person sees. `review claim <thread>...` holds
+     threads for 60 minutes, renewed by claiming again, and refuses one
+     another agent holds; `review release` lets go. After a failure, repeat a
+     `reply` or `open` with the same `--key <k>`: it writes nothing twice.
+  8. A comment may carry images. Pass `--attachments-dir <dir>` to `review
      watch`, `fetch` or `list`, and open every file it prints with a tool
      that shows you the image before you answer. Show your own evidence the
      same way: `preview --out after.png`, then
@@ -1669,7 +1678,9 @@ fn print_body(body: &ResponseBody) {
         | ResponseBody::ReviewThread { .. }
         | ResponseBody::ReviewPending { .. }
         | ResponseBody::ReviewImage { .. }
-        | ResponseBody::ReviewFetched { .. } => {
+        | ResponseBody::ReviewFetched { .. }
+        | ResponseBody::ReviewAcked { .. }
+        | ResponseBody::ReviewClaimed { .. } => {
             print!("{}", review::describe(body, true, None).unwrap_or_default());
         }
         ResponseBody::SpineFit { node, params } => {

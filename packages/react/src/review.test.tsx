@@ -16,7 +16,19 @@ import type { Selection } from "./index.js";
 import { harness, mount, run, settle } from "./test/harness.js";
 import type { Mounted } from "./test/harness.js";
 
-async function review(): Promise<{
+const CLAUDE = { id: "claude:s1", name: "claude" };
+
+/** What `review watch` does once comments are sent: fetch, then acknowledge. */
+async function take(session: Session, agent = CLAUDE): Promise<void> {
+  await run(async () => {
+    const fetched = await session.sendReview({ cmd: "review_fetch", agent });
+    if (fetched.result !== "review_fetched" || !fetched.batch) throw new Error("nothing to take");
+    await session.sendReview({ cmd: "review_ack", agent, batch: fetched.batch });
+  });
+  await settle();
+}
+
+async function review(reviewer?: { id: string; name: string }): Promise<{
   editor: Editor;
   wasm: FakeEditor;
   session: Session;
@@ -40,6 +52,7 @@ async function review(): Promise<{
       <SelectionProvider session={session}>
         <ReviewProvider
           session={session}
+          {...(reviewer ? { reviewer } : {})}
           onError={(cause) => {
             problems.push(cause);
           }}
@@ -138,10 +151,17 @@ describe("the review panel", () => {
     await comment(view, "raise the collar");
     await run(() => session.sendReview({ cmd: "review_submit" }));
 
-    await run(() => session.sendReview({ cmd: "review_fetch", agent: "claude" }));
+    await run(() => session.sendReview({ cmd: "review_fetch", agent: CLAUDE }));
     await settle();
     const card = () => view.container.querySelector("[data-catchlight-review-thread]");
+    expect(card()?.hasAttribute("data-working")).toBe(false);
+    expect(card()?.querySelector("[data-delivery]")?.getAttribute("data-delivery")).toBe("sent");
+
+    await take(session);
     expect(card()?.hasAttribute("data-working")).toBe(true);
+    expect(card()?.querySelector("[data-catchlight-review-working]")?.textContent).toBe(
+      "claude is working on this…",
+    );
     expect(view.container.querySelector("[data-catchlight-review]")?.getAttribute("data-phase")).toBe(
       "working",
     );
@@ -150,7 +170,7 @@ describe("the review panel", () => {
       session.sendReview({
         cmd: "review_comment_add",
         thread: 1,
-        author: { role: "agent", name: "claude" },
+        author: { role: "agent", ...CLAUDE },
         body: "raised it 12px",
         images: [],
       }),
@@ -168,8 +188,7 @@ describe("the review panel", () => {
 
     await comment(view, "raise the collar");
     await run(() => session.sendReview({ cmd: "review_submit" }));
-    await run(() => session.sendReview({ cmd: "review_fetch", agent: "claude" }));
-    await settle();
+    await take(session);
 
     expect(view.container.querySelector("[data-connect]")).toBeNull();
     await view.unmount();
@@ -271,6 +290,48 @@ describe("the review panel", () => {
     expect(
       view.container.querySelector("[data-catchlight-review-thread]")?.hasAttribute("data-focused"),
     ).toBe(true);
+    await view.unmount();
+  });
+
+  test("several agents are summed up, and each thread names its holder", async () => {
+    const { view, wasm, session } = await review();
+    await comment(view, "raise the collar");
+    await comment(view, "lower the hem");
+    await run(() => session.sendReview({ cmd: "review_submit" }));
+    await take(session);
+    const codex = { id: "codex:t1", name: "codex" };
+    await run(() => session.sendReview({ cmd: "review_release", agent: CLAUDE, threads: [3] }));
+    await run(() => session.sendReview({ cmd: "review_claim", agent: codex, threads: [3] }));
+    await settle();
+
+    expect(wasm.reviews.get(1)?.agents.map((agent) => agent.name)).toEqual(["claude", "codex"]);
+    expect(view.container.querySelector("[data-catchlight-review-header] strong")?.textContent).toBe("2 agents");
+    const working = [...view.container.querySelectorAll("[data-catchlight-review-working]")].map(
+      (note) => note.textContent,
+    );
+    expect(working.sort()).toEqual(["claude is working on this…", "codex is working on this…"]);
+    await view.unmount();
+  });
+
+  test("a person's comment reads as the viewer's own only when it is", async () => {
+    const { view, wasm, session } = await review({ id: "u1", name: "Ada" });
+    await comment(view, "mine");
+    expect(wasm.reviews.get(1)?.threads[0]?.comments[0]?.author).toEqual({ role: "human", id: "u1", name: "Ada" });
+    await run(() =>
+      session.sendReview({
+        cmd: "review_comment_add",
+        thread: 1,
+        author: { role: "human", id: "u2", name: "Grace" },
+        body: "theirs",
+        images: [],
+      }),
+    );
+    await run(() =>
+      session.sendReview({ cmd: "review_comment_add", thread: 1, author: { role: "human" }, body: "nobody's", images: [] }),
+    );
+    await settle();
+    const names = [...view.container.querySelectorAll('[data-role="human"] strong')].map((name) => name.textContent);
+    expect(names).toEqual(["You", "Grace", "Reviewer"]);
     await view.unmount();
   });
 });

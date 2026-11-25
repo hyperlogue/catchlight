@@ -119,7 +119,7 @@ try {
     await drive("connected, WebGPU", [chromium, `${origin}/`, serverBase], {
       TIER: "webgpu",
       AGENT_CMD: `target/debug/catchlight-editor-cli node add --session 1 --parent Puppet --kind group --name ${AGENT_NODE}`,
-      REVIEW_CLI: "target/debug/catchlight-editor-cli --session 1 review --agent e2e-agent",
+      REVIEW_CLI: "CATCHLIGHT_AGENT_SESSION=e2e target/debug/catchlight-editor-cli --session 1 review --name e2e-agent",
     }),
     await drive("in-tab, WebGL2", [chromium, `${origin}/`], { TIER: "webgl2" }),
     await drive("in-tab, neither tier", [chromium, `${origin}/`], {

@@ -547,6 +547,11 @@ export type Command =
      * Images from [`Command::ReviewImageAdd`], each usable once.
      */
     images: Array<number>,
+    /**
+     * A retry key: the same author writing again under it gets the
+     * thread it opened back and opens nothing.
+     */
+    key?: string | null,
   }
   | {
     "cmd": "review_thread_set",
@@ -569,6 +574,11 @@ export type Command =
      * Images from [`Command::ReviewImageAdd`], each usable once.
      */
     images: Array<number>,
+    /**
+     * As for [`Command::ReviewThreadAdd`]: a repeat answers with the
+     * thread and adds nothing.
+     */
+    key?: string | null,
   }
   | {
     "cmd": "review_comment_delete",
@@ -592,12 +602,30 @@ export type Command =
   | {
     "cmd": "review_poll",
     session: SessionId,
-    agent: string,
+    agent: ReviewIdentity,
   }
   | {
     "cmd": "review_fetch",
     session: SessionId,
-    agent: string,
+    agent: ReviewIdentity,
+  }
+  | {
+    "cmd": "review_ack",
+    session: SessionId,
+    agent: ReviewIdentity,
+    batch: string,
+  }
+  | {
+    "cmd": "review_claim",
+    session: SessionId,
+    agent: ReviewIdentity,
+    threads: Array<ThreadId>,
+  }
+  | {
+    "cmd": "review_release",
+    session: SessionId,
+    agent: ReviewIdentity,
+    threads: Array<ThreadId>,
   };
 
 export type NodeKindArg =
@@ -1199,10 +1227,13 @@ export type ReviewTarget =
  */
 export type ReviewAuthor =
   | {
-    "role": "human"
+    "role": "human",
+    id?: string | null,
+    name?: string | null,
   }
   | {
     "role": "agent",
+    id: string,
     name: string,
   };
 
@@ -1277,20 +1308,38 @@ export type ReviewThread = {
    */
   comments: Array<ReviewComment>,
   /**
-   * The agent that took the thread and has not replied since.
+   * The agent whose claim on the thread is live: it is working on it.
    */
-  working?: string | null,
+  holder?: ReviewIdentity | null,
 };
 
 /**
- * An agent that polled or fetched this session's review.
+ * An agent recently heard from on this session's review.
  */
 export type ReviewAgent = {
+  id: string,
   name: string,
   /**
    * It polled recently enough to be waiting for comments now.
    */
   listening: boolean,
+};
+
+/**
+ * An agent: `id` is stable for as long as it works (one harness session),
+ * and is what claims, presence and retry keys go by; `name` is only shown.
+ */
+export type ReviewIdentity = {
+  id: string,
+  name: string,
+};
+
+/**
+ * A thread another agent holds.
+ */
+export type ReviewHeld = {
+  thread: ThreadId,
+  holder: ReviewIdentity,
 };
 
 /**
@@ -1303,9 +1352,9 @@ export type Review = {
    */
   threads: Array<ReviewThread>,
   /**
-   * The agent last heard from, if any.
+   * Every agent recently heard from, most recent last.
    */
-  agent?: ReviewAgent | null,
+  agents: Array<ReviewAgent>,
   kept: ReviewKept,
   /**
    * Why, when `kept` is `unreadable`.
@@ -1436,6 +1485,9 @@ export type ErrorCode =
   | "no_thread"
   | "no_comment"
   | "no_image"
+  | "batch_stale"
+  | "thread_claimed"
+  | "key_conflict"
   | "reserved_extension";
 
 export type ResponseBody =
@@ -1617,6 +1669,26 @@ export type ResponseBody =
   | {
     "result": "review_fetched",
     threads: Array<ReviewThread>,
+    /**
+     * Opaque; absent when nothing waits.
+     */
+    batch?: string | null,
+  }
+  | {
+    "result": "review_acked",
+    /**
+     * Now held by the acknowledging agent.
+     */
+    claimed: Array<ThreadId>,
+    /**
+     * Delivered, but another agent holds them.
+     */
+    held: Array<ReviewHeld>,
+  }
+  | {
+    "result": "review_claimed",
+    threads: Array<ThreadId>,
+    lease_seconds: number,
   };
 
 export type Event =
@@ -1916,7 +1988,10 @@ export type ReviewCommandTag =
   | "review_image_add"
   | "review_submit"
   | "review_poll"
-  | "review_fetch";
+  | "review_fetch"
+  | "review_ack"
+  | "review_claim"
+  | "review_release";
 export type ReviewCommand = Extract<Command, { cmd: ReviewCommandTag }>;
 
 /**

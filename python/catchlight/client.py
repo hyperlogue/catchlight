@@ -59,6 +59,8 @@ from .protocol_gen import (
     ResponseBodyEditHistory,
     ResponseBodyTexture,
     ResponseBodyReview,
+    ResponseBodyReviewAcked,
+    ResponseBodyReviewClaimed,
     ResponseBodyReviewFetched,
     ResponseBodyReviewImage,
     ResponseBodyReviewPending,
@@ -67,12 +69,16 @@ from .protocol_gen import (
     ReviewAuthor,
     ReviewAuthorAgent,
     ReviewAuthorHuman,
+    ReviewAck,
+    ReviewClaim,
     ReviewCommentAdd,
     ReviewFetch,
     ReviewGet,
     ReviewImageAdd,
     ReviewImageGet,
+    ReviewIdentity,
     ReviewPoll,
+    ReviewRelease,
     ReviewSubmit,
     ReviewTarget,
     ReviewTargetModel,
@@ -98,7 +104,10 @@ from .protocol_gen import (
 )
 from .transport import ByteTransport, Transport
 
-__all__ = ["Client", "ProtocolError"]
+__all__ = ["AGENT", "Client", "ProtocolError"]
+
+AGENT = ReviewIdentity(id="agent", name="agent")
+"""The agent a review call acts as unless told otherwise."""
 
 
 class ProtocolError(RuntimeError):
@@ -455,7 +464,7 @@ class Client:
     # -- review
 
     def review(self, session: SessionId) -> Review:
-        """Every thread, and whether an agent is on the session."""
+        """Every thread, and the agents attending to the session."""
         body = self.send(ReviewGet(session=session))
         if not isinstance(body, ResponseBodyReview):
             raise ProtocolError(ErrorCode.BAD_REQUEST, f"review_get answered {body!r}")
@@ -467,15 +476,17 @@ class Client:
         body: str = "",
         *,
         target: ReviewTarget | None = None,
-        agent: str | None = "agent",
+        agent: ReviewIdentity | None = AGENT,
         pose: Sequence[ParamPose] = (),
         attach: Sequence[ReviewAttachment] = (),
+        key: str | None = None,
     ) -> ReviewThread:
         """Start a thread, on the whole model unless `target` names something.
 
         `agent=None` writes as the person, whose comments wait for `review_send`.
         `attach` is up to four PNG, JPEG or WebP images, each a path or the
-        file's bytes; with one, `body` may be empty.
+        file's bytes; with one, `body` may be empty. Repeating the call with
+        the same `key` returns the thread it opened and opens nothing.
         """
         return _thread(
             self.send(
@@ -486,6 +497,7 @@ class Client:
                     body=body,
                     pose=list(pose),
                     images=self._review_images(session, attach),
+                    key=key,
                 )
             )
         )
@@ -496,12 +508,13 @@ class Client:
         thread: ThreadId,
         body: str = "",
         *,
-        agent: str | None = "agent",
+        agent: ReviewIdentity | None = AGENT,
         attach: Sequence[ReviewAttachment] = (),
+        key: str | None = None,
     ) -> ReviewThread:
-        """An agent's reply ends its work on the thread.
+        """An agent's reply releases its claim on the thread.
 
-        `attach` is as for `review_open`.
+        `attach` and `key` are as for `review_open`.
         """
         return _thread(
             self.send(
@@ -511,6 +524,7 @@ class Client:
                     author=_author(agent),
                     body=body,
                     images=self._review_images(session, attach),
+                    key=key,
                 )
             )
         )
@@ -544,22 +558,55 @@ class Client:
         """Hand the person's unsent comments to the agent."""
         self.send(ReviewSubmit(session=session))
 
-    def review_poll(self, session: SessionId, *, agent: str = "agent") -> int:
-        """How many threads wait to be fetched; also the listening heartbeat."""
+    def review_poll(self, session: SessionId, *, agent: ReviewIdentity = AGENT) -> int:
+        """How many threads wait for `agent`; also its listening heartbeat."""
         body = self.send(ReviewPoll(session=session, agent=agent))
         if not isinstance(body, ResponseBodyReviewPending):
             raise ProtocolError(ErrorCode.BAD_REQUEST, f"review_poll answered {body!r}")
         return body.pending
 
-    def review_fetch(self, session: SessionId, *, agent: str = "agent") -> list[ReviewThread]:
-        """Take the threads sent to the agent.
+    def review_fetch(
+        self, session: SessionId, *, agent: ReviewIdentity = AGENT
+    ) -> ResponseBodyReviewFetched:
+        """The threads waiting for `agent`, the new comments still `sent`.
 
-        The comments this call delivers still read `sent` in what it returns.
+        Nothing is delivered until `review_ack(batch)`: fetching again first
+        returns the same comments.
         """
         body = self.send(ReviewFetch(session=session, agent=agent))
         if not isinstance(body, ResponseBodyReviewFetched):
             raise ProtocolError(ErrorCode.BAD_REQUEST, f"review_fetch answered {body!r}")
-        return body.threads
+        return body
+
+    def review_ack(
+        self, session: SessionId, batch: str, *, agent: ReviewIdentity = AGENT
+    ) -> ResponseBodyReviewAcked:
+        """Deliver a fetched batch and claim its threads where nobody else does.
+
+        Raises `BATCH_STALE` when the batch changed since it was fetched.
+        """
+        body = self.send(ReviewAck(session=session, agent=agent, batch=batch))
+        if not isinstance(body, ResponseBodyReviewAcked):
+            raise ProtocolError(ErrorCode.BAD_REQUEST, f"review_ack answered {body!r}")
+        return body
+
+    def review_claim(
+        self, session: SessionId, threads: Sequence[ThreadId], *, agent: ReviewIdentity = AGENT
+    ) -> int:
+        """Take or renew claims on `threads`; the lease in seconds.
+
+        Raises `THREAD_CLAIMED` when another agent holds one.
+        """
+        body = self.send(ReviewClaim(session=session, agent=agent, threads=list(threads)))
+        if not isinstance(body, ResponseBodyReviewClaimed):
+            raise ProtocolError(ErrorCode.BAD_REQUEST, f"review_claim answered {body!r}")
+        return body.lease_seconds
+
+    def review_release(
+        self, session: SessionId, threads: Sequence[ThreadId], *, agent: ReviewIdentity = AGENT
+    ) -> None:
+        """Give up `agent`'s own claims on `threads`."""
+        self.send(ReviewRelease(session=session, agent=agent, threads=list(threads)))
 
     def resolve(
         self, session: SessionId, thread: ThreadId, *, resolved: bool = True
@@ -574,8 +621,10 @@ class Client:
 ReviewAttachment = bytes | bytearray | str | os.PathLike[str]
 
 
-def _author(agent: str | None) -> ReviewAuthor:
-    return ReviewAuthorHuman() if agent is None else ReviewAuthorAgent(name=agent)
+def _author(agent: ReviewIdentity | None) -> ReviewAuthor:
+    if agent is None:
+        return ReviewAuthorHuman()
+    return ReviewAuthorAgent(id=agent.id, name=agent.name)
 
 
 def _thread(body: ResponseBody) -> ReviewThread:

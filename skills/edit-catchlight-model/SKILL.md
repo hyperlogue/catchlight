@@ -30,11 +30,13 @@ curl -fsSL https://github.com/hyperlogue/catchlight/releases/latest/download/ins
 
 Once you are on a session, run `catchlight-editor review watch
 --attachments-dir <dir>` in the background: it returns with the comments the
-user sends from their tab, and saves their images to `<dir>`. Open every image
-it lists before acting. Change the model, answer each thread with
-`catchlight-editor review reply <thread> -m "…"`, adding `--attach <image>`
-when a `preview --out` render shows the result, and watch again. Leave
-resolving to the user.
+user sends from their tab, and saves their images to `<dir>`. Act only on exit
+0; on 4 or 1 run `review fetch` again, as the guide's review section explains.
+Open every image it lists before acting. Change the model, answer each thread
+with `catchlight-editor review reply <thread> -m "…" --key <k>`, adding
+`--attach <image>` when a `preview --out` render shows the result, and watch
+again. Repeat a failed reply with the same `--key`. Leave resolving to the
+user.
 
 Use `catchlight-editor help <command>` for a command's flags. Give the user the
 editor URL when you start one, so they can watch your edits land.

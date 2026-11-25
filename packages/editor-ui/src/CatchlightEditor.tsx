@@ -50,7 +50,7 @@ import {
   usePreviewExport,
   captureCanvas,
 } from "@catchlight/react";
-import type { IconName, SaveOutcome } from "@catchlight/react";
+import type { IconName, Reviewer, SaveOutcome } from "@catchlight/react";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import { Stage, Environment } from "./stage.js";
@@ -71,12 +71,19 @@ export interface CatchlightEditorProps {
    * offers. Without it the tab only says that no agent is connected.
    */
   agentConnect?: (session: Session) => ReactNode;
+  /**
+   * The person using this tab, as the host knows them: stamped on the
+   * comments they write, so a review shared by several people tells them
+   * apart. Without it every person's comment reads as "You".
+   */
+  reviewer?: Reviewer;
 }
 export function CatchlightEditor({
   editor,
   className,
   onOpenStarter,
   agentConnect,
+  reviewer,
 }: CatchlightEditorProps) {
   return (
     <div className={className ? `catchlight ${className}` : "catchlight"}>
@@ -84,6 +91,7 @@ export function CatchlightEditor({
         <Shell
           {...(onOpenStarter ? { onOpenStarter } : {})}
           {...(agentConnect ? { agentConnect } : {})}
+          {...(reviewer ? { reviewer } : {})}
         />
       </EditorProvider>
     </div>
@@ -92,7 +100,8 @@ export function CatchlightEditor({
 function Shell({
   onOpenStarter,
   agentConnect,
-}: Pick<CatchlightEditorProps, "onOpenStarter" | "agentConnect">) {
+  reviewer,
+}: Pick<CatchlightEditorProps, "onOpenStarter" | "agentConnect" | "reviewer">) {
   const editor = useEditor();
   const { sessions } = useSessions();
   const [session, setSession] = useState<Session>();
@@ -200,7 +209,12 @@ function Shell({
   return (
     <PresenceProvider session={session}>
       <EditingProvider session={session} onError={failed} onNotice={setNotice}>
-        <ReviewProvider session={session} onError={failed} onAttention={askReview}>
+        <ReviewProvider
+          session={session}
+          onError={failed}
+          onAttention={askReview}
+          {...(reviewer ? { reviewer } : {})}
+        >
         <Workspace
           session={session}
           reviewAsked={reviewAsked}

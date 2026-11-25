@@ -98,26 +98,50 @@ catchlight-editor review watch                  # run it in the background
 
 It shows you as listening in their tab and returns when they send: it prints
 each thread with its Id, what it is about, the pose the user was looking at,
-and the conversation so far, the new comments marked `(new)`. `--timeout
-<seconds>` makes it give up with exit code 3. Then, for every thread it printed:
+and the conversation so far, the new comments marked `(new)`. Only once that
+is printed does it acknowledge them, which marks them delivered and claims
+their threads for you, so the tab shows you working. Its exit code says what
+happened:
+
+- `0`: the comments were delivered; act on them.
+- `3`: `--timeout <seconds>` passed with nothing sent.
+- `4`: they changed before the acknowledgment (deleted, resolved, or taken by
+  another agent); disregard the output and run `review fetch` or `watch` again.
+- `1`: they could not be saved, printed or acknowledged; they stay pending,
+  so fix the cause and fetch again, expecting the same comments.
+
+`review fetch` does the same without waiting. Then, for every thread printed:
 
 1. Read the target (`node info <id>`, `preview --param …` at the thread's
    pose) and make the change, or decide what to ask.
 2. Answer on the thread, saying what you changed in the user's terms:
 
    ```sh
-   catchlight-editor review reply <thread> -m "Raised the ear's z order above the hair."
+   catchlight-editor review reply <thread> -m "Raised the ear's z order above the hair." --key ear-1
    ```
 
+   The reply ends your claim on the thread. If a reply or `review open` fails
+   or you cannot tell whether it landed, run it again with the same `--key`:
+   a repeat writes nothing twice, and a key reused for other content is
+   refused.
 3. Run `review watch` again.
 
 Reply to every thread you were given, even when the answer is a question or
 "not done, because …": the thread shows as yours until you do. Never resolve
 a thread; the user does that when they are satisfied. `review list` shows the
-open threads at any time, and `review open --node <id> -m "…"` (or `--param`,
-`--texture`, `--slot <node> <slot>`, `--model`) starts one of your own when you
-need to ask about something. Set `CATCHLIGHT_AGENT` (or pass `--agent`) to the
-name the user should see on your comments.
+open threads, who is working on each and which agents are around, and
+`review open --node <id> -m "…"` (or `--param`, `--texture`, `--slot <node>
+<slot>`, `--model`) starts one of your own when you need to ask about
+something.
+
+Several agents can attend one review. Each is its harness session
+(`claude:<session>`, `codex:<thread>`, `antigravity:<conversation>`), or
+`CATCHLIGHT_AGENT_SESSION` when set; with neither, every agent is the same
+one, `agent`. `--name` (or `CATCHLIGHT_AGENT`) is only the name the user
+sees, by default the harness's. `review claim <thread>...` takes a 60-minute
+claim, renewed by claiming again before it lapses, and is refused for a thread
+another agent holds; `review release <thread>...` gives yours up. New comments
+on a thread another agent holds wait for that agent.
 
 Threads of a saved model are kept for you on this machine and are there when
 it is next opened; those of a model never saved last only as long as its

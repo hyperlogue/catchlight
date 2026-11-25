@@ -73,7 +73,7 @@ export interface ScratchTransform {
  */
 export const REVIEW_LISTENING_POLL_MS = 4000;
 
-const NO_REVIEW: Review = { threads: [], kept: "stored" };
+const NO_REVIEW: Review = { threads: [], agents: [], kept: "stored" };
 
 /** How long a `send` waits for its `model_changed` frame before re-feeding. */
 export const CATCH_UP_TIMEOUT_MS = 4000;
@@ -215,7 +215,7 @@ export class Session {
     if (this.#closed || read !== this.#reviewRead) return;
     const next = expectResult(body, "review").review;
     this.#stopReviewTimer();
-    if (next.agent?.listening && this.#reviewListeners.size > 0) {
+    if (next.agents.some((agent) => agent.listening) && this.#reviewListeners.size > 0) {
       this.#reviewTimer = setTimeout(() => {
         this.#reviewTimer = undefined;
         void this.refreshReview().catch(() => undefined);

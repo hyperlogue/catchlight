@@ -8,6 +8,7 @@ import type {
   ParamInfo,
   Review,
   ReviewAgent,
+  ReviewAuthor,
   ReviewComment,
   ReviewImage,
   ReviewTarget,
@@ -41,21 +42,30 @@ import { readPose } from "./pose.js";
 import { useSelection } from "./presence.js";
 import { useRevision } from "./replica.js";
 
-const NO_REVIEW: Review = { threads: [], kept: "stored" };
+const NO_REVIEW: Review = { threads: [], agents: [], kept: "stored" };
 const neverChanges = (): (() => void) => () => {};
 const noReview = (): Review => NO_REVIEW;
 
 /**
- * `absent`: no agent has been heard from. `away`: one was, and it is neither
- * waiting nor holding a thread. `working` wins over `listening`.
+ * `absent`: no agent has been heard from lately. `away`: some were, and none
+ * is waiting or holding a thread. `working`, any agent holding an open
+ * thread, wins over `listening`, any agent waiting.
  */
 export type AgentPhase = "absent" | "away" | "listening" | "working";
+
+/** The person at this tab, as the host knows them. */
+export interface Reviewer {
+  id: string;
+  name: string;
+}
 
 export interface ReviewState {
   session: Session | undefined;
   review: Review;
-  agent: ReviewAgent | undefined;
+  /** Recently heard from, most recent last. */
+  agents: readonly ReviewAgent[];
   phase: AgentPhase;
+  reviewer: Reviewer | undefined;
   /** Human comments on open threads still held back from the agent. */
   unsent: number;
   /** Threads sent and not yet taken by an agent. */
@@ -83,12 +93,17 @@ const ReviewContext = createContext<ReviewState | undefined>(undefined);
 export interface ReviewProviderProps {
   session: Session | undefined;
   onError: ErrorHandler;
+  /**
+   * Stamped on the comments this tab writes. Without one, every comment from
+   * a person reads as the viewer's own.
+   */
+  reviewer?: Reviewer;
   /** A thread was focused or a comment started from outside the panel. */
   onAttention?: () => void;
   children?: ReactNode;
 }
 
-export function ReviewProvider({ session, onError, onAttention, children }: ReviewProviderProps) {
+export function ReviewProvider({ session, onError, reviewer, onAttention, children }: ReviewProviderProps) {
   const review = useSyncExternalStore(
     session?.subscribeReview ?? neverChanges,
     session?.getReview ?? noReview,
@@ -99,8 +114,15 @@ export function ReviewProvider({ session, onError, onAttention, children }: Revi
     session,
   });
   const here = aim.session === session ? aim : { session };
-  const live = useRef({ session, onError, onAttention });
-  live.current = { session, onError, onAttention };
+  // By value: a host passing a fresh object each render must not churn the context.
+  const reviewerId = reviewer?.id;
+  const reviewerName = reviewer?.name;
+  const live = useRef({ session, onError, onAttention, reviewer });
+  live.current = { session, onError, onAttention, reviewer };
+  const person = (): ReviewAuthor => {
+    const who = live.current.reviewer;
+    return who ? { role: "human", id: who.id, name: who.name } : { role: "human" };
+  };
 
   const run = useCallback(async (work: (session: Session) => Promise<unknown>): Promise<boolean> => {
     const { session, onError } = live.current;
@@ -143,7 +165,7 @@ export function ReviewProvider({ session, onError, onAttention, children }: Revi
           const reply = await session.sendReview({
             cmd: "review_thread_add",
             target,
-            author: { role: "human" },
+            author: person(),
             body,
             pose: readPose(session),
             images: await upload(session, images),
@@ -158,7 +180,7 @@ export function ReviewProvider({ session, onError, onAttention, children }: Revi
           session.sendReview({
             cmd: "review_comment_add",
             thread,
-            author: { role: "human" },
+            author: person(),
             body,
             images: await upload(session, images),
           }),
@@ -176,16 +198,17 @@ export function ReviewProvider({ session, onError, onAttention, children }: Revi
 
   const value = useMemo<ReviewState>(() => {
     const open = review.threads.filter((thread) => thread.status === "open");
-    const agent = review.agent ?? undefined;
+    const agents = review.agents;
     return {
       session,
       review,
-      agent,
-      phase: open.some((thread) => thread.working)
+      agents,
+      reviewer: reviewerId === undefined ? undefined : { id: reviewerId, name: reviewerName ?? "" },
+      phase: open.some((thread) => thread.holder)
         ? "working"
-        : agent?.listening
+        : agents.some((agent) => agent.listening)
           ? "listening"
-          : agent
+          : agents.length > 0
             ? "away"
             : "absent",
       unsent: open.reduce((n, thread) => n + thread.comments.filter(isUnsent).length, 0),
@@ -196,7 +219,7 @@ export function ReviewProvider({ session, onError, onAttention, children }: Revi
       focused: here.thread,
       ...actions,
     };
-  }, [session, review, pending, here.target, here.thread, actions]);
+  }, [session, review, pending, here.target, here.thread, actions, reviewerId, reviewerName]);
 
   return <ReviewContext.Provider value={value}>{children}</ReviewContext.Provider>;
 }
@@ -222,6 +245,17 @@ function isUnsent(comment: ReviewComment): boolean {
 
 function agentSpokeLast(thread: ReviewThread): boolean {
   return thread.comments[thread.comments.length - 1]?.author.role === "agent";
+}
+
+/** Whether a person's comment is the viewer's: same id, or neither has one. */
+export function isViewer(author: ReviewAuthor, reviewer: Reviewer | undefined): boolean {
+  return author.role === "human" && (author.id ?? undefined) === reviewer?.id;
+}
+
+/** Who is attending, in a few words: one agent by name, several by count. */
+export function agentsLabel(agents: readonly ReviewAgent[]): string | undefined {
+  if (agents.length > 1) return `${agents.length} agents`;
+  return agents[0]?.name;
 }
 
 export function sameTarget(a: ReviewTarget, b: ReviewTarget): boolean {
@@ -300,7 +334,7 @@ export function ReviewBadge({ target, label }: { target: ReviewTarget; label: st
       type="button"
       data-catchlight-review-badge=""
       data-attention={threads.some(agentSpokeLast) ? "" : undefined}
-      data-working={threads.some((thread) => thread.working) ? "" : undefined}
+      data-working={threads.some((thread) => thread.holder) ? "" : undefined}
       aria-label={`${threads.length} open ${threads.length === 1 ? "thread" : "threads"} on ${label}`}
       title={`${threads.length} open ${threads.length === 1 ? "thread" : "threads"}`}
       onClick={(event) => {
@@ -342,17 +376,18 @@ const PHASE_TEXT: Record<AgentPhase, string> = {
 export function ReviewStatus({ onOpen }: { onOpen?: () => void }) {
   const review = useReview();
   if (!review?.session) return null;
-  const { phase, agent, unsent, replied } = review;
+  const { phase, agents, unsent, replied } = review;
+  const who = agentsLabel(agents);
   return (
     <div data-catchlight-review-status="" data-phase={phase}>
       <button
         type="button"
         data-catchlight-review-agent=""
-        title={agent ? `${agent.name}: ${PHASE_TEXT[phase].toLowerCase()}` : PHASE_TEXT[phase]}
+        title={who ? `${agents.map((agent) => agent.name).join(", ")}: ${PHASE_TEXT[phase].toLowerCase()}` : PHASE_TEXT[phase]}
         onClick={onOpen}
       >
         <i data-catchlight-review-dot="" />
-        <span>{phase === "absent" ? "Review" : (agent?.name ?? "Agent")}</span>
+        <span>{phase === "absent" ? "Review" : (who ?? "Agent")}</span>
         <small>{phase === "absent" ? "" : PHASE_TEXT[phase].replace("Agent ", "")}</small>
         {replied > 0 && <b data-catchlight-review-count="">{replied}</b>}
       </button>
@@ -417,7 +452,7 @@ export function ReviewPanel({ session, connect, capture }: ReviewPanelProps) {
   }, [focused, tab]);
 
   if (!review) return null;
-  const { phase, agent, unsent, waiting } = review;
+  const { phase, agents, unsent, waiting } = review;
   const threads = review.review.threads
     .filter((thread) => thread.status === tab)
     .sort((a, b) => lastComment(b) - lastComment(a));
@@ -449,7 +484,9 @@ export function ReviewPanel({ session, connect, capture }: ReviewPanelProps) {
         <div data-catchlight-review-agent="" data-phase={phase}>
           <i data-catchlight-review-dot="" />
           <span>
-            <strong>{agent?.name ?? "No agent connected"}</strong>
+            <strong title={agents.map((agent) => agent.name).join(", ")}>
+              {agentsLabel(agents) ?? "No agent connected"}
+            </strong>
             <small>
               {phase === "absent"
                 ? "Comments wait here until one joins"
@@ -529,6 +566,7 @@ export function ReviewPanel({ session, connect, capture }: ReviewPanelProps) {
             thread={thread}
             label={label(thread.target)}
             session={session}
+            reviewer={review.reviewer}
             focused={thread.thread === focused}
             busy={review.busy}
             capture={capture}
@@ -703,6 +741,7 @@ function ReviewThreadCard({
   thread,
   label,
   session,
+  reviewer,
   focused,
   busy,
   capture,
@@ -717,6 +756,7 @@ function ReviewThreadCard({
   thread: ReviewThread;
   label: TargetLabel;
   session: Session;
+  reviewer: Reviewer | undefined;
   focused: boolean;
   busy: boolean;
   capture: (() => Promise<Blob>) | undefined;
@@ -748,7 +788,7 @@ function ReviewThreadCard({
       data-thread={thread.thread}
       data-status={thread.status}
       data-focused={focused ? "" : undefined}
-      data-working={thread.working ? "" : undefined}
+      data-working={thread.holder ? "" : undefined}
       data-attention={!resolved && agentSpokeLast(thread) ? "" : undefined}
       data-missing={thread.target_missing ? "" : undefined}
     >
@@ -783,7 +823,9 @@ function ReviewThreadCard({
               </>
             ) : (
               <>
-                <strong>You</strong>
+                <strong>
+                  {isViewer(comment.author, reviewer) ? "You" : (comment.author.name ?? "Reviewer")}
+                </strong>
                 <small data-catchlight-review-delivery="">{DELIVERY_TEXT[comment.delivery]}</small>
               </>
             )}
@@ -800,10 +842,10 @@ function ReviewThreadCard({
           {!!comment.images?.length && <ReviewImages session={session} images={comment.images} />}
         </article>
       ))}
-      {thread.working && (
-        <p data-catchlight-review-working="" role="status">
+      {thread.holder && (
+        <p data-catchlight-review-working="" role="status" title={thread.holder.id}>
           <Icon name="spark" width="13" height="13" />
-          {thread.working} is working on this…
+          {thread.holder.name} is working on this…
         </p>
       )}
       {replying ? (

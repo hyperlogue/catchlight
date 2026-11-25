@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
+use std::io::Write as _;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -11,18 +12,63 @@ use serde_json::Value;
 use super::*;
 
 /// `review watch` ran out its `--timeout` with nothing sent. Apart from 1
-/// (a refused command) and 2 (clap's usage error).
+/// (a refused command or failed delivery) and 2 (clap's usage error).
 pub(super) const TIMED_OUT: i32 = 3;
+/// What `fetch` or `watch` printed changed before it was acknowledged: the
+/// comments were deleted, resolved or taken by another agent meanwhile.
+pub(super) const SUPERSEDED: i32 = 4;
 
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
 
+/// Who an agent is when its harness says nothing and
+/// `CATCHLIGHT_AGENT_SESSION` is unset: every such agent is the same one.
+const DEFAULT_AGENT: &str = "agent";
+
 #[derive(clap::Args)]
 pub(super) struct ReviewArgs {
-    /// The name comments and work are recorded under.
-    #[arg(long, global = true, env = "CATCHLIGHT_AGENT", default_value = "agent")]
-    agent: String,
+    /// The name the person sees on your comments. Defaults to your harness
+    /// (claude, codex, antigravity), else "agent". Who you are is separate:
+    /// the harness session, or CATCHLIGHT_AGENT_SESSION.
+    #[arg(long, global = true, env = "CATCHLIGHT_AGENT")]
+    name: Option<String>,
     #[command(subcommand)]
     action: ReviewCmd,
+}
+
+/// The harness's name for an agent and its session id, as r3 reads them.
+fn harness(env: &dyn Fn(&str) -> Option<String>) -> Option<(&'static str, String)> {
+    let value = |name: &str| {
+        env(name)
+            .map(|v| v.trim().to_owned())
+            .filter(|v| !v.is_empty())
+    };
+    if let Some(id) = value("CLAUDE_CODE_SESSION_ID") {
+        return Some(("claude", format!("claude:{id}")));
+    }
+    if let Some(id) = value("ANTIGRAVITY_CONVERSATION_ID") {
+        return Some(("antigravity", format!("antigravity:{id}")));
+    }
+    value("CODEX_THREAD_ID")
+        .or_else(|| value("CODEX_SESSION_ID"))
+        .map(|id| ("codex", format!("codex:{id}")))
+}
+
+fn identity(name: Option<&str>, env: &dyn Fn(&str) -> Option<String>) -> ReviewIdentity {
+    let detected = harness(env);
+    let id = env("CATCHLIGHT_AGENT_SESSION")
+        .map(|v| v.trim().to_owned())
+        .filter(|v| !v.is_empty())
+        .or_else(|| detected.as_ref().map(|(_, id)| id.clone()))
+        .unwrap_or_else(|| DEFAULT_AGENT.into());
+    let name = name
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        .or(detected.map(|(label, _)| label))
+        .unwrap_or(DEFAULT_AGENT);
+    ReviewIdentity {
+        id,
+        name: name.to_owned(),
+    }
 }
 
 #[derive(Subcommand)]
@@ -35,8 +81,10 @@ enum ReviewCmd {
         #[arg(long, value_name = "DIR")]
         attachments_dir: Option<PathBuf>,
     },
-    /// Wait until the person sends comments, then take and print them.
-    /// Exits 3 if `--timeout` passes first.
+    /// Wait until the person sends comments, then print and acknowledge
+    /// them. Exits 0 once they are delivered, 3 if `--timeout` passes first,
+    /// 4 if they changed before the acknowledgment (fetch again), 1 if they
+    /// could not be saved, printed or acknowledged (they stay pending).
     Watch {
         /// Give up after this many seconds; without it, wait indefinitely.
         #[arg(long)]
@@ -45,7 +93,8 @@ enum ReviewCmd {
         #[arg(long, value_name = "DIR")]
         attachments_dir: Option<PathBuf>,
     },
-    /// Take and print the comments sent so far, without waiting.
+    /// Print and acknowledge the comments sent so far, without waiting.
+    /// Exits as `watch` does.
     Fetch {
         /// Save the threads' images here and print each one's path.
         #[arg(long, value_name = "DIR")]
@@ -63,6 +112,8 @@ enum ReviewCmd {
         /// Write as the person rather than as the agent.
         #[arg(long)]
         human: bool,
+        #[command(flatten)]
+        key: KeyArg,
     },
     /// Start a thread on a node, param, texture, slot or the whole model.
     Open {
@@ -76,6 +127,19 @@ enum ReviewCmd {
         /// Write as the person rather than as the agent.
         #[arg(long)]
         human: bool,
+        #[command(flatten)]
+        key: KeyArg,
+    },
+    /// Take or renew a 60-minute claim on threads: the person sees you
+    /// working on them, and other agents leave them to you.
+    Claim {
+        #[arg(required = true)]
+        threads: Vec<u64>,
+    },
+    /// Give up your claims on threads. A reply releases its thread itself.
+    Release {
+        #[arg(required = true)]
+        threads: Vec<u64>,
     },
     /// Hand the person's unsent comments to the agent, as their Send button does.
     Send,
@@ -89,6 +153,14 @@ enum ReviewCmd {
     Delete {
         thread: u64,
     },
+}
+
+#[derive(clap::Args)]
+struct KeyArg {
+    /// Repeating the command with the same key writes nothing new and prints
+    /// the original result; the same key with other content is refused.
+    #[arg(long, value_name = "KEY")]
+    key: Option<String>,
 }
 
 #[derive(clap::Args)]
@@ -217,6 +289,7 @@ impl Client<'_> {
                         ),
                         Reply::Event(_) => bail!("image {}: no reply", image.image),
                     }
+                    verify(&path, image)?;
                     saved.insert(image.image, path);
                 }
             }
@@ -228,14 +301,51 @@ impl Client<'_> {
 /// Where each downloaded image landed.
 type Saved = BTreeMap<u64, PathBuf>;
 
-fn author(args: &ReviewArgs, human: bool) -> ReviewAuthor {
+/// The file holds what the comment lists: an agent must not be told to look
+/// at a truncated or foreign file.
+fn verify(path: &Path, image: &ReviewImage) -> Result<()> {
+    let bytes = std::fs::read(path).with_context(|| format!("reading back {}", path.display()))?;
+    let magic: &[u8] = match image.media_type.as_str() {
+        "image/png" => b"\x89PNG\r\n\x1a\n",
+        "image/jpeg" => &[0xff, 0xd8, 0xff],
+        "image/webp" => b"RIFF",
+        _ => b"",
+    };
+    if bytes.len() != image.byte_length as usize || !bytes.starts_with(magic) {
+        bail!(
+            "{}: not the {} of {} bytes that image {} is",
+            path.display(),
+            image.media_type,
+            image.byte_length,
+            image.image
+        );
+    }
+    Ok(())
+}
+
+fn author(who: &ReviewIdentity, human: bool) -> ReviewAuthor {
     if human {
-        ReviewAuthor::Human
+        ReviewAuthor::Human {
+            id: None,
+            name: None,
+        }
     } else {
         ReviewAuthor::Agent {
-            name: args.agent.clone(),
+            id: who.id.clone(),
+            name: who.name.clone(),
         }
     }
+}
+
+fn threads(ids: &[u64]) -> Vec<ThreadId> {
+    ids.iter().copied().map(ThreadId).collect()
+}
+
+fn listed(ids: &[ThreadId]) -> String {
+    ids.iter()
+        .map(|t| t.0.to_string())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn message(given: &Option<String>, attach: &[PathBuf]) -> Result<String> {
@@ -256,6 +366,7 @@ fn message(given: &Option<String>, attach: &[PathBuf]) -> Result<String> {
 /// The process exit code.
 pub(super) fn run(cli: &Cli, args: &ReviewArgs, stream: &mut transport::Transport) -> Result<i32> {
     let session = resolve_session(cli)?;
+    let who = identity(args.name.as_deref(), &|name| std::env::var(name).ok());
     let mut client = Client { stream, next_id: 1 };
     let mut all = true;
     let mut save_to = None;
@@ -272,20 +383,25 @@ pub(super) fn run(cli: &Cli, args: &ReviewArgs, stream: &mut transport::Transpor
             timeout,
             attachments_dir,
         } => {
-            save_to = attachments_dir.as_deref();
             let deadline = timeout.map(|s| Instant::now() + Duration::from_secs(s));
             loop {
                 let reply = client.send(Command::ReviewPoll {
                     session,
-                    agent: args.agent.clone(),
+                    agent: who.clone(),
                 })?;
                 match reply {
                     Reply::Ok {
                         body: ResponseBody::ReviewPending { pending },
                         ..
                     } => {
+                        // Another agent may take what was waiting between
+                        // the poll and the fetch; then keep waiting.
                         if pending > 0 {
-                            break;
+                            if let Some(code) =
+                                deliver(cli, &mut client, session, &who, attachments_dir, false)?
+                            {
+                                return Ok(code);
+                            }
                         }
                     }
                     other => return Ok(finish(cli, &other, all, None)),
@@ -296,23 +412,18 @@ pub(super) fn run(cli: &Cli, args: &ReviewArgs, stream: &mut transport::Transpor
                 }
                 std::thread::sleep(POLL_INTERVAL);
             }
-            Command::ReviewFetch {
-                session,
-                agent: args.agent.clone(),
-            }
         }
         ReviewCmd::Fetch { attachments_dir } => {
-            save_to = attachments_dir.as_deref();
-            Command::ReviewFetch {
-                session,
-                agent: args.agent.clone(),
-            }
+            return Ok(
+                deliver(cli, &mut client, session, &who, attachments_dir, true)?.unwrap_or(0),
+            );
         }
         ReviewCmd::Reply {
             thread,
             message: text,
             attach,
             human,
+            key,
         } => {
             let body = message(text, attach)?;
             let images = match client.upload(session, attach)? {
@@ -322,9 +433,10 @@ pub(super) fn run(cli: &Cli, args: &ReviewArgs, stream: &mut transport::Transpor
             Command::ReviewCommentAdd {
                 session,
                 thread: ThreadId(*thread),
-                author: author(args, *human),
+                author: author(&who, *human),
                 body,
                 images,
+                key: key.key.clone(),
             }
         }
         ReviewCmd::Open {
@@ -332,6 +444,7 @@ pub(super) fn run(cli: &Cli, args: &ReviewArgs, stream: &mut transport::Transpor
             message: text,
             attach,
             human,
+            key,
         } => {
             let target = target.target()?;
             let body = message(text, attach)?;
@@ -342,11 +455,29 @@ pub(super) fn run(cli: &Cli, args: &ReviewArgs, stream: &mut transport::Transpor
             Command::ReviewThreadAdd {
                 session,
                 target,
-                author: author(args, *human),
+                author: author(&who, *human),
                 body,
                 pose: Vec::new(),
                 images,
+                key: key.key.clone(),
             }
+        }
+        ReviewCmd::Claim { threads: ids } => Command::ReviewClaim {
+            session,
+            agent: who.clone(),
+            threads: threads(ids),
+        },
+        ReviewCmd::Release { threads: ids } => {
+            let reply = client.send(Command::ReviewRelease {
+                session,
+                agent: who.clone(),
+                threads: threads(ids),
+            })?;
+            if matches!(reply, Reply::Ok { .. }) && !cli.json {
+                println!("released thread {}", listed(&threads(ids)));
+                return Ok(0);
+            }
+            return Ok(finish(cli, &reply, all, None));
         }
         ReviewCmd::Send => Command::ReviewSubmit { session },
         ReviewCmd::Resolve { thread } => Command::ReviewThreadSet {
@@ -374,6 +505,83 @@ pub(super) fn run(cli: &Cli, args: &ReviewArgs, stream: &mut transport::Transpor
     Ok(finish(cli, &reply, all, saved.as_ref()))
 }
 
+/// Fetches, saves every image, prints and flushes, and only then
+/// acknowledges: whatever fails before the acknowledgment leaves the comments
+/// pending. `None` when nothing waited and `empty_too` is unset.
+fn deliver(
+    cli: &Cli,
+    client: &mut Client,
+    session: SessionId,
+    who: &ReviewIdentity,
+    save_to: &Option<PathBuf>,
+    empty_too: bool,
+) -> Result<Option<i32>> {
+    let reply = client.send(Command::ReviewFetch {
+        session,
+        agent: who.clone(),
+    })?;
+    let (threads, batch) = match &reply {
+        Reply::Ok {
+            body: ResponseBody::ReviewFetched { threads, batch },
+            ..
+        } => (threads, batch.clone()),
+        other => return Ok(Some(finish(cli, other, true, None))),
+    };
+    let Some(batch) = batch else {
+        return Ok(empty_too.then(|| finish(cli, &reply, true, None)));
+    };
+    const PENDING: &str = "the comments stay pending: fix this and fetch again";
+    let saved = save_to
+        .as_deref()
+        .map(|dir| client.download(session, dir, &threads.iter().collect::<Vec<_>>()))
+        .transpose()
+        .context(PENDING)?;
+    finish(cli, &reply, true, saved.as_ref());
+    std::io::stdout().flush().context(PENDING)?;
+
+    let acked = client
+        .send(Command::ReviewAck {
+            session,
+            agent: who.clone(),
+            batch,
+        })
+        .context("acknowledging what was printed; the comments stay pending: fetch again")?;
+    if cli.json {
+        print_reply(cli, &acked);
+    }
+    Ok(Some(match &acked {
+        Reply::Ok {
+            body: body @ ResponseBody::ReviewAcked { .. },
+            ..
+        } => {
+            if !cli.json {
+                print!("{}", describe(body, true, None).unwrap_or_default());
+            }
+            0
+        }
+        Reply::Err {
+            code: ErrorCode::BatchStale,
+            ..
+        } => {
+            eprintln!(
+                "these comments changed or another agent took them before they were acknowledged; \
+                 disregard them and run `review fetch` again"
+            );
+            SUPERSEDED
+        }
+        Reply::Err { code, message, .. } => {
+            eprintln!(
+                "acknowledging failed [{}]: {message}; the comments stay pending: fetch again",
+                code_name(*code)
+            );
+            1
+        }
+        Reply::Ok { .. } | Reply::Event(_) => {
+            bail!("acknowledging: an unexpected reply; the comments stay pending: fetch again")
+        }
+    }))
+}
+
 /// The threads [`describe`] prints for `body`.
 fn shown(body: &ResponseBody, all: bool) -> Vec<&ReviewThread> {
     match body {
@@ -383,7 +591,7 @@ fn shown(body: &ResponseBody, all: bool) -> Vec<&ReviewThread> {
             .filter(|t| all || t.status == ThreadStatus::Open)
             .collect(),
         ResponseBody::ReviewThread { thread } => vec![thread],
-        ResponseBody::ReviewFetched { threads } => threads.iter().collect(),
+        ResponseBody::ReviewFetched { threads, .. } => threads.iter().collect(),
         _ => Vec::new(),
     }
 }
@@ -407,14 +615,9 @@ pub(super) fn describe(body: &ResponseBody, all: bool, saved: Option<&Saved>) ->
     match body {
         ResponseBody::Review { review } => {
             let shown = shown(body, all);
-            match &review.agent {
-                Some(agent) if agent.listening => {
-                    let _ = writeln!(out, "agent {} is listening", agent.name);
-                }
-                Some(agent) => {
-                    let _ = writeln!(out, "agent {} is not listening", agent.name);
-                }
-                None => {}
+            for agent in &review.agents {
+                let state = if agent.listening { "is" } else { "is not" };
+                let _ = writeln!(out, "agent {} ({}) {state} listening", agent.name, agent.id);
             }
             if review.kept == ReviewKept::Unreadable {
                 let _ = writeln!(
@@ -436,7 +639,7 @@ pub(super) fn describe(body: &ResponseBody, all: bool, saved: Option<&Saved>) ->
             }
         }
         ResponseBody::ReviewThread { thread } => describe_thread(&mut out, thread, false, saved),
-        ResponseBody::ReviewFetched { threads } => {
+        ResponseBody::ReviewFetched { threads, .. } => {
             if threads.is_empty() {
                 let _ = writeln!(out, "(nothing sent to you)");
             }
@@ -446,9 +649,10 @@ pub(super) fn describe(body: &ResponseBody, all: bool, saved: Option<&Saved>) ->
             if !threads.is_empty() {
                 let _ = writeln!(
                     out,
-                    "These threads are now yours. Make the changes, then answer each one with\n\
-                     `review reply <thread> -m \"<what changed, or your question>\"`. Resolving is\n\
-                     the person's call. Run `review watch` again to wait for more."
+                    "Make the changes, then answer each thread with\n\
+                     `review reply <thread> -m \"<what changed, or your question>\"`; the reply ends\n\
+                     your claim on it. Resolving is the person's call. Run `review watch` again to\n\
+                     wait for more."
                 );
                 if threads
                     .iter()
@@ -472,6 +676,29 @@ pub(super) fn describe(body: &ResponseBody, all: bool, saved: Option<&Saved>) ->
         }
         ResponseBody::ReviewImage { image } => {
             let _ = writeln!(out, "image {}", describe_image(image));
+        }
+        ResponseBody::ReviewAcked { claimed, held } => {
+            if !claimed.is_empty() {
+                let _ = writeln!(out, "delivered; claimed thread {}", listed(claimed));
+            }
+            for held in held {
+                let _ = writeln!(
+                    out,
+                    "thread {} is claimed by {} ({}): its comments were left for them; leave it to them",
+                    held.thread.0, held.holder.name, held.holder.id
+                );
+            }
+        }
+        ResponseBody::ReviewClaimed {
+            threads,
+            lease_seconds,
+        } => {
+            let _ = writeln!(
+                out,
+                "claimed thread {} for {} minutes; claim again to renew",
+                listed(threads),
+                lease_seconds / 60
+            );
         }
         ResponseBody::ReviewPending { pending } => {
             let _ = writeln!(
@@ -514,8 +741,8 @@ fn describe_thread(out: &mut String, thread: &ReviewThread, fetched: bool, saved
         thread.thread.0,
         describe_target(&thread.target)
     );
-    if let Some(agent) = thread.working.as_ref().filter(|_| !fetched) {
-        let _ = write!(out, " ({agent} is working on it)");
+    if let Some(holder) = thread.holder.as_ref().filter(|_| !fetched) {
+        let _ = write!(out, " ({} is working on it)", holder.name);
     }
     let _ = writeln!(out);
     if thread.target_missing {
@@ -531,8 +758,11 @@ fn describe_thread(out: &mut String, thread: &ReviewThread, fetched: bool, saved
     }
     for comment in &thread.comments {
         let who = match &comment.author {
-            ReviewAuthor::Human => "[human]".to_owned(),
-            ReviewAuthor::Agent { name } => format!("[agent: {name}]"),
+            ReviewAuthor::Human { name: None, .. } => "[human]".to_owned(),
+            ReviewAuthor::Human {
+                name: Some(name), ..
+            } => format!("[human: {name}]"),
+            ReviewAuthor::Agent { name, .. } => format!("[agent: {name}]"),
         };
         let mark = match (comment.delivery, fetched) {
             (ReviewDelivery::Sent, true) => " (new)",
@@ -561,6 +791,18 @@ fn describe_thread(out: &mut String, thread: &ReviewThread, fetched: bool, saved
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const HUMAN: ReviewAuthor = ReviewAuthor::Human {
+        id: None,
+        name: None,
+    };
+
+    fn claude() -> ReviewIdentity {
+        ReviewIdentity {
+            id: "claude:s1".into(),
+            name: "claude".into(),
+        }
+    }
 
     fn comment(
         id: u64,
@@ -591,23 +833,19 @@ mod tests {
                 value: 0.5,
             }],
             comments: vec![
-                comment(1, ReviewAuthor::Human, "old", ReviewDelivery::Delivered),
+                comment(1, HUMAN, "old", ReviewDelivery::Delivered),
                 comment(
                     2,
                     ReviewAuthor::Agent {
+                        id: "claude:s1".into(),
                         name: "claude".into(),
                     },
                     "done",
                     ReviewDelivery::Delivered,
                 ),
-                comment(
-                    3,
-                    ReviewAuthor::Human,
-                    "still torn\nat the ear",
-                    ReviewDelivery::Sent,
-                ),
+                comment(3, HUMAN, "still torn\nat the ear", ReviewDelivery::Sent),
             ],
-            working: Some("claude".into()),
+            holder: Some(claude()),
         }
     }
 
@@ -616,6 +854,7 @@ mod tests {
         let text = describe(
             &ResponseBody::ReviewFetched {
                 threads: vec![thread()],
+                batch: Some("3".into()),
             },
             false,
             None,
@@ -634,9 +873,10 @@ mod tests {
              \x20   still torn\n\
              \x20   at the ear\n\
              \n\
-             These threads are now yours. Make the changes, then answer each one with\n\
-             `review reply <thread> -m \"<what changed, or your question>\"`. Resolving is\n\
-             the person's call. Run `review watch` again to wait for more.\n"
+             Make the changes, then answer each thread with\n\
+             `review reply <thread> -m \"<what changed, or your question>\"`; the reply ends\n\
+             your claim on it. Resolving is the person's call. Run `review watch` again to\n\
+             wait for more.\n"
         );
     }
 
@@ -647,16 +887,31 @@ mod tests {
         let body = ResponseBody::Review {
             review: Review {
                 threads: vec![resolved],
-                agent: Some(ReviewAgent {
-                    name: "claude".into(),
-                    listening: true,
-                }),
+                agents: vec![
+                    ReviewAgent {
+                        id: "claude:s1".into(),
+                        name: "claude".into(),
+                        listening: true,
+                    },
+                    ReviewAgent {
+                        id: "codex:t1".into(),
+                        name: "codex".into(),
+                        listening: false,
+                    },
+                ],
                 kept: ReviewKept::Stored,
                 kept_problem: None,
             },
         };
         let open = describe(&body, false, None).unwrap();
-        assert!(open.contains("agent claude is listening"), "{open}");
+        assert!(
+            open.contains("agent claude (claude:s1) is listening\n"),
+            "{open}"
+        );
+        assert!(
+            open.contains("agent codex (codex:t1) is not listening\n"),
+            "{open}"
+        );
         assert!(
             open.contains("(no open threads; 1 resolved, shown by --all)"),
             "{open}"
@@ -667,6 +922,10 @@ mod tests {
             "{all}"
         );
         assert!(all.contains("(sent, not yet taken)"), "{all}");
+        assert!(
+            all.contains("[resolved] (claude is working on it)"),
+            "{all}"
+        );
     }
 
     #[test]
@@ -688,6 +947,7 @@ mod tests {
         ];
         let body = ResponseBody::ReviewFetched {
             threads: vec![thread],
+            batch: Some("1".into()),
         };
         let bare = describe(&body, false, None).unwrap();
         assert!(
@@ -754,8 +1014,8 @@ mod tests {
             panic!("a slot is a node and a slot");
         };
         let Cmd::Review(ReviewArgs {
-            agent,
             action: ReviewCmd::Open { target, .. },
+            ..
         }) = &cli.cmd
         else {
             panic!("parsed as something else");
@@ -767,9 +1027,137 @@ mod tests {
                 slot: "wrist".parse().unwrap(),
             }
         );
-        assert!(!agent.is_empty());
         assert!(parse(&[]).is_err());
         assert!(parse(&["--model", "--node", "arm"]).is_err());
         assert!(parse(&["--slot", "arm"]).is_err());
+    }
+
+    #[test]
+    fn an_agent_is_its_harness_session_and_shown_by_name() {
+        let env = |pairs: &'static [(&'static str, &'static str)]| {
+            move |name: &str| {
+                pairs
+                    .iter()
+                    .find(|(k, _)| *k == name)
+                    .map(|(_, v)| (*v).to_owned())
+            }
+        };
+        let id = |name: Option<&str>, pairs| {
+            let who = identity(name, &env(pairs));
+            (who.id, who.name)
+        };
+        assert_eq!(id(None, &[]), ("agent".into(), "agent".into()));
+        assert_eq!(
+            id(
+                None,
+                &[("CLAUDE_CODE_SESSION_ID", "s1"), ("CODEX_THREAD_ID", "t1")]
+            ),
+            ("claude:s1".into(), "claude".into())
+        );
+        assert_eq!(
+            id(Some("Ada"), &[("CODEX_SESSION_ID", " t2 ")]),
+            ("codex:t2".into(), "Ada".into())
+        );
+        assert_eq!(
+            id(
+                None,
+                &[
+                    ("ANTIGRAVITY_CONVERSATION_ID", "c1"),
+                    ("CODEX_THREAD_ID", "t1")
+                ]
+            ),
+            ("antigravity:c1".into(), "antigravity".into())
+        );
+        assert_eq!(
+            id(
+                None,
+                &[
+                    ("CATCHLIGHT_AGENT_SESSION", "b"),
+                    ("CLAUDE_CODE_SESSION_ID", "s1")
+                ]
+            ),
+            ("b".into(), "claude".into()),
+            "the override names who, not what it is called"
+        );
+    }
+
+    #[test]
+    fn a_claim_and_a_key_parse() {
+        let parse = |args: &[&str]| {
+            let mut full = vec!["cli", "--session", "1", "review"];
+            full.extend_from_slice(args);
+            Cli::try_parse_from(full).map(|cli| cli.cmd)
+        };
+        assert!(matches!(
+            parse(&["claim", "1", "2"]),
+            Ok(Cmd::Review(ReviewArgs { action: ReviewCmd::Claim { threads }, .. })) if threads == [1, 2]
+        ));
+        assert!(parse(&["claim"]).is_err());
+        assert!(parse(&["release"]).is_err());
+        assert!(matches!(
+            parse(&["reply", "1", "-m", "x", "--key", "k", "--name", "Ada"]),
+            Ok(Cmd::Review(ReviewArgs {
+                name: Some(name),
+                action: ReviewCmd::Reply { key: KeyArg { key: Some(key) }, .. },
+            })) if name == "Ada" && key == "k"
+        ));
+        assert!(parse(&["open", "--model", "-m", "x", "--key", "k"]).is_ok());
+        assert!(
+            parse(&["watch", "--agent", "x"]).is_err(),
+            "--agent is gone"
+        );
+    }
+
+    #[test]
+    fn an_ack_and_a_claim_say_what_is_held() {
+        let acked = describe(
+            &ResponseBody::ReviewAcked {
+                claimed: vec![ThreadId(1)],
+                held: vec![ReviewHeld {
+                    thread: ThreadId(2),
+                    holder: claude(),
+                }],
+            },
+            true,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            acked,
+            "delivered; claimed thread 1\n\
+             thread 2 is claimed by claude (claude:s1): its comments were left for them; leave it to them\n"
+        );
+        let claimed = describe(
+            &ResponseBody::ReviewClaimed {
+                threads: vec![ThreadId(1), ThreadId(4)],
+                lease_seconds: 3600,
+            },
+            true,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            claimed,
+            "claimed thread 1 4 for 60 minutes; claim again to renew\n"
+        );
+    }
+
+    #[test]
+    fn a_saved_image_must_be_what_the_comment_lists() {
+        let dir = std::env::temp_dir().join(format!("cl-review-verify-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.png");
+        let png = b"\x89PNG\r\n\x1a\nrest";
+        std::fs::write(&path, png).unwrap();
+        let image = |media_type: &str, byte_length| ReviewImage {
+            image: 1,
+            media_type: media_type.into(),
+            byte_length,
+        };
+        assert!(verify(&path, &image("image/png", png.len() as u32)).is_ok());
+        assert!(verify(&path, &image("image/png", 3)).is_err());
+        assert!(verify(&path, &image("image/jpeg", png.len() as u32)).is_err());
+        assert!(verify(&dir.join("missing.png"), &image("image/png", 1)).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

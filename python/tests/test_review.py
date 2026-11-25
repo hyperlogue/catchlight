@@ -11,9 +11,14 @@ from catchlight.protocol_gen import (
     ResponseBodyStatus,
     ReviewAuthorAgent,
     ReviewDelivery,
+    ReviewHeld,
+    ReviewIdentity,
     ReviewTargetNode,
     ThreadStatus,
 )
+
+CLAUDE = ReviewIdentity(id="claude:s1", name="claude")
+CODEX = ReviewIdentity(id="codex:t1", name="codex")
 
 
 @pytest.fixture(params=["socket", "http"])
@@ -28,27 +33,75 @@ def test_a_comment_reaches_the_agent_only_once_it_is_sent(either: Client) -> Non
     opened = either.review_open(session, "the ear tears", agent=None)
     assert [c.delivery for c in opened.comments] == [ReviewDelivery.UNSENT]
 
-    assert either.review_poll(session, agent="claude") == 0
-    assert either.review_fetch(session, agent="claude") == []
+    assert either.review_poll(session, agent=CLAUDE) == 0
+    nothing = either.review_fetch(session, agent=CLAUDE)
+    assert (nothing.threads, nothing.batch) == ([], None)
 
     either.review_send(session)
-    assert either.review_poll(session, agent="claude") == 1
-    (taken,) = either.review_fetch(session, agent="claude")
+    assert either.review_poll(session, agent=CLAUDE) == 1
+    fetched = either.review_fetch(session, agent=CLAUDE)
+    assert either.review_fetch(session, agent=CLAUDE) == fetched, "nothing taken yet"
+    (taken,) = fetched.threads
     assert taken.thread == opened.thread
     assert [c.delivery for c in taken.comments] == [ReviewDelivery.SENT]
-    assert taken.working == "claude"
-    assert either.review_poll(session, agent="claude") == 0
+    assert fetched.batch is not None
 
-    replied = either.review_reply(session, opened.thread, "fixed", agent="claude")
-    assert replied.working is None
-    assert replied.comments[-1].author == ReviewAuthorAgent(name="claude")
+    acked = either.review_ack(session, fetched.batch, agent=CLAUDE)
+    assert (acked.claimed, acked.held) == ([opened.thread], [])
+    assert either.review_poll(session, agent=CLAUDE) == 0
+    with pytest.raises(ProtocolError) as raised:
+        either.review_ack(session, fetched.batch, agent=CODEX)
+    assert raised.value.code is ErrorCode.BATCH_STALE
+
+    replied = either.review_reply(session, opened.thread, "fixed", agent=CLAUDE)
+    assert replied.holder is None
+    assert replied.comments[-1].author == ReviewAuthorAgent(id="claude:s1", name="claude")
 
     review = either.review(session)
     assert [c.delivery for c in review.threads[0].comments] == [
         ReviewDelivery.DELIVERED,
         ReviewDelivery.DELIVERED,
     ]
-    assert review.agent is not None and review.agent.name == "claude"
+    assert [a.name for a in review.agents] == ["claude"], "a refused command is not heard"
+
+
+def test_a_claim_is_one_agents_until_released(either: Client) -> None:
+    session = either.new()
+    opened = either.review_open(session, "which ear?", agent=CODEX)
+    assert either.review_claim(session, [opened.thread], agent=CLAUDE) == 3600
+    assert either.review(session).threads[0].holder == CLAUDE
+    with pytest.raises(ProtocolError) as raised:
+        either.review_claim(session, [opened.thread], agent=CODEX)
+    assert raised.value.code is ErrorCode.THREAD_CLAIMED
+    assert "claude:s1" in raised.value.message
+
+    either.review_release(session, [opened.thread], agent=CLAUDE)
+    assert either.review_claim(session, [opened.thread], agent=CODEX) == 3600
+
+    either.review_reply(session, opened.thread, "the left", agent=None)
+    either.review_send(session)
+    fetched = either.review_fetch(session, agent=CLAUDE)
+    assert fetched.threads == [], "codex holds it"
+    fetched = either.review_fetch(session, agent=CODEX)
+    assert fetched.batch is not None
+    either.review_release(session, [opened.thread], agent=CODEX)
+    either.review_claim(session, [opened.thread], agent=CLAUDE)
+    acked = either.review_ack(session, fetched.batch, agent=CODEX)
+    assert acked.held == [ReviewHeld(thread=opened.thread, holder=CLAUDE)]
+
+
+def test_a_retried_write_lands_once(either: Client) -> None:
+    session = either.new()
+    first = either.review_open(session, "a question", agent=CLAUDE, key="q1")
+    again = either.review_open(session, "a question", agent=CLAUDE, key="q1")
+    assert again == first
+    replied = either.review_reply(session, first.thread, "more", agent=CLAUDE, key="r1")
+    assert either.review_reply(session, first.thread, "more", agent=CLAUDE, key="r1") == replied
+    assert len(either.review(session).threads[0].comments) == 2
+
+    with pytest.raises(ProtocolError) as raised:
+        either.review_reply(session, first.thread, "other", agent=CLAUDE, key="r1")
+    assert raised.value.code is ErrorCode.KEY_CONFLICT
 
 
 def test_a_review_moves_no_revision(either: Client) -> None:

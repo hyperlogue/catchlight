@@ -593,11 +593,13 @@ fn a_comment_made_over_post_reaches_a_websocket_subscriber() {
                 session,
                 target: ReviewTarget::Model,
                 author: ReviewAuthor::Agent {
+                    id: "claude:session".into(),
                     name: "claude".into(),
                 },
                 body: "which ear?".into(),
                 pose: Vec::new(),
                 images: Vec::new(),
+                key: None,
             },
         },
     ));

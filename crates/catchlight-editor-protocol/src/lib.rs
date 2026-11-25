@@ -555,7 +555,7 @@ pub enum Command {
         key: ExtensionKey,
     },
 
-    /// The session's review: every thread, and whether an agent is on it.
+    /// The session's review: every thread, and the agents attending to it.
     ReviewGet {
         session: SessionId,
     },
@@ -571,6 +571,10 @@ pub enum Command {
         /// Images from [`Command::ReviewImageAdd`], each usable once.
         #[serde(default)]
         images: Vec<u64>,
+        /// A retry key: the same author writing again under it gets the
+        /// thread it opened back and opens nothing.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<String>,
     },
     ReviewThreadSet {
         session: SessionId,
@@ -581,7 +585,7 @@ pub enum Command {
         session: SessionId,
         thread: ThreadId,
     },
-    /// Reply on a thread. An agent's reply ends its work on the thread.
+    /// Reply on a thread. An agent's reply releases its own claim on it.
     ReviewCommentAdd {
         session: SessionId,
         thread: ThreadId,
@@ -590,6 +594,10 @@ pub enum Command {
         /// Images from [`Command::ReviewImageAdd`], each usable once.
         #[serde(default)]
         images: Vec<u64>,
+        /// As for [`Command::ReviewThreadAdd`]: a repeat answers with the
+        /// thread and adds nothing.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<String>,
     },
     /// Removing a thread's only comment removes the thread.
     ReviewCommentDelete {
@@ -612,18 +620,39 @@ pub enum Command {
         session: SessionId,
     },
     /// An agent's heartbeat while it waits for comments: keeps it shown as
-    /// listening and answers how many threads have been handed to it.
+    /// listening and answers how many threads wait for it.
     ReviewPoll {
         session: SessionId,
-        agent: String,
+        agent: ReviewIdentity,
     },
-    /// Take the threads handed to the agent: their sent comments become
-    /// delivered and `agent` is recorded as working on each. The reply shows
-    /// them as handed over, the taken comments still `sent`, so the taker can
-    /// tell which are new.
+    /// Read the threads waiting for `agent`: handed over and claimed by no
+    /// other agent. Changes nothing but presence, so a second fetch before
+    /// [`Command::ReviewAck`] returns the same comments.
     ReviewFetch {
         session: SessionId,
-        agent: String,
+        agent: ReviewIdentity,
+    },
+    /// Mark exactly the comments of a fetched `batch` delivered once the agent
+    /// has them, and claim their threads for it where nobody else holds them.
+    /// Refused with `batch_stale`, changing nothing, when any of them was
+    /// deleted, resolved or delivered since.
+    ReviewAck {
+        session: SessionId,
+        agent: ReviewIdentity,
+        batch: String,
+    },
+    /// Take or renew a lease on each thread for `agent`; all or none. A thread
+    /// another agent holds is refused with `thread_claimed`.
+    ReviewClaim {
+        session: SessionId,
+        agent: ReviewIdentity,
+        threads: Vec<ThreadId>,
+    },
+    /// Give up `agent`'s own claims on the threads; another's are left alone.
+    ReviewRelease {
+        session: SessionId,
+        agent: ReviewIdentity,
+        threads: Vec<ThreadId>,
     },
 }
 
@@ -725,6 +754,9 @@ pub const COMMAND_KINDS: &[(&str, CommandKind)] = &[
     ("review_submit", CommandKind::Review),
     ("review_poll", CommandKind::Review),
     ("review_fetch", CommandKind::Review),
+    ("review_ack", CommandKind::Review),
+    ("review_claim", CommandKind::Review),
+    ("review_release", CommandKind::Review),
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -912,6 +944,9 @@ impl Command {
             Command::ReviewSubmit { .. } => "review_submit",
             Command::ReviewPoll { .. } => "review_poll",
             Command::ReviewFetch { .. } => "review_fetch",
+            Command::ReviewAck { .. } => "review_ack",
+            Command::ReviewClaim { .. } => "review_claim",
+            Command::ReviewRelease { .. } => "review_release",
         }
     }
 
@@ -1026,7 +1061,10 @@ impl Command {
             | Command::ReviewImageGet { session, .. }
             | Command::ReviewSubmit { session }
             | Command::ReviewPoll { session, .. }
-            | Command::ReviewFetch { session, .. } => Some(*session),
+            | Command::ReviewFetch { session, .. }
+            | Command::ReviewAck { session, .. }
+            | Command::ReviewClaim { session, .. }
+            | Command::ReviewRelease { session, .. } => Some(*session),
         }
     }
 }
@@ -2030,6 +2068,12 @@ pub enum ErrorCode {
     NoComment,
     /// No such review image, or a comment already holds it.
     NoImage,
+    /// A fetched batch changed before it was acknowledged: fetch again.
+    BatchStale,
+    /// Another agent holds a live claim on the thread.
+    ThreadClaimed,
+    /// A retry key the same author already used for different content.
+    KeyConflict,
     /// `catchlight.` is the format's own prefix: a reader accepts a key under
     /// it, and nothing outside the format may author one.
     ReservedExtension,
@@ -2178,13 +2222,29 @@ pub enum ResponseBody {
     ReviewImage {
         image: ReviewImage,
     },
-    /// How many threads hold comments handed to the agent and not yet taken.
+    /// How many threads wait for the polling agent.
     ReviewPending {
         pending: u32,
     },
-    /// The threads a [`Command::ReviewFetch`] took, whole, oldest first.
+    /// The threads waiting for the agent, whole, oldest first. The comments
+    /// handed over read `sent`; `batch` acknowledges exactly those.
     ReviewFetched {
         threads: Vec<ReviewThread>,
+        /// Opaque; absent when nothing waits.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        batch: Option<String>,
+    },
+    /// What a [`Command::ReviewAck`] delivered and claimed.
+    ReviewAcked {
+        /// Now held by the acknowledging agent.
+        claimed: Vec<ThreadId>,
+        /// Delivered, but another agent holds them.
+        held: Vec<ReviewHeld>,
+    },
+    /// Held by the agent for `lease_seconds` unless claimed again.
+    ReviewClaimed {
+        threads: Vec<ThreadId>,
+        lease_seconds: u32,
     },
 }
 
@@ -2242,8 +2302,34 @@ pub enum ReviewTarget {
 #[serde(tag = "role", rename_all = "snake_case")]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub enum ReviewAuthor {
-    Human,
-    Agent { name: String },
+    /// Both as the host knows the person, if it does.
+    Human {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+    },
+    Agent {
+        id: String,
+        name: String,
+    },
+}
+
+/// An agent: `id` is stable for as long as it works (one harness session),
+/// and is what claims, presence and retry keys go by; `name` is only shown.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ReviewIdentity {
+    pub id: String,
+    pub name: String,
+}
+
+/// A thread another agent holds.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ReviewHeld {
+    pub thread: ThreadId,
+    pub holder: ReviewIdentity,
 }
 
 /// How far a human comment has travelled toward the agent. An agent's own
@@ -2305,15 +2391,16 @@ pub struct ReviewThread {
     pub pose: Vec<ParamPose>,
     /// Never empty; the first is the opening comment.
     pub comments: Vec<ReviewComment>,
-    /// The agent that took the thread and has not replied since.
+    /// The agent whose claim on the thread is live: it is working on it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub working: Option<String>,
+    pub holder: Option<ReviewIdentity>,
 }
 
-/// An agent that polled or fetched this session's review.
+/// An agent recently heard from on this session's review.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ReviewAgent {
+    pub id: String,
     pub name: String,
     /// It polled recently enough to be waiting for comments now.
     pub listening: bool,
@@ -2326,9 +2413,9 @@ pub struct ReviewAgent {
 pub struct Review {
     /// Oldest first.
     pub threads: Vec<ReviewThread>,
-    /// The agent last heard from, if any.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent: Option<ReviewAgent>,
+    /// Every agent recently heard from, most recent last.
+    #[serde(default)]
+    pub agents: Vec<ReviewAgent>,
     #[serde(default)]
     pub kept: ReviewKept,
     /// Why, when `kept` is `unreadable`.

@@ -10,6 +10,7 @@ use std::time::Duration;
 use catchlight_core::{Model, ModelError};
 use catchlight_editor_protocol::*;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::review_store::ReviewStore;
 use crate::{Attachments, Captured, Editor, EditorError, Payload};
@@ -17,9 +18,14 @@ use crate::{Attachments, Captured, Editor, EditorError, Payload};
 /// A `review watch` polls about once a second; a few missed beats is a gone
 /// agent, not a slow one.
 const LISTENING_FOR: Duration = Duration::from_secs(5);
-/// An agent that took a thread and died must not hold it forever.
-const WORKING_FOR: Duration = Duration::from_secs(30 * 60);
-const MAX_AGENT_NAME_BYTES: usize = 64;
+/// An agent that claimed a thread and died must not hold it forever.
+const LEASE: Duration = Duration::from_secs(60 * 60);
+/// How long an agent stays listed after it was last heard from.
+const HEARD_FOR: Duration = LEASE;
+const MAX_AGENTS: usize = 32;
+const MAX_ID_BYTES: usize = 128;
+const MAX_NAME_BYTES: usize = 64;
+const MAX_KEY_BYTES: usize = 128;
 const MAX_RENAMES: usize = 256;
 const MAX_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_SESSION_IMAGE_BYTES: usize = 128 * 1024 * 1024;
@@ -61,9 +67,18 @@ impl Stamp {
 }
 
 #[derive(Debug, Clone)]
-struct Working {
-    agent: String,
+struct Claim {
+    holder: ReviewIdentity,
     since: Stamp,
+}
+
+/// A retry key, kept as long as the comment it wrote. `digest` is what was
+/// written under it, so a repeat with other content is told apart.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Keyed {
+    comment: u64,
+    key: String,
+    digest: String,
 }
 
 #[derive(Debug, Clone)]
@@ -73,7 +88,8 @@ struct Thread {
     status: ThreadStatus,
     pose: Vec<ParamPose>,
     comments: Vec<ReviewComment>,
-    working: Option<Working>,
+    claim: Option<Claim>,
+    keys: Vec<Keyed>,
 }
 
 impl Thread {
@@ -85,6 +101,22 @@ impl Thread {
                 .any(|c| c.delivery == ReviewDelivery::Sent)
     }
 
+    fn holder(&self) -> Option<&ReviewIdentity> {
+        self.claim
+            .as_ref()
+            .filter(|c| !c.since.older_than(LEASE))
+            .map(|c| &c.holder)
+    }
+
+    fn held_by_other(&self, agent: &str) -> bool {
+        self.holder().is_some_and(|h| h.id != agent)
+    }
+
+    /// Another agent's live claim keeps new comments on its thread for it.
+    fn waiting_for(&self, agent: &str) -> bool {
+        self.handed_over() && !self.held_by_other(agent)
+    }
+
     fn wire(&self, model: &Model) -> ReviewThread {
         ReviewThread {
             thread: self.id,
@@ -93,18 +125,15 @@ impl Thread {
             status: self.status,
             pose: self.pose.clone(),
             comments: self.comments.clone(),
-            working: self
-                .working
-                .as_ref()
-                .filter(|w| !w.since.older_than(WORKING_FOR))
-                .map(|w| w.agent.clone()),
+            holder: self.holder().cloned(),
         }
     }
 }
 
 #[derive(Debug, Clone)]
 struct Agent {
-    name: String,
+    identity: ReviewIdentity,
+    heard: Stamp,
     polled: Option<Stamp>,
 }
 
@@ -112,6 +141,21 @@ impl Agent {
     fn listening(&self) -> bool {
         self.polled.is_some_and(|at| at.within(LISTENING_FOR))
     }
+
+    fn listed(&self) -> bool {
+        !self.heard.older_than(HEARD_FOR)
+    }
+}
+
+/// What hearing from an agent says about whether it is waiting for comments.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Heard {
+    Polled,
+    /// Leaves listening as the agent's own heartbeat last set it: a reply may
+    /// come from another process while its watch runs.
+    Acted,
+    /// It took comments, so it is working, not waiting.
+    Took,
 }
 
 #[derive(Debug, Clone)]
@@ -163,7 +207,8 @@ pub(crate) struct ReviewState {
     images: BTreeMap<u64, Image>,
     /// Uploaded and not yet on a comment, oldest first.
     held: VecDeque<u64>,
-    agent: Option<Agent>,
+    /// Most recently heard from last.
+    agents: Vec<Agent>,
     /// What [`Self::follow_model`] walks to find where a renamed target went
     /// once history navigation moves the model under the threads.
     renames: Vec<Rename>,
@@ -262,6 +307,7 @@ struct Draft {
     author: ReviewAuthor,
     body: String,
     images: Vec<u64>,
+    key: Option<String>,
 }
 
 fn body_of(body: String, images: &[u64]) -> Result<String, EditorError> {
@@ -274,36 +320,147 @@ fn body_of(body: String, images: &[u64]) -> Result<String, EditorError> {
     Ok(body.to_owned())
 }
 
-fn agent_name(name: &str) -> Result<&str, EditorError> {
-    let name = name.trim();
-    if name.is_empty() || name.len() > MAX_AGENT_NAME_BYTES {
+fn bounded(what: &str, text: &str, max: usize) -> Result<String, EditorError> {
+    let text = text.trim();
+    if text.is_empty() || text.len() > max {
         return Err(EditorError::BadRequest(format!(
-            "an agent name is 1 to {MAX_AGENT_NAME_BYTES} bytes"
+            "{what} is 1 to {max} bytes"
         )));
     }
-    Ok(name)
+    Ok(text.to_owned())
+}
+
+fn identity(who: ReviewIdentity) -> Result<ReviewIdentity, EditorError> {
+    Ok(ReviewIdentity {
+        id: bounded("an agent id", &who.id, MAX_ID_BYTES)?,
+        name: bounded("an agent name", &who.name, MAX_NAME_BYTES)?,
+    })
 }
 
 fn author_of(author: ReviewAuthor) -> Result<ReviewAuthor, EditorError> {
+    let optional = |what: &str, text: Option<String>, max: usize| {
+        text.filter(|t| !t.trim().is_empty())
+            .map(|t| bounded(what, &t, max))
+            .transpose()
+    };
     Ok(match author {
-        ReviewAuthor::Human => ReviewAuthor::Human,
-        ReviewAuthor::Agent { name } => ReviewAuthor::Agent {
-            name: agent_name(&name)?.to_owned(),
+        ReviewAuthor::Human { id, name } => ReviewAuthor::Human {
+            id: optional("a person's id", id, MAX_ID_BYTES)?,
+            name: optional("a person's name", name, MAX_NAME_BYTES)?,
         },
+        ReviewAuthor::Agent { id, name } => {
+            let who = identity(ReviewIdentity { id, name })?;
+            ReviewAuthor::Agent {
+                id: who.id,
+                name: who.name,
+            }
+        }
     })
+}
+
+/// Whether two comments came from the same writer, by id alone: a name may
+/// change between them.
+fn same_author(a: &ReviewAuthor, b: &ReviewAuthor) -> bool {
+    match (a, b) {
+        (ReviewAuthor::Human { id: a, .. }, ReviewAuthor::Human { id: b, .. }) => a == b,
+        (ReviewAuthor::Agent { id: a, .. }, ReviewAuthor::Agent { id: b, .. }) => a == b,
+        _ => false,
+    }
+}
+
+fn agent_of(author: &ReviewAuthor) -> Option<ReviewIdentity> {
+    match author {
+        ReviewAuthor::Agent { id, name } => Some(ReviewIdentity {
+            id: id.clone(),
+            name: name.clone(),
+        }),
+        ReviewAuthor::Human { .. } => None,
+    }
+}
+
+fn key_of(key: Option<String>) -> Result<Option<String>, EditorError> {
+    match key {
+        Some(key) if key.is_empty() || key.len() > MAX_KEY_BYTES => Err(EditorError::BadRequest(
+            format!("a retry key is 1 to {MAX_KEY_BYTES} bytes"),
+        )),
+        key => Ok(key),
+    }
+}
+
+/// A batch names the comments a fetch handed over; clients treat it as
+/// opaque.
+fn batch_of(comments: &[u64]) -> Option<String> {
+    (!comments.is_empty()).then(|| {
+        comments
+            .iter()
+            .map(u64::to_string)
+            .collect::<Vec<_>>()
+            .join(".")
+    })
+}
+
+fn comments_of(batch: &str) -> Result<Vec<u64>, EditorError> {
+    batch
+        .split('.')
+        .map(|id| id.parse().ok())
+        .collect::<Option<Vec<u64>>>()
+        .ok_or_else(|| EditorError::BadRequest(format!("{batch:?} is not a fetched batch")))
 }
 
 impl ReviewState {
     fn wire(&self, model: &Model, kept: ReviewKept, kept_problem: Option<String>) -> Review {
         Review {
             threads: self.threads.iter().map(|t| t.wire(model)).collect(),
-            agent: self.agent.as_ref().map(|a| ReviewAgent {
-                name: a.name.clone(),
-                listening: a.listening(),
-            }),
+            agents: self.presence(),
             kept,
             kept_problem,
         }
+    }
+
+    fn presence(&self) -> Vec<ReviewAgent> {
+        self.agents
+            .iter()
+            .filter(|a| a.listed())
+            .map(|a| ReviewAgent {
+                id: a.identity.id.clone(),
+                name: a.identity.name.clone(),
+                listening: a.listening(),
+            })
+            .collect()
+    }
+
+    /// What clients see of agents: compared across a command to decide
+    /// whether it changed the review.
+    fn attendance(&self) -> (Vec<ReviewAgent>, Vec<Option<String>>) {
+        (
+            self.presence(),
+            self.threads
+                .iter()
+                .map(|t| t.holder().map(|h| h.id.clone()))
+                .collect(),
+        )
+    }
+
+    fn hear(&mut self, who: &ReviewIdentity, heard: Heard) {
+        let was = self
+            .agents
+            .iter()
+            .position(|a| a.identity.id == who.id)
+            .map(|at| self.agents.remove(at));
+        let polled = match heard {
+            Heard::Polled => Some(Stamp::now()),
+            Heard::Acted => was.and_then(|a| a.polled),
+            Heard::Took => None,
+        };
+        self.agents.retain(Agent::listed);
+        if self.agents.len() >= MAX_AGENTS {
+            self.agents.remove(0);
+        }
+        self.agents.push(Agent {
+            identity: who.clone(),
+            heard: Stamp::now(),
+            polled,
+        });
     }
 
     /// Which targets the model no longer holds. Compared across an edit to
@@ -414,7 +571,7 @@ impl ReviewState {
         ReviewComment {
             comment: self.last_comment,
             delivery: match author {
-                ReviewAuthor::Human => ReviewDelivery::Unsent,
+                ReviewAuthor::Human { .. } => ReviewDelivery::Unsent,
                 ReviewAuthor::Agent { .. } => ReviewDelivery::Delivered,
             },
             author,
@@ -424,6 +581,70 @@ impl ReviewState {
         }
     }
 
+    /// What `draft` writes about `scope`, for telling a retry from a reuse
+    /// of its key. Images are compared by their bytes: a retry uploads them
+    /// again under new Ids.
+    fn digest(&self, scope: &str, body: &str, images: &[u64]) -> String {
+        let mut hash = Sha256::new();
+        for part in [scope.as_bytes(), body.as_bytes()] {
+            hash.update((part.len() as u64).to_le_bytes());
+            hash.update(part);
+        }
+        for id in images {
+            let bytes = self
+                .images
+                .get(id)
+                .and_then(|image| image.bytes.as_deref())
+                .map_or(&[][..], Vec::as_slice);
+            hash.update((bytes.len() as u64).to_le_bytes());
+            hash.update(bytes);
+        }
+        hash.finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    }
+
+    /// The thread `author` already wrote `key` on, when this is a repeat of
+    /// that write; its fresh uploads are dropped.
+    fn repeated(
+        &mut self,
+        model: &Model,
+        author: &ReviewAuthor,
+        key: Option<&str>,
+        digest: &str,
+        images: &[u64],
+    ) -> Result<Option<ReviewThread>, EditorError> {
+        let Some(key) = key else { return Ok(None) };
+        let found = self.threads.iter().find_map(|thread| {
+            thread
+                .keys
+                .iter()
+                .filter(|keyed| keyed.key == key)
+                .find(|keyed| {
+                    thread
+                        .comments
+                        .iter()
+                        .any(|c| c.comment == keyed.comment && same_author(&c.author, author))
+                })
+                .map(|keyed| (thread, keyed.digest == digest))
+        });
+        let Some((thread, same)) = found else {
+            return Ok(None);
+        };
+        if !same {
+            return Err(EditorError::KeyConflict(key.to_owned()));
+        }
+        let wire = thread.wire(model);
+        self.held.retain(|id| !images.contains(id));
+        for id in images {
+            self.images.remove(id);
+        }
+        Ok(Some(wire))
+    }
+
+    /// The thread, and whether this wrote anything rather than repeat a
+    /// keyed write.
     fn open(
         &mut self,
         model: &Model,
@@ -431,11 +652,25 @@ impl ReviewState {
         target: ReviewTarget,
         draft: Draft,
         pose: Vec<ParamPose>,
-    ) -> Result<ReviewThread, EditorError> {
+    ) -> Result<(ReviewThread, bool), EditorError> {
         let body = body_of(draft.body, &draft.images)?;
         let author = author_of(draft.author)?;
-        require(model, &target)?;
+        let key = key_of(draft.key)?;
         self.check_images(&draft.images)?;
+        let scope = format!(
+            "open {}",
+            serde_json::to_string(&target).unwrap_or_default()
+        );
+        let digest = self.digest(&scope, &body, &draft.images);
+        if let Some(thread) =
+            self.repeated(model, &author, key.as_deref(), &digest, &draft.images)?
+        {
+            return Ok((thread, false));
+        }
+        require(model, &target)?;
+        if let Some(agent) = agent_of(&author) {
+            self.hear(&agent, Heard::Acted);
+        }
         let comment = self.comment(author, body, rev, &draft.images);
         self.last_thread += 1;
         let thread = Thread {
@@ -443,35 +678,68 @@ impl ReviewState {
             target,
             status: ThreadStatus::Open,
             pose,
+            keys: key
+                .map(|key| Keyed {
+                    comment: comment.comment,
+                    key,
+                    digest,
+                })
+                .into_iter()
+                .collect(),
             comments: vec![comment],
-            working: None,
+            claim: None,
         };
         let wire = thread.wire(model);
         self.threads.push(thread);
-        Ok(wire)
+        Ok((wire, true))
     }
 
+    /// As [`Self::open`].
     fn reply(
         &mut self,
         model: &Model,
         rev: u64,
         id: ThreadId,
         draft: Draft,
-    ) -> Result<ReviewThread, EditorError> {
+    ) -> Result<(ReviewThread, bool), EditorError> {
         let body = body_of(draft.body, &draft.images)?;
         let author = author_of(draft.author)?;
-        self.thread_mut(id)?;
+        let key = key_of(draft.key)?;
         self.check_images(&draft.images)?;
-        let human = author == ReviewAuthor::Human;
+        let digest = self.digest(&format!("reply {}", id.0), &body, &draft.images);
+        if let Some(thread) =
+            self.repeated(model, &author, key.as_deref(), &digest, &draft.images)?
+        {
+            return Ok((thread, false));
+        }
+        self.thread_mut(id)?;
+        let agent = agent_of(&author);
+        if let Some(agent) = &agent {
+            self.hear(agent, Heard::Acted);
+        }
         let comment = self.comment(author, body, rev, &draft.images);
         let thread = self.thread_mut(id)?;
-        thread.comments.push(comment);
-        if human {
-            thread.status = ThreadStatus::Open;
-        } else {
-            thread.working = None;
+        if let Some(key) = key {
+            thread.keys.push(Keyed {
+                comment: comment.comment,
+                key,
+                digest,
+            });
         }
-        Ok(thread.wire(model))
+        thread.comments.push(comment);
+        match agent {
+            None => thread.status = ThreadStatus::Open,
+            Some(agent) => {
+                if thread
+                    .claim
+                    .as_ref()
+                    .is_some_and(|c| c.holder.id == agent.id)
+                {
+                    thread.claim = None;
+                }
+            }
+        }
+        Ok((thread.wire(model), true))
     }
 
     /// The reply and whether anything changed.
@@ -485,7 +753,7 @@ impl ReviewState {
         let changed = thread.status != status;
         thread.status = status;
         if status == ThreadStatus::Resolved {
-            thread.working = None;
+            thread.claim = None;
         }
         Ok((thread.wire(model), changed))
     }
@@ -509,6 +777,7 @@ impl ReviewState {
             .position(|c| c.comment == comment)
             .ok_or(EditorError::NoComment(comment))?;
         let removed = thread.comments.remove(at);
+        thread.keys.retain(|keyed| keyed.comment != comment);
         let emptied = thread.comments.is_empty();
         self.free(&[removed]);
         if emptied {
@@ -533,58 +802,136 @@ impl ReviewState {
         changed
     }
 
-    fn pending(&self) -> u32 {
-        let count = self.threads.iter().filter(|t| t.handed_over()).count();
+    fn pending(&self, agent: &str) -> u32 {
+        let count = self.threads.iter().filter(|t| t.waiting_for(agent)).count();
         u32::try_from(count).unwrap_or(u32::MAX)
     }
 
-    /// Whether what [`Self::wire`] says about the agent changed.
-    fn poll(&mut self, name: &str) -> bool {
-        let was = self
-            .agent
-            .as_ref()
-            .is_some_and(|a| a.name == name && a.listening());
-        let polled = Some(Stamp::now());
-        let agent = Agent {
-            name: name.to_owned(),
-            polled,
-        };
-        let now = agent.listening();
-        let renamed = self.agent.as_ref().is_none_or(|a| a.name != name);
-        self.agent = Some(agent);
-        renamed || was != now
+    fn poll(&mut self, who: &ReviewIdentity) -> u32 {
+        self.hear(who, Heard::Polled);
+        self.pending(&who.id)
     }
 
-    /// The threads taken, as they were handed over: the comments this fetch
-    /// delivers still read `sent`, which is how a reader tells them from the
-    /// thread's history. Second is whether anything changed.
-    fn fetch(&mut self, model: &Model, name: &str) -> (Vec<ReviewThread>, bool) {
-        let mut taken = Vec::new();
+    /// The threads waiting for `who`, as they were handed over, and the batch
+    /// that acknowledges their `sent` comments.
+    fn fetch(
+        &mut self,
+        model: &Model,
+        who: &ReviewIdentity,
+    ) -> (Vec<ReviewThread>, Option<String>) {
+        self.hear(who, Heard::Acted);
+        let mut sent = Vec::new();
+        let mut threads = Vec::new();
+        for thread in self.threads.iter().filter(|t| t.waiting_for(&who.id)) {
+            sent.extend(
+                thread
+                    .comments
+                    .iter()
+                    .filter(|c| c.delivery == ReviewDelivery::Sent)
+                    .map(|c| c.comment),
+            );
+            threads.push(thread.wire(model));
+        }
+        (threads, batch_of(&sent))
+    }
+
+    /// Refuses a stale batch whole. Otherwise delivers and claims for `who`
+    /// each of its threads no other agent holds; on one another holds, the
+    /// comments stay `sent` for that agent's next fetch.
+    fn ack(
+        &mut self,
+        who: &ReviewIdentity,
+        batch: &str,
+    ) -> Result<(Vec<ThreadId>, Vec<ReviewHeld>), EditorError> {
+        let comments = comments_of(batch)?;
+        let sent = |thread: &Thread, id: u64| {
+            thread.status == ThreadStatus::Open
+                && thread
+                    .comments
+                    .iter()
+                    .any(|c| c.comment == id && c.delivery == ReviewDelivery::Sent)
+        };
+        if !comments
+            .iter()
+            .all(|id| self.threads.iter().any(|t| sent(t, *id)))
+        {
+            return Err(EditorError::BatchStale);
+        }
+        let mut claimed = Vec::new();
+        let mut held = Vec::new();
         for thread in &mut self.threads {
-            if !thread.handed_over() {
+            if !thread
+                .comments
+                .iter()
+                .any(|c| comments.contains(&c.comment))
+            {
                 continue;
             }
-            thread.working = Some(Working {
-                agent: name.to_owned(),
-                since: Stamp::now(),
-            });
-            taken.push(thread.wire(model));
+            if let Some(holder) = thread.holder().filter(|h| h.id != who.id) {
+                held.push(ReviewHeld {
+                    thread: thread.id,
+                    holder: holder.clone(),
+                });
+                continue;
+            }
             for comment in &mut thread.comments {
-                if comment.delivery == ReviewDelivery::Sent {
+                if comments.contains(&comment.comment) {
                     comment.delivery = ReviewDelivery::Delivered;
                 }
             }
+            thread.claim = Some(Claim {
+                holder: who.clone(),
+                since: Stamp::now(),
+            });
+            claimed.push(thread.id);
         }
-        let known = self.agent.as_ref().is_some_and(|a| a.name == name);
-        let changed = !taken.is_empty() || !known;
-        if !known || !taken.is_empty() {
-            // An agent that took work is no longer waiting for it.
-            self.agent = Some(Agent {
-                name: name.to_owned(),
-                polled: None,
+        self.hear(who, Heard::Took);
+        Ok((claimed, held))
+    }
+
+    fn claim_threads(
+        &mut self,
+        who: &ReviewIdentity,
+        threads: &[ThreadId],
+    ) -> Result<(), EditorError> {
+        if threads.is_empty() {
+            return Err(EditorError::BadRequest("name a thread to claim".into()));
+        }
+        for id in threads {
+            let thread = self
+                .threads
+                .iter()
+                .find(|t| t.id == *id)
+                .ok_or(EditorError::NoThread(*id))?;
+            if let Some(holder) = thread.holder().filter(|h| h.id != who.id) {
+                return Err(EditorError::Claimed {
+                    thread: *id,
+                    holder: holder.clone(),
+                });
+            }
+        }
+        for id in threads {
+            self.thread_mut(*id)?.claim = Some(Claim {
+                holder: who.clone(),
+                since: Stamp::now(),
             });
         }
-        (taken, changed)
+        self.hear(who, Heard::Acted);
+        Ok(())
+    }
+
+    fn release(&mut self, who: &ReviewIdentity, threads: &[ThreadId]) -> Result<(), EditorError> {
+        for id in threads {
+            self.thread_mut(*id)?;
+        }
+        for id in threads {
+            let thread = self.thread_mut(*id)?;
+            if thread.claim.as_ref().is_some_and(|c| c.holder.id == who.id) {
+                thread.claim = None;
+            }
+        }
+        self.hear(who, Heard::Acted);
+        Ok(())
     }
 
     pub(crate) fn take_touched(&mut self) -> bool {
@@ -635,9 +982,9 @@ impl ReviewState {
     }
 }
 
-const DOCUMENT_VERSION: u32 = 1;
+const DOCUMENT_VERSION: u32 = 2;
 
-/// The part of a review that outlives the session. Agents, leases and held
+/// The part of a review that outlives the session. Agents, claims and held
 /// images are the session's own.
 #[derive(Serialize, Deserialize)]
 struct Document {
@@ -660,6 +1007,8 @@ struct DocumentThread {
     #[serde(default)]
     pose: Vec<ParamPose>,
     comments: Vec<ReviewComment>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    keys: Vec<Keyed>,
 }
 
 fn bad_document(why: impl std::fmt::Display) -> io::Error {
@@ -689,6 +1038,7 @@ impl ReviewState {
                     status: t.status,
                     pose: t.pose.clone(),
                     comments: t.comments.clone(),
+                    keys: t.keys.clone(),
                 })
                 .collect(),
             renames: self.renames.clone(),
@@ -740,7 +1090,8 @@ impl ReviewState {
                     status: t.status,
                     pose: t.pose,
                     comments: t.comments,
-                    working: None,
+                    claim: None,
+                    keys: t.keys,
                 })
                 .collect(),
             last_thread: document.last_thread,
@@ -907,7 +1258,9 @@ impl Editor {
             // The change is kept before it is published: a store that
             // refuses leaves the review as every client last read it.
             let mut next = s.review.clone();
-            let out = f(&mut next, &s.model, rev)?;
+            let attended = next.attendance();
+            let (body, changed) = f(&mut next, &s.model, rev)?;
+            let out = (body, changed || next.attendance() != attended);
             s.review_keeping
                 .write(&*self.review_store, s.file.as_deref(), &next)?;
             s.review = next;
@@ -986,8 +1339,9 @@ impl Editor {
                 body,
                 pose,
                 images,
+                key,
             } => self.review_session(session, |review, model, rev| {
-                let thread = review.open(
+                let (thread, wrote) = review.open(
                     model,
                     rev,
                     target,
@@ -995,10 +1349,11 @@ impl Editor {
                         author,
                         body,
                         images,
+                        key,
                     },
                     pose,
                 )?;
-                Ok((ResponseBody::ReviewThread { thread }, true))
+                Ok((ResponseBody::ReviewThread { thread }, wrote))
             }),
             Command::ReviewThreadSet {
                 session,
@@ -1020,8 +1375,9 @@ impl Editor {
                 author,
                 body,
                 images,
+                key,
             } => self.review_session(session, |review, model, rev| {
-                let thread = review.reply(
+                let (thread, wrote) = review.reply(
                     model,
                     rev,
                     thread,
@@ -1029,9 +1385,10 @@ impl Editor {
                         author,
                         body,
                         images,
+                        key,
                     },
                 )?;
-                Ok((ResponseBody::ReviewThread { thread }, true))
+                Ok((ResponseBody::ReviewThread { thread }, wrote))
             }),
             Command::ReviewCommentDelete {
                 session,
@@ -1046,20 +1403,56 @@ impl Editor {
                 Ok((ResponseBody::Empty, changed))
             }),
             Command::ReviewPoll { session, agent } => {
+                let agent = identity(agent)?;
                 self.review_session(session, |review, _, _| {
-                    let changed = review.poll(agent_name(&agent)?);
-                    Ok((
-                        ResponseBody::ReviewPending {
-                            pending: review.pending(),
-                        },
-                        changed,
-                    ))
+                    let pending = review.poll(&agent);
+                    Ok((ResponseBody::ReviewPending { pending }, false))
                 })
             }
             Command::ReviewFetch { session, agent } => {
+                let agent = identity(agent)?;
                 self.review_session(session, |review, model, _| {
-                    let (threads, changed) = review.fetch(model, agent_name(&agent)?);
-                    Ok((ResponseBody::ReviewFetched { threads }, changed))
+                    let (threads, batch) = review.fetch(model, &agent);
+                    Ok((ResponseBody::ReviewFetched { threads, batch }, false))
+                })
+            }
+            Command::ReviewAck {
+                session,
+                agent,
+                batch,
+            } => {
+                let agent = identity(agent)?;
+                self.review_session(session, |review, _, _| {
+                    let (claimed, held) = review.ack(&agent, &batch)?;
+                    Ok((ResponseBody::ReviewAcked { claimed, held }, true))
+                })
+            }
+            Command::ReviewClaim {
+                session,
+                agent,
+                threads,
+            } => {
+                let agent = identity(agent)?;
+                self.review_session(session, |review, _, _| {
+                    review.claim_threads(&agent, &threads)?;
+                    Ok((
+                        ResponseBody::ReviewClaimed {
+                            threads,
+                            lease_seconds: LEASE.as_secs() as u32,
+                        },
+                        false,
+                    ))
+                })
+            }
+            Command::ReviewRelease {
+                session,
+                agent,
+                threads,
+            } => {
+                let agent = identity(agent)?;
+                self.review_session(session, |review, _, _| {
+                    review.release(&agent, &threads)?;
+                    Ok((ResponseBody::Empty, false))
                 })
             }
             other => Err(EditorError::BadRequest(format!(
@@ -1174,6 +1567,71 @@ mod tests {
             node
         }
 
+        fn fetch(&mut self, name: &str) -> (Vec<ReviewThread>, Option<String>) {
+            let session = self.session;
+            match self.ok(Command::ReviewFetch {
+                session,
+                agent: who(name),
+            }) {
+                ResponseBody::ReviewFetched { threads, batch } => (threads, batch),
+                other => panic!("{other:?}"),
+            }
+        }
+
+        fn ack(
+            &mut self,
+            name: &str,
+            batch: &str,
+        ) -> Result<(Vec<ThreadId>, Vec<ReviewHeld>), ErrorCode> {
+            let session = self.session;
+            match self.send(Command::ReviewAck {
+                session,
+                agent: who(name),
+                batch: batch.into(),
+            }) {
+                Reply::Ok {
+                    body: ResponseBody::ReviewAcked { claimed, held },
+                    ..
+                } => Ok((claimed, held)),
+                Reply::Err { code, .. } => Err(code),
+                other => panic!("{other:?}"),
+            }
+        }
+
+        fn claim(&mut self, name: &str, threads: &[u64]) -> Reply {
+            let session = self.session;
+            self.send(Command::ReviewClaim {
+                session,
+                agent: who(name),
+                threads: threads.iter().copied().map(ThreadId).collect(),
+            })
+        }
+
+        fn holder(&mut self, thread: usize) -> Option<String> {
+            self.review().threads[thread].holder.clone().map(|h| h.name)
+        }
+
+        /// Sends the person's comments and hands them to `name`.
+        fn take(&mut self, name: &str) -> Vec<ReviewThread> {
+            let session = self.session;
+            self.ok(Command::ReviewSubmit { session });
+            let (threads, batch) = self.fetch(name);
+            self.ack(name, &batch.unwrap()).unwrap();
+            threads
+        }
+
+        fn keyed(&mut self, author: ReviewAuthor, thread: u64, body: &str, key: &str) -> Reply {
+            let session = self.session;
+            self.send(Command::ReviewCommentAdd {
+                session,
+                thread: ThreadId(thread),
+                author,
+                body: body.into(),
+                images: Vec::new(),
+                key: Some(key.into()),
+            })
+        }
+
         fn open(&mut self, target: ReviewTarget, author: ReviewAuthor) -> ReviewThread {
             let session = self.session;
             match self.ok(Command::ReviewThreadAdd {
@@ -1183,6 +1641,7 @@ mod tests {
                 body: "  look here \n".into(),
                 pose: Vec::new(),
                 images: Vec::new(),
+                key: None,
             }) {
                 ResponseBody::ReviewThread { thread } => thread,
                 other => panic!("{other:?}"),
@@ -1190,8 +1649,26 @@ mod tests {
         }
     }
 
+    fn who(name: &str) -> ReviewIdentity {
+        ReviewIdentity {
+            id: format!("{name}:session"),
+            name: name.into(),
+        }
+    }
+
     fn agent(name: &str) -> ReviewAuthor {
-        ReviewAuthor::Agent { name: name.into() }
+        let who = who(name);
+        ReviewAuthor::Agent {
+            id: who.id,
+            name: who.name,
+        }
+    }
+
+    fn human() -> ReviewAuthor {
+        ReviewAuthor::Human {
+            id: None,
+            name: None,
+        }
     }
 
     fn deliveries(thread: &ReviewThread) -> Vec<ReviewDelivery> {
@@ -1204,7 +1681,7 @@ mod tests {
         let session = f.session;
         let rev = f.rev();
 
-        let opened = f.open(ReviewTarget::Model, ReviewAuthor::Human);
+        let opened = f.open(ReviewTarget::Model, human());
         assert_eq!(opened.thread, ThreadId(1));
         assert_eq!(opened.comments[0].body, "look here");
         assert_eq!(opened.comments[0].comment, 1);
@@ -1213,7 +1690,7 @@ mod tests {
         assert!(matches!(
             f.ok(Command::ReviewPoll {
                 session,
-                agent: "claude".into()
+                agent: who("claude")
             }),
             ResponseBody::ReviewPending { pending: 0 }
         ));
@@ -1222,46 +1699,40 @@ mod tests {
         assert!(matches!(
             f.ok(Command::ReviewPoll {
                 session,
-                agent: "claude".into()
+                agent: who("claude")
             }),
             ResponseBody::ReviewPending { pending: 1 }
         ));
         assert_eq!(
-            f.review().agent,
-            Some(ReviewAgent {
+            f.review().agents,
+            [ReviewAgent {
+                id: "claude:session".into(),
                 name: "claude".into(),
                 listening: true
-            })
+            }]
         );
 
-        let fetched = match f.ok(Command::ReviewFetch {
-            session,
-            agent: "claude".into(),
-        }) {
-            ResponseBody::ReviewFetched { threads } => threads,
-            other => panic!("{other:?}"),
-        };
+        let (fetched, batch) = f.fetch("claude");
         assert_eq!(fetched.len(), 1);
         assert_eq!(deliveries(&fetched[0]), [ReviewDelivery::Sent]);
-        assert_eq!(fetched[0].working.as_deref(), Some("claude"));
+        assert_eq!(fetched[0].holder, None);
+        assert_eq!(
+            f.fetch("claude"),
+            (fetched, batch.clone()),
+            "a fetch takes nothing"
+        );
+        assert_eq!(deliveries(&f.review().threads[0]), [ReviewDelivery::Sent]);
 
+        let (claimed, held) = f.ack("claude", batch.as_deref().unwrap()).unwrap();
+        assert_eq!((claimed, held), (vec![ThreadId(1)], Vec::new()));
         let review = f.review();
         assert_eq!(deliveries(&review.threads[0]), [ReviewDelivery::Delivered]);
-        assert_eq!(review.threads[0].working.as_deref(), Some("claude"));
-        assert_eq!(
-            review.agent,
-            Some(ReviewAgent {
-                name: "claude".into(),
-                listening: false
-            })
+        assert_eq!(review.threads[0].holder, Some(who("claude")));
+        assert!(
+            !review.agents[0].listening,
+            "it took work, so it is not waiting"
         );
-        assert!(matches!(
-            f.ok(Command::ReviewFetch {
-                session,
-                agent: "claude".into()
-            }),
-            ResponseBody::ReviewFetched { threads } if threads.is_empty()
-        ));
+        assert_eq!(f.fetch("claude"), (Vec::new(), None));
 
         let replied = match f.ok(Command::ReviewCommentAdd {
             session,
@@ -1269,11 +1740,12 @@ mod tests {
             author: agent("claude"),
             body: "done".into(),
             images: Vec::new(),
+            key: None,
         }) {
             ResponseBody::ReviewThread { thread } => thread,
             other => panic!("{other:?}"),
         };
-        assert_eq!(replied.working, None);
+        assert_eq!(replied.holder, None);
         assert_eq!(replied.comments[1].comment, 2);
         assert_eq!(
             deliveries(&replied),
@@ -1298,14 +1770,14 @@ mod tests {
     fn every_change_is_announced_and_a_steady_heartbeat_is_not() {
         let mut f = Fixture::new();
         let session = f.session;
-        f.open(ReviewTarget::Model, ReviewAuthor::Human);
+        f.open(ReviewTarget::Model, human());
         assert_eq!(f.review_events(), 1);
         f.review();
         assert_eq!(f.review_events(), 1);
 
         let poll = Command::ReviewPoll {
             session,
-            agent: "claude".into(),
+            agent: who("claude"),
         };
         f.ok(poll.clone());
         assert_eq!(f.review_events(), 2);
@@ -1344,10 +1816,11 @@ mod tests {
         let add = |target| Command::ReviewThreadAdd {
             session,
             target,
-            author: ReviewAuthor::Human,
+            author: human(),
             body: "x".into(),
             pose: Vec::new(),
             images: Vec::new(),
+            key: None,
         };
         let node = NodeId::new("nope").unwrap();
         assert_eq!(
@@ -1378,10 +1851,11 @@ mod tests {
             f.refused(Command::ReviewThreadAdd {
                 session,
                 target: ReviewTarget::Model,
-                author: ReviewAuthor::Human,
+                author: human(),
                 body: " \n".into(),
                 pose: Vec::new(),
                 images: Vec::new(),
+                key: None,
             }),
             ErrorCode::BadRequest
         );
@@ -1389,16 +1863,20 @@ mod tests {
             f.refused(Command::ReviewCommentAdd {
                 session,
                 thread: ThreadId(9),
-                author: ReviewAuthor::Human,
+                author: human(),
                 body: "x".into(),
                 images: Vec::new(),
+                key: None,
             }),
             ErrorCode::NoThread
         );
         assert_eq!(
             f.refused(Command::ReviewPoll {
                 session,
-                agent: " ".into()
+                agent: ReviewIdentity {
+                    id: " ".into(),
+                    name: "claude".into()
+                }
             }),
             ErrorCode::BadRequest
         );
@@ -1409,7 +1887,7 @@ mod tests {
     fn deleting_the_only_comment_deletes_the_thread_and_ids_are_not_reused() {
         let mut f = Fixture::new();
         let session = f.session;
-        f.open(ReviewTarget::Model, ReviewAuthor::Human);
+        f.open(ReviewTarget::Model, human());
         assert_eq!(
             f.refused(Command::ReviewCommentDelete {
                 session,
@@ -1441,7 +1919,7 @@ mod tests {
     fn a_resolved_thread_is_not_handed_over_and_a_human_reply_reopens_it() {
         let mut f = Fixture::new();
         let session = f.session;
-        f.open(ReviewTarget::Model, ReviewAuthor::Human);
+        f.open(ReviewTarget::Model, human());
         f.ok(Command::ReviewThreadSet {
             session,
             thread: ThreadId(1),
@@ -1453,20 +1931,18 @@ mod tests {
         let reopened = match f.ok(Command::ReviewCommentAdd {
             session,
             thread: ThreadId(1),
-            author: ReviewAuthor::Human,
+            author: human(),
             body: "still wrong".into(),
             images: Vec::new(),
+            key: None,
         }) {
             ResponseBody::ReviewThread { thread } => thread,
             other => panic!("{other:?}"),
         };
         assert_eq!(reopened.status, ThreadStatus::Open);
 
-        f.ok(Command::ReviewSubmit { session });
-        f.ok(Command::ReviewFetch {
-            session,
-            agent: "claude".into(),
-        });
+        f.take("claude");
+        assert_eq!(f.holder(0).as_deref(), Some("claude"));
         let resolved = match f.ok(Command::ReviewThreadSet {
             session,
             thread: ThreadId(1),
@@ -1475,7 +1951,7 @@ mod tests {
             ResponseBody::ReviewThread { thread } => thread,
             other => panic!("{other:?}"),
         };
-        assert_eq!(resolved.working, None);
+        assert_eq!(resolved.holder, None);
     }
 
     #[test]
@@ -1483,10 +1959,7 @@ mod tests {
         let mut f = Fixture::new();
         let session = f.session;
         let node = f.group("g");
-        f.open(
-            ReviewTarget::Node { node: node.clone() },
-            ReviewAuthor::Human,
-        );
+        f.open(ReviewTarget::Node { node: node.clone() }, human());
         let before = f.review_events();
 
         f.ok(Command::NodeDelete { session, node });
@@ -1508,10 +1981,7 @@ mod tests {
         let session = f.session;
         let from = f.group("g");
         let to = NodeId::new("torso").unwrap();
-        f.open(
-            ReviewTarget::Node { node: from.clone() },
-            ReviewAuthor::Human,
-        );
+        f.open(ReviewTarget::Node { node: from.clone() }, human());
 
         f.ok(Command::RenameId {
             session,
@@ -1547,7 +2017,7 @@ mod tests {
     fn a_fork_starts_with_no_review() {
         let mut f = Fixture::new();
         let session = f.session;
-        f.open(ReviewTarget::Model, ReviewAuthor::Human);
+        f.open(ReviewTarget::Model, human());
         let rev = f.rev();
         let fork = match f.ok(Command::SessionFork {
             session,
@@ -1565,7 +2035,7 @@ mod tests {
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    fn a_silent_agent_stops_listening_and_stale_work_lapses() {
+    fn a_silent_agent_stops_listening_and_a_stale_claim_lapses() {
         let mut state = ReviewState::default();
         let model = Model::new();
         state
@@ -1574,37 +2044,237 @@ mod tests {
                 0,
                 ReviewTarget::Model,
                 Draft {
-                    author: ReviewAuthor::Human,
+                    author: human(),
                     body: "x".into(),
                     images: Vec::new(),
+                    key: None,
                 },
                 Vec::new(),
             )
             .unwrap();
         state.submit();
-        assert!(state.poll("claude"));
-        assert!(!state.poll("claude"));
-        let Some(long_ago) = std::time::Instant::now().checked_sub(WORKING_FOR) else {
+        assert_eq!(state.poll(&who("claude")), 1);
+        let Some(long_ago) = std::time::Instant::now().checked_sub(LEASE) else {
             return;
         };
-        state.agent.as_mut().unwrap().polled = Some(Stamp(long_ago));
-        assert!(
-            !state
-                .wire(&model, ReviewKept::Session, None)
-                .agent
-                .unwrap()
-                .listening
-        );
-        assert!(state.poll("claude"), "coming back is a change");
+        state.agents[0].polled = Some(Stamp(long_ago));
+        assert!(!state.presence()[0].listening);
 
-        state.fetch(&model, "claude");
-        assert!(state.wire(&model, ReviewKept::Session, None).threads[0]
-            .working
-            .is_some());
-        state.threads[0].working.as_mut().unwrap().since = Stamp(long_ago);
+        state.claim_threads(&who("claude"), &[ThreadId(1)]).unwrap();
+        assert_eq!(state.pending(&who("codex").id), 0, "held for claude");
+        state.threads[0].claim.as_mut().unwrap().since = Stamp(long_ago);
         assert_eq!(
-            state.wire(&model, ReviewKept::Session, None).threads[0].working,
+            state.wire(&model, ReviewKept::Session, None).threads[0].holder,
             None
+        );
+        assert_eq!(
+            state.pending(&who("codex").id),
+            1,
+            "a lapsed claim frees it"
+        );
+
+        state.agents[0].heard = Stamp(long_ago);
+        assert!(state.presence().is_empty(), "nothing heard for an hour");
+    }
+
+    #[test]
+    fn a_fetch_is_acknowledged_whole_or_found_stale() {
+        let mut f = Fixture::new();
+        let session = f.session;
+        f.open(ReviewTarget::Model, human());
+        f.open(ReviewTarget::Model, human());
+        f.ok(Command::ReviewSubmit { session });
+
+        let (first, batch) = f.fetch("claude");
+        assert_eq!(first.len(), 2);
+        let (again, also) = f.fetch("codex");
+        assert_eq!((again, &also), (first, &batch), "both see what waits");
+        let events = f.review_events();
+        f.ack("claude", batch.as_deref().unwrap()).unwrap();
+        assert_eq!(f.review_events(), events + 1);
+        assert_eq!(
+            f.ack("codex", also.as_deref().unwrap()),
+            Err(ErrorCode::BatchStale),
+            "claude took them first"
+        );
+
+        f.open(ReviewTarget::Model, human());
+        f.ok(Command::ReviewSubmit { session });
+        let (_, batch) = f.fetch("claude");
+        f.ok(Command::ReviewThreadDelete {
+            session,
+            thread: ThreadId(3),
+        });
+        assert_eq!(
+            f.ack("claude", batch.as_deref().unwrap()),
+            Err(ErrorCode::BatchStale)
+        );
+        assert_eq!(f.ack("claude", "x"), Err(ErrorCode::BadRequest));
+    }
+
+    #[test]
+    fn a_claim_keeps_a_thread_for_one_agent_until_its_reply() {
+        let mut f = Fixture::new();
+        let session = f.session;
+        f.open(ReviewTarget::Model, human());
+        f.open(ReviewTarget::Model, human());
+        let taken = f.take("claude");
+        assert_eq!(taken.len(), 2);
+        assert_eq!(f.holder(0).as_deref(), Some("claude"));
+
+        let refused = f.claim("codex", &[2, 1]);
+        assert!(
+            matches!(
+                &refused,
+                Reply::Err { code: ErrorCode::ThreadClaimed, message, .. }
+                    if message.contains("claude (claude:session)")
+            ),
+            "{refused:?}"
+        );
+        assert!(matches!(
+            f.claim("claude", &[1]),
+            Reply::Ok {
+                body: ResponseBody::ReviewClaimed {
+                    lease_seconds: 3600,
+                    ..
+                },
+                ..
+            }
+        ));
+
+        f.keyed(human(), 1, "and the other ear", "k");
+        f.ok(Command::ReviewSubmit { session });
+        assert!(f.fetch("codex").0.is_empty(), "claude holds thread 1");
+        assert!(matches!(
+            f.ok(Command::ReviewPoll {
+                session,
+                agent: who("codex")
+            }),
+            ResponseBody::ReviewPending { pending: 0 }
+        ));
+        let (mine, _) = f.fetch("claude");
+        assert_eq!(mine.len(), 1);
+
+        f.keyed(agent("codex"), 1, "not mine", "a");
+        assert_eq!(
+            f.holder(0).as_deref(),
+            Some("claude"),
+            "only its own reply releases"
+        );
+        f.keyed(agent("claude"), 1, "done", "b");
+        assert_eq!(f.holder(0), None);
+
+        f.ok(Command::ReviewRelease {
+            session,
+            agent: who("codex"),
+            threads: vec![ThreadId(2)],
+        });
+        assert_eq!(
+            f.holder(1).as_deref(),
+            Some("claude"),
+            "not codex's to release"
+        );
+        f.ok(Command::ReviewRelease {
+            session,
+            agent: who("claude"),
+            threads: vec![ThreadId(2)],
+        });
+        assert_eq!(f.holder(1), None);
+        assert!(matches!(f.claim("codex", &[2]), Reply::Ok { .. }));
+        assert_eq!(f.holder(1).as_deref(), Some("codex"));
+        assert!(matches!(
+            f.claim("codex", &[9]),
+            Reply::Err {
+                code: ErrorCode::NoThread,
+                ..
+            }
+        ));
+
+        let names: Vec<String> = f.review().agents.into_iter().map(|a| a.name).collect();
+        assert_eq!(names, ["claude", "codex"]);
+    }
+
+    #[test]
+    fn an_ack_leaves_a_thread_claimed_meanwhile_to_its_holder() {
+        let mut f = Fixture::new();
+        let session = f.session;
+        f.open(ReviewTarget::Model, human());
+        f.open(ReviewTarget::Model, human());
+        f.ok(Command::ReviewSubmit { session });
+        let (_, batch) = f.fetch("codex");
+        assert!(matches!(f.claim("claude", &[1]), Reply::Ok { .. }));
+
+        let (claimed, held) = f.ack("codex", batch.as_deref().unwrap()).unwrap();
+        assert_eq!(claimed, [ThreadId(2)]);
+        assert_eq!(
+            held,
+            [ReviewHeld {
+                thread: ThreadId(1),
+                holder: who("claude"),
+            }]
+        );
+        let review = f.review();
+        assert_eq!(deliveries(&review.threads[0]), [ReviewDelivery::Sent]);
+        assert_eq!(deliveries(&review.threads[1]), [ReviewDelivery::Delivered]);
+
+        let (theirs, batch) = f.fetch("claude");
+        assert_eq!(theirs.len(), 1);
+        assert_eq!(theirs[0].thread, ThreadId(1));
+        f.ack("claude", batch.as_deref().unwrap()).unwrap();
+        assert_eq!(
+            deliveries(&f.review().threads[0]),
+            [ReviewDelivery::Delivered]
+        );
+    }
+
+    #[test]
+    fn a_repeated_key_writes_once_and_a_reused_one_is_refused() {
+        let mut f = Fixture::new();
+        let session = f.session;
+        f.open(ReviewTarget::Model, human());
+        let first = f.keyed(agent("claude"), 1, "done", "k1");
+        let again = f.keyed(agent("claude"), 1, "done", "k1");
+        let (Reply::Ok { body: first, .. }, Reply::Ok { body: again, .. }) = (first, again) else {
+            panic!("a repeat is answered, not refused");
+        };
+        assert!(matches!((&first, &again), (
+            ResponseBody::ReviewThread { thread: a },
+            ResponseBody::ReviewThread { thread: b },
+        ) if a == b && b.comments.len() == 2));
+
+        assert!(matches!(
+            f.keyed(agent("claude"), 1, "something else", "k1"),
+            Reply::Err {
+                code: ErrorCode::KeyConflict,
+                ..
+            }
+        ));
+        assert!(
+            matches!(f.keyed(agent("codex"), 1, "done", "k1"), Reply::Ok { .. }),
+            "a key is the author's own"
+        );
+        assert_eq!(f.review().threads[0].comments.len(), 3);
+
+        let open = |key: &str| Command::ReviewThreadAdd {
+            session,
+            target: ReviewTarget::Model,
+            author: agent("claude"),
+            body: "a question".into(),
+            pose: Vec::new(),
+            images: Vec::new(),
+            key: Some(key.into()),
+        };
+        let thread = |body| match body {
+            ResponseBody::ReviewThread { thread } => thread.thread,
+            other => panic!("{other:?}"),
+        };
+        let opened = thread(f.ok(open("t")));
+        assert_eq!(thread(f.ok(open("t"))), opened);
+        assert_eq!(f.review().threads.len(), 2);
+        assert_eq!(
+            f.refused(open("k1")),
+            ErrorCode::KeyConflict,
+            "k1 wrote a reply"
         );
     }
 
@@ -1661,10 +2331,11 @@ mod tests {
             self.send(Command::ReviewThreadAdd {
                 session,
                 target: ReviewTarget::Model,
-                author: ReviewAuthor::Human,
+                author: human(),
                 body: body.into(),
                 pose: Vec::new(),
                 images,
+                key: None,
             })
         }
     }
@@ -1760,9 +2431,10 @@ mod tests {
             f.refused(Command::ReviewCommentAdd {
                 session,
                 thread: ThreadId(9),
-                author: ReviewAuthor::Human,
+                author: human(),
                 body: "x".into(),
                 images: vec![image],
+                key: None,
             }),
             ErrorCode::NoThread
         );
@@ -1796,6 +2468,41 @@ mod tests {
     }
 
     #[test]
+    fn a_retry_with_images_is_told_apart_by_their_bytes() {
+        let mut f = Fixture::new();
+        let session = f.session;
+        let reply = |f: &mut Fixture, image: u64| {
+            f.send(Command::ReviewCommentAdd {
+                session,
+                thread: ThreadId(1),
+                author: agent("claude"),
+                body: "after".into(),
+                images: vec![image],
+                key: Some("k".into()),
+            })
+        };
+        f.open(ReviewTarget::Model, human());
+        let first = f.image(PNG).image;
+        assert!(matches!(reply(&mut f, first), Reply::Ok { .. }));
+        let again = f.image(PNG).image;
+        assert!(matches!(reply(&mut f, again), Reply::Ok { .. }));
+        assert_eq!(f.review().threads[0].comments.len(), 2);
+        assert_eq!(
+            f.bytes(again).unwrap_err(),
+            ErrorCode::NoImage,
+            "a repeat's upload is dropped"
+        );
+        let other = f.image(b"\x89PNG\r\n\x1a\nother").image;
+        assert!(matches!(
+            reply(&mut f, other),
+            Reply::Err {
+                code: ErrorCode::KeyConflict,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn deleting_a_comment_or_thread_frees_its_images() {
         let mut f = Fixture::new();
         let session = f.session;
@@ -1805,9 +2512,10 @@ mod tests {
         f.ok(Command::ReviewCommentAdd {
             session,
             thread: ThreadId(1),
-            author: ReviewAuthor::Human,
+            author: human(),
             body: "two".into(),
             images: vec![second],
+            key: None,
         });
         f.ok(Command::ReviewCommentDelete {
             session,
@@ -2013,12 +2721,12 @@ mod tests {
         assert_eq!(f.review().kept, ReviewKept::Stored);
 
         let first = f.thread_with_image(PNG);
-        let second = f.open(ReviewTarget::Model, ReviewAuthor::Human);
-        f.ok(Command::ReviewSubmit { session });
-        f.ok(Command::ReviewFetch {
-            session,
-            agent: "claude".into(),
-        });
+        let second = f.open(ReviewTarget::Model, human());
+        f.take("claude");
+        assert!(matches!(
+            f.keyed(agent("claude"), second.thread.0, "on it", "retry"),
+            Reply::Ok { .. }
+        ));
         f.ok(Command::ReviewThreadSet {
             session,
             thread: second.thread,
@@ -2030,7 +2738,8 @@ mod tests {
         let after = g.review();
         assert_eq!(after.kept, ReviewKept::Stored);
         assert_eq!(
-            after.agent, None,
+            after.agents,
+            [],
             "an agent belongs to the session it joined"
         );
         assert_eq!(after.threads.len(), 2);
@@ -2039,16 +2748,23 @@ mod tests {
             assert_eq!(was.status, now.status);
             assert_eq!(was.comments, now.comments);
             assert_eq!(
-                now.working, None,
-                "a lease belongs to the session that took it"
+                now.holder, None,
+                "a claim belongs to the session that took it"
             );
         }
         let image = first.comments[0].images[0].image;
         assert_eq!(g.bytes(image).unwrap().bytes, PNG);
+        assert!(
+            matches!(
+                g.keyed(agent("claude"), second.thread.0, "on it", "retry"),
+                Reply::Ok { body: ResponseBody::ReviewThread { thread }, .. } if thread.comments.len() == 2
+            ),
+            "a retry key outlives the editor"
+        );
 
         let next = g.thread_with_image(PNG);
         assert_eq!(next.thread, ThreadId(3), "thread Ids continue");
-        assert_eq!(next.comments[0].comment, 3, "comment Ids continue");
+        assert_eq!(next.comments[0].comment, 4, "comment Ids continue");
         assert_eq!(
             next.comments[0].images[0].image,
             image + 1,
@@ -2111,21 +2827,21 @@ mod tests {
         f.save("m.clm");
         f.ok(Command::ReviewPoll {
             session,
-            agent: "claude".into(),
+            agent: who("claude"),
         });
         f.review();
         assert_eq!(store.saves(), 0, "an empty review is not written");
 
-        f.open(ReviewTarget::Model, ReviewAuthor::Human);
+        f.open(ReviewTarget::Model, human());
         assert_eq!(store.saves(), 1);
         f.image(PNG);
         f.ok(Command::ReviewPoll {
             session,
-            agent: "claude".into(),
+            agent: who("claude"),
         });
         f.ok(Command::ReviewFetch {
             session,
-            agent: "claude".into(),
+            agent: who("claude"),
         });
         f.save("m.clm");
         assert_eq!(
@@ -2199,7 +2915,7 @@ mod tests {
     fn a_save_whose_review_is_refused_still_saved_the_model() {
         let (models, store) = Default::default();
         let mut f = Fixture::keeping(&models, &store);
-        f.open(ReviewTarget::Model, ReviewAuthor::Human);
+        f.open(ReviewTarget::Model, human());
         store
             .refuse
             .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -2216,7 +2932,7 @@ mod tests {
         store
             .refuse
             .store(false, std::sync::atomic::Ordering::Relaxed);
-        f.open(ReviewTarget::Model, ReviewAuthor::Human);
+        f.open(ReviewTarget::Model, human());
         assert_eq!(
             Fixture::reopened(&models, &store, "m.clm")
                 .review()
@@ -2243,7 +2959,7 @@ mod tests {
             assert!(review.kept_problem.is_some());
             assert!(review.threads.is_empty());
 
-            f.open(ReviewTarget::Model, ReviewAuthor::Human);
+            f.open(ReviewTarget::Model, human());
             f.save("m.clm");
             assert_eq!(
                 f.review().threads.len(),
@@ -2268,10 +2984,7 @@ mod tests {
         let session = f.session;
         let node = f.group("arm");
         f.save("m.clm");
-        f.open(
-            ReviewTarget::Node { node: node.clone() },
-            ReviewAuthor::Human,
-        );
+        f.open(ReviewTarget::Node { node: node.clone() }, human());
         let renamed = NodeId::new("limb").unwrap();
         f.ok(Command::RenameId {
             session,

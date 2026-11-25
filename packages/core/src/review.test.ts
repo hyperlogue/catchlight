@@ -21,11 +21,15 @@ function thread(id: number): Review["threads"][number] {
   };
 }
 
-function open(): { backend: ScriptedBackend; session: Session; serve(review: Omit<Review, "kept">): void } {
+type Served = Pick<Review, "threads"> & Partial<Pick<Review, "agents">>;
+
+function open(): { backend: ScriptedBackend; session: Session; serve(review: Served): void } {
   const backend = new ScriptedBackend();
   const session = new Session(backend, 1, new FakeReplica());
-  const serve = (review: Omit<Review, "kept">): void => {
-    backend.replies.set("review_get", { body: { result: "review", review: { ...review, kept: "stored" } } });
+  const serve = (review: Served): void => {
+    backend.replies.set("review_get", {
+      body: { result: "review", review: { threads: review.threads, agents: review.agents ?? [], kept: "stored" } },
+    });
   };
   serve({ threads: [] });
   return { backend, session, serve };
@@ -76,21 +80,22 @@ describe("a session's review", () => {
     expect(session.getReview().threads).toHaveLength(1);
   });
 
-  test("keeps re-reading while an agent listens, to notice it leaving", async () => {
+  test("keeps re-reading while any agent listens, to notice it leaving", async () => {
     jest.useFakeTimers();
     try {
       const { backend, session, serve } = open();
-      serve({ threads: [], agent: { name: "claude", listening: true } });
+      const codex = { id: "codex:t1", name: "codex", listening: false };
+      serve({ threads: [], agents: [codex, { id: "claude:s1", name: "claude", listening: true }] });
       const stop = session.subscribeReview(() => {});
       await Promise.resolve();
       await Promise.resolve();
-      expect(session.getReview().agent?.listening).toBe(true);
+      expect(session.getReview().agents[1]?.listening).toBe(true);
 
-      serve({ threads: [], agent: { name: "claude", listening: false } });
+      serve({ threads: [], agents: [codex, { id: "claude:s1", name: "claude", listening: false }] });
       jest.advanceTimersByTime(REVIEW_LISTENING_POLL_MS);
       await Promise.resolve();
       await Promise.resolve();
-      expect(session.getReview().agent?.listening).toBe(false);
+      expect(session.getReview().agents[1]?.listening).toBe(false);
 
       const settled = reads(backend);
       jest.advanceTimersByTime(REVIEW_LISTENING_POLL_MS * 3);

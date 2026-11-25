@@ -221,5 +221,6 @@ export type {
   ReviewPanelProps,
   ReviewProviderProps,
   ReviewState,
+  Reviewer,
   TargetLabel,
 } from "./review.js";

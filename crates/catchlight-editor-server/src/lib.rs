@@ -133,6 +133,15 @@ pub enum EditorError {
     NoComment(u64),
     #[error("no review image {0}")]
     NoImage(u64),
+    #[error("the fetched comments changed before they were acknowledged; fetch again")]
+    BatchStale,
+    #[error("thread {} is claimed by {} ({})", .thread.0, .holder.name, .holder.id)]
+    Claimed {
+        thread: ThreadId,
+        holder: ReviewIdentity,
+    },
+    #[error("retry key {0:?} was already used for something else")]
+    KeyConflict(String),
 }
 
 impl EditorError {
@@ -200,6 +209,9 @@ impl EditorError {
             Self::NoThread(_) => ErrorCode::NoThread,
             Self::NoComment(_) => ErrorCode::NoComment,
             Self::NoImage(_) => ErrorCode::NoImage,
+            Self::BatchStale => ErrorCode::BatchStale,
+            Self::Claimed { .. } => ErrorCode::ThreadClaimed,
+            Self::KeyConflict(_) => ErrorCode::KeyConflict,
             // Install's refusals answer with the codes the equivalent edit gets.
             Self::Install(e) => match e {
                 InstallError::Collision { .. } => ErrorCode::DuplicateId,
@@ -1584,7 +1596,10 @@ impl Editor {
             | Command::ReviewImageGet { .. }
             | Command::ReviewSubmit { .. }
             | Command::ReviewPoll { .. }
-            | Command::ReviewFetch { .. }) => self.review(command, attachments, payload),
+            | Command::ReviewFetch { .. }
+            | Command::ReviewAck { .. }
+            | Command::ReviewClaim { .. }
+            | Command::ReviewRelease { .. }) => self.review(command, attachments, payload),
             Command::PresenceGet { session } => self.with_session_captured(session, |s| {
                 Ok(ResponseBody::Presence {
                     presence: s.presence.clone(),

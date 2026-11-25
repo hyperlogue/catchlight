@@ -104,7 +104,7 @@ export class FakeEditor implements WasmEditor {
   /** Commands to refuse instead of running, keyed by `cmd`. */
   refuse = new Map<string, { code: string; message: string }>();
   presence = new Map<number, Presence>();
-  /** Tests set `agent` directly; no fake command moves it but a fetch. */
+  /** Tests may set `agents` directly; polls, fetches, acks and claims move it. */
   reviews = new Map<number, Review>();
   reviewImages = new Map<number, Uint8Array>();
   /** What every review says of how long it is kept. */
@@ -357,13 +357,16 @@ export class FakeEditor implements WasmEditor {
       case "review_comment_delete":
       case "review_submit":
       case "review_poll":
-      case "review_fetch": {
+      case "review_fetch":
+      case "review_ack":
+      case "review_claim":
+      case "review_release": {
         const doc = this.docs.get(request.session);
         if (!doc) return this.#noSession(id, request.session);
         const body = this.#review(request, doc.rev);
         if (!body)
           return JSON.stringify({ reply: "err", id, code: "no_thread", message: "no such thread" });
-        if (!["review_get", "review_poll", "review_image_add", "review_image_get"].includes(request.cmd))
+        if (!["review_get", "review_poll", "review_fetch", "review_image_add", "review_image_get"].includes(request.cmd))
           this.#emit({ event: "review_changed", session: request.session });
         return this.#ok(id, body, doc.rev);
       }
@@ -430,11 +433,24 @@ export class FakeEditor implements WasmEditor {
     rev: number,
   ): ResponseBody | undefined {
     let review = this.reviews.get(request.session);
-    if (!review) this.reviews.set(request.session, (review = { threads: [], kept: "stored" }));
+    if (!review) this.reviews.set(request.session, (review = { threads: [], agents: [], kept: "stored" }));
     const find = (thread: number): ReviewThread | undefined =>
       review.threads.find((t) => t.thread === thread);
     const sent = (t: ReviewThread): boolean =>
       t.status === "open" && t.comments.some((c) => c.delivery === "sent");
+    const agent = "agent" in request ? request.agent : undefined;
+    const waiting = (t: ReviewThread): boolean =>
+      sent(t) && (!t.holder || t.holder.id === agent?.id);
+    /** `listening` undefined keeps what the agent's own polls last said. */
+    const hear = (listening: boolean | undefined): void => {
+      if (!agent) return;
+      const agents = review.agents;
+      const was = agents.find((a) => a.id === agent.id);
+      review.agents = [
+        ...agents.filter((a) => a.id !== agent.id),
+        { ...agent, listening: listening ?? was?.listening ?? false },
+      ];
+    };
     const claim = (ids: number[] | undefined) =>
       (ids ?? []).map((image) => ({
         image,
@@ -492,15 +508,15 @@ export class FakeEditor implements WasmEditor {
           rev,
           images: claim(request.images),
         });
-        if (request.author.role === "agent") delete thread.working;
-        else thread.status = "open";
+        if (request.author.role === "human") thread.status = "open";
+        else if (thread.holder?.id === request.author.id) delete thread.holder;
         return { result: "review_thread", thread: structuredClone(thread) };
       }
       case "review_thread_set": {
         const thread = find(request.thread);
         if (!thread) return undefined;
         thread.status = request.status;
-        if (request.status === "resolved") delete thread.working;
+        if (request.status === "resolved") delete thread.holder;
         return { result: "review_thread", thread: structuredClone(thread) };
       }
       case "review_thread_delete": {
@@ -524,16 +540,52 @@ export class FakeEditor implements WasmEditor {
         return { result: "empty" };
       }
       case "review_poll":
-        return { result: "review_pending", pending: review.threads.filter(sent).length };
+        hear(true);
+        return { result: "review_pending", pending: review.threads.filter(waiting).length };
       case "review_fetch": {
-        const taken = review.threads.filter(sent);
-        for (const thread of taken) {
-          thread.working = request.agent;
-          for (const comment of thread.comments)
-            if (comment.delivery === "sent") comment.delivery = "delivered";
+        hear(undefined);
+        const taken = review.threads.filter(waiting);
+        const batch = taken.flatMap((t) => t.comments.filter((c) => c.delivery === "sent").map((c) => c.comment));
+        return {
+          result: "review_fetched",
+          threads: structuredClone(taken),
+          ...(batch.length ? { batch: batch.join(".") } : {}),
+        };
+      }
+      case "review_ack": {
+        const ids = request.batch.split(".").map(Number);
+        const owner = (id: number) =>
+          review.threads.find((t) => t.status === "open" && t.comments.some((c) => c.comment === id && c.delivery === "sent"));
+        if (!ids.every(owner)) return undefined;
+        const claimed: number[] = [];
+        const held: { thread: number; holder: { id: string; name: string } }[] = [];
+        for (const thread of review.threads) {
+          const mine = thread.comments.filter((c) => ids.includes(c.comment));
+          if (mine.length === 0) continue;
+          for (const comment of mine) comment.delivery = "delivered";
+          if (thread.holder && thread.holder.id !== request.agent.id)
+            held.push({ thread: thread.thread, holder: thread.holder });
+          else {
+            thread.holder = request.agent;
+            claimed.push(thread.thread);
+          }
         }
-        review.agent = { name: request.agent, listening: false };
-        return { result: "review_fetched", threads: structuredClone(taken) };
+        hear(false);
+        return { result: "review_acked", claimed, held };
+      }
+      case "review_claim": {
+        for (const id of request.threads) if (!find(id)) return undefined;
+        for (const id of request.threads) find(id)!.holder = request.agent;
+        hear(undefined);
+        return { result: "review_claimed", threads: request.threads, lease_seconds: 3600 };
+      }
+      case "review_release": {
+        for (const id of request.threads) {
+          const thread = find(id);
+          if (thread?.holder?.id === request.agent.id) delete thread.holder;
+        }
+        hear(undefined);
+        return { result: "empty" };
       }
     }
   }

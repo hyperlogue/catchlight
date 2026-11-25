@@ -17,7 +17,12 @@ next release is 0.3.0.
   the same calls (`Client.review_*`). A comment can carry images: paste,
   drop or capture the canvas in the tab and mark it up, `review watch
   --attachments-dir` hands them to the agent as files, and `review reply
-  --attach` sends one back. A review is kept with a
+  --attach` sends one back. Comments count as delivered only once the CLI
+  has saved, printed and acknowledged them, so a failed run loses nothing;
+  several agents can attend one review, each known by its harness session
+  and holding threads with renewable `review claim`s; `--key` makes a
+  repeated `reply` or `open` write once; and `CatchlightEditor`'s `reviewer`
+  prop tells people sharing a review apart. A review is kept with a
   saved model, never in the `.clm`: `catchlight-editor` keeps it in a per-user
   data directory (`--reviews beside` writes a `<model>.clm.review/` sidecar
   instead; `catchlight-editor reviews gc --dry-run` lists threads left by

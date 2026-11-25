@@ -562,7 +562,7 @@ A session's shared pose, camera and selection, as last published by any
 client. Published, never saved, never undone.
 
 **Review**:
-A session's threads, and the agent attending to them. Shared like presence
+A session's threads, and the agents attending to them. Shared like presence
 and kept beside the model: never an edit, never undone, never in the model
 file, and not carried into a fork. An editor may keep a review with a saved
 model so it is there when the model is next opened; where is the editor's
@@ -584,15 +584,27 @@ _Avoid_: anchor
 **Comment**:
 One message on a thread, from the person or from an agent, stamped with the
 revision its author was looking at. A person's comment is **unsent** when
-written, **sent** once they hand the review to the agent, and **delivered**
-when an agent takes it; an agent's comment is delivered as written. A comment
+written, **sent** once they hand the review to the agents, and **delivered**
+when an agent acknowledges having received it, not when it merely reads it;
+an agent's comment is delivered as written. A repeated write under the same
+**retry key** from the same author lands once. A comment
 may carry a few images in place of or beside its text, kept with the review
 and never in the model.
 _Avoid_: note, message
 
+**Agent**:
+Whoever answers a review from outside the tab, known by a stable id (its
+harness session) and shown by a name that may change.
+
 **Listening**:
 An agent is listening while it waits for comments to be sent, and **working**
-on a thread from when it takes the thread until it replies.
+on a thread while it holds the thread's claim.
+
+**Claim**:
+One agent's renewable lease on a thread: other agents leave the thread to it
+until it replies, releases it or lets the lease lapse. Acknowledging
+comments claims their threads.
+_Avoid_: lock, assignment
 
 **Preview**:
 A rendered image of a session's model at a given pose, through a camera.
