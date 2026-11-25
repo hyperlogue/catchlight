@@ -104,7 +104,8 @@ pub fn list(path: &Path) -> Result<Listing, Error> {
 }
 
 /// Without `stops`, a two-sided control spans the param's min, default and
-/// max, and a one-sided control rests at the default and reaches the max.
+/// max, and a one-sided control rests at the default and reaches the end of
+/// the range farther from it.
 pub fn map(
     path: &Path,
     control_name: &str,

@@ -18,7 +18,11 @@ fn pid(s: &str) -> ParamId {
 /// `jaw` in 0..1 resting at 0.2, `turn` in -2..2 resting at -2.
 fn rig() -> Model {
     let mut model = Model::new();
-    for (p, min, max, default) in [("jaw", 0.0, 1.0, 0.2), ("turn", -2.0, 2.0, -2.0)] {
+    for (p, min, max, default) in [
+        ("jaw", 0.0, 1.0, 0.2),
+        ("turn", -2.0, 2.0, -2.0),
+        ("lid", 0.0, 1.0, 1.0),
+    ] {
         model
             .add_param_with_id(
                 pid(p),
@@ -49,6 +53,12 @@ fn default_stops_follow_the_controls_sidedness_and_explicit_stops_are_kept() {
     );
     let mapped = map(&mut model, "mouth_open", &pid("jaw"), None, false).unwrap();
     assert_eq!(mapped.mapping.stops, [0.2, 0.2, 1.0], "one-sided");
+    let mapped = map(&mut model, "eye_left_squint", &pid("lid"), None, false).unwrap();
+    assert_eq!(
+        mapped.mapping.stops,
+        [1.0, 1.0, 0.0],
+        "a one-sided control reaches the end farther from the default"
+    );
     let mapped = map(
         &mut model,
         "head_yaw",
@@ -67,7 +77,7 @@ fn default_stops_follow_the_controls_sidedness_and_explicit_stops_are_kept() {
         humanoid.mapping("head_yaw"),
         Some(mapping("turn", [1.0, 0.0, -1.0]))
     );
-    assert_eq!(humanoid.len(), 2);
+    assert_eq!(humanoid.len(), 3);
 }
 
 #[test]

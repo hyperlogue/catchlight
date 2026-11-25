@@ -1530,8 +1530,8 @@ class ExtensionWarnings:
 class HumanoidMap:
     """Map a humanoid control onto a param, replacing its mapping. Without
     `stops`, a two-sided control spans the param's min, default and max,
-    and a one-sided control rests at the default and reaches the max. A
-    control outside the standard list is
+    and a one-sided control rests at the default and reaches the end of
+    the range farther from it. A control outside the standard list is
     [`ErrorCode::NonstandardControl`] unless `nonstandard`.
     """
 

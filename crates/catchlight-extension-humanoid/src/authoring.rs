@@ -88,7 +88,8 @@ fn edit_distance(a: &str, b: &str) -> usize {
 
 /// Maps `control_name` onto `param`, replacing its mapping. Without `stops`,
 /// a two-sided control spans the param's min, default and max, and a
-/// one-sided control rests at the default and reaches the max.
+/// one-sided control rests at the default and reaches the end of the range
+/// farther from it.
 pub fn map(
     model: &mut Model,
     control_name: &str,
@@ -103,7 +104,12 @@ pub fn map(
     let stops = match stops {
         Some(stops) => stops,
         None if standard.is_some_and(|c| c.one_sided) => {
-            [limits.default, limits.default, limits.max]
+            let far = if limits.default - limits.min > limits.max - limits.default {
+                limits.min
+            } else {
+                limits.max
+            };
+            [limits.default, limits.default, far]
         }
         None => [limits.min, limits.default, limits.max],
     };

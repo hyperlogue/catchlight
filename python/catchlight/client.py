@@ -559,7 +559,8 @@ class Client:
         nonstandard: bool = False,
     ) -> ResponseBodyHumanoidMapped:
         """Without `stops`, a two-sided control spans the param's min, default
-        and max, and a one-sided one rests at the default and reaches the max.
+        and max, and a one-sided one rests at the default and reaches the end
+        of the range farther from it.
         A control outside the standard list needs `nonstandard`."""
         return self._expect(
             HumanoidMap(

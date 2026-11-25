@@ -28,7 +28,7 @@ pub(super) enum HumanoidCmd {
         /// The param values at control -1, 0 and +1, as `low,mid,high`.
         /// Without it a two-sided control spans the param's min, default and
         /// max, and a one-sided control rests at the default and reaches the
-        /// max.
+        /// end of the range farther from it.
         #[arg(long)]
         stops: Option<String>,
         /// Keep a control name outside the standard list.
