@@ -3,8 +3,8 @@
 use std::path::PathBuf;
 
 use catchlight_cli::{
-    diff, extension, fragment, patch, poses, render, storage, texture, Error, EXIT_DIFFERS,
-    EXIT_ERROR,
+    diff, extension, fragment, humanoid, patch, poses, render, storage, texture, Error,
+    EXIT_DIFFERS, EXIT_ERROR,
 };
 use catchlight_core::formats::clm::TextureAlpha;
 use catchlight_extension_animations::Animations;
@@ -145,6 +145,9 @@ enum Cmd {
         #[arg(short, long)]
         out: PathBuf,
     },
+    /// Map the standard humanoid controls onto the model's params.
+    #[command(subcommand)]
+    Humanoid(HumanoidCmd),
     /// Render to a PNG, inspect a render plan, or discover its JSON schema.
     Render(render::args::RenderArgs),
     /// Inspect overall and per-Part evaluated world bounds without a GPU.
@@ -189,6 +192,46 @@ enum ExtensionCmd {
         file: PathBuf,
         /// The extension key.
         key: String,
+    },
+}
+
+/// The control mappings of `catchlight.humanoid`. Each edit prints its
+/// result as JSON, then the extension's warnings for the edited model on
+/// stderr; warnings never fail the command.
+#[derive(Subcommand)]
+enum HumanoidCmd {
+    /// Print the standard controls as JSON: name, and whether one-sided
+    /// (0..1 rather than -1..1).
+    Controls,
+    /// Print the model's mappings, the standard controls it leaves unmapped,
+    /// and the extension's warnings for the model, as JSON.
+    List {
+        /// The .clm to read.
+        file: PathBuf,
+    },
+    /// Map one control onto one param, replacing its mapping if it has one.
+    Map {
+        /// The .clm to edit, in place.
+        file: PathBuf,
+        /// The control name, from `humanoid controls`.
+        control: String,
+        /// The param id.
+        param: String,
+        /// The param values the control's -1, 0 and +1 land on. Default: the
+        /// param's min,default,max for a two-sided control, and
+        /// default,default,max for a one-sided one.
+        #[arg(long, allow_hyphen_values = true, value_name = "low,mid,high")]
+        stops: Option<String>,
+        /// Keep a control name outside the standard list.
+        #[arg(long)]
+        nonstandard: bool,
+    },
+    /// Remove one control's mapping. Removing the last drops the extension.
+    Unmap {
+        /// The .clm to edit, in place.
+        file: PathBuf,
+        /// The control name.
+        control: String,
     },
 }
 
@@ -241,6 +284,40 @@ fn run_extension(cmd: ExtensionCmd) -> Result<i32, Error> {
         }
     }
     Ok(0)
+}
+
+fn print_json(value: &impl serde::Serialize) -> Result<(), Error> {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(value).map_err(|e| Error::Storage(e.to_string()))?
+    );
+    Ok(())
+}
+
+fn print_edit<T: serde::Serialize>(edited: humanoid::Edited<T>) -> Result<(), Error> {
+    print_json(&edited.result)?;
+    for warning in &edited.warnings {
+        eprintln!("catchlight-cli: {warning}");
+    }
+    Ok(())
+}
+
+fn run_humanoid(cmd: HumanoidCmd) -> Result<(), Error> {
+    match cmd {
+        HumanoidCmd::Controls => print_json(&humanoid::controls()),
+        HumanoidCmd::List { file } => print_json(&humanoid::list(&file)?),
+        HumanoidCmd::Map {
+            file,
+            control,
+            param,
+            stops,
+            nonstandard,
+        } => {
+            let stops = stops.as_deref().map(humanoid::parse_stops).transpose()?;
+            print_edit(humanoid::map(&file, &control, &param, stops, nonstandard)?)
+        }
+        HumanoidCmd::Unmap { file, control } => print_edit(humanoid::unmap(&file, &control)?),
+    }
 }
 
 fn run() -> Result<i32, Error> {
@@ -310,6 +387,7 @@ fn run() -> Result<i32, Error> {
         Cmd::Render(args) => args.run()?,
         Cmd::Bounds(args) => args.run()?,
         Cmd::Extension(cmd) => return run_extension(cmd),
+        Cmd::Humanoid(cmd) => run_humanoid(cmd)?,
         Cmd::Diff { a, b } => {
             let lines = diff::run(&a, &b)?;
             for line in &lines {

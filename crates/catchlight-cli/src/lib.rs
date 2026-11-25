@@ -11,6 +11,7 @@ pub mod diff;
 pub mod extension;
 pub mod file;
 pub mod fragment;
+pub mod humanoid;
 pub mod patch;
 pub mod poses;
 pub mod render;
@@ -181,6 +182,26 @@ pub enum Error {
     Unread {
         key: String,
         why: catchlight_core::extension::Unread,
+    },
+    #[error(
+        "{} holds a plain value under {key:?} where this build expects the extension's \
+         maintained data, so it cannot be edited here",
+        .path.display()
+    )]
+    NotMaintained { path: PathBuf, key: String },
+    #[error(
+        "{} maps no control {control:?}; `catchlight-cli humanoid list` shows its mappings",
+        .path.display()
+    )]
+    NotMapped { path: PathBuf, control: String },
+    #[error(
+        "{name:?} is not a standard humanoid control{}; `catchlight-cli humanoid controls` \
+         lists them, and --nonstandard keeps a name outside the list",
+        .nearest.map(|n| format!(" (did you mean {n:?}?)")).unwrap_or_default()
+    )]
+    NonstandardControl {
+        name: String,
+        nearest: Option<&'static str>,
     },
     #[error("extension {key:?} would carry {size} bytes, over the {max}-byte cap")]
     ExtensionTooLarge {

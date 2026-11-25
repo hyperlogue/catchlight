@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use catchlight_core::extension::{decode_as, Extension, Payload, RawExtension, Unread};
+use catchlight_core::extension::{decode_as, Extension, Payload, RawExtension, Unread, Warning};
 use catchlight_core::formats::clm::{
     extension_hash, ClmExtension, ClmExtensionBlob, ClmExtensionMarker, ClmFile, ClmPayload,
     MAX_EXTENSION_BYTES,
@@ -236,6 +236,65 @@ pub fn render(value: &ClmExtension) -> String {
 /// value under the key.
 pub fn typed<T: Extension>(file: &ClmFile) -> Option<Result<T, Unread>> {
     raw(file, T::KEY).map(decode_as::<T>)
+}
+
+/// The maintained extension `T` in `file` for an edit: the default when the
+/// file has none. Data this build cannot read is refused rather than
+/// overwritten.
+pub fn for_edit<T: Extension>(file: &ClmFile, path: &Path) -> Result<T, Error> {
+    match typed::<T>(file) {
+        Some(Ok(data)) => Ok(data),
+        Some(Err(why)) => Err(Error::Unread {
+            key: T::KEY.to_string(),
+            why,
+        }),
+        None if file.doc.extensions.contains_key(T::KEY) => Err(Error::NotMaintained {
+            path: path.to_path_buf(),
+            key: T::KEY.to_string(),
+        }),
+        None => Ok(T::default()),
+    }
+}
+
+/// Stores `data` under `T::KEY` as its own encoding writes it, or drops the
+/// key when `empty` so no empty extension is left behind.
+pub fn store<T: Extension>(file: &mut ClmFile, data: &T, empty: bool) -> Result<(), Error> {
+    let key = ExtensionKey::new(T::KEY).map_err(|source| Error::BadId {
+        value: T::KEY.to_string(),
+        source,
+    })?;
+    file.extensions.retain(|blob| blob.key != key);
+    if empty {
+        file.doc.extensions.remove(&key);
+        return Ok(());
+    }
+    let raw = data.encode();
+    let Payload::Json(payload) = raw.payload else {
+        return Err(Error::Storage(format!(
+            "extension {key:?} encodes a byte payload, which this command does not write"
+        )));
+    };
+    file.doc.extensions.insert(
+        key,
+        ClmExtension::Maintained {
+            version: raw.version,
+            refs: raw.refs,
+            payload: ClmPayload::Json(payload),
+        },
+    );
+    Ok(())
+}
+
+/// The warnings the model in `file` raises under `key`: unresolved
+/// references and the extension's own check. Loading decodes no texture.
+pub fn warnings(file: &ClmFile, path: &Path, key: &str) -> Result<Vec<Warning>, Error> {
+    let (model, _) = file::load(file, path)?;
+    Ok(model
+        .extension_warnings()
+        .into_iter()
+        .filter(|w| w.key.as_str() == key)
+        .map(|w| w.warning)
+        .collect())
 }
 
 fn raw(file: &ClmFile, key: &str) -> Option<RawExtension> {
