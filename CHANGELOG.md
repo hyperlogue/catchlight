@@ -104,8 +104,12 @@ next release is 0.3.0.
   or visemes, and `viseme add-standard` adds the standard visemes. Output is
   JSON, a typo in a control name is refused with the nearest standard name,
   and each edit prints the warnings about its group for the edited model.
-  Texture bytes and other extensions are kept byte for byte. `render` and
-  `bounds` take `--control name=value`, `--expression name=weight` and
+  Texture bytes and other extensions are kept byte for byte. The rules are
+  the extension crates' own: `catchlight_extension_humanoid::authoring` and
+  `catchlight_extension_expressions::authoring` make these edits on a
+  `Model` and refuse what the CLI refuses, and `Model::remove_extension`
+  drops an emptied official extension. `render` and `bounds` take
+  `--control name=value`, `--expression name=weight` and
   `--viseme name=weight`, and a render spec request takes `controls`,
   `expressions` and `visemes`.
 - **Animate controls, expressions and visemes.** An animation lane can drive

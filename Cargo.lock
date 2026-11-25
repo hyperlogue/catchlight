@@ -1608,6 +1608,7 @@ dependencies = [
  "catchlight-extension-humanoid",
  "serde",
  "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -1617,6 +1618,7 @@ dependencies = [
  "catchlight-core",
  "serde",
  "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

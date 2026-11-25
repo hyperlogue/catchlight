@@ -101,6 +101,17 @@ impl Model {
         self.extension_mut::<T>()
     }
 
+    /// Drops whatever is stored under `T::KEY`, reserved keys included, so a
+    /// tool can remove an official extension it has emptied. Returns whether
+    /// anything was there.
+    pub fn remove_extension<T: Extension>(&mut self) -> bool {
+        let removed = self.extensions.map.remove(T::KEY).is_some();
+        if removed {
+            self.bump();
+        }
+        removed
+    }
+
     fn extension_key<T: Extension>(&self) -> Result<ExtensionKey, ExtensionError> {
         if let Some((key, _)) = self.extensions.map.get_key_value(T::KEY) {
             return Ok(key.clone());

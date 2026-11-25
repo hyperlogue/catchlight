@@ -7,12 +7,14 @@ use std::path::Path;
 
 use catchlight_core::extension::{Extension, Warning};
 use catchlight_core::formats::clm::ClmFile;
+use catchlight_core::Model;
+use catchlight_extension_expressions::authoring::{self, AuthoringError};
 use catchlight_extension_expressions::{
-    standard_visemes, Expression, Expressions, Group, Setting, Target, EMOTIONS, VISEMES,
+    Expression, Expressions, Group, Setting, Target, EMOTIONS, VISEMES,
 };
 use serde::ser::{Serialize, SerializeMap, Serializer};
 
-use crate::humanoid::{find_param, standard_control, warning_lines, Edited, WarningLine};
+use crate::humanoid::{self, parse_param, warning_lines, Edited, WarningLine};
 use crate::{extension, file, Error};
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -117,6 +119,7 @@ pub fn names(group: Group) -> &'static [&'static str] {
 pub fn list(path: &Path, group: Group) -> Result<Listing, Error> {
     let clm = file::read(path)?;
     let expressions: Expressions = extension::for_edit(&clm, path)?;
+    let (model, _) = file::load(&clm, path)?;
     Ok(Listing {
         group,
         members: expressions
@@ -124,7 +127,7 @@ pub fn list(path: &Path, group: Group) -> Result<Listing, Error> {
             .into_iter()
             .map(ExpressionLine::from)
             .collect(),
-        warnings: warnings(&clm, path, &expressions, group)?,
+        warnings: warnings(&model, &expressions, group),
     })
 }
 
@@ -137,56 +140,22 @@ pub fn set(
     settings: &[SettingArg],
     nonstandard: bool,
 ) -> Result<Edited<Set>, Error> {
-    let noun = group.noun();
-    if name.is_empty() {
-        return Err(Error::BadValue {
-            field: format!("the {noun} name"),
-            expected: "a non-empty name".into(),
-            value: String::new(),
-        });
-    }
-    if settings.is_empty() {
-        return Err(Error::BadValue {
-            field: format!("{noun} {name:?}"),
-            expected: "at least one --control name=value or --param id=value".into(),
-            value: String::new(),
-        });
-    }
+    let settings = settings
+        .iter()
+        .map(|setting| {
+            Ok(match setting {
+                SettingArg::Control(control, value) => Setting::control(control.clone(), *value),
+                SettingArg::Param(id, value) => Setting::param(parse_param(id)?, *value),
+            })
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
     let mut clm = file::read(path)?;
-    file::load(&clm, path)?;
-    let mut out = Vec::with_capacity(settings.len());
-    for setting in settings {
-        out.push(match setting {
-            SettingArg::Control(control, value) => {
-                let standard = standard_control(control, nonstandard)?;
-                let (min, max) = standard.map_or((-1.0, 1.0), |c| (c.min(), c.max()));
-                if !value.is_finite() || !(min..=max).contains(value) {
-                    return Err(Error::BadValue {
-                        field: format!("control {control:?}"),
-                        expected: format!("a finite value in {min}..{max}"),
-                        value: value.to_string(),
-                    });
-                }
-                Setting::control(control.clone(), *value)
-            }
-            SettingArg::Param(id, value) => {
-                if !value.is_finite() {
-                    return Err(Error::BadValue {
-                        field: format!("param {id:?}"),
-                        expected: "a finite value".into(),
-                        value: value.to_string(),
-                    });
-                }
-                Setting::param(find_param(&clm, path, id)?.id.clone(), *value)
-            }
-        });
-    }
-    let mut expressions: Expressions = extension::for_edit(&clm, path)?;
-    let member = Expression::new(name, out);
-    let replaced = expressions
-        .insert(group, member.clone())
+    let (mut model, _) = file::load(&clm, path)?;
+    let member = Expression::new(name, settings.clone());
+    let replaced = authoring::set(&mut model, group, name, settings, nonstandard)
+        .map_err(|e| authoring_error(e, path))?
         .map(ExpressionLine::from);
-    let warnings = save(&mut clm, path, &expressions, group)?;
+    let warnings = save(&mut clm, path, &model, group)?;
     Ok(Edited {
         result: Set {
             group,
@@ -200,16 +169,10 @@ pub fn set(
 /// Removing the last expression or viseme drops the extension.
 pub fn remove(path: &Path, group: Group, name: &str) -> Result<Edited<ExpressionLine>, Error> {
     let mut clm = file::read(path)?;
-    file::load(&clm, path)?;
-    let mut expressions: Expressions = extension::for_edit(&clm, path)?;
-    let removed = expressions
-        .remove(group, name)
-        .ok_or_else(|| Error::NoSuchExpression {
-            path: path.to_path_buf(),
-            noun: group.noun(),
-            name: name.to_string(),
-        })?;
-    let warnings = save(&mut clm, path, &expressions, group)?;
+    let (mut model, _) = file::load(&clm, path)?;
+    let removed =
+        authoring::remove(&mut model, group, name).map_err(|e| authoring_error(e, path))?;
+    let warnings = save(&mut clm, path, &model, group)?;
     Ok(Edited {
         result: removed.into(),
         warnings,
@@ -219,28 +182,16 @@ pub fn remove(path: &Path, group: Group, name: &str) -> Result<Edited<Expression
 /// New visemes go after the existing ones, in the standard order.
 pub fn add_standard_visemes(path: &Path, replace: bool) -> Result<Edited<StandardAdded>, Error> {
     let mut clm = file::read(path)?;
-    file::load(&clm, path)?;
-    let mut expressions: Expressions = extension::for_edit(&clm, path)?;
-    let mut report = StandardAdded {
-        added: Vec::new(),
-        replaced: Vec::new(),
-        skipped: Vec::new(),
-    };
-    for viseme in standard_visemes() {
-        let name = viseme.name.clone();
-        if !expressions.contains(Group::Viseme, &name) {
-            report.added.push(name);
-        } else if replace {
-            report.replaced.push(name);
-        } else {
-            report.skipped.push(name);
-            continue;
-        }
-        expressions.insert(Group::Viseme, viseme);
-    }
-    let warnings = save(&mut clm, path, &expressions, Group::Viseme)?;
+    let (mut model, _) = file::load(&clm, path)?;
+    let report = authoring::add_standard_visemes(&mut model, replace)
+        .map_err(|e| authoring_error(e, path))?;
+    let warnings = save(&mut clm, path, &model, Group::Viseme)?;
     Ok(Edited {
-        result: report,
+        result: StandardAdded {
+            added: report.added,
+            replaced: report.replaced,
+            skipped: report.skipped,
+        },
         warnings,
     })
 }
@@ -248,35 +199,69 @@ pub fn add_standard_visemes(path: &Path, replace: bool) -> Result<Edited<Standar
 fn save(
     clm: &mut ClmFile,
     path: &Path,
-    expressions: &Expressions,
+    model: &Model,
     group: Group,
 ) -> Result<Vec<WarningLine>, Error> {
-    extension::store(clm, expressions, expressions.is_empty())?;
+    extension::store::<Expressions>(clm, model)?;
     let bytes = file::encode(clm, path)?;
-    let warnings = warnings(clm, path, expressions, group)?;
     file::write(path, &bytes)?;
-    Ok(warnings)
+    let empty = Expressions::default();
+    let expressions = model.extension::<Expressions>().unwrap_or(&empty);
+    Ok(warnings(model, expressions, group))
+}
+
+fn authoring_error(error: AuthoringError, path: &Path) -> Error {
+    match error {
+        AuthoringError::EmptyName(group) => Error::BadValue {
+            field: format!("the {} name", group.noun()),
+            expected: "a non-empty name".into(),
+            value: String::new(),
+        },
+        AuthoringError::NoSettings { group, name } => Error::BadValue {
+            field: format!("{} {name:?}", group.noun()),
+            expected: "at least one --control name=value or --param id=value".into(),
+            value: String::new(),
+        },
+        AuthoringError::Control(e) => humanoid::authoring_error(e, path),
+        AuthoringError::ControlValue {
+            control,
+            value,
+            min,
+            max,
+        } => Error::BadValue {
+            field: format!("control {control:?}"),
+            expected: format!("a finite value in {min}..{max}"),
+            value: value.to_string(),
+        },
+        AuthoringError::ParamValue { param, value } => Error::BadValue {
+            field: format!("param {:?}", param.as_str()),
+            expected: "a finite value".into(),
+            value: value.to_string(),
+        },
+        AuthoringError::NoParam(id) => Error::NoSuchId {
+            path: path.to_path_buf(),
+            kind: "param",
+            id: id.to_string(),
+        },
+        AuthoringError::NoMember { group, name } => Error::NoSuchExpression {
+            path: path.to_path_buf(),
+            noun: group.noun(),
+            name,
+        },
+        AuthoringError::Unreadable(e) => extension::unreadable::<Expressions>(e, path),
+    }
 }
 
 /// The extension's warnings that concern `group`: the core's about a
 /// reference the group uses or about the data as a whole, then the
 /// extension's own check of the group.
-fn warnings(
-    clm: &ClmFile,
-    path: &Path,
-    expressions: &Expressions,
-    group: Group,
-) -> Result<Vec<WarningLine>, Error> {
+fn warnings(model: &Model, expressions: &Expressions, group: Group) -> Vec<WarningLine> {
     let own = format!("{}/", Expressions::KEY);
-    let (model, _) = file::load(clm, path)?;
-    let mut out: Vec<Warning> = model
-        .extension_warnings()
+    let mut out: Vec<Warning> = extension::model_warnings(model, Expressions::KEY)
         .into_iter()
-        .filter(|w| w.key.as_str() == Expressions::KEY)
-        .map(|w| w.warning)
         .filter(|w| !w.code.starts_with(&own))
         .filter(|w| w.subjects.is_empty() || w.subjects.iter().any(|r| expressions.uses(group, r)))
         .collect();
-    out.extend(expressions.check_group(group, &model));
-    Ok(warning_lines(out))
+    out.extend(expressions.check_group(group, model));
+    warning_lines(out)
 }

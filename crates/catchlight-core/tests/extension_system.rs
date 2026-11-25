@@ -173,6 +173,8 @@ notes_extension!(Twice, "test.twice");
 notes_extension!(TwiceOther, "test.twice");
 notes_extension!(Reserved, "catchlight.reserved-by-test");
 notes_extension!(Plain, "test.plain");
+notes_extension!(Removable, "test.removable");
+notes_extension!(ReservedRemovable, "catchlight.removable-by-test");
 
 fn key(text: &str) -> ExtensionKey {
     ExtensionKey::new(text).unwrap()
@@ -570,6 +572,23 @@ fn extension_mut_unshares_only_when_shared_and_bumps_the_generation() {
     assert!(!model.authored_eq(&snapshot).unwrap());
     let restored = snapshot.clone();
     assert!(restored.authored_eq(&snapshot).unwrap());
+}
+
+#[test]
+fn remove_extension_drops_the_key_reserved_or_not_and_bumps_only_when_present() {
+    let r = rig();
+    let mut model = r.model.clone();
+    model.extension_or_default::<Removable>().unwrap();
+    model.extension_or_default::<ReservedRemovable>().unwrap();
+    let before = model.generation();
+    assert!(model.remove_extension::<Removable>());
+    assert!(model.remove_extension::<ReservedRemovable>());
+    assert!(model.generation() > before);
+    assert!(model.extensions().is_empty());
+
+    let before = model.generation();
+    assert!(!model.remove_extension::<Removable>());
+    assert_eq!(model.generation(), before);
 }
 
 #[test]

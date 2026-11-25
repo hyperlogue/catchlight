@@ -16,6 +16,7 @@
 //! ```
 
 mod arkit;
+pub mod authoring;
 mod controls;
 
 pub use arkit::{controls_from_arkit, ARKIT_BLEND_SHAPES};

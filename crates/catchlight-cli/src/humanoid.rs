@@ -4,9 +4,10 @@
 use std::path::Path;
 
 use catchlight_core::extension::{Extension, Warning};
-use catchlight_core::formats::clm::{ClmFile, ClmParam};
-use catchlight_core::ParamId;
-use catchlight_extension_humanoid::{control, ControlMapping, Humanoid, CONTROLS};
+use catchlight_core::formats::clm::ClmFile;
+use catchlight_core::{Model, ParamId};
+use catchlight_extension_humanoid::authoring::{self, AuthoringError};
+use catchlight_extension_humanoid::{Humanoid, CONTROLS};
 use serde::Serialize;
 
 use crate::{extension, file, Error};
@@ -20,9 +21,8 @@ pub struct StandardControl {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Mapping {
     pub control: String,
-    /// `None` for a mapping whose param was removed and not yet reconciled.
-    pub param: Option<String>,
-    pub stops: Option<[f32; 3]>,
+    pub param: String,
+    pub stops: [f32; 3],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -87,8 +87,8 @@ pub fn list(path: &Path) -> Result<Listing, Error> {
         .mappings()
         .map(|(name, m)| Mapping {
             control: name.to_string(),
-            param: Some(m.param.to_string()),
-            stops: Some(m.stops),
+            param: m.param.to_string(),
+            stops: m.stops,
         })
         .collect();
     let unmapped = CONTROLS
@@ -112,37 +112,23 @@ pub fn map(
     stops: Option<[f32; 3]>,
     nonstandard: bool,
 ) -> Result<Edited<Mapped>, Error> {
-    let standard = standard_control(control_name, nonstandard)?;
+    authoring::standard_control(control_name, nonstandard).map_err(|e| authoring_error(e, path))?;
     let mut clm = file::read(path)?;
-    file::load(&clm, path)?;
-    let param = find_param(&clm, path, param)?;
-    let stops = match stops {
-        Some(stops) => stops,
-        None if standard.is_some_and(|c| c.one_sided) => [param.default, param.default, param.max],
-        None => [param.min, param.default, param.max],
-    };
-    let param = param.id.clone();
-    let mut humanoid: Humanoid = extension::for_edit(&clm, path)?;
-    let replaced = humanoid
-        .set(
-            control_name,
-            ControlMapping {
-                param: param.clone(),
-                stops,
-            },
-        )
-        .map(|m| Mapping {
-            control: control_name.to_string(),
-            param: Some(m.param.to_string()),
-            stops: Some(m.stops),
-        });
-    let warnings = save(&mut clm, path, &humanoid)?;
+    let (mut model, _) = file::load(&clm, path)?;
+    let param = parse_param(param)?;
+    let mapped = authoring::map(&mut model, control_name, &param, stops, nonstandard)
+        .map_err(|e| authoring_error(e, path))?;
+    let warnings = save(&mut clm, path, &model)?;
     Ok(Edited {
         result: Mapped {
             control: control_name.to_string(),
             param: param.to_string(),
-            stops,
-            replaced,
+            stops: mapped.mapping.stops,
+            replaced: mapped.replaced.map(|m| Mapping {
+                control: control_name.to_string(),
+                param: m.param.to_string(),
+                stops: m.stops,
+            }),
         },
         warnings,
     })
@@ -151,111 +137,67 @@ pub fn map(
 /// Removing the last mapping drops the extension from the file.
 pub fn unmap(path: &Path, control_name: &str) -> Result<Edited<Mapping>, Error> {
     let mut clm = file::read(path)?;
-    file::load(&clm, path)?;
-    let mut humanoid: Humanoid = extension::for_edit(&clm, path)?;
-    let before = humanoid.len();
-    let removed = humanoid.remove(control_name);
-    if humanoid.len() == before {
-        return Err(Error::NotMapped {
-            path: path.to_path_buf(),
-            control: control_name.to_string(),
-        });
-    }
-    let warnings = save(&mut clm, path, &humanoid)?;
+    let (mut model, _) = file::load(&clm, path)?;
+    let removed =
+        authoring::unmap(&mut model, control_name).map_err(|e| authoring_error(e, path))?;
+    let warnings = save(&mut clm, path, &model)?;
     Ok(Edited {
         result: Mapping {
             control: control_name.to_string(),
-            param: removed.as_ref().map(|m| m.param.to_string()),
-            stops: removed.map(|m| m.stops),
+            param: removed.param.to_string(),
+            stops: removed.stops,
         },
         warnings,
     })
 }
 
-fn save(clm: &mut ClmFile, path: &Path, humanoid: &Humanoid) -> Result<Vec<WarningLine>, Error> {
-    extension::store(clm, humanoid, humanoid.is_empty())?;
+fn save(clm: &mut ClmFile, path: &Path, model: &Model) -> Result<Vec<WarningLine>, Error> {
+    extension::store::<Humanoid>(clm, model)?;
     let bytes = file::encode(clm, path)?;
-    let warnings = extension::warnings(clm, path, Humanoid::KEY)?;
     file::write(path, &bytes)?;
-    Ok(warning_lines(warnings))
+    Ok(warning_lines(extension::model_warnings(
+        model,
+        Humanoid::KEY,
+    )))
 }
 
 pub(crate) fn warning_lines(warnings: Vec<Warning>) -> Vec<WarningLine> {
     warnings.into_iter().map(WarningLine::from).collect()
 }
 
-pub(crate) fn find_param<'a>(
-    clm: &'a ClmFile,
-    path: &Path,
-    id: &str,
-) -> Result<&'a ClmParam, Error> {
-    let parsed = ParamId::new(id).map_err(|source| Error::BadId {
+pub(crate) fn parse_param(id: &str) -> Result<ParamId, Error> {
+    ParamId::new(id).map_err(|source| Error::BadId {
         value: id.to_string(),
         source,
-    })?;
-    clm.doc
-        .params
-        .iter()
-        .find(|p| p.id == parsed)
-        .ok_or_else(|| Error::NoSuchId {
-            path: path.to_path_buf(),
-            kind: "param",
-            id: id.to_string(),
-        })
-}
-
-/// The standard control named `name`. A name outside the list is refused
-/// unless `nonstandard`, which yields `None`.
-pub(crate) fn standard_control(
-    name: &str,
-    nonstandard: bool,
-) -> Result<Option<&'static catchlight_extension_humanoid::Control>, Error> {
-    if let Some(c) = control(name) {
-        return Ok(Some(c));
-    }
-    if name.is_empty() {
-        return Err(Error::BadValue {
-            field: "a control name".into(),
-            expected: "a non-empty name".into(),
-            value: String::new(),
-        });
-    }
-    if nonstandard {
-        return Ok(None);
-    }
-    Err(Error::NonstandardControl {
-        name: name.to_string(),
-        nearest: nearest(name, CONTROLS.iter().map(|c| c.name)),
     })
 }
 
-/// The candidate within a few edits of `name`, for a "did you mean".
-pub(crate) fn nearest(
-    name: &str,
-    candidates: impl Iterator<Item = &'static str>,
-) -> Option<&'static str> {
-    candidates
-        .map(|c| (edit_distance(name, c), c))
-        .filter(|(d, _)| *d <= 3)
-        .min_by_key(|(d, _)| *d)
-        .map(|(_, c)| c)
-}
-
-fn edit_distance(a: &str, b: &str) -> usize {
-    let b: Vec<char> = b.chars().collect();
-    let mut row: Vec<usize> = (0..=b.len()).collect();
-    for (i, ca) in a.chars().enumerate() {
-        let mut diagonal = row[0];
-        row[0] = i + 1;
-        for (j, cb) in b.iter().enumerate() {
-            let above = row[j + 1];
-            row[j + 1] = (above + 1)
-                .min(row[j] + 1)
-                .min(diagonal + usize::from(ca != *cb));
-            diagonal = above;
+pub(crate) fn authoring_error(error: AuthoringError, path: &Path) -> Error {
+    match error {
+        AuthoringError::EmptyControlName => Error::BadValue {
+            field: "a control name".into(),
+            expected: "a non-empty name".into(),
+            value: String::new(),
+        },
+        AuthoringError::NonstandardControl { name, nearest } => {
+            Error::NonstandardControl { name, nearest }
         }
+        AuthoringError::NoParam(id) => Error::NoSuchId {
+            path: path.to_path_buf(),
+            kind: "param",
+            id: id.to_string(),
+        },
+        AuthoringError::NonFiniteStop { stops, .. } => Error::BadValue {
+            field: "--stops".into(),
+            expected: "three finite numbers low,mid,high".into(),
+            value: format!("{},{},{}", stops[0], stops[1], stops[2]),
+        },
+        AuthoringError::NotMapped(control) => Error::NotMapped {
+            path: path.to_path_buf(),
+            control,
+        },
+        AuthoringError::Unreadable(e) => extension::unreadable::<Humanoid>(e, path),
     }
-    row[b.len()]
 }
 
 /// `low,mid,high`, each finite.
@@ -293,17 +235,4 @@ pub fn parse_assignment(flag: &str, text: &str) -> Result<(String, f32), Error> 
         return Err(bad("name=value with a finite value"));
     }
     Ok((name.to_string(), value))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_near_miss_suggests_the_standard_name() {
-        let near = |n| nearest(n, CONTROLS.iter().map(|c| c.name));
-        assert_eq!(near("mouth_opn"), Some("mouth_open"));
-        assert_eq!(near("head_yaww"), Some("head_yaw"));
-        assert_eq!(near("tail_wag_speed"), None);
-    }
 }

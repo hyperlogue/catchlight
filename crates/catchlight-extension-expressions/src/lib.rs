@@ -30,6 +30,7 @@
 //! # }
 //! ```
 
+pub mod authoring;
 mod standard;
 
 pub use standard::{standard_visemes, EMOTIONS, VISEMES, VISEME_CONTROLS};
