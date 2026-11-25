@@ -6,7 +6,7 @@
 use std::path::Path;
 
 use catchlight_core::extension::{
-    decode_as, Extension, ExtensionError, Payload, RawExtension, Unread, Warning,
+    codes, decode_as, Extension, ExtensionError, IdRef, Payload, RawExtension, Unread, Warning,
 };
 use catchlight_core::formats::clm::{
     extension_hash, ClmExtension, ClmExtensionBlob, ClmExtensionMarker, ClmFile, ClmPayload,
@@ -124,36 +124,52 @@ pub fn get(path: &Path, key: &str, out: Option<&Path>) -> Result<Got, Error> {
             }
             Ok(Got::Json(text))
         }
-        ClmExtension::Bytes(_)
-        | ClmExtension::Maintained {
-            payload: ClmPayload::Bytes(_),
-            ..
+        ClmExtension::Bytes(_) => {
+            let data = write_blob(&file, &key, path, out)?;
+            Ok(Got::Bytes(data))
+        }
+        ClmExtension::Maintained {
+            version,
+            refs,
+            payload: ClmPayload::Bytes(marker),
         } => {
-            let out = out.ok_or_else(|| Error::BytesNeedAFile {
-                key: key.to_string(),
-            })?;
-            let blob = file
-                .extensions
-                .iter()
-                .find(|blob| blob.key == key)
-                .ok_or_else(|| Error::NoSuchId {
-                    path: path.to_path_buf(),
-                    kind: "extension payload",
-                    id: key.to_string(),
-                })?;
-            std::fs::write(out, &blob.data).map_err(|e| Error::io(out, e))?;
-            Ok(Got::Bytes(blob.data.clone()))
+            write_blob(&file, &key, path, out)?;
+            Ok(Got::Json(render_json(&serde_json::json!({
+                "version": version,
+                "refs": refs,
+                "size": marker.size,
+                "hash": marker.hash,
+            }))))
         }
     }
 }
 
+/// Writes the bytes `file` keeps for `key` to `out`, which a byte value needs.
+fn write_blob(
+    file: &ClmFile,
+    key: &ExtensionKey,
+    path: &Path,
+    out: Option<&Path>,
+) -> Result<Vec<u8>, Error> {
+    let out = out.ok_or_else(|| Error::BytesNeedAFile {
+        key: key.to_string(),
+    })?;
+    let blob = file
+        .extensions
+        .iter()
+        .find(|blob| blob.key == *key)
+        .ok_or_else(|| Error::NoSuchId {
+            path: path.to_path_buf(),
+            kind: "extension payload",
+            id: key.to_string(),
+        })?;
+    std::fs::write(out, &blob.data).map_err(|e| Error::io(out, e))?;
+    Ok(blob.data.clone())
+}
+
 pub fn set_json(path: &Path, key: &str, text: &str) -> Result<Changed, Error> {
     let key = parse_key(key)?;
-    let value: serde_json::Value = serde_json::from_str(text).map_err(|e| Error::BadValue {
-        field: format!("extension {}", key.as_str()),
-        expected: format!("a JSON value ({e})"),
-        value: text.to_string(),
-    })?;
+    let value = parse_json(&key, text)?;
     let mut file = file::read(path)?;
     let what = replaced(&file, &key);
     file.extensions.retain(|blob| blob.key != key);
@@ -166,14 +182,7 @@ pub fn set_json(path: &Path, key: &str, text: &str) -> Result<Changed, Error> {
 
 pub fn set_bytes(path: &Path, key: &str, source: &Path) -> Result<Changed, Error> {
     let key = parse_key(key)?;
-    let data = std::fs::read(source).map_err(|e| Error::io(source, e))?;
-    if data.len() > MAX_EXTENSION_BYTES {
-        return Err(Error::ExtensionTooLarge {
-            key: key.to_string(),
-            size: data.len(),
-            max: MAX_EXTENSION_BYTES,
-        });
-    }
+    let data = read_bytes(&key, source)?;
     let mut file = file::read(path)?;
     let what = replaced(&file, &key);
     file.doc.extensions.insert(
@@ -184,14 +193,96 @@ pub fn set_bytes(path: &Path, key: &str, source: &Path) -> Result<Changed, Error
         }),
     );
     file.extensions.retain(|blob| blob.key != key);
+    push_blob(&mut file, &key, data);
+    write(path, &file)?;
+    Ok(Changed { key, what })
+}
+
+fn parse_json(key: &ExtensionKey, text: &str) -> Result<serde_json::Value, Error> {
+    serde_json::from_str(text).map_err(|e| Error::BadValue {
+        field: format!("extension {}", key.as_str()),
+        expected: format!("a JSON value ({e})"),
+        value: text.to_string(),
+    })
+}
+
+fn read_bytes(key: &ExtensionKey, source: &Path) -> Result<Vec<u8>, Error> {
+    let data = std::fs::read(source).map_err(|e| Error::io(source, e))?;
+    if data.len() > MAX_EXTENSION_BYTES {
+        return Err(Error::ExtensionTooLarge {
+            key: key.to_string(),
+            size: data.len(),
+            max: MAX_EXTENSION_BYTES,
+        });
+    }
+    Ok(data)
+}
+
+fn push_blob(file: &mut ClmFile, key: &ExtensionKey, data: Vec<u8>) {
     file.extensions.push(ClmExtensionBlob {
         key: key.clone(),
         data,
     });
     // Key order makes the bytes independent of authoring order.
     file.extensions.sort_by(|a, b| a.key.cmp(&b.key));
+}
+
+/// What a value set from the command line holds: JSON text, or a file's bytes.
+pub enum Source<'a> {
+    Json(&'a str),
+    Bytes(&'a Path),
+}
+
+/// Sets a maintained value: `version`, the reference table `refs` as a JSON
+/// array in the file's own form (`[{"param": "eye_l"}, {"slot": ["head",
+/// "slot-1"]}]`) and the payload. A reference the model does not hold is
+/// kept and reported among the returned warnings, never refused.
+pub fn set_maintained(
+    path: &Path,
+    key: &str,
+    version: u32,
+    refs: &str,
+    payload: Source<'_>,
+) -> Result<(Changed, Vec<Warning>), Error> {
+    let key = parse_key(key)?;
+    let refs: Vec<IdRef> = serde_json::from_str(refs).map_err(|e| Error::BadValue {
+        field: "--refs".into(),
+        expected: format!(
+            "a JSON array of references such as [{{\"param\": \"id\"}}, {{\"slot\": \
+             [\"node\", \"slot\"]}}] ({e})"
+        ),
+        value: refs.to_string(),
+    })?;
+    let mut file = file::read(path)?;
+    let what = replaced(&file, &key);
+    file.extensions.retain(|blob| blob.key != key);
+    let payload = match payload {
+        Source::Json(text) => ClmPayload::Json(parse_json(&key, text)?),
+        Source::Bytes(source) => {
+            let data = read_bytes(&key, source)?;
+            let marker = ClmExtensionMarker {
+                size: data.len() as u64,
+                hash: extension_hash(&data),
+            };
+            push_blob(&mut file, &key, data);
+            ClmPayload::Bytes(marker)
+        }
+    };
+    file.doc.extensions.insert(
+        key.clone(),
+        ClmExtension::Maintained {
+            version,
+            refs,
+            payload,
+        },
+    );
+    let (model, _) = file::load(&file, path)?;
+    let warnings = model_warnings(&model, key.as_str())
+        .into_iter()
+        .filter(|w| w.code == codes::DANGLING || w.code == codes::REMOVED)
+        .collect();
     write(path, &file)?;
-    Ok(Changed { key, what })
+    Ok((Changed { key, what }, warnings))
 }
 
 pub fn delete(path: &Path, key: &str) -> Result<Changed, Error> {

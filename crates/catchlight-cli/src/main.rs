@@ -181,7 +181,9 @@ enum ExtensionCmd {
         #[arg(short, long)]
         out: Option<PathBuf>,
     },
-    /// Set one extension, replacing whatever was under that key.
+    /// Set one extension, replacing whatever was under that key. With
+    /// --version it is maintained: --json or --bytes is its payload, and the
+    /// core keeps its --refs current as the model's Ids change.
     Set {
         /// The .clm to edit, in place.
         file: PathBuf,
@@ -193,6 +195,15 @@ enum ExtensionCmd {
         /// A file whose contents become the value.
         #[arg(long)]
         bytes: Option<PathBuf>,
+        /// Store a maintained value at this version of its format.
+        #[arg(long)]
+        version: Option<u32>,
+        /// The maintained value's reference table, as a JSON array:
+        /// {"param": "id"}, {"node": "id"}, {"texture": "id"} or
+        /// {"slot": ["node", "slot"]}. A reference the model lacks is kept
+        /// and warned about.
+        #[arg(long, requires = "version")]
+        refs: Option<String>,
     },
     /// Drop one extension.
     Delete {
@@ -348,10 +359,12 @@ fn run_extension(cmd: ExtensionCmd) -> Result<i32, Error> {
             key,
             json,
             bytes,
+            version,
+            refs,
         } => {
-            let changed = match (json, bytes) {
-                (Some(text), None) => extension::set_json(&file, &key, &text)?,
-                (None, Some(source)) => extension::set_bytes(&file, &key, &source)?,
+            let source = match (&json, &bytes) {
+                (Some(text), None) => extension::Source::Json(text),
+                (None, Some(source)) => extension::Source::Bytes(source),
                 // Unreachable: clap requires exactly one of the two.
                 _ => {
                     return Err(Error::BadValue {
@@ -359,6 +372,21 @@ fn run_extension(cmd: ExtensionCmd) -> Result<i32, Error> {
                         expected: "exactly one of them".into(),
                         value: String::new(),
                     })
+                }
+            };
+            let changed = match (version, source) {
+                (Some(version), source) => {
+                    let refs = refs.as_deref().unwrap_or("[]");
+                    let (changed, warnings) =
+                        extension::set_maintained(&file, &key, version, refs, source)?;
+                    for warning in humanoid::warning_lines(warnings) {
+                        eprintln!("catchlight-cli: {warning}");
+                    }
+                    changed
+                }
+                (None, extension::Source::Json(text)) => extension::set_json(&file, &key, text)?,
+                (None, extension::Source::Bytes(source)) => {
+                    extension::set_bytes(&file, &key, source)?
                 }
             };
             println!("{changed}");

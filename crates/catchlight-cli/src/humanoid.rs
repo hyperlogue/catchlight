@@ -161,7 +161,7 @@ fn save(clm: &mut ClmFile, path: &Path, model: &Model) -> Result<Vec<WarningLine
     )))
 }
 
-pub(crate) fn warning_lines(warnings: Vec<Warning>) -> Vec<WarningLine> {
+pub fn warning_lines(warnings: Vec<Warning>) -> Vec<WarningLine> {
     warnings.into_iter().map(WarningLine::from).collect()
 }
 

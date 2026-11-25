@@ -81,7 +81,9 @@ next release is 0.3.0.
   references and each extension's own findings. Data a build cannot read,
   written by a newer version or failing to decode, is kept and saved as
   stored. Addon extensions merge into the base's data and come back out on
-  uninstall.
+  uninstall. `catchlight-cli extension set --version <n> --refs <json>`
+  writes a vendor's maintained extension with a JSON or byte payload, and
+  warns about a reference the model lacks rather than refusing it.
 - **Humanoid controls.** The official `catchlight.humanoid` extension
   (`catchlight-extension-humanoid`) defines 35 standard face and body
   controls and maps each onto one of a model's params by three stops, so one

@@ -374,3 +374,157 @@ fn get_prints_the_humanoid_mappings_in_their_envelope() {
         })
     );
 }
+
+#[test]
+fn a_maintained_json_value_takes_a_version_and_references_and_round_trips() {
+    let dir = common::tmp("extension-maintained-json");
+    let path = common::copy_fixture("welded_seam", &dir);
+    let model = catchlight_core::Model::from_clm_bytes(&common::read(&path)).unwrap();
+    let param = model.param_ids()[0].to_string();
+    let node = model.root().unwrap().to_string();
+    let refs = serde_json::json!([{"param": param}, {"node": node}]);
+
+    let (code, stdout, stderr) = common::run(&[
+        "extension",
+        "set",
+        path.to_str().unwrap(),
+        "acme.framing",
+        "--version",
+        "3",
+        "--refs",
+        &refs.to_string(),
+        "--json",
+        r#"{"subject": 1}"#,
+    ]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(stdout.contains("set"), "{stdout}");
+    assert!(stderr.is_empty(), "every reference resolves: {stderr}");
+
+    let (code, stdout, _) = common::run(&["extension", "list", path.to_str().unwrap()]);
+    assert_eq!(code, 0);
+    assert_eq!(stdout.trim(), "acme.framing\tmaintained");
+
+    let (code, stdout, stderr) =
+        common::run(&["extension", "get", path.to_str().unwrap(), "acme.framing"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json on stdout");
+    assert_eq!(
+        json,
+        serde_json::json!({"version": 3, "refs": refs, "payload": {"subject": 1}})
+    );
+    let loaded = catchlight_core::Model::from_clm_bytes(&common::read(&path)).unwrap();
+    assert_eq!(loaded.extensions().refs("acme.framing").unwrap().len(), 2);
+}
+
+#[test]
+fn a_maintained_byte_payload_goes_to_out_and_its_envelope_is_printed() {
+    let dir = common::tmp("extension-maintained-bytes");
+    let path = common::copy_fixture("welded_seam", &dir);
+    let source = dir.join("payload.bin");
+    std::fs::write(&source, payload()).unwrap();
+
+    let (code, _, stderr) = common::run(&[
+        "extension",
+        "set",
+        path.to_str().unwrap(),
+        "acme.cache",
+        "--version",
+        "1",
+        "--bytes",
+        source.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let (code, stdout, _) = common::run(&["extension", "list", path.to_str().unwrap()]);
+    assert_eq!(code, 0);
+    assert_eq!(stdout.trim(), "acme.cache\tmaintained\t3000");
+
+    let (code, _, stderr) =
+        common::run(&["extension", "get", path.to_str().unwrap(), "acme.cache"]);
+    assert_eq!(code, 2, "bytes need --out");
+    assert!(stderr.contains("--out"), "{stderr}");
+
+    let out = dir.join("back.bin");
+    let (code, stdout, stderr) = common::run(&[
+        "extension",
+        "get",
+        path.to_str().unwrap(),
+        "acme.cache",
+        "--out",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(common::read(&out), payload());
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json on stdout");
+    assert_eq!(json["version"], 1);
+    assert_eq!(json["refs"], serde_json::json!([]));
+    assert_eq!(json["size"], 3000);
+    assert_eq!(json["hash"].as_str().unwrap().len(), 64);
+}
+
+#[test]
+fn an_unresolved_reference_is_kept_and_warned_about() {
+    let dir = common::tmp("extension-maintained-dangling");
+    let path = common::copy_fixture("welded_seam", &dir);
+    let refs = r#"[{"param": "ghost"}, {"slot": ["nowhere", "slot-1"]}]"#;
+
+    let (code, _, stderr) = common::run(&[
+        "extension",
+        "set",
+        path.to_str().unwrap(),
+        "acme.framing",
+        "--version",
+        "1",
+        "--refs",
+        refs,
+        "--json",
+        "{}",
+    ]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(
+        stderr.contains("catchlight/dangling-reference") && stderr.contains("ghost"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("nowhere"), "{stderr}");
+    let loaded = catchlight_core::Model::from_clm_bytes(&common::read(&path)).unwrap();
+    assert_eq!(loaded.extensions().refs("acme.framing").unwrap().len(), 2);
+}
+
+#[test]
+fn a_maintained_value_is_refused_a_reserved_key_and_malformed_references() {
+    let dir = common::tmp("extension-maintained-refused");
+    let path = common::copy_fixture("welded_seam", &dir);
+    let before = common::read(&path);
+    for (key, refs, want) in [
+        ("catchlight.humanoid", "[]", "catchlight."),
+        ("acme.framing", r#"[{"bone": "x"}]"#, "--refs"),
+        ("acme.framing", r#"{"param": "x"}"#, "--refs"),
+    ] {
+        let (code, _, stderr) = common::run(&[
+            "extension",
+            "set",
+            path.to_str().unwrap(),
+            key,
+            "--version",
+            "1",
+            "--refs",
+            refs,
+            "--json",
+            "{}",
+        ]);
+        assert_eq!(code, 2, "{key} {refs} should be refused");
+        assert!(stderr.contains(want), "{key} {refs}: {stderr}");
+    }
+    let (code, _, stderr) = common::run(&[
+        "extension",
+        "set",
+        path.to_str().unwrap(),
+        "acme.framing",
+        "--refs",
+        "[]",
+        "--json",
+        "{}",
+    ]);
+    assert_eq!(code, 2, "--refs needs --version");
+    assert!(stderr.contains("--version"), "{stderr}");
+    assert_eq!(common::read(&path), before, "a refusal writes nothing");
+}
