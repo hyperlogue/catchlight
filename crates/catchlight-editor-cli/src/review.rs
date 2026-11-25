@@ -1259,6 +1259,8 @@ mod tests {
             (who.id, who.name)
         };
         assert_eq!(id(None, &[]), ("agent".into(), "agent".into()));
+        // Only a platform that can listen prefers the harness it would notify.
+        #[cfg(unix)]
         assert_eq!(
             id(
                 None,
@@ -1287,6 +1289,7 @@ mod tests {
             id(Some("Ada"), &[("CODEX_SESSION_ID", " t2 ")]),
             ("codex:t2".into(), "Ada".into())
         );
+        #[cfg(unix)]
         assert_eq!(
             id(
                 None,
