@@ -42,7 +42,35 @@ pub(super) struct Http {
     token: String,
 }
 
-pub(super) fn connect(target: &Target) -> Result<Transport> {
+/// Where a [`Transport`] reached the editor, kept so a later process can dial
+/// the same one.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum Endpoint {
+    Socket(PathBuf),
+    Http { url: String, token: String },
+}
+
+#[cfg_attr(not(unix), allow(dead_code))]
+impl Endpoint {
+    pub fn connect(&self) -> Result<Transport> {
+        match self {
+            Endpoint::Socket(path) => connect_socket(path),
+            Endpoint::Http { url, token } => Ok(Transport::Http(Http::new(url, token.clone())?)),
+        }
+    }
+
+    /// What a person reads: never the token.
+    pub fn describe(&self) -> String {
+        match self {
+            Endpoint::Socket(path) => path.display().to_string(),
+            Endpoint::Http { url, .. } => url.clone(),
+        }
+    }
+}
+
+/// The transport and the endpoint it reached.
+pub(super) fn resolve(target: &Target) -> Result<(Transport, Endpoint)> {
     if let Some(url) = &target.server {
         let token = match &target.token {
             Some(token) => token.clone(),
@@ -53,14 +81,19 @@ pub(super) fn connect(target: &Target) -> Result<Transport> {
                     anyhow!("--server {url} needs --token (or CATCHLIGHT_EDITOR_TOKEN)")
                 })?,
         };
-        return Ok(Transport::Http(Http::new(url, token)?));
+        let endpoint = Endpoint::Http {
+            url: url.clone(),
+            token: token.clone(),
+        };
+        return Ok((Transport::Http(Http::new(url, token)?), endpoint));
     }
     if let Some(path) = &target.socket {
-        return connect_socket(path);
+        let transport = connect_socket(path)?;
+        return Ok((transport, Endpoint::Socket(std::path::absolute(path)?)));
     }
     let recorded = if target.connection_first {
         match from_connection_file() {
-            Some(Ok(transport)) => return Ok(transport),
+            Some(Ok(found)) => return Ok(found),
             other => other,
         }
     } else {
@@ -71,7 +104,10 @@ pub(super) fn connect(target: &Target) -> Result<Transport> {
     let socket_error = {
         let path = catchlight_editor_protocol::default_socket_path();
         match UnixStream::connect(&path) {
-            Ok(stream) => return Ok(Transport::Socket(stream)),
+            Ok(stream) => {
+                let endpoint = Endpoint::Socket(std::path::absolute(&path)?);
+                return Ok((Transport::Socket(stream), endpoint));
+            }
             Err(err)
                 if matches!(
                     err.kind(),
@@ -99,9 +135,30 @@ pub(super) fn connect(target: &Target) -> Result<Transport> {
 
 #[cfg(unix)]
 fn connect_socket(path: &Path) -> Result<Transport> {
-    UnixStream::connect(path)
+    let stream = match UnixStream::connect(path) {
+        // An absolute path can outgrow `sun_path` (about 100 bytes) where the
+        // relative one a person typed fit; dial it from its directory.
+        Err(err) if err.kind() == std::io::ErrorKind::InvalidInput && path.is_absolute() => {
+            connect_from_parent(path)
+        }
+        other => other,
+    };
+    stream
         .map(Transport::Socket)
         .with_context(|| format!("cannot connect to the editor at {}", path.display()))
+}
+
+/// Changes the process's working directory for the dial and restores it.
+#[cfg(unix)]
+fn connect_from_parent(path: &Path) -> std::io::Result<UnixStream> {
+    let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+        return Err(std::io::ErrorKind::InvalidInput.into());
+    };
+    let back = std::env::current_dir()?;
+    std::env::set_current_dir(parent)?;
+    let stream = UnixStream::connect(name);
+    std::env::set_current_dir(back)?;
+    stream
 }
 
 #[cfg(not(unix))]
@@ -109,7 +166,7 @@ fn connect_socket(_: &Path) -> Result<Transport> {
     bail!("--socket is unix-only; pass --server <url> --token <token>")
 }
 
-fn from_connection_file() -> Option<Result<Transport>> {
+fn from_connection_file() -> Option<Result<(Transport, Endpoint)>> {
     let (path, connection) = recorded()?;
     if connection.version != env!("CARGO_PKG_VERSION") {
         eprintln!(
@@ -119,6 +176,10 @@ fn from_connection_file() -> Option<Result<Transport>> {
             env!("CARGO_PKG_VERSION")
         );
     }
+    let endpoint = Endpoint::Http {
+        url: connection.url.clone(),
+        token: connection.token.clone(),
+    };
     let http = match Http::new(&connection.url, connection.token) {
         Ok(http) => http,
         Err(err) => return Some(Err(err)),
@@ -131,7 +192,7 @@ fn from_connection_file() -> Option<Result<Transport>> {
             connection.url
         )
     });
-    Some(dialed.map(|_| Transport::Http(http)))
+    Some(dialed.map(|_| (Transport::Http(http), endpoint)))
 }
 
 fn recorded() -> Option<(PathBuf, Connection)> {

@@ -1499,6 +1499,7 @@ dependencies = [
  "catchlight-editor-protocol",
  "catchlight-editor-server",
  "ctrlc",
+ "serde_json",
 ]
 
 [[package]]
@@ -1511,6 +1512,7 @@ dependencies = [
  "getrandom 0.3.4",
  "serde",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]

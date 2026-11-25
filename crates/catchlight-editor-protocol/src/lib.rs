@@ -2225,6 +2225,10 @@ pub enum ResponseBody {
     /// How many threads wait for the polling agent.
     ReviewPending {
         pending: u32,
+        /// The `batch` a [`Command::ReviewFetch`] would return now: it
+        /// changes exactly when other comments wait. Absent when none do.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        batch: Option<String>,
     },
     /// The threads waiting for the agent, whole, oldest first. The comments
     /// handed over read `sent`; `batch` acknowledges exactly those.

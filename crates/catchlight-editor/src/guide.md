@@ -90,27 +90,42 @@ Never retry a refused edit blindly.
 ## 6. Review threads
 
 The user can comment on a node, param, texture, slot or the whole model in
-their tab, then send those comments to you. Wait for them with:
+their tab, then send those comments to you. Listen for them once:
+
+```sh
+catchlight-editor review listen
+```
+
+It returns at once. From then on a background worker shows you as listening
+in their tab, and each time they press Send a short notice arrives in this
+session naming the editor session, the model and the exact `review fetch`
+command to run. Nothing waits in your turn: do not poll, watch or announce
+that you are waiting; carry on or end your turn. It works from Claude Code,
+Codex and Antigravity (`agy`). Running `listen` again replaces your
+registration, and `review unlisten` ends it. Exit 5 means this harness or
+platform cannot receive a notice; then wait instead with:
 
 ```sh
 catchlight-editor review watch                  # run it in the background
 ```
 
-It shows you as listening in their tab and returns when they send: it prints
-each thread with its Id, what it is about, the pose the user was looking at,
+which shows you as listening and returns when they send.
+
+`review fetch`, which a notice asks for, and `watch` print each thread with
+its Id, what it is about, the pose the user was looking at,
 and the conversation so far, the new comments marked `(new)`. Only once that
 is printed does it acknowledge them, which marks them delivered and claims
 their threads for you, so the tab shows you working. Its exit code says what
 happened:
 
 - `0`: the comments were delivered; act on them.
-- `3`: `--timeout <seconds>` passed with nothing sent.
+- `3`: `watch --timeout <seconds>` passed with nothing sent.
 - `4`: they changed before the acknowledgment (deleted, resolved, or taken by
   another agent); disregard the output and run `review fetch` or `watch` again.
 - `1`: they could not be saved, printed or acknowledged; they stay pending,
   so fix the cause and fetch again, expecting the same comments.
 
-`review fetch` does the same without waiting. Then, for every thread printed:
+Then, for every thread printed:
 
 1. Read the target (`node info <id>`, `preview --param …` at the thread's
    pose) and make the change, or decide what to ask.
@@ -124,7 +139,7 @@ happened:
    or you cannot tell whether it landed, run it again with the same `--key`:
    a repeat writes nothing twice, and a key reused for other content is
    refused.
-3. Run `review watch` again.
+3. If you wait with `watch` rather than listen, run `review watch` again.
 
 Reply to every thread you were given, even when the answer is a question or
 "not done, because …": the thread shows as yours until you do. Never resolve
@@ -141,7 +156,16 @@ one, `agent`. `--name` (or `CATCHLIGHT_AGENT`) is only the name the user
 sees, by default the harness's. `review claim <thread>...` takes a 60-minute
 claim, renewed by claiming again before it lapses, and is refused for a thread
 another agent holds; `review release <thread>...` gives yours up. New comments
-on a thread another agent holds wait for that agent.
+on a thread another agent holds wait for that agent. When several agents
+listen on one session, each is notified of a Send; whoever fetches a thread
+first claims it, and the others see it held.
+
+One worker serves every listening agent of the user; it exits when none is
+left, and drops an agent whose harness process has exited or whose session
+closed. `review worker status` shows it, who listens, and a notice that could
+not be delivered: that agent stops showing as listening until it runs
+`listen` again. `review worker stop` stops the worker and keeps the
+registrations for the next `listen` or `review worker start`.
 
 Threads of a saved model are kept for you on this machine and are there when
 it is next opened; those of a model never saved last only as long as its

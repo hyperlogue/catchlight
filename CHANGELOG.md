@@ -30,7 +30,10 @@ next release is 0.3.0.
   with `Editor::with_review_store`. The in-tab editor keeps none yet. A host
   says how an agent joins through `CatchlightEditor`'s `agentConnect` prop,
   so the same editor serves a local process or a hosted one that offers its
-  own agent.
+  own agent. `review listen` returns at once and has a per-user background
+  worker announce each Send in the agent's Claude Code, Codex or Antigravity
+  session, so nothing blocks the agent's turn; `review watch` remains the
+  fallback.
 - **A redesigned editor.** One top bar holds the menus, open models, review
   status and save; the canvas runs edge to edge with its modes and tools
   floating over it; the tree, params and properties are denser, so more of the

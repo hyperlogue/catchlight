@@ -807,9 +807,20 @@ impl ReviewState {
         u32::try_from(count).unwrap_or(u32::MAX)
     }
 
-    fn poll(&mut self, who: &ReviewIdentity) -> u32 {
+    fn poll(&mut self, who: &ReviewIdentity) -> (u32, Option<String>) {
         self.hear(who, Heard::Polled);
-        self.pending(&who.id)
+        (self.pending(&who.id), batch_of(&self.waiting(&who.id)))
+    }
+
+    /// The `sent` comments of the threads waiting for `agent`.
+    fn waiting(&self, agent: &str) -> Vec<u64> {
+        self.threads
+            .iter()
+            .filter(|t| t.waiting_for(agent))
+            .flat_map(|t| &t.comments)
+            .filter(|c| c.delivery == ReviewDelivery::Sent)
+            .map(|c| c.comment)
+            .collect()
     }
 
     /// The threads waiting for `who`, as they were handed over, and the batch
@@ -820,19 +831,13 @@ impl ReviewState {
         who: &ReviewIdentity,
     ) -> (Vec<ReviewThread>, Option<String>) {
         self.hear(who, Heard::Acted);
-        let mut sent = Vec::new();
-        let mut threads = Vec::new();
-        for thread in self.threads.iter().filter(|t| t.waiting_for(&who.id)) {
-            sent.extend(
-                thread
-                    .comments
-                    .iter()
-                    .filter(|c| c.delivery == ReviewDelivery::Sent)
-                    .map(|c| c.comment),
-            );
-            threads.push(thread.wire(model));
-        }
-        (threads, batch_of(&sent))
+        let threads = self
+            .threads
+            .iter()
+            .filter(|t| t.waiting_for(&who.id))
+            .map(|t| t.wire(model))
+            .collect();
+        (threads, batch_of(&self.waiting(&who.id)))
     }
 
     /// Refuses a stale batch whole. Otherwise delivers and claims for `who`
@@ -1405,8 +1410,8 @@ impl Editor {
             Command::ReviewPoll { session, agent } => {
                 let agent = identity(agent)?;
                 self.review_session(session, |review, _, _| {
-                    let pending = review.poll(&agent);
-                    Ok((ResponseBody::ReviewPending { pending }, false))
+                    let (pending, batch) = review.poll(&agent);
+                    Ok((ResponseBody::ReviewPending { pending, batch }, false))
                 })
             }
             Command::ReviewFetch { session, agent } => {
@@ -1692,17 +1697,20 @@ mod tests {
                 session,
                 agent: who("claude")
             }),
-            ResponseBody::ReviewPending { pending: 0 }
+            ResponseBody::ReviewPending {
+                pending: 0,
+                batch: None
+            }
         ));
         f.ok(Command::ReviewSubmit { session });
         assert_eq!(deliveries(&f.review().threads[0]), [ReviewDelivery::Sent]);
-        assert!(matches!(
-            f.ok(Command::ReviewPoll {
-                session,
-                agent: who("claude")
-            }),
-            ResponseBody::ReviewPending { pending: 1 }
-        ));
+        let polled = match f.ok(Command::ReviewPoll {
+            session,
+            agent: who("claude"),
+        }) {
+            ResponseBody::ReviewPending { pending: 1, batch } => batch,
+            other => panic!("{other:?}"),
+        };
         assert_eq!(
             f.review().agents,
             [ReviewAgent {
@@ -1713,6 +1721,7 @@ mod tests {
         );
 
         let (fetched, batch) = f.fetch("claude");
+        assert_eq!(polled, batch, "a poll names the batch a fetch would take");
         assert_eq!(fetched.len(), 1);
         assert_eq!(deliveries(&fetched[0]), [ReviewDelivery::Sent]);
         assert_eq!(fetched[0].holder, None);
@@ -2053,7 +2062,7 @@ mod tests {
             )
             .unwrap();
         state.submit();
-        assert_eq!(state.poll(&who("claude")), 1);
+        assert_eq!(state.poll(&who("claude")).0, 1);
         let Some(long_ago) = std::time::Instant::now().checked_sub(LEASE) else {
             return;
         };
@@ -2150,7 +2159,10 @@ mod tests {
                 session,
                 agent: who("codex")
             }),
-            ResponseBody::ReviewPending { pending: 0 }
+            ResponseBody::ReviewPending {
+                pending: 0,
+                batch: None
+            }
         ));
         let (mine, _) = f.fetch("claude");
         assert_eq!(mine.len(), 1);

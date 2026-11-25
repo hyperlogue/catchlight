@@ -1665,6 +1665,11 @@ export type ResponseBody =
   | {
     "result": "review_pending",
     pending: number,
+    /**
+     * The `batch` a [`Command::ReviewFetch`] would return now: it
+     * changes exactly when other comments wait. Absent when none do.
+     */
+    batch?: string | null,
   }
   | {
     "result": "review_fetched",

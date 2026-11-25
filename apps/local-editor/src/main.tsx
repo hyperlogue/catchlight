@@ -47,7 +47,7 @@ async function start(): Promise<void> {
         editor={editor}
         agentConnect={(session) => (
           <AgentPrompt
-            prompt={`Join catchlight session ${session.id} and work through my review comments: run \`catchlight-editor guide\`, then \`catchlight-editor review watch --session ${session.id}\`.`}
+            prompt={`Join catchlight session ${session.id} and work through my review comments: run \`catchlight-editor guide\`, then \`catchlight-editor review listen --session ${session.id}\`.`}
           >
             <p>Bring your agent into this session by telling it:</p>
           </AgentPrompt>

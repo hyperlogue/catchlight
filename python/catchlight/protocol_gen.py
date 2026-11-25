@@ -4118,6 +4118,9 @@ class ResponseBodyReviewPending:
     TAG: ClassVar[str] = "review_pending"
 
     pending: int
+    # The `batch` a [`Command::ReviewFetch`] would return now: it
+    # changes exactly when other comments wait. Absent when none do.
+    batch: str | None = None
 
     def to_wire(self) -> dict[str, Any]:
         """This value, as one JSON object: its tag, then every field it set."""

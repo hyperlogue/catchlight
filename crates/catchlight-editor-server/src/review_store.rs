@@ -316,7 +316,9 @@ impl ReviewStore for UserReviewStore {
 /// The platform's per-user directory for reviews: `$XDG_STATE_HOME` (else
 /// `~/.local/state`) on Linux and other unixes, `~/Library/Application
 /// Support` on macOS, `%LOCALAPPDATA%` on Windows, each under
-/// `catchlight/reviews`. `None` when the environment names none of them.
+/// `catchlight/reviews`. `CATCHLIGHT_STATE_DIR` replaces `<base>/catchlight`
+/// for everything the editor keeps per user. `None` when the environment
+/// names none of them.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn user_review_dir() -> Option<PathBuf> {
     user_review_dir_from(|name| std::env::var_os(name))
@@ -330,6 +332,9 @@ fn user_review_dir_from(var: impl Fn(&str) -> Option<std::ffi::OsString>) -> Opt
             .map(PathBuf::from)
             .filter(|path| path.is_absolute())
     };
+    if let Some(state) = absolute("CATCHLIGHT_STATE_DIR") {
+        return Some(state.join("reviews"));
+    }
     let base = if cfg!(windows) {
         absolute("LOCALAPPDATA")?
     } else if cfg!(target_os = "macos") {
@@ -428,6 +433,10 @@ mod tests {
         assert_eq!(dir_from(&[("XDG_STATE_HOME", "state")]), None);
         assert_eq!(dir_from(&[("HOME", "")]), None);
         assert_eq!(dir_from(&[]), None);
+        assert_eq!(
+            dir_from(&[("CATCHLIGHT_STATE_DIR", "/s"), ("XDG_STATE_HOME", "/state")]),
+            Some(PathBuf::from("/s/reviews"))
+        );
     }
 
     #[cfg(target_os = "macos")]

@@ -3,6 +3,8 @@
 use std::io::Read;
 
 mod compose;
+#[cfg(unix)]
+mod listen;
 mod review;
 mod transport;
 use std::path::PathBuf;
@@ -31,14 +33,19 @@ Working with a running editor (a person may be watching the same session):
   4. `edit <file.json>` applies a JSON array of edits as one undo step;
      `request -` sends any protocol command from stdin.
   5. `preview --out view.png` renders the model as it is now; `undo` reverts.
-  6. `review watch`, run in the background, waits for the comments the person
-     sends from the browser, prints them, then acknowledges them and claims
+  6. `review listen` returns at once; after it, each time the person sends
+     comments from the browser, a notice arrives in your Claude Code, Codex
+     or Antigravity session with the `review fetch` command to run. Do not
+     wait or poll meanwhile. Exit 5: this harness cannot receive notices;
+     run `review watch` in the background instead, which waits for them.
+     `fetch` and `watch` print the comments, then acknowledge them and claim
      their threads for you. Exit 0: delivered, act on them; 3: `--timeout`
      passed; 4: they changed before the acknowledgment, fetch again; 1: they
      could not be saved, printed or acknowledged and stay pending. Change the
      model, answer each thread with `review reply <thread> -m <text>` (which
-     ends your claim), then watch again. Never resolve a thread: that is the
-     person's call.
+     ends your claim), then, unless you listen, watch again. Never resolve a
+     thread: that is the person's call. `review worker status` shows who
+     listens and any notice that failed.
   7. You are your harness session (`CATCHLIGHT_AGENT_SESSION` overrides it);
      `--name` is only what the person sees. `review claim <thread>...` holds
      threads for 60 minutes, renewed by claiming again, and refuses one
@@ -786,14 +793,27 @@ where
         return Ok(());
     }
 
-    let mut transport = transport::connect(&transport::Target {
+    if let Cmd::Review(args) = &cli.cmd {
+        if let Some(code) = review::run_local(&cli, args)? {
+            if code != 0 {
+                std::process::exit(code);
+            }
+            return Ok(());
+        }
+    }
+
+    let (mut transport, endpoint) = transport::resolve(&transport::Target {
         server: cli.server.clone(),
         token: cli.token.clone(),
         socket: cli.socket.clone(),
         connection_first: discovery == Discovery::ConnectionFirst,
     })?;
     if let Cmd::Review(args) = &cli.cmd {
-        let code = review::run(&cli, args, &mut transport)?;
+        let reached = review::Reached {
+            program: name,
+            endpoint: &endpoint,
+        };
+        let code = review::run(&cli, args, &mut transport, &reached)?;
         if code != 0 {
             std::process::exit(code);
         }

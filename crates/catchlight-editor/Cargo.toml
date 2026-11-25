@@ -31,6 +31,11 @@ anyhow = { workspace = true }
 # stale.
 ctrlc = { version = "3", features = ["termination"] }
 
+[dev-dependencies]
+# Notices go to a file instead of a harness, for tests/review_listen.rs.
+catchlight-editor-cli = { workspace = true, features = ["fake-harness"] }
+serde_json = { workspace = true }
+
 # `cargo binstall catchlight-editor` fetches the release archive instead of
 # building; the names are the ones `scripts/release/editor_app.py` writes.
 [package.metadata.binstall]

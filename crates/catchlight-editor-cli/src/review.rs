@@ -54,7 +54,19 @@ fn harness(env: &dyn Fn(&str) -> Option<String>) -> Option<(&'static str, String
 }
 
 fn identity(name: Option<&str>, env: &dyn Fn(&str) -> Option<String>) -> ReviewIdentity {
-    let detected = harness(env);
+    // As r3 decides: the harness `listen` would notify names the agent, so
+    // the worker polls as the identity the agent fetches with; only without
+    // one does the first harness id found count.
+    #[cfg(unix)]
+    let listening = crate::listen::detected_session(env).and_then(|id| {
+        let label = ["claude", "codex", "antigravity"]
+            .into_iter()
+            .find(|h| id.strip_prefix(h).is_some_and(|r| r.starts_with(':')))?;
+        Some((label, id))
+    });
+    #[cfg(not(unix))]
+    let listening = None;
+    let detected = listening.or_else(|| harness(env));
     let id = env("CATCHLIGHT_AGENT_SESSION")
         .map(|v| v.trim().to_owned())
         .filter(|v| !v.is_empty())
@@ -92,6 +104,18 @@ enum ReviewCmd {
         /// Save the threads' images here and print each one's path.
         #[arg(long, value_name = "DIR")]
         attachments_dir: Option<PathBuf>,
+    },
+    /// Have each new batch of sent comments announced in your harness
+    /// session (Claude Code, Codex, Antigravity) by a background worker,
+    /// then return at once. Exit 0: registered; 5: no notification adapter
+    /// here, use `watch`. Listening again replaces your registration.
+    Listen,
+    /// End what `listen` set up for this session.
+    Unlisten,
+    /// The background process behind `listen`, one per user.
+    Worker {
+        #[command(subcommand)]
+        action: WorkerAction,
     },
     /// Print and acknowledge the comments sent so far, without waiting.
     /// Exits as `watch` does.
@@ -153,6 +177,20 @@ enum ReviewCmd {
     Delete {
         thread: u64,
     },
+}
+
+#[cfg(unix)]
+use crate::listen::WorkerCmd as WorkerAction;
+
+/// Only so the command parses everywhere; it is refused off unix.
+#[cfg(not(unix))]
+#[derive(Subcommand)]
+enum WorkerAction {
+    Status,
+    Start,
+    Stop,
+    #[command(hide = true)]
+    Run,
 }
 
 #[derive(clap::Args)]
@@ -363,8 +401,68 @@ fn message(given: &Option<String>, attach: &[PathBuf]) -> Result<String> {
     }
 }
 
+/// Runs the commands that need no editor; `None` for the others.
+#[cfg_attr(not(unix), allow(unused_variables))]
+pub(super) fn run_local(cli: &Cli, args: &ReviewArgs) -> Result<Option<i32>> {
+    match &args.action {
+        #[cfg(unix)]
+        ReviewCmd::Worker { action } => crate::listen::worker_command(action, cli.json).map(Some),
+        #[cfg(unix)]
+        ReviewCmd::Unlisten => {
+            let editor = match (&cli.socket, &cli.server) {
+                (Some(socket), _) => {
+                    Some(transport::Endpoint::Socket(std::path::absolute(socket)?))
+                }
+                (None, Some(url)) => Some(transport::Endpoint::Http {
+                    url: url.clone(),
+                    token: String::new(),
+                }),
+                (None, None) => None,
+            };
+            let who = identity(args.name.as_deref(), &|name| std::env::var(name).ok());
+            crate::listen::unlisten(editor.as_ref(), resolve_session(cli)?, &who, cli.json)
+                .map(Some)
+        }
+        #[cfg(not(unix))]
+        ReviewCmd::Listen | ReviewCmd::Unlisten | ReviewCmd::Worker { .. } => {
+            eprintln!(
+                "`review listen` is not supported on this platform; run `review watch` in the \
+                 background instead"
+            );
+            Ok(Some(UNSUPPORTED))
+        }
+        _ => Ok(None),
+    }
+}
+
+#[cfg(not(unix))]
+const UNSUPPORTED: i32 = 5;
+
+/// Prints a refusal; the exit code.
+#[cfg(unix)]
+pub(super) fn refused(reply: &Reply) -> i32 {
+    match reply {
+        Reply::Err { code, message, .. } => eprintln!("[{}] {message}", code_name(*code)),
+        other => eprintln!("unexpected reply: {other:?}"),
+    }
+    1
+}
+
+/// How this command reached the editor, for `listen`.
+#[cfg_attr(not(unix), allow(dead_code))]
+pub(super) struct Reached<'a> {
+    pub program: &'a str,
+    pub endpoint: &'a transport::Endpoint,
+}
+
 /// The process exit code.
-pub(super) fn run(cli: &Cli, args: &ReviewArgs, stream: &mut transport::Transport) -> Result<i32> {
+#[cfg_attr(not(unix), allow(unused_variables))]
+pub(super) fn run(
+    cli: &Cli,
+    args: &ReviewArgs,
+    stream: &mut transport::Transport,
+    reached: &Reached,
+) -> Result<i32> {
     let session = resolve_session(cli)?;
     let who = identity(args.name.as_deref(), &|name| std::env::var(name).ok());
     let mut client = Client { stream, next_id: 1 };
@@ -391,7 +489,7 @@ pub(super) fn run(cli: &Cli, args: &ReviewArgs, stream: &mut transport::Transpor
                 })?;
                 match reply {
                     Reply::Ok {
-                        body: ResponseBody::ReviewPending { pending },
+                        body: ResponseBody::ReviewPending { pending, .. },
                         ..
                     } => {
                         // Another agent may take what was waiting between
@@ -412,6 +510,32 @@ pub(super) fn run(cli: &Cli, args: &ReviewArgs, stream: &mut transport::Transpor
                 }
                 std::thread::sleep(POLL_INTERVAL);
             }
+        }
+        #[cfg(unix)]
+        ReviewCmd::Listen => {
+            let mut reach = Vec::new();
+            if let Some(socket) = &cli.socket {
+                reach.push("--socket".into());
+                reach.push(std::path::absolute(socket)?.to_string_lossy().into_owned());
+            } else if let Some(server) = &cli.server {
+                reach.push("--server".into());
+                reach.push(server.clone());
+            }
+            let how = crate::listen::Listening {
+                program: reached.program,
+                reach,
+                endpoint: reached.endpoint,
+                session,
+                who: &who,
+                json: cli.json,
+            };
+            return crate::listen::listen(&how, client.stream);
+        }
+        #[cfg(unix)]
+        ReviewCmd::Unlisten | ReviewCmd::Worker { .. } => unreachable!("run_local answers these"),
+        #[cfg(not(unix))]
+        ReviewCmd::Listen | ReviewCmd::Unlisten | ReviewCmd::Worker { .. } => {
+            unreachable!("run_local answers these")
         }
         ReviewCmd::Fetch { attachments_dir } => {
             return Ok(
@@ -651,8 +775,8 @@ pub(super) fn describe(body: &ResponseBody, all: bool, saved: Option<&Saved>) ->
                     out,
                     "Make the changes, then answer each thread with\n\
                      `review reply <thread> -m \"<what changed, or your question>\"`; the reply ends\n\
-                     your claim on it. Resolving is the person's call. Run `review watch` again to\n\
-                     wait for more."
+                     your claim on it. Resolving is the person's call. Unless you listen\n\
+                     (`review listen`), run `review watch` again to wait for more."
                 );
                 if threads
                     .iter()
@@ -700,7 +824,7 @@ pub(super) fn describe(body: &ResponseBody, all: bool, saved: Option<&Saved>) ->
                 lease_seconds / 60
             );
         }
-        ResponseBody::ReviewPending { pending } => {
+        ResponseBody::ReviewPending { pending, .. } => {
             let _ = writeln!(
                 out,
                 "{pending} thread(s) waiting; `review fetch` takes them"
@@ -875,8 +999,8 @@ mod tests {
              \n\
              Make the changes, then answer each thread with\n\
              `review reply <thread> -m \"<what changed, or your question>\"`; the reply ends\n\
-             your claim on it. Resolving is the person's call. Run `review watch` again to\n\
-             wait for more.\n"
+             your claim on it. Resolving is the person's call. Unless you listen\n\
+             (`review listen`), run `review watch` again to wait for more.\n"
         );
     }
 
@@ -1052,6 +1176,23 @@ mod tests {
                 None,
                 &[("CLAUDE_CODE_SESSION_ID", "s1"), ("CODEX_THREAD_ID", "t1")]
             ),
+            ("codex:t1".into(), "codex".into()),
+            "without its messaging socket Claude cannot be notified; Codex can"
+        );
+        assert_eq!(
+            id(
+                None,
+                &[
+                    ("CLAUDE_CODE_SESSION_ID", "s1"),
+                    ("CLAUDE_CODE_MESSAGING_SOCKET", "/tmp/cc-socks/1.sock"),
+                    ("CLAUDE_CODE_MESSAGING_TOKEN", "k"),
+                    ("CODEX_THREAD_ID", "t1")
+                ]
+            ),
+            ("claude:s1".into(), "claude".into())
+        );
+        assert_eq!(
+            id(None, &[("CLAUDE_CODE_SESSION_ID", "s1")]),
             ("claude:s1".into(), "claude".into())
         );
         assert_eq!(
@@ -1066,6 +1207,11 @@ mod tests {
                     ("CODEX_THREAD_ID", "t1")
                 ]
             ),
+            ("codex:t1".into(), "codex".into()),
+            "an Antigravity id without its connection cannot be notified"
+        );
+        assert_eq!(
+            id(None, &[("ANTIGRAVITY_CONVERSATION_ID", "c1")]),
             ("antigravity:c1".into(), "antigravity".into())
         );
         assert_eq!(
