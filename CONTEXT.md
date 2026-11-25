@@ -409,18 +409,17 @@ draws. Animations stay behind.
 Data on a whole model, filed under a key that is its owner first, then a dot
 — `acme.camera` — with a JSON or byte value. An **official extension** is one
 under `catchlight.`, the format's own; any other is a **vendor extension**.
-Either kind is **registered** in a program that registers its extension
-module: the model then hands it out as typed data, and the module keeps it
-consistent with the model. An extension the program has not registered, at
-a newer version, or that fails to decode is carried unchanged.
+A program that has an extension's module reads it as typed data, and the
+module keeps it consistent with the model. An extension the program has no
+module for, at a newer version, or that fails to decode is carried unchanged.
 _Avoid_: metadata, custom data, plugin
 
 **Extension module**:
 The code that understands one extension: its key, its **version**, how it
 **migrates** older versions forward, and its policies. It lives outside the
-core and is registered with it at startup; the core knows no extension by
-name. Every entry point catchlight ships registers every official module. A
-module never refuses an edit: what an edit leaves dangling is **stale**, and
+core, which knows no extension by name. A program that installs addons or
+checks models **registers** the modules it wants applied to extensions it
+does not name itself. A module never refuses an edit: what an edit leaves dangling is **stale**, and
 the module decides what to do with it — repair it, drop it, or warn. Nor
 does it assume its data matches the model it is loaded with; it checks on
 load and reports what is stale as warnings, never as a failure to load.
@@ -434,9 +433,8 @@ whether or not the extension is registered.
 
 **Humanoid**:
 The official `catchlight.humanoid` extension, which makes a human-like model
-drivable by any app that speaks the standard controls, Stage among them. It
-maps each control the model supports onto one of its params and carries the
-model's expressions.
+drivable by any app that speaks the standard controls, Stage among them, by
+mapping each control the model supports onto one of its params.
 _Avoid_: avatar, character config
 
 **Control**:
@@ -446,14 +444,17 @@ _Avoid_: param (that's the model's own), control parameter
 
 **Control mapping**:
 A control's link to one param: the param values the control's -1, 0 and +1
-land on, linear between them. The 0 stop need not be the param's default.
+land on, linear between them. The 0 stop need not be the param's default,
+and a stop may lie outside the param's range.
 _Avoid_: binding (that's a param driving a node)
 
 **Expression**:
-A named pose a humanoid model carries, written in control values and faded
-in by a weight from 0 to 1. A standard name — an emotion or a viseme — means
-the same on every model; a model may add names of its own.
-_Avoid_: preset, pose (alone)
+A named pose a model carries in the official `catchlight.expressions`
+extension, faded in by a weight from 0 to 1. Each of its **settings** gives
+a value to a control or to one of the model's own params, so an expression
+can reach what the standard does not name. A standard name — an emotion or
+a viseme — means the same on every model; a model may add names of its own.
+_Avoid_: preset, pose (alone), blendshape
 
 **Viseme**:
 An expression under a standard mouth-shape name, one for each group of
