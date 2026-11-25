@@ -4,6 +4,8 @@ use std::collections::HashSet;
 
 use catchlight_core::LoadLimits;
 use catchlight_extension_animations::Animations;
+use catchlight_extension_expressions::Expressions;
+use catchlight_extension_humanoid::Humanoid;
 use sha2::{Digest, Sha256};
 
 use super::*;
@@ -163,6 +165,8 @@ impl Editor {
         // A session installs addons and checks its model, which merge and
         // check the official extensions through the registry.
         catchlight_core::extension::register::<Animations>()
+            .and_then(|()| catchlight_core::extension::register::<Humanoid>())
+            .and_then(|()| catchlight_core::extension::register::<Expressions>())
             .map_err(|e| EditorError::BadRequest(e.to_string()))?;
         let session = self.alloc_id();
         let title = name.unwrap_or_else(|| format!("untitled-{}", session.0));

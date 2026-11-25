@@ -8,6 +8,8 @@ use catchlight_cli::{
 };
 use catchlight_core::formats::clm::TextureAlpha;
 use catchlight_extension_animations::Animations;
+use catchlight_extension_expressions::Expressions;
+use catchlight_extension_humanoid::Humanoid;
 use clap::{Parser, Subcommand, ValueEnum};
 
 /// The bytes cannot say what their alpha means, so the user must.
@@ -243,6 +245,8 @@ fn run_extension(cmd: ExtensionCmd) -> Result<i32, Error> {
 
 fn run() -> Result<i32, Error> {
     catchlight_core::extension::register::<Animations>()?;
+    catchlight_core::extension::register::<Humanoid>()?;
+    catchlight_core::extension::register::<Expressions>()?;
     match Cli::parse().cmd {
         Cmd::Patch {
             file,

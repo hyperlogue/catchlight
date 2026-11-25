@@ -20,6 +20,13 @@ pub use catchlight_core::*;
 /// The official `catchlight.animations` extension and its player.
 pub use catchlight_extension_animations as animations;
 
+/// The official `catchlight.expressions` extension: emotions and visemes.
+pub use catchlight_extension_expressions as expressions;
+
+/// The official `catchlight.humanoid` extension: standard controls mapped
+/// onto params.
+pub use catchlight_extension_humanoid as humanoid;
+
 /// GPU rendering backend. Requires the `wgpu` feature.
 #[cfg(feature = "wgpu")]
 pub use catchlight_wgpu as wgpu;

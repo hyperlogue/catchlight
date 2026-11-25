@@ -1422,6 +1422,8 @@ dependencies = [
  "catchlight-bevy",
  "catchlight-core",
  "catchlight-extension-animations",
+ "catchlight-extension-expressions",
+ "catchlight-extension-humanoid",
  "catchlight-wgpu",
 ]
 
@@ -1447,6 +1449,8 @@ dependencies = [
  "base64",
  "catchlight-core",
  "catchlight-extension-animations",
+ "catchlight-extension-expressions",
+ "catchlight-extension-humanoid",
  "catchlight-wgpu",
  "ciborium",
  "clap",
@@ -1540,6 +1544,8 @@ dependencies = [
  "catchlight-editor-core",
  "catchlight-editor-protocol",
  "catchlight-extension-animations",
+ "catchlight-extension-expressions",
+ "catchlight-extension-humanoid",
  "catchlight-wgpu",
  "ctrlc",
  "getrandom 0.3.4",
@@ -1587,6 +1593,17 @@ dependencies = [
  "serde_bytes",
  "serde_json",
  "tracing",
+]
+
+[[package]]
+name = "catchlight-extension-expressions"
+version = "0.2.2"
+dependencies = [
+ "catchlight-core",
+ "catchlight-extension-animations",
+ "catchlight-extension-humanoid",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

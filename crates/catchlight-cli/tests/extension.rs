@@ -333,3 +333,35 @@ fn get_prints_the_animations_byte_payload_as_its_decoded_clips() {
         "lanes name their param: {stdout}"
     );
 }
+
+#[test]
+fn get_prints_the_humanoid_mappings_in_their_envelope() {
+    use catchlight_core::extension::Extension;
+    use catchlight_extension_humanoid::{ControlMapping, Humanoid};
+
+    let dir = common::tmp("extension-humanoid");
+    let path = common::copy_fixture("welded_seam", &dir);
+    let mut model = catchlight_core::Model::from_clm_bytes(&common::read(&path)).unwrap();
+    let param = model.param_ids()[0].clone();
+    model.extension_or_default::<Humanoid>().unwrap().set(
+        "mouth_open",
+        ControlMapping {
+            param: param.clone(),
+            stops: [0.0, 0.25, 1.0],
+        },
+    );
+    std::fs::write(&path, model.to_clm_bytes().unwrap()).unwrap();
+
+    let (code, stdout, stderr) =
+        common::run(&["extension", "get", path.to_str().unwrap(), Humanoid::KEY]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json on stdout");
+    assert_eq!(
+        json,
+        serde_json::json!({
+            "version": 1,
+            "refs": [{"param": param.as_str()}],
+            "payload": {"controls": {"mouth_open": {"param": 0, "stops": [0.0, 0.25, 1.0]}}},
+        })
+    );
+}

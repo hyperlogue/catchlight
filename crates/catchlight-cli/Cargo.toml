@@ -9,6 +9,8 @@ description = "The catchlight command line over a .clm model file: patch, replac
 [dependencies]
 catchlight-core = { workspace = true, features = ["schema"] }
 catchlight-extension-animations = { workspace = true }
+catchlight-extension-expressions = { workspace = true }
+catchlight-extension-humanoid = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -5,6 +5,7 @@ members = [
     "crates/catchlight-core",
     "crates/catchlight-extension-animations",
     "crates/catchlight-extension-humanoid",
+    "crates/catchlight-extension-expressions",
     "crates/catchlight-importer",
     "crates/catchlight-cli",
     "crates/catchlight-editor-core",
@@ -32,6 +33,7 @@ repository = "https://github.com/hyperlogue/catchlight"
 catchlight-core = { path = "crates/catchlight-core", version = "0.2.2" }
 catchlight-extension-animations = { path = "crates/catchlight-extension-animations", version = "0.2.2" }
 catchlight-extension-humanoid = { path = "crates/catchlight-extension-humanoid", version = "0.2.2" }
+catchlight-extension-expressions = { path = "crates/catchlight-extension-expressions", version = "0.2.2" }
 catchlight-importer = { path = "crates/catchlight-importer", version = "0.2.2" }
 catchlight-editor-core = { path = "crates/catchlight-editor-core", version = "0.2.2" }
 catchlight-editor-protocol = { path = "crates/catchlight-editor-protocol", version = "0.2.2" }

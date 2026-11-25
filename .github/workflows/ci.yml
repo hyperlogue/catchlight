@@ -68,7 +68,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # The editor runs in a browser, so everything under it must keep
       # compiling for wasm32, including the editor server's storage seam.
-      - run: nix develop -c cargo build --target wasm32-unknown-unknown -p catchlight --features catchlight/wgpu -p catchlight-core -p catchlight-extension-animations -p catchlight-extension-humanoid -p catchlight-wgpu -p catchlight-importer -p catchlight-editor-server -p catchlight-editor-wasm
+      - run: nix develop -c cargo build --target wasm32-unknown-unknown -p catchlight --features catchlight/wgpu -p catchlight-core -p catchlight-extension-animations -p catchlight-extension-humanoid -p catchlight-extension-expressions -p catchlight-wgpu -p catchlight-importer -p catchlight-editor-server -p catchlight-editor-wasm
       # Cargo unifies features, so check the protocol's `ts` feature (enabled
       # by xtask) does not leak into a shipped artifact.
       - name: the browser bundle carries no codegen dependency

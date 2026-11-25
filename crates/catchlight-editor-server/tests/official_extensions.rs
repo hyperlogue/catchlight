@@ -7,6 +7,8 @@ use catchlight_core::{InterpolateMode, Model, ParamId};
 use catchlight_editor_protocol::{Command, Reply, Request, ResponseBody, SessionSource};
 use catchlight_editor_server::{Attachments, Editor};
 use catchlight_extension_animations::{Animations, Clip, Keyframe, Lane};
+use catchlight_extension_expressions::{Expression, Expressions, Setting};
+use catchlight_extension_humanoid::{ControlMapping, Humanoid};
 
 #[test]
 fn a_session_checks_its_animations_as_the_extension_does() {
@@ -24,6 +26,20 @@ fn a_session_checks_its_animations_as_the_extension_does() {
         ..Clip::new("haunt")
     }]);
 
+    let warnings = check_in_a_session(&model);
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("catchlight.animations") && w.contains("ghost")),
+        "{warnings:?}"
+    );
+    assert!(
+        !warnings.iter().any(|w| w.contains("not registered")),
+        "{warnings:?}"
+    );
+}
+
+fn check_in_a_session(model: &Model) -> Vec<String> {
     let editor = Editor::new();
     let mut attachments = Attachments::none();
     attachments.insert("model", model.to_clm_bytes().unwrap());
@@ -46,7 +62,7 @@ fn a_session_checks_its_animations_as_the_extension_does() {
         } => session,
         other => panic!("session_new: {other:?}"),
     };
-    let warnings = match editor.handle(Request {
+    match editor.handle(Request {
         id: 2,
         command: Command::Check { session },
     }) {
@@ -55,13 +71,33 @@ fn a_session_checks_its_animations_as_the_extension_does() {
             ..
         } => warnings,
         other => panic!("check: {other:?}"),
-    };
-    assert!(
-        warnings
-            .iter()
-            .any(|w| w.contains("catchlight.animations") && w.contains("ghost")),
-        "{warnings:?}"
+    }
+}
+
+#[test]
+fn a_session_checks_its_humanoid_and_expressions_as_the_extensions_do() {
+    let mut model = Model::new();
+    model.extension_or_default::<Humanoid>().unwrap().set(
+        "tail_wag",
+        ControlMapping {
+            param: ParamId::new("ghost").unwrap(),
+            stops: [-1.0, 0.0, 1.0],
+        },
     );
+    *model.extension_or_default::<Expressions>().unwrap() =
+        Expressions::from_expressions([Expression::new(
+            "wag",
+            vec![Setting::control("tail_wag", 2.0)],
+        )]);
+    let warnings = check_in_a_session(&model);
+    for key in ["catchlight.humanoid", "catchlight.expressions"] {
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains(key) && w.contains("tail_wag") && w.contains("standard")),
+            "{key}: {warnings:?}"
+        );
+    }
     assert!(
         !warnings.iter().any(|w| w.contains("not registered")),
         "{warnings:?}"

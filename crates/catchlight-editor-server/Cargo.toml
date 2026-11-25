@@ -11,6 +11,8 @@ catchlight-editor-core = { workspace = true }
 catchlight-editor-protocol = { workspace = true }
 catchlight-core = { workspace = true }
 catchlight-extension-animations = { workspace = true }
+catchlight-extension-expressions = { workspace = true }
+catchlight-extension-humanoid = { workspace = true }
 image = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
