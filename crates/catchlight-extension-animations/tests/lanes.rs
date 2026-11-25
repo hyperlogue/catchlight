@@ -252,6 +252,33 @@ fn a_param_the_host_moves_between_frames_becomes_the_new_base() {
 }
 
 #[test]
+fn a_param_returns_to_its_base_once_no_control_maps_onto_it() {
+    let model = rig();
+    let mut host = Host::new(&model);
+    host.puppet.set_param_value(&pid("jaw"), 0.2);
+    host.inputs.controls.set("mouth_open", 0.7);
+    for _ in 0..3 {
+        host.frame(1.0 / 60.0);
+        assert_eq!(host.value("jaw"), 0.7);
+    }
+    host.inputs.controls.clear();
+    host.frame(1.0 / 60.0);
+    assert_eq!(host.value("jaw"), 0.2);
+
+    host.inputs.visemes.set("aa", 0.5);
+    for _ in 0..3 {
+        host.frame(1.0 / 60.0);
+        assert!(
+            close(host.value("jaw"), 0.5),
+            "a control setting counts from 0"
+        );
+    }
+    host.inputs.visemes.clear();
+    host.frame(1.0 / 60.0);
+    assert_eq!(host.value("jaw"), 0.2);
+}
+
+#[test]
 fn with_no_clip_the_host_inputs_still_apply() {
     let model = rig();
     let mut host = Host::new(&model);

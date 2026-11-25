@@ -6,7 +6,7 @@
 //! hash (their bytes change under a stable key). Pose and scratch live on the
 //! puppet, never in the model, so they survive a rebake.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use catchlight_core::formats::clm::structure_texture_ids;
@@ -14,12 +14,12 @@ use catchlight_core::formats::clm::{
     decode_structure, extension_hash, ClmTextureRef, TextureAlpha, TextureEncoding,
 };
 use catchlight_core::{
-    BlendMode, ExtensionKey, Mat4, Model, ModelTexture, Motion, NodeId, NodeKind, ParamId, Puppet,
+    BlendMode, ExtensionKey, Mat4, Model, ModelTexture, NodeId, NodeKind, ParamId, Puppet,
     ScratchTransform, TexId, Vec2, Vec3,
 };
 use catchlight_editor_protocol::{ErrorCode, Reply, Request, RequestId, SessionId};
 use catchlight_editor_server::{replica_reply, Editor};
-use catchlight_extension_animations::Animations;
+use catchlight_extension_animations::{AnimationPlayer, Animations, FrameInputs, Rig};
 use catchlight_extension_expressions::Expressions;
 use catchlight_extension_humanoid::Humanoid;
 use serde::{Deserialize, Serialize};
@@ -31,7 +31,28 @@ pub struct ExtensionNeed {
     pub hash: String,
 }
 
+/// The clip a replica plays and where it is.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Playing {
+    pub name: String,
+    /// Seconds from the clip's start.
+    pub time: f32,
+    /// Fractional.
+    pub frame: f32,
+}
+
+/// The preview inputs a replica poses its puppet with, by name.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PreviewInputs {
+    pub controls: BTreeMap<String, f32>,
+    pub expressions: BTreeMap<String, f32>,
+    pub visemes: BTreeMap<String, f32>,
+}
+
 /// One session's model and pose, in the tab. No GPU, so it tests natively.
+///
+/// Preview inputs and the playing clip are the tab's own, like its pose:
+/// never written to the model.
 pub struct ReplicaState {
     model: Model,
     puppet: Puppet,
@@ -43,9 +64,11 @@ pub struct ReplicaState {
     rev: Option<u64>,
     /// The last tick's animation-frame timestamp, in milliseconds.
     last_frame_ms: Option<f64>,
-    /// What that tick reported, replayed to every later caller framing at the
-    /// same timestamp.
-    motion: Motion,
+    /// Whether that tick left the puppet still moving, replayed to every later
+    /// caller framing at the same timestamp.
+    moving: bool,
+    player: AnimationPlayer,
+    inputs: FrameInputs,
 }
 
 impl Default for ReplicaState {
@@ -71,7 +94,9 @@ impl ReplicaState {
             extension_bytes: HashMap::new(),
             rev: None,
             last_frame_ms: None,
-            motion: Motion::default(),
+            moving: false,
+            player: AnimationPlayer::default(),
+            inputs: FrameInputs::default(),
         }
     }
 
@@ -207,6 +232,12 @@ impl ReplicaState {
         // Eagerly: `node_idx` answers off the bake, and a caller may pose a node the
         // feed just added before any frame runs.
         self.puppet.sync(&self.model);
+        let clips = self
+            .model
+            .extension::<Animations>()
+            .map(Animations::clips)
+            .unwrap_or_default();
+        self.player.replace_clips(clips);
     }
 
     /// Answer one model-only JSON [`Request`]; anything else is `bad_request`.
@@ -238,7 +269,89 @@ impl ReplicaState {
             return false;
         }
         self.puppet.set_param_value(&id, value);
+        // The slider wins over a control previewed onto the same param.
+        if let Ok(humanoid) = self.model.extension::<Humanoid>() {
+            for control in humanoid.controls_for(&id) {
+                self.inputs.controls.remove(control);
+            }
+        }
         true
+    }
+
+    /// Sets or, with `None`, clears one control's preview value, clamped to
+    /// the control's range. Applied at once, so reads that follow see it.
+    pub fn set_control(&mut self, name: &str, value: Option<f32>) {
+        match value {
+            Some(value) => self.inputs.controls.set(name, value),
+            None => {
+                self.inputs.controls.remove(name);
+            }
+        }
+        self.tick(0.0);
+    }
+
+    /// Sets or clears one expression's preview weight, clamped to 0..1.
+    pub fn set_expression_weight(&mut self, name: &str, weight: Option<f32>) {
+        match weight {
+            Some(weight) => self.inputs.expressions.set(name, weight),
+            None => {
+                self.inputs.expressions.remove(name);
+            }
+        }
+        self.tick(0.0);
+    }
+
+    /// Sets or clears one viseme's preview weight, clamped to 0..1.
+    pub fn set_viseme_weight(&mut self, name: &str, weight: Option<f32>) {
+        match weight {
+            Some(weight) => self.inputs.visemes.set(name, weight),
+            None => {
+                self.inputs.visemes.remove(name);
+            }
+        }
+        self.tick(0.0);
+    }
+
+    pub fn clear_inputs(&mut self) {
+        self.inputs = FrameInputs::default();
+        self.tick(0.0);
+    }
+
+    pub fn inputs(&self) -> PreviewInputs {
+        let inputs = &self.inputs;
+        PreviewInputs {
+            controls: inputs.controls.iter().map(|(n, v)| (n.into(), v)).collect(),
+            expressions: inputs
+                .expressions
+                .iter()
+                .map(|(n, v)| (n.into(), v))
+                .collect(),
+            visemes: inputs.visemes.iter().map(|(n, v)| (n.into(), v)).collect(),
+        }
+    }
+
+    /// Plays the model's clip named `name` from its start. `false` when the
+    /// model has no such clip.
+    pub fn play(&mut self, name: &str) -> bool {
+        if !self.player.play(name) {
+            return false;
+        }
+        self.tick(0.0);
+        true
+    }
+
+    pub fn stop(&mut self) {
+        self.player.stop();
+        self.tick(0.0);
+    }
+
+    pub fn playing(&self) -> Option<Playing> {
+        let sample = self.player.sample()?;
+        Some(Playing {
+            name: sample.name.to_owned(),
+            time: sample.time,
+            frame: sample.frame,
+        })
     }
 
     /// `None` when nothing posed it and no driver claims it, or it does not exist.
@@ -401,9 +514,13 @@ impl ReplicaState {
         Some(decoded)
     }
 
-    /// Editing pauses motion responses in this tab.
+    /// Editing pauses motion responses in this tab and stops the playing
+    /// clip. Preview inputs stay.
     pub fn set_editing(&mut self, editing: bool) {
         self.puppet.set_motion_responses_enabled(!editing);
+        if editing {
+            self.player.stop();
+        }
         self.tick(0.0);
     }
 
@@ -498,26 +615,32 @@ impl ReplicaState {
         Some([authored[0] + local.x, authored[1] + local.y, authored[2]])
     }
 
-    /// Evaluate one step of `dt` seconds. Viewports use [`Self::frame`] so two
-    /// canvases do not step the puppet twice.
-    pub fn tick(&mut self, dt: f32) -> Motion {
-        self.puppet.tick(&self.model, dt)
+    /// Evaluate one step of `dt` seconds: the preview inputs and the playing
+    /// clip, then the puppet. Returns whether the puppet is still moving: a
+    /// clip plays or a motion response has not settled. Viewports use
+    /// [`Self::frame`] so two canvases do not step the puppet twice.
+    pub fn tick(&mut self, dt: f32) -> bool {
+        self.player
+            .advance_with(&mut self.puppet, dt, Rig::of(&self.model), &self.inputs);
+        let motion = self.puppet.tick(&self.model, dt);
+        motion.motion_responses || self.player.is_playing()
     }
 
     /// Advance to the animation frame stamped `now_ms`; ticks at most once per
     /// timestamp, since `requestAnimationFrame` gives one batch the same
-    /// timestamp. Later callers get the same [`Motion`]. `dt` is clamped to
-    /// 100 ms so a tab returning from hidden does not integrate the whole gap.
-    pub fn frame(&mut self, now_ms: f64) -> Motion {
+    /// timestamp. Later callers get the same answer to whether it is still
+    /// moving. `dt` is clamped to 100 ms so a tab returning from hidden does
+    /// not integrate the whole gap.
+    pub fn frame(&mut self, now_ms: f64) -> bool {
         if self.last_frame_ms != Some(now_ms) {
             let dt = self
                 .last_frame_ms
                 .map(|last| ((now_ms - last) / 1000.0).clamp(0.0, 0.1) as f32)
                 .unwrap_or(0.0);
             self.last_frame_ms = Some(now_ms);
-            self.motion = self.tick(dt);
+            self.moving = self.tick(dt);
         }
-        self.motion
+        self.moving
     }
 
     /// Posed world-space bounds of the drawn geometry after the last tick, as
@@ -607,7 +730,6 @@ pub(crate) mod browser {
     use std::rc::Rc;
     use std::sync::Arc;
 
-    use catchlight_core::Motion;
     use catchlight_editor_protocol::SessionId;
     use catchlight_wgpu::{Pipelines, PrepareOptions, RenderCache, RenderList, WgpuRenderer};
     use wasm_bindgen::prelude::*;
@@ -671,13 +793,9 @@ pub(crate) mod browser {
         }
 
         /// Advance to `now_ms` (at most one tick per timestamp) and fill this
-        /// viewport's `list`. Returns what is still moving.
-        pub(crate) fn frame(
-            &mut self,
-            now_ms: f64,
-            list: &mut RenderList,
-        ) -> Result<Motion, String> {
-            let motion = self.state.frame(now_ms);
+        /// viewport's `list`. Returns whether the puppet is still moving.
+        pub(crate) fn frame(&mut self, now_ms: f64, list: &mut RenderList) -> Result<bool, String> {
+            let moving = self.state.frame(now_ms);
             let render = self
                 .render
                 .as_mut()
@@ -690,7 +808,7 @@ pub(crate) mod browser {
                 );
             }
             let Some(cache) = render.cache.as_mut() else {
-                return Ok(motion);
+                return Ok(moving);
             };
             // Rebuilds itself when the model moved, keeping every texture payload it
             // already holds.
@@ -698,7 +816,7 @@ pub(crate) mod browser {
                 .refresh(&mut render.renderer, model, puppet)
                 .map_err(|e| e.to_string())?;
             cache.collect_into(puppet, list);
-            Ok(motion)
+            Ok(moving)
         }
     }
 
@@ -1625,7 +1743,7 @@ mod tests {
              renderer goes on drawing the rest mesh",
         );
 
-        assert_eq!(replica.frame(16.0), Motion::default());
+        assert!(!replica.frame(16.0));
         assert_bounds(&replica, [-1.0, -1.0, 5.0, 9.0]);
         assert_eq!(deform_generation(&replica, &face), dragged);
 
@@ -1733,7 +1851,7 @@ mod tests {
              would hold however the puppet was ticked",
         );
         assert!(
-            motions.iter().any(|m: &Motion| m.motion_responses),
+            motions.iter().any(|moving| *moving),
             "the driver never reported motion, so nothing was being compared",
         );
     }
@@ -1747,9 +1865,9 @@ mod tests {
 
         let mut replica = ReplicaState::new();
         replica.sync_from_editor(editor.editor(), session);
-        assert_eq!(replica.frame(0.0), Motion::default());
-        assert_eq!(replica.frame(0.0), Motion::default());
-        assert_eq!(replica.frame(16.0), Motion::default());
+        assert!(!replica.frame(0.0));
+        assert!(!replica.frame(0.0));
+        assert!(!replica.frame(16.0));
         assert_bounds(&replica, [-1.0, -1.0, 1.0, 1.0]);
     }
 

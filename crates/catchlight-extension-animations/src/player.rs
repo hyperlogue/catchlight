@@ -60,8 +60,8 @@ impl<'a> Rig<'a> {
     }
 }
 
-/// A param that param settings blended onto: the value blended from, and
-/// what the puppet held right after.
+/// A param the control mappings or param settings wrote: its value before
+/// they did, and what the puppet held after.
 #[derive(Debug, Clone, PartialEq)]
 struct Blended {
     param: ParamId,
@@ -90,8 +90,9 @@ pub struct AnimationPlayer {
     wrap_cuts_named: bool,
     state: Option<PlayState>,
     sampled: Option<(PlayState, f32)>,
-    /// What last frame's param settings wrote, so a held weight does not
-    /// compound from frame to frame.
+    /// What last frame's mappings and param settings wrote, so a held weight
+    /// does not compound from frame to frame and a param returns to its base
+    /// once nothing sets it.
     blended: Vec<Blended>,
 }
 
@@ -116,6 +117,30 @@ impl AnimationPlayer {
     pub fn set_clips(&mut self, clips: impl Into<Arc<[Clip]>>) {
         self.clips = clips.into();
         self.stop();
+    }
+
+    /// Takes new clips, as after the model changed: the playing clip keeps
+    /// playing from where it was when a clip of its name remains, and
+    /// otherwise stops.
+    pub fn replace_clips(&mut self, clips: impl Into<Arc<[Clip]>>) {
+        let resume = self.state.and_then(|state| {
+            let name = self.clips.get(state.index)?.name.clone();
+            Some((name, state, self.sampled))
+        });
+        self.clips = clips.into();
+        self.stop();
+        let Some((name, state, sampled)) = resume else {
+            return;
+        };
+        if !self.play(&name) {
+            return;
+        }
+        let Some(index) = self.state.map(|s| s.index) else {
+            return;
+        };
+        self.state = Some(PlayState { index, ..state });
+        // Not a start: the clip carries on without marking jumps.
+        self.sampled = sampled.map(|(s, frame)| (PlayState { index, ..s }, frame));
     }
 
     /// Starts the clip named `name` from its first frame. `false` when no clip
@@ -226,17 +251,7 @@ impl AnimationPlayer {
         if let Some(data) = rig.expressions {
             data.blend_controls(&expressions, &visemes, &mut controls);
         }
-        if let Some(humanoid) = rig.humanoid {
-            for (name, mapping) in humanoid.mappings() {
-                if controls.get(name).is_some() && !before.iter().any(|(p, _)| *p == mapping.param)
-                {
-                    let value = puppet.param_value_posed(&mapping.param);
-                    before.push((mapping.param, value));
-                }
-            }
-            humanoid.pose(&controls, puppet);
-        }
-        self.blend_params(puppet, rig.expressions, &expressions, &visemes, &mut before);
+        self.pose(puppet, rig, &controls, &expressions, &visemes, &mut before);
         let mut changed = false;
         for (param, value) in &before {
             let now = puppet.param_value_posed(param);
@@ -344,15 +359,17 @@ impl AnimationPlayer {
         (Some((clip, frame)), cut)
     }
 
-    /// Blends the param settings from a base that does not drift: a param
-    /// that still holds what last frame wrote blends from last frame's base,
-    /// and one that something else moved since blends from its new value. A
-    /// param no longer set returns to its base. Adds each param written to
-    /// `before`.
-    fn blend_params(
+    /// Applies the control mappings, then blends the param settings over
+    /// them, from a base that does not drift: a param that still holds what
+    /// last frame left blends from last frame's base, and one that something
+    /// else moved since blends from its new value. A param that a control
+    /// maps onto blends from what the mapping wrote. A param neither sets any
+    /// more returns to its base. Adds each param written to `before`.
+    fn pose(
         &mut self,
         puppet: &mut Puppet,
-        data: Option<&Expressions>,
+        rig: Rig<'_>,
+        controls: &ControlValues,
         expressions: &Weights,
         visemes: &Weights,
         before: &mut Vec<(ParamId, Option<f32>)>,
@@ -363,17 +380,42 @@ impl AnimationPlayer {
                 .param_value_posed(param)
                 .or_else(|| puppet.param_limits(param).map(|l| l.default))
         };
+        let base_of = |puppet: &Puppet, param: &ParamId| {
+            let current = posed(puppet, param)?;
+            Some(match previous.iter().find(|b| b.param == *param) {
+                Some(b) if b.written == current => b.base,
+                _ => current,
+            })
+        };
         let mut bases: Vec<(ParamId, f32)> = Vec::new();
-        let values = match data {
+        if let Some(humanoid) = rig.humanoid {
+            for (name, mapping) in humanoid.mappings() {
+                if controls.get(name).is_none()
+                    || puppet.is_driven(&mapping.param)
+                    || before.iter().any(|(p, _)| *p == mapping.param)
+                {
+                    continue;
+                }
+                before.push((
+                    mapping.param.clone(),
+                    puppet.param_value_posed(&mapping.param),
+                ));
+                if let Some(base) = base_of(puppet, &mapping.param) {
+                    bases.push((mapping.param, base));
+                }
+            }
+            humanoid.pose(controls, puppet);
+        }
+        let mapped = bases.len();
+        let values = match rig.expressions {
             Some(data) => data.param_values(expressions, visemes, |param| {
                 if puppet.is_driven(param) {
                     return None;
                 }
-                let current = posed(puppet, param)?;
-                let base = match previous.iter().find(|b| b.param == *param) {
-                    Some(b) if b.written == current => b.base,
-                    _ => current,
-                };
+                if bases[..mapped].iter().any(|(p, _)| p == param) {
+                    return posed(puppet, param);
+                }
+                let base = base_of(puppet, param)?;
                 bases.push((param.clone(), base));
                 Some(base)
             }),
@@ -385,7 +427,7 @@ impl AnimationPlayer {
             }
         };
         for b in &previous {
-            if values.iter().any(|(p, _)| *p == b.param) || puppet.is_driven(&b.param) {
+            if bases.iter().any(|(p, _)| *p == b.param) || puppet.is_driven(&b.param) {
                 continue;
             }
             if posed(puppet, &b.param) == Some(b.written) {
@@ -396,18 +438,15 @@ impl AnimationPlayer {
         for (param, value) in values {
             note(before, puppet, &param);
             puppet.set_param_value(&param, value);
-            let Some(written) = posed(puppet, &param) else {
-                continue;
-            };
-            let base = bases
-                .iter()
-                .find(|(p, _)| *p == param)
-                .map_or(written, |(_, base)| *base);
-            self.blended.push(Blended {
-                param,
-                base,
-                written,
-            });
+        }
+        for (param, base) in bases {
+            if let Some(written) = posed(puppet, &param) {
+                self.blended.push(Blended {
+                    param,
+                    base,
+                    written,
+                });
+            }
         }
     }
 }

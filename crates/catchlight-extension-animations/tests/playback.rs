@@ -106,6 +106,28 @@ fn sample_matches_fractional_and_looped_values_without_advancing_playback() {
 }
 
 #[test]
+fn replaced_clips_keep_the_playing_clip_by_name_from_where_it_was() {
+    let (model, id) = with_param(0.0, 10.0);
+    let ramp = |name: &str| clip(name, 0.125, 8, &id, &[(0, 0.0), (7, 7.0)]);
+    let mut puppet = Puppet::new(&model);
+    let mut player = AnimationPlayer::new(vec![ramp("a")]);
+    assert!(player.play("a"));
+    player.advance(&mut puppet, 0.0);
+    player.advance(&mut puppet, 0.25);
+
+    player.replace_clips(vec![ramp("b"), ramp("a")]);
+    assert_eq!(player.playing(), Some("a"));
+    let kept = player.sample().unwrap();
+    assert_eq!((kept.index, kept.frame), (1, 2.0));
+    player.advance(&mut puppet, 0.125);
+    assert_eq!(player.sample().unwrap().frame, 3.0);
+    assert_eq!(puppet.param_value_posed(&id), Some(3.0));
+
+    player.replace_clips(vec![ramp("b")]);
+    assert!(!player.is_playing(), "no clip is named a any more");
+}
+
+#[test]
 fn a_stepped_lane_switches_on_the_keyframe() {
     let mut hex = SeededHex::new(11);
     let (mut model, param) = with_param(-1.0, 1.0);

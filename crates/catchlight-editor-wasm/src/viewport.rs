@@ -8,8 +8,8 @@
 //! the same callback so only its picture is composited.
 //!
 //! [`Viewport::invalidate`] requests at most one frame; a clean viewport skips
-//! the GPU, and a frame stays dirty while the replica reports
-//! [`Motion`](catchlight_core::Motion). Sizes arrive in device pixels from the
+//! the GPU, and a frame stays dirty while the replica reports its puppet
+//! still moving. Sizes arrive in device pixels from the
 //! page. Frames pass the animation timestamp, not a `dt`, so two viewports on
 //! one replica do not double its tick.
 
@@ -554,8 +554,8 @@ impl Inner {
             .map_err(|_| "the replica is already borrowed on this frame".to_string())?;
         // The timestamp, not a `dt`: the replica derives the step, so a second canvas
         // in this animation frame advances nothing. Stale again while the puppet is
-        // still moving itself.
-        if replica.frame(now_ms, &mut self.list)?.motion_responses {
+        // still moving.
+        if replica.frame(now_ms, &mut self.list)? {
             self.dirty = true;
         }
 
