@@ -504,6 +504,7 @@ pub(crate) fn propagate_mesh_group_deforms(
 
         // Propagation still runs at zero MG deform: a child may have its own.
         child_ids.clear();
+        let mg_zero;
         {
             let Some(node) = arena.get(mg_id) else {
                 continue;
@@ -514,6 +515,7 @@ pub(crate) fn propagate_mesh_group_deforms(
             child_ids.extend(mg.pins.per_child.keys().copied());
 
             let mg_combined = mg.deform_stack.combined();
+            mg_zero = mg_combined.iter().all(|v| *v == Vec2::ZERO);
             let mg_vertices = &mg.mesh.vertices;
             let mg_origin = mg.mesh.origin;
             deformed_mg_vertices.clear();
@@ -553,6 +555,7 @@ pub(crate) fn propagate_mesh_group_deforms(
                 &deformed_mg_vertices,
                 child_to_mg_2d,
                 mg_to_child_2d,
+                mg_zero,
             );
         }
     }
@@ -702,6 +705,7 @@ fn propagate_to_child(
     deformed_mg_vertices: &[Vec2],
     child_to_mg_2d: Affine2,
     mg_to_child_2d: Affine2,
+    mg_zero: bool,
 ) {
     // Deactivate the prior Node(mg_id) source first, so every early return
     // leaves it dropped, as if this MG never propagated.
@@ -720,7 +724,7 @@ fn propagate_to_child(
         cur_deform_scratch.len()
     };
 
-    let ok = {
+    {
         let Some(mg_node) = arena.get(mg_id) else {
             return;
         };
@@ -730,8 +734,6 @@ fn propagate_to_child(
         let Some(pins) = mg.pins.per_child.get(&child_id) else {
             return;
         };
-
-        let mg_combined = mg.deform_stack.combined();
 
         let Some(child_node) = arena.get(child_id) else {
             return;
@@ -747,7 +749,6 @@ fn propagate_to_child(
 
         // Zero deform on both sides emits all-zero deltas; skipping saves ~1ms per
         // frame on a complex model.
-        let mg_zero = mg_combined.iter().all(|v| *v == Vec2::ZERO);
         let child_zero = cur_deform_scratch.iter().all(|v| *v == Vec2::ZERO);
         if mg_zero && child_zero {
             scratch.clear();
@@ -816,10 +817,6 @@ fn propagate_to_child(
         } else {
             scratch.extend((0..n).map(offset));
         }
-        true
-    };
-    if !ok {
-        return;
     }
 
     let Some(child) = arena.get_mut(child_id) else {
