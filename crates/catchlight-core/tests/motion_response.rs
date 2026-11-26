@@ -422,7 +422,7 @@ fn renaming_a_fragment_node_checks_external_slots_before_rewriting_references() 
     let error = fragment
         .rename_node_id(&nid("spare"), nid("art"))
         .unwrap_err();
-    assert!(error.to_string().contains("unknown part slot"), "{error}");
+    assert!(error.to_string().contains("unknown vertex slot"), "{error}");
     assert_eq!(fragment.generation(), generation);
     assert_eq!(fragment.to_clm_bytes().unwrap(), before);
     fragment

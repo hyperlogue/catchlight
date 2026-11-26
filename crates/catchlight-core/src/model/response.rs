@@ -190,7 +190,7 @@ impl Model {
                         if (self.node(declared).is_some() || !fragment)
                             && self.slot(declared, slot).is_none()
                         {
-                            return Err(invalid(format!("unknown part slot {part}/{slot}")));
+                            return Err(invalid(format!("unknown vertex slot {part}/{slot}")));
                         }
                     }
                     _ => {}

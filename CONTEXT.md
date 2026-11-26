@@ -27,7 +27,7 @@ a bake, a render cache — is valid for one generation.
 _Avoid_: revision (that's a session's publication number), version
 
 **Id**:
-The identity of a node, param, texture or slot: a string, chosen by the
+The identity of a node, param, texture or vertex slot: a string, chosen by the
 author or generated, that never changes on its own and is stored with the
 model. A generated node Id is its parent's Id, a slash, then the kind and a
 random suffix — `head/part-3f9a2c1e`, say; that prefix is a reading aid, not
@@ -92,7 +92,7 @@ _Avoid_: deformer, warp, dynamic mesh group (every mesh group is)
 
 **Motion response**:
 A driver node whose scalar spring follows a weighted combination of
-**inputs** — posed params, projected part slots and its immediate parent
+**inputs** — posed params, projected vertex slots and its immediate parent
 response — and writes the lag (followed value minus target) to an optional
 **output** param. A child reads the parent's unclipped followed value. The
 lag returns to zero at a held pose. A param that is a response's output
@@ -184,19 +184,21 @@ mask**). A drawable may have several, applied in order, and never masks
 itself.
 _Avoid_: mask binding
 
-**Slot**:
+**Vertex slot**:
 A handle on a part, identified by an Id unique within the part, filled by one
 of the part's vertices or left unfilled, so welds and motion responses can
-refer to vertices by Id. Whoever owns the part fills its slots; re-authoring
-the mesh empties every slot, and the author must fill them again.
-_Avoid_: seam (that's the join a weld closes), vertex ref
+refer to vertices by Id. A **slot** for short. Whoever owns the part fills
+its slots; re-authoring the mesh empties every slot, and the author must fill
+them again.
+_Avoid_: named vertex (a slot outlives its vertex), seam (that's the join a
+weld closes), vertex ref
 
 **Weld**:
-A pairing of two different parts, slot by slot: each pair names a slot on
-each side and a weight, the first part's share of the meeting point. Each
-pair of vertices is pulled toward a shared point after all other
-deformation, so the join stays closed. One weld per pair of parts, and a
-slot in at most one of its pairs.
+A pairing of two different parts, vertex slot by vertex slot: each pair
+names a slot on each side and a weight, the first part's share of the meeting
+point. Each pair of vertices is pulled toward a shared point after all other
+deformation, so the join stays closed. One weld per pair of parts, and a slot
+in at most one of its pairs.
 _Avoid_: glue
 
 ### Params and posing
@@ -392,8 +394,8 @@ _Avoid_: partial model, subtree
 **Requirement**:
 Something an addon names but does not carry, which must be present in the
 base it is installed into: a node, a drawable a mask names, a part a weld
-names, a slot on such a part, or a param. Found by scanning, never declared.
-Textures are never requirements: an addon carries its own.
+names, a vertex slot on such a part, or a param. Found by scanning, never
+declared. Textures are never requirements: an addon carries its own.
 _Avoid_: dependency
 
 **Install**:
@@ -611,9 +613,9 @@ person reopens it.
 _Avoid_: issue, ticket
 
 **Target**:
-What a thread is about: a node, a param, a texture, a slot, or the model as
-a whole. Named by Id, so a thread follows a rename; a target the model no
-longer holds is **missing** until an undo brings it back.
+What a thread is about: a node, a param, a texture, a vertex slot, or the
+model as a whole. Named by Id, so a thread follows a rename; a target the
+model no longer holds is **missing** until an undo brings it back.
 _Avoid_: anchor
 
 **Comment**:

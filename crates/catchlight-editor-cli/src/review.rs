@@ -146,7 +146,7 @@ enum ReviewCmd {
         #[command(flatten)]
         version: VersionRef,
     },
-    /// Start a thread on a node, param, texture, slot or the whole model.
+    /// Start a thread on a node, param, texture, vertex slot or the whole model.
     Open {
         #[command(flatten)]
         target: TargetArg,
@@ -909,7 +909,7 @@ fn describe_target(target: &ReviewTarget) -> String {
         ReviewTarget::Node { node } => format!("node {node}"),
         ReviewTarget::Param { param } => format!("param {param}"),
         ReviewTarget::Texture { texture } => format!("texture {texture}"),
-        ReviewTarget::Slot { node, slot } => format!("slot {slot} on node {node}"),
+        ReviewTarget::Slot { node, slot } => format!("vertex slot {slot} on node {node}"),
     }
 }
 

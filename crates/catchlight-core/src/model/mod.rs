@@ -87,9 +87,9 @@ pub enum ModelError {
     NotAPart,
     #[error("a mask source must be a part or a composite")]
     NotAMaskSource,
-    #[error("part carries no such slot")]
+    #[error("part carries no such vertex slot")]
     UnknownSlot,
-    #[error("slot {0:?} is already on this part")]
+    #[error("vertex slot {0:?} is already on this part")]
     DuplicateSlot(String),
     #[error("a weld pairs two different parts, never a part with itself")]
     WeldSelfPaired,
@@ -97,13 +97,13 @@ pub enum ModelError {
     WeldEndNotAPart,
     #[error("those two parts are already welded; one weld records a part pair")]
     DuplicateWeld,
-    #[error("a weld pairs slot {0:?}, which the part on that side does not carry")]
+    #[error("a weld pairs vertex slot {0:?}, which the part on that side does not carry")]
     WeldUnknownSlot(String),
-    #[error("a weld pairs slot {0:?} twice")]
+    #[error("a weld pairs vertex slot {0:?} twice")]
     WeldSlotPairedTwice(String),
     #[error("no weld pairs those two parts")]
     UnknownWeld,
-    #[error("a slot weight is a share of a meeting point, so it must be within 0..=1")]
+    #[error("a vertex slot's weight is a share of a meeting point, so it must be within 0..=1")]
     WeldWeightOutOfRange,
     #[error("node carries no mesh")]
     NotMeshed,

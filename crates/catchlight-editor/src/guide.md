@@ -41,11 +41,11 @@ catchlight-editor status
 catchlight-editor node tree
 catchlight-editor node info <node>
 catchlight-editor param list
-catchlight-editor check                         # untextured parts, bad meshes, unfilled slots
+catchlight-editor check                         # untextured parts, bad meshes, unfilled vertex slots
 catchlight-editor preview --out view.png        # what the model looks like now
 ```
 
-Nodes, params, textures and slots are named by their Id, the string the
+Nodes, params, textures and vertex slots are named by their Id, the string the
 `.clm` stores, so an Id from `node tree` stays valid across sessions of the
 same file. Add `--json` to any command for the exact protocol reply.
 
@@ -110,7 +110,7 @@ Never retry a refused edit blindly.
 
 ## 6. Review threads
 
-The user can comment on a node, param, texture, slot or the whole model in
+The user can comment on a node, param, texture, vertex slot or the whole model in
 their tab, then send those comments to you. Listen for them once:
 
 ```sh

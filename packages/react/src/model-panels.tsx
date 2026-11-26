@@ -117,11 +117,11 @@ export function SlotsPanel({
   const { run, busy } = useCommand(session, onError);
   return (
     <Disclosure
-      title="Slots"
+      title="Vertex slots"
       defaultOpen={false}
       badge={<span data-catchlight-badge="">{slots.length}</span>}
     >
-      <p data-catchlight-hint="">Name a vertex to connect it to a slot on another part.</p>
+      <p data-catchlight-hint="">Give a vertex an Id so welds and motion responses can refer to it.</p>
       <fieldset disabled={busy}>
         {slots.map((slot) => (
           <div key={slot.id} data-catchlight-slot="">
@@ -424,7 +424,7 @@ function describeRef(ref: ExtensionRef): string {
   if ("node" in ref) return `Node ${ref.node}`;
   if ("param" in ref) return `Param ${ref.param}`;
   if ("texture" in ref) return `Texture ${ref.texture}`;
-  if ("slot" in ref) return `Slot ${ref.slot[1]} on ${ref.slot[0]}`;
+  if ("slot" in ref) return `Vertex slot ${ref.slot[1]} on ${ref.slot[0]}`;
   return `Removed: ${describeRef(ref.removed)}`;
 }
 

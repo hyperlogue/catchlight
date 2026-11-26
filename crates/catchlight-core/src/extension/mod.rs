@@ -189,7 +189,12 @@ impl fmt::Display for IdRef {
             Self::Param(id) => write!(f, "param {:?}", id.as_str()),
             Self::Texture(id) => write!(f, "texture {:?}", id.as_str()),
             Self::Slot(node, slot) => {
-                write!(f, "slot {:?} on part {:?}", slot.as_str(), node.as_str())
+                write!(
+                    f,
+                    "vertex slot {:?} on part {:?}",
+                    slot.as_str(),
+                    node.as_str()
+                )
             }
             Self::Removed(gone) => write!(f, "removed {}", IdRef::from(gone.clone())),
         }

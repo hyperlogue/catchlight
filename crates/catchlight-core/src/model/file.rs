@@ -75,9 +75,11 @@ pub enum ClmLoadError {
          addressed by its params, node and target, so a model holds one of each"
     )]
     DuplicateBinding { node: String, target: &'static str },
-    #[error("part {node:?} carries two slots named {slot:?}")]
+    #[error("part {node:?} carries two vertex slots with the Id {slot:?}")]
     DuplicateSlot { node: String, slot: String },
-    #[error("part {node:?} fills slot {slot:?} with vertex {vertex}, past the mesh's {vertices}")]
+    #[error(
+        "part {node:?} fills vertex slot {slot:?} with vertex {vertex}, past the mesh's {vertices}"
+    )]
     SlotOutOfRange {
         node: String,
         slot: String,
@@ -103,7 +105,7 @@ pub enum ClmLoadError {
         got: usize,
         expected: usize,
     },
-    #[error("a weld pairs slot {slot:?} on node {node:?}, which carries no such slot")]
+    #[error("a weld pairs vertex slot {slot:?} on node {node:?}, which carries no such slot")]
     WeldUnknownSlot { node: String, slot: String },
     #[error("a weld names node {node:?}, which the file does not carry")]
     DanglingWeldEnd { node: String },
@@ -152,7 +154,7 @@ pub enum ClmLoadError {
     SelfMask { node: String },
     #[error("the mesh on node {node:?} is malformed: {reason}")]
     MalformedMesh { node: String, reason: &'static str },
-    #[error("the weld between {a:?} and {b:?} pairs slot {slot:?} twice")]
+    #[error("the weld between {a:?} and {b:?} pairs vertex slot {slot:?} twice")]
     WeldSlotPairedTwice { a: String, b: String, slot: String },
     #[error(
         "the weld between {a:?} and {b:?} weights slot {slot:?} outside 0..=1; a weight is a \

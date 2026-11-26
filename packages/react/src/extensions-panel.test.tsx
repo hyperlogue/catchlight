@@ -94,7 +94,7 @@ describe("the extensions panel", () => {
     const dialog = view.container.querySelector("dialog") as HTMLElement;
     expect([...dialog.querySelectorAll("li")].map((li) => li.textContent)).toEqual([
       "Param eye",
-      "Removed: Slot slot-1 on head",
+      "Removed: Vertex slot slot-1 on head",
     ]);
     expect(dialog.textContent).toContain("Version 2");
     const key = dialog.querySelector("input") as HTMLInputElement;

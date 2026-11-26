@@ -228,7 +228,7 @@ function useEditingController(
       setEmptiedSlots(emptied);
       onNotice(
         emptied.length
-          ? `Mesh applied. ${emptied.length} slot${emptied.length === 1 ? " needs" : "s need"} reassignment.`
+          ? `Mesh applied. ${emptied.length} vertex slot${emptied.length === 1 ? " needs" : "s need"} reassignment.`
           : "Mesh applied. Existing shape keys were refitted.",
       );
       then?.();

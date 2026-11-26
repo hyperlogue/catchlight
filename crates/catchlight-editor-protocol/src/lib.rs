@@ -3411,7 +3411,7 @@ mod tests {
         let s = serde_json::to_string(&Reply::Err {
             id: 3,
             code: ErrorCode::UnknownSlot,
-            message: "part carries no such slot".into(),
+            message: "part carries no such vertex slot".into(),
             op_index: None,
             limit: None,
         })

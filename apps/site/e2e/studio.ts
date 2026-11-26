@@ -317,7 +317,7 @@ export async function studio(
       .getByRole("button", { name: "Remove mask 1", exact: true })
       .click();
     await change(rev);
-    await disclosure("Slots");
+    await disclosure("Vertex slots");
     rev = (await read()).revision;
     await page.getByRole("button", { name: "Add slot", exact: true }).click();
     await change(rev);

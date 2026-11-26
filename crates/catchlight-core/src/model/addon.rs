@@ -40,7 +40,12 @@ impl fmt::Display for Required {
             Self::Part(id) => write!(f, "part {:?}", id.as_str()),
             Self::Param(id) => write!(f, "param {:?}", id.as_str()),
             Self::Slot(node, slot) => {
-                write!(f, "slot {:?} on part {:?}", slot.as_str(), node.as_str())
+                write!(
+                    f,
+                    "vertex slot {:?} on part {:?}",
+                    slot.as_str(),
+                    node.as_str()
+                )
             }
         }
     }
@@ -161,9 +166,9 @@ pub enum InstallError {
         field: &'static str,
         owner: String,
     },
-    #[error("the addon welds slot {slot:?} on node {node:?}, which carries no such slot")]
+    #[error("the addon welds vertex slot {slot:?} on node {node:?}, which carries no such slot")]
     WeldUnknownSlot { node: String, slot: String },
-    #[error("the addon's weld between {a:?} and {b:?} pairs slot {slot:?} twice")]
+    #[error("the addon's weld between {a:?} and {b:?} pairs vertex slot {slot:?} twice")]
     WeldSlotPairedTwice { a: String, b: String, slot: String },
     #[error("the addon welds node {node:?}, which is a {kind}; a weld joins two parts")]
     WeldEndNotAPart { node: String, kind: &'static str },
@@ -963,12 +968,12 @@ mod tests {
                     sway.to_string()
                 ),
                 (
-                    format!("slot \"left\" on part {:?}", b.body.as_str()),
+                    format!("vertex slot \"left\" on part {:?}", b.body.as_str()),
                     "weld end",
                     hat.to_string()
                 ),
                 (
-                    format!("slot \"right\" on part {:?}", b.body.as_str()),
+                    format!("vertex slot \"right\" on part {:?}", b.body.as_str()),
                     "weld end",
                     hat.to_string()
                 ),

@@ -138,7 +138,7 @@ enum Cmd {
     ExportManifest { path: String },
     /// Print a one-line summary of the session.
     Status,
-    /// List model problems (untextured parts, bad meshes, unfilled slots, …).
+    /// List model problems (untextured parts, bad meshes, unfilled vertex slots, …).
     Check,
     /// Node tree operations.
     Node {
@@ -175,12 +175,12 @@ enum Cmd {
         #[command(subcommand)]
         action: MeshCmd,
     },
-    /// Slots: the named vertices a weld pairs.
+    /// Vertex slots: handles on a part's vertices, for welds and motion responses.
     Slot {
         #[command(subcommand)]
         action: SlotCmd,
     },
-    /// Welds: pair two parts, slot by slot.
+    /// Welds: pair two parts, vertex slot by vertex slot.
     Weld {
         #[command(subcommand)]
         action: WeldCmd,
@@ -419,7 +419,7 @@ enum MeshCmd {
 
 #[derive(Subcommand)]
 enum SlotCmd {
-    /// Add an unfilled slot to a part. Without `--slot` the editor draws one.
+    /// Add an unfilled vertex slot to a part. Without `--slot` the editor draws one.
     Add {
         #[arg(long)]
         node: NodeId,
@@ -463,7 +463,7 @@ enum SlotCmd {
         #[arg(long)]
         node: NodeId,
     },
-    /// List every slot in the model that no vertex fills.
+    /// List every vertex slot in the model that no vertex fills.
     Unfilled,
 }
 
@@ -901,7 +901,7 @@ where
             if cli.json {
                 println!("{}", serde_json::json!({"rev": revision, "slots": slots}));
             } else if slots.is_empty() {
-                println!("every slot is filled");
+                println!("every vertex slot is filled");
             } else {
                 for slot in slots {
                     println!("unfilled {}:{}", slot.node, slot.slot);

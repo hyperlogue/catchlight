@@ -324,7 +324,7 @@ export function targetLabel(
       return { icon: "part", kind: "Texture", name: target.texture };
     case "slot": {
       const node = tree && findNode(tree, target.node);
-      return { icon: "link", kind: "Slot", name: `${node?.name ?? target.node} · ${target.slot}` };
+      return { icon: "link", kind: "Vertex slot", name: `${node?.name ?? target.node} · ${target.slot}` };
     }
   }
 }

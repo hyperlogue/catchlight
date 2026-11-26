@@ -106,7 +106,7 @@ impl Model {
                 out.push(CheckWarning {
                     node: Some(ends[0].clone()),
                     message: format!(
-                        "the weld between node {:?} and node {:?} pairs no slots, so it holds \
+                        "the weld between node {:?} and node {:?} pairs no vertex slots, so it holds \
                          nothing together",
                         ends[0].as_str(),
                         ends[1].as_str(),
@@ -134,7 +134,7 @@ impl Model {
                         out.push(CheckWarning {
                             node: Some(end.clone()),
                             message: format!(
-                                "a weld pairs slot {:?} on node {:?}, which carries no such \
+                                "a weld pairs vertex slot {:?} on node {:?}, which carries no such \
                                  slot (the model no longer saves)",
                                 slot.as_str(),
                                 end.as_str(),
@@ -146,7 +146,7 @@ impl Model {
                         out.push(CheckWarning {
                             node: Some(end.clone()),
                             message: format!(
-                                "slot {:?} on node {:?} is unfilled, so the weld skips it — a \
+                                "vertex slot {:?} on node {:?} is unfilled, so the weld skips it — a \
                                  mesh edit empties a part's slots and they have to be refilled",
                                 slot.as_str(),
                                 end.as_str(),
@@ -345,7 +345,7 @@ mod tests {
         assert!(
             m.check()
                 .iter()
-                .any(|w| w.message.contains("pairs no slots")),
+                .any(|w| w.message.contains("pairs no vertex slots")),
             "a weld holding nothing is flagged"
         );
         assert!(m.to_clm_bytes().is_ok(), "and it still saves");
