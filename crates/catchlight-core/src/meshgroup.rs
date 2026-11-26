@@ -497,7 +497,7 @@ pub(crate) fn propagate_mesh_group_deforms(
     transforms: &mut GlobalTransforms,
     root: Mat4,
 ) {
-    let _span = tracing::debug_span!("propagate_mesh_group_deforms").entered();
+    let _span = tracing::trace_span!("propagate_mesh_group_deforms").entered();
     arena.mg_written_sources.clear();
     arena.mg_shifts.clear();
     let order = take_mg_pre_order(arena);

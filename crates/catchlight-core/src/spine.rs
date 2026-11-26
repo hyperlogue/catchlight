@@ -482,7 +482,7 @@ fn pose_guide(
 
 /// Runs after transforms and before the mesh groups.
 pub(crate) fn propagate_spine_deforms(arena: &mut Arena, transforms: &GlobalTransforms) {
-    let _span = tracing::debug_span!("propagate_spine_deforms").entered();
+    let _span = tracing::trace_span!("propagate_spine_deforms").entered();
     let order = spine_pre_order(arena);
     let mut scratch = std::mem::take(&mut arena.spine_scratch);
     let mut cur_deform = std::mem::take(&mut arena.spine_cur_deform_scratch);
