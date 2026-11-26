@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::kept_store::KeptStore;
-use crate::{Attachments, Captured, Editor, EditorError, Payload};
+use crate::{Attachments, Captured, Editor, EditorError, Payload, Session};
 
 /// A `review watch` polls about once a second; a few missed beats is a gone
 /// agent, not a slow one.
@@ -214,6 +214,9 @@ pub(crate) struct ReviewState {
     renames: Vec<Rename>,
     /// Set by [`Self::rename`], which runs inside an edit and cannot notify.
     touched: bool,
+    /// Moves whenever what a [`Document`] keeps may have changed, so a
+    /// review already kept at this generation is not serialized again.
+    generation: u64,
 }
 
 fn exists(model: &Model, target: &ReviewTarget) -> bool {
@@ -496,18 +499,27 @@ impl ReviewState {
                 requested: bytes.len() as u64,
             });
         }
-        if self.held.len() == MAX_HELD_IMAGES
-            && let Some(oldest) = self.held.pop_front()
-        {
-            self.images.remove(&oldest);
-        }
-        let total: usize = self.images.values().map(|i| i.byte_length).sum();
+        let evicted = self
+            .held
+            .front()
+            .copied()
+            .filter(|_| self.held.len() == MAX_HELD_IMAGES);
+        let total: usize = self
+            .images
+            .iter()
+            .filter(|(id, _)| Some(**id) != evicted)
+            .map(|(_, i)| i.byte_length)
+            .sum();
         if total + bytes.len() > MAX_SESSION_IMAGE_BYTES {
             return Err(EditorError::Limit {
                 resource: "review_session_image_bytes",
                 limit: MAX_SESSION_IMAGE_BYTES as u64,
                 requested: (total + bytes.len()) as u64,
             });
+        }
+        if let Some(oldest) = evicted {
+            self.held.pop_front();
+            self.images.remove(&oldest);
         }
         self.last_image += 1;
         let id = self.last_image;
@@ -956,6 +968,7 @@ impl ReviewState {
             }
         }
         if !self.threads.is_empty() {
+            self.generation += 1;
             if self.renames.len() == MAX_RENAMES {
                 self.renames.remove(0);
             }
@@ -987,6 +1000,9 @@ impl ReviewState {
                     None => break,
                 }
             }
+        }
+        if moved {
+            self.generation += 1;
         }
         moved
     }
@@ -1139,6 +1155,8 @@ impl ReviewState {
 pub(crate) struct ReviewKeeping {
     /// The document as last read or written; `None` forces the next write.
     written: Option<Vec<u8>>,
+    /// The [`ReviewState::generation`] `written` holds.
+    generation: Option<u64>,
     stored: BTreeMap<u64, String>,
     /// Set when the kept review could not be read. Nothing is written while
     /// it stands, so the file a person may still want is never replaced.
@@ -1161,12 +1179,16 @@ impl ReviewKeeping {
         match read {
             Ok(None) => Default::default(),
             Ok(Some((mut state, bytes))) => {
+                // Read before following the model: targets that moved are
+                // what the next write keeps.
+                let generation = Some(state.generation);
                 state.follow_model(model);
                 let stored = state.claimed();
                 (
                     state,
                     Self {
                         written: Some(bytes),
+                        generation,
                         stored,
                         unreadable: None,
                     },
@@ -1204,7 +1226,7 @@ impl ReviewKeeping {
         next: &ReviewState,
     ) -> io::Result<()> {
         let Some(key) = key else { return Ok(()) };
-        if !store.keeps() || self.unreadable.is_some() {
+        if !store.keeps() || self.unreadable.is_some() || self.generation == Some(next.generation) {
             return Ok(());
         }
         if self.written.is_none() && next.blank() {
@@ -1212,6 +1234,7 @@ impl ReviewKeeping {
         }
         let document = next.document()?;
         if self.written.as_deref() == Some(document.as_slice()) {
+            self.generation = Some(next.generation);
             return Ok(());
         }
         let claimed = next.claimed();
@@ -1236,6 +1259,7 @@ impl ReviewKeeping {
         }
         self.stored = claimed;
         self.written = Some(document);
+        self.generation = Some(next.generation);
         Ok(())
     }
 
@@ -1281,26 +1305,52 @@ impl Editor {
         })
     }
 
-    /// Runs `f` under the session lock and, when it reports a change, tells
-    /// observers once the lock is released.
+    /// Runs `f`, which may change what is kept, under the session lock and,
+    /// when it reports a change, tells observers once the lock is released.
     fn review_session(
         &self,
         id: SessionId,
         f: impl FnOnce(&mut ReviewState, &Model, u64) -> Result<(ResponseBody, bool), EditorError>,
     ) -> Result<Captured<ResponseBody>, EditorError> {
-        let captured = self.with_session_captured(id, |s| {
-            s.writable()?;
+        self.reviewed(id, |s| {
             let rev = s.rev;
             // The change is kept before it is published: a store that
             // refuses leaves the review as every client last read it.
             let mut next = s.review.clone();
             let attended = next.attendance();
             let (body, changed) = f(&mut next, &s.model, rev)?;
+            next.generation += 1;
             let out = (body, changed || next.attendance() != attended);
             s.review_keeping
                 .write(&*self.kept_store, s.file.as_deref(), &next)?;
             s.review = next;
             Ok(out)
+        })
+    }
+
+    /// For what changes only who attends and what they hold, which no store
+    /// keeps: `f` changes the review in place, and must refuse before it
+    /// changes anything.
+    fn attend_session(
+        &self,
+        id: SessionId,
+        f: impl FnOnce(&mut ReviewState, &Model) -> Result<ResponseBody, EditorError>,
+    ) -> Result<Captured<ResponseBody>, EditorError> {
+        self.reviewed(id, |s| {
+            let attended = s.review.attendance();
+            let body = f(&mut s.review, &s.model)?;
+            Ok((body, s.review.attendance() != attended))
+        })
+    }
+
+    fn reviewed(
+        &self,
+        id: SessionId,
+        f: impl FnOnce(&mut Session) -> Result<(ResponseBody, bool), EditorError>,
+    ) -> Result<Captured<ResponseBody>, EditorError> {
+        let captured = self.with_session_captured(id, |s| {
+            s.writable()?;
+            f(s)
         })?;
         let (body, changed) = captured.value;
         if changed {
@@ -1325,9 +1375,9 @@ impl Editor {
                         "review_image_add needs the attachment \"image\"".into(),
                     )
                 })?;
-                self.review_session(session, |review, _, _| {
+                self.attend_session(session, |review, _| {
                     let image = review.hold_image(bytes)?;
-                    Ok((ResponseBody::ReviewImage { image }, false))
+                    Ok(ResponseBody::ReviewImage { image })
                 })
             }
             Command::ReviewImageGet { session, image } => {
@@ -1450,16 +1500,16 @@ impl Editor {
             }),
             Command::ReviewPoll { session, agent } => {
                 let agent = identity(agent)?;
-                self.review_session(session, |review, _, _| {
+                self.attend_session(session, |review, _| {
                     let (pending, batch) = review.poll(&agent);
-                    Ok((ResponseBody::ReviewPending { pending, batch }, false))
+                    Ok(ResponseBody::ReviewPending { pending, batch })
                 })
             }
             Command::ReviewFetch { session, agent } => {
                 let agent = identity(agent)?;
-                self.review_session(session, |review, model, _| {
+                self.attend_session(session, |review, model| {
                     let (threads, batch) = review.fetch(model, &agent);
-                    Ok((ResponseBody::ReviewFetched { threads, batch }, false))
+                    Ok(ResponseBody::ReviewFetched { threads, batch })
                 })
             }
             Command::ReviewAck {
@@ -1479,15 +1529,12 @@ impl Editor {
                 threads,
             } => {
                 let agent = identity(agent)?;
-                self.review_session(session, |review, _, _| {
+                self.attend_session(session, |review, _| {
                     review.claim_threads(&agent, &threads)?;
-                    Ok((
-                        ResponseBody::ReviewClaimed {
-                            threads,
-                            lease_seconds: LEASE.as_secs() as u32,
-                        },
-                        false,
-                    ))
+                    Ok(ResponseBody::ReviewClaimed {
+                        threads,
+                        lease_seconds: LEASE.as_secs() as u32,
+                    })
                 })
             }
             Command::ReviewRelease {
@@ -1496,9 +1543,9 @@ impl Editor {
                 threads,
             } => {
                 let agent = identity(agent)?;
-                self.review_session(session, |review, _, _| {
+                self.attend_session(session, |review, _| {
                     review.release(&agent, &threads)?;
-                    Ok((ResponseBody::Empty, false))
+                    Ok(ResponseBody::Empty)
                 })
             }
             other => Err(EditorError::BadRequest(format!(
