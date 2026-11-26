@@ -104,6 +104,11 @@ impl Store {
         self.dir.join("worker.lock")
     }
 
+    /// The running worker's pid and how many polls it has made.
+    pub fn worker_polls(&self) -> PathBuf {
+        self.dir.join("worker.polls")
+    }
+
     /// A private directory for the images of one registration's comments:
     /// a shared, guessable temp path would let another user plant files the
     /// agent then opens. The agent may be sandboxed away from the state

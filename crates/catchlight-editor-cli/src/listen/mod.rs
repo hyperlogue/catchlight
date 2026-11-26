@@ -253,8 +253,8 @@ pub(crate) fn unlisten(
 
 #[derive(clap::Subcommand)]
 pub(crate) enum WorkerCmd {
-    /// Show whether the worker runs, every registration, and the last
-    /// delivery failure of each.
+    /// Show whether the worker runs and how many polls it has made, every
+    /// registration, and the last delivery failure of each.
     Status,
     /// Start the worker for the registrations kept on disk.
     Start,
@@ -294,6 +294,7 @@ pub(crate) fn worker_command(action: &WorkerCmd, json: bool) -> Result<i32> {
             let mut processes = process::Processes::new(Some(store.uid));
             let dropped = store.sweep(&mut |owner| processes.liveness(owner))?;
             let pid = worker::running(&store)?;
+            let polls = pid.and_then(|pid| worker::polls(&store, pid));
             let regs = {
                 let _lock = store.lock()?;
                 store.list()?
@@ -318,6 +319,7 @@ pub(crate) fn worker_command(action: &WorkerCmd, json: bool) -> Result<i32> {
                     "{}",
                     json!({
                         "worker": pid,
+                        "polls": polls,
                         "log": store.log(),
                         "agents": agents,
                         "dropped": dropped.len(),
@@ -325,9 +327,12 @@ pub(crate) fn worker_command(action: &WorkerCmd, json: bool) -> Result<i32> {
                 );
                 return Ok(0);
             }
-            match pid {
-                Some(pid) => println!("review worker: running (pid {pid})"),
-                None => println!("review worker: not running"),
+            match (pid, polls) {
+                (Some(pid), Some(polls)) => {
+                    println!("review worker: running (pid {pid}, {polls} polls)");
+                }
+                (Some(pid), None) => println!("review worker: running (pid {pid})"),
+                (None, _) => println!("review worker: not running"),
             }
             println!("log: {}", store.log().display());
             if regs.is_empty() {

@@ -82,6 +82,20 @@ fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
     }
 }
 
+/// How many polls the worker has made.
+fn polls(dir: &Path) -> u64 {
+    let status: serde_json::Value =
+        serde_json::from_str(&ok(dir, &["--json", "review", "worker", "status"])).unwrap();
+    status["polls"].as_u64().unwrap_or_default()
+}
+
+/// Waits until the worker has polled twice more, so it has seen what the
+/// editor holds now at least once after this call.
+fn two_more_polls(dir: &Path) {
+    let from = polls(dir);
+    wait_for("two more polls", || polls(dir) >= from + 2);
+}
+
 #[test]
 fn each_send_is_announced_once_in_the_listening_session() {
     let dir = std::env::temp_dir().join(format!("cl-listen-e2e-{}", std::process::id()));
@@ -139,7 +153,7 @@ fn each_send_is_announced_once_in_the_listening_session() {
     assert!(notice.contains(&*images.to_string_lossy()), "{notice}");
 
     // The same pending batch is never announced again.
-    std::thread::sleep(Duration::from_secs(3));
+    two_more_polls(&dir.0);
     assert_eq!(notices(&dir.0).len(), 1);
 
     ok(
@@ -176,7 +190,7 @@ fn each_send_is_announced_once_in_the_listening_session() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(fetched.contains("and the other one"), "{fetched}");
-    std::thread::sleep(Duration::from_secs(2));
+    two_more_polls(&dir.0);
     assert_eq!(notices(&dir.0).len(), 2, "taking them announces nothing");
 
     ok(&dir.0, &["review", "unlisten"]);

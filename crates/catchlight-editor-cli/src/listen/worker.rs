@@ -59,6 +59,32 @@ pub(crate) fn running(store: &Store) -> Result<Option<u32>> {
     }
 }
 
+/// How many polls the worker running as `pid` has made, once it has
+/// counted any.
+pub(crate) fn polls(store: &Store, pid: u32) -> Option<u64> {
+    let text = std::fs::read_to_string(store.worker_polls()).ok()?;
+    let (owner, polls) = text.trim().split_once(' ')?;
+    if owner.parse() != Ok(pid) {
+        return None;
+    }
+    polls.parse().ok()
+}
+
+/// Replaced whole, so a reader never sees half of it.
+fn write_polls(store: &Store, polls: u64) -> Result<()> {
+    let path = store.worker_polls();
+    let tmp = path.with_extension("polls.tmp");
+    let mut file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .mode(0o600)
+        .open(&tmp)?;
+    write!(file, "{} {polls}", std::process::id())?;
+    std::fs::rename(&tmp, &path)?;
+    Ok(())
+}
+
 /// Starts the worker unless one runs. `true` when this call started it.
 pub(crate) fn ensure(store: &Store) -> Result<bool> {
     if running(store)?.is_some() {
@@ -214,6 +240,8 @@ pub(crate) fn run(store: &Store) -> Result<()> {
     let mut in_flight: BTreeSet<String> = BTreeSet::new();
     let mut swept: Option<Instant> = None;
     let mut processes = Processes::new(Some(store.uid));
+    let mut polls = 0;
+    write_polls(store, polls)?;
     loop {
         if store.stop_file().exists() {
             let _ = std::fs::remove_file(store.stop_file());
@@ -269,6 +297,7 @@ pub(crate) fn run(store: &Store) -> Result<()> {
                 .push(reg);
         }
         editors.retain(|key, _| by_editor.contains_key(key));
+        let before = polls;
         for (key, regs) in by_editor {
             let editor = editors.entry(key).or_insert_with(|| Editor {
                 endpoint: regs[0].editor.clone(),
@@ -277,7 +306,18 @@ pub(crate) fn run(store: &Store) -> Result<()> {
                 checked: false,
                 next_id: 0,
             });
-            serve(store, editor, regs, &mut processes, &mut in_flight, &sent)?;
+            serve(
+                store,
+                editor,
+                regs,
+                &mut processes,
+                &mut in_flight,
+                &sent,
+                &mut polls,
+            )?;
+        }
+        if polls != before {
+            write_polls(store, polls)?;
         }
         std::thread::sleep(TICK);
     }
@@ -306,6 +346,7 @@ fn serve(
     processes: &mut Processes,
     in_flight: &mut BTreeSet<String>,
     sent: &mpsc::Sender<Delivered>,
+    polls: &mut u64,
 ) -> Result<()> {
     if editor.transport.is_none() {
         match editor.endpoint.connect() {
@@ -352,6 +393,7 @@ fn serve(
             return Ok(());
         };
         editor.down_since = None;
+        *polls += 1;
         let (threads, batch) = match reply {
             Reply::Ok {
                 body: ResponseBody::ReviewPending { pending, batch },
