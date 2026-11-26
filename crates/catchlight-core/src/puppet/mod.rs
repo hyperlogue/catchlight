@@ -521,15 +521,7 @@ impl Puppet {
 
     pub fn set_param_value(&mut self, param: &ParamId, value: f32) {
         match self.slot_of_param.get(param).copied() {
-            Some(slot) => {
-                if self.param_values.get(slot as usize).copied().flatten() == Some(value) {
-                    return;
-                }
-                if let Some(v) = self.param_values.get_mut(slot as usize) {
-                    *v = Some(value);
-                }
-                self.bump_param_generation(slot);
-            }
+            Some(slot) => self.set_slot_value(slot, value),
             None => {
                 if self.param_values_overflow.get(param).copied() == Some(value) {
                     return;
@@ -538,6 +530,16 @@ impl Puppet {
                 self.param_generation = self.param_generation.wrapping_add(1);
             }
         }
+    }
+
+    fn set_slot_value(&mut self, slot: u32, value: f32) {
+        if self.param_values.get(slot as usize).copied().flatten() == Some(value) {
+            return;
+        }
+        if let Some(v) = self.param_values.get_mut(slot as usize) {
+            *v = Some(value);
+        }
+        self.bump_param_generation(slot);
     }
 
     pub fn clear_param_value(&mut self, param: &ParamId) {
@@ -563,12 +565,9 @@ impl Puppet {
     /// Restore every param to its default, then apply `pose` as an overlay.
     pub fn apply_pose(&mut self, pose: &Pose) {
         for slot in 0..self.params.len() {
-            let (id, default) = {
-                let p = &self.params[slot];
-                (p.id.clone(), p.default)
-            };
-            let value = pose.get(&id).unwrap_or(default);
-            self.set_param_value(&id, value);
+            let p = &self.params[slot];
+            let value = pose.get(&p.id).unwrap_or(p.default);
+            self.set_slot_value(slot as u32, value);
         }
         for (id, value) in pose.iter() {
             if !self.slot_of_param.contains_key(id) {
@@ -580,7 +579,8 @@ impl Puppet {
     pub fn pose(&self) -> Pose {
         self.params
             .iter()
-            .map(|p| (p.id.clone(), self.param_value(&p.id).unwrap_or(p.default)))
+            .enumerate()
+            .map(|(slot, p)| (p.id.clone(), self.resolved(slot as u32)))
             .collect()
     }
 
