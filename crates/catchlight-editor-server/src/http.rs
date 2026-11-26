@@ -6,7 +6,8 @@
 //!   answers CORS only for an allowlisted origin, never `*`. `Host` must name
 //!   loopback (421 otherwise) to defeat DNS rebinding.
 //! - **A launch link carries a code, not the token.** `POST /launch` (with
-//!   the token) mints a code; `POST /token` trades it for the token once.
+//!   the token) mints a code; `POST /token` trades it for the token once,
+//!   within a minute.
 //! - **Another machine is opted into.** Only a loopback address binds, and
 //!   only a loopback peer is served, unless [`HttpOptions::allow_remote`] is
 //!   set; then the token is never served and the operator hands it over.
@@ -46,6 +47,9 @@ const HTTP_IO_TIMEOUT: Duration = Duration::from_secs(30);
 /// The whole request head must arrive within this, however it is dribbled:
 /// the per-read timeout alone lets a client hold a connection permit forever.
 const HEAD_DEADLINE: Duration = Duration::from_secs(10);
+/// A launch link is opened as it is handed over; one left unopened, say by a
+/// browser that never started, must not stay a way in.
+const LAUNCH_CODE_LIFETIME: Duration = Duration::from_secs(60);
 const ACCEPT_RETRY_PAUSE: Duration = Duration::from_millis(50);
 const DEFAULT_MAX_UPLOAD_BYTES: usize = 256 * 1024 * 1024;
 /// Two of these with no answer and the peer is treated as gone.
@@ -104,8 +108,8 @@ struct ServerState {
     ui: Option<UiFiles>,
     serve_token: bool,
     allow_remote: bool,
-    /// Minted and not yet traded for the token.
-    launch_codes: Mutex<Vec<String>>,
+    /// Minted and not yet traded for the token, with when each was minted.
+    launch_codes: Mutex<Vec<(String, Instant)>>,
 }
 
 /// The allowlist includes the server's own loopback origins, so it can only be
@@ -199,18 +203,35 @@ pub(crate) fn accepted<S>(
 
 impl ServerState {
     fn mint_launch_code(&self) -> io::Result<String> {
+        self.mint_launch_code_at(Instant::now())
+    }
+
+    /// Expired codes go as a new one comes, so the set stays small.
+    fn mint_launch_code_at(&self, now: Instant) -> io::Result<String> {
         let code = mint_token()?;
-        crate::lock(&self.launch_codes).push(code.clone());
+        let mut codes = crate::lock(&self.launch_codes);
+        codes.retain(|(_, minted)| live(*minted, now));
+        codes.push((code.clone(), now));
         Ok(code)
     }
 
-    /// The code is spent whether or not the caller ever reads the token.
     fn redeem_launch_code(&self, given: &str) -> Option<&str> {
-        let mut codes = crate::lock(&self.launch_codes);
-        let at = codes.iter().position(|code| secret_matches(given, code))?;
-        codes.swap_remove(at);
-        Some(&self.token)
+        self.redeem_launch_code_at(given, Instant::now())
     }
+
+    /// The code is spent whether or not the caller ever reads the token.
+    fn redeem_launch_code_at(&self, given: &str, now: Instant) -> Option<&str> {
+        let mut codes = crate::lock(&self.launch_codes);
+        let at = codes
+            .iter()
+            .position(|(code, _)| secret_matches(given, code))?;
+        let (_, minted) = codes.swap_remove(at);
+        live(minted, now).then_some(self.token.as_str())
+    }
+}
+
+fn live(minted: Instant, now: Instant) -> bool {
+    now.saturating_duration_since(minted) < LAUNCH_CODE_LIFETIME
 }
 
 /// A guessable token is no token: every page the browser loads can reach
@@ -1465,6 +1486,34 @@ mod tests {
         assert!(!host_is_loopback(Some("evil.example")));
         assert!(!host_is_loopback(Some("localhost.evil.example:8080")));
         assert!(!host_is_loopback(None));
+    }
+
+    #[test]
+    fn a_launch_code_expires_a_minute_after_it_is_minted() {
+        let server = bind_http(
+            Arc::new(Editor::new()),
+            "127.0.0.1:0".parse().unwrap(),
+            HttpOptions::default(),
+        )
+        .unwrap();
+        let state = &server.state;
+        let minted = Instant::now();
+        let fresh = state.mint_launch_code_at(minted).unwrap();
+        let stale = state.mint_launch_code_at(minted).unwrap();
+        let late = minted + LAUNCH_CODE_LIFETIME;
+        assert_eq!(state.redeem_launch_code_at(&stale, late), None);
+        assert_eq!(
+            state.redeem_launch_code_at(&fresh, late - Duration::from_secs(1)),
+            Some(server.token.as_str())
+        );
+
+        state.mint_launch_code_at(minted).unwrap();
+        state.mint_launch_code_at(late).unwrap();
+        assert_eq!(
+            crate::lock(&state.launch_codes).len(),
+            1,
+            "the expired one went"
+        );
     }
 
     #[test]
