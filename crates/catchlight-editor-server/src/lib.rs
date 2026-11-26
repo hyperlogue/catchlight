@@ -1759,7 +1759,7 @@ impl Default for Editor {
 }
 
 #[cfg(unix)]
-pub use catchlight_editor_protocol::default_socket_path;
+pub use catchlight_editor_discovery::default_socket_path;
 #[cfg(unix)]
 pub use transport::serve_unix;
 #[cfg(all(unix, test))]

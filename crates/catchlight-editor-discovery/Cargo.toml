@@ -1,0 +1,15 @@
+[package]
+name = "catchlight-editor-discovery"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Where a local client finds a running catchlight editor: its socket and connection file"
+
+[dependencies]
+serde.workspace = true
+
+[lints]
+workspace = true

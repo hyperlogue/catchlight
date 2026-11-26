@@ -8,7 +8,7 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-pub use catchlight_editor_protocol::{Connection, default_connection_path};
+pub use catchlight_editor_discovery::{Connection, default_connection_path};
 
 use crate::HttpServer;
 

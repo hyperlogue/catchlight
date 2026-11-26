@@ -1509,6 +1509,7 @@ name = "catchlight-editor-cli"
 version = "0.4.0"
 dependencies = [
  "anyhow",
+ "catchlight-editor-discovery",
  "catchlight-editor-protocol",
  "clap",
  "getrandom 0.3.4",
@@ -1530,6 +1531,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "catchlight-editor-discovery"
+version = "0.4.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "catchlight-editor-protocol"
 version = "0.4.0"
 dependencies = [
@@ -1546,6 +1554,7 @@ version = "0.4.0"
 dependencies = [
  "catchlight-core",
  "catchlight-editor-core",
+ "catchlight-editor-discovery",
  "catchlight-editor-protocol",
  "catchlight-extension-animations",
  "catchlight-extension-expressions",

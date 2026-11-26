@@ -13,7 +13,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use catchlight_core::LoadLimits;
-use catchlight_editor_protocol::{ErrorCode, Reply, Request, RequestId, default_socket_path};
+use catchlight_editor_discovery::default_socket_path;
+use catchlight_editor_protocol::{ErrorCode, Reply, Request, RequestId};
 use serde_json::Value;
 
 use super::{Attachments, Editor, Payload};

@@ -8,8 +8,9 @@ use std::process::Command;
 
 const CLI: &str = "catchlight-cli";
 
-const ABOVE_THE_LINE: [&str; 4] = [
+const ABOVE_THE_LINE: [&str; 5] = [
     "catchlight-editor-protocol",
+    "catchlight-editor-discovery",
     "catchlight-editor-server",
     "catchlight-editor-cli",
     "catchlight-editor-wasm",

@@ -25,6 +25,8 @@ tracing.workspace = true
 # The headless preview renderer is native-only; the wasm build keeps just the
 # model/session core (the browser GUI renders on its own device).
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The connection file and default socket that local clients look for.
+catchlight-editor-discovery.workspace = true
 catchlight-wgpu.workspace = true
 glam.workspace = true
 wgpu.workspace = true
