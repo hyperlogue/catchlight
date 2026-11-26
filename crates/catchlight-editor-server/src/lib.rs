@@ -4,6 +4,8 @@
 mod atomic;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod connection;
+#[cfg(not(target_arch = "wasm32"))]
+mod doors;
 mod edit;
 mod editor;
 mod error;

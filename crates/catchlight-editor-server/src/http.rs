@@ -19,28 +19,25 @@
 //!   one TCP stream; the reader's writes go through [`Bounce`].
 
 use std::collections::HashMap;
-use std::io::{self, BufRead, BufReader, Read, Write};
+use std::io::{self, BufReader, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::ops::Range;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use catchlight_core::formats::clm::{TextureEncoding, extension_hash};
-use catchlight_editor_protocol::{
-    ErrorCode, ExtensionKey, Reply, Request, RequestId, SessionId, TexId,
-};
+use catchlight_editor_protocol::{ErrorCode, ExtensionKey, Reply, Request, SessionId, TexId};
 use percent_encoding::percent_decode_str;
 use tungstenite::handshake::derive_accept_key;
 use tungstenite::protocol::{Message, Role, WebSocket, WebSocketConfig};
 
+use crate::doors::{
+    ConnectionLimiter, Line, LineError, MAX_REQUEST_BYTES, accepted, read_line, refuse_line,
+};
 use crate::{Attachments, Editor, EditorError, Payload};
 
-/// Same cap as one Unix-socket line.
-const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 const MAX_HEADER_BYTES: usize = 16 * 1024;
-const MAX_CONNECTIONS: usize = 64;
 /// A WebSocket re-arms this as its keepalive interval instead, because an
 /// idle tab is a live tab but a silent one is not.
 const HTTP_IO_TIMEOUT: Duration = Duration::from_secs(30);
@@ -50,7 +47,6 @@ const HEAD_DEADLINE: Duration = Duration::from_secs(10);
 /// A launch link is opened as it is handed over; one left unopened, say by a
 /// browser that never started, must not stay a way in.
 const LAUNCH_CODE_LIFETIME: Duration = Duration::from_secs(60);
-const ACCEPT_RETRY_PAUSE: Duration = Duration::from_millis(50);
 const DEFAULT_MAX_UPLOAD_BYTES: usize = 256 * 1024 * 1024;
 /// Two of these with no answer and the peer is treated as gone.
 const DEFAULT_PING_INTERVAL: Duration = Duration::from_secs(30);
@@ -184,23 +180,6 @@ impl HttpServer {
     }
 }
 
-/// The connections `incoming` yields, past any that failed to arrive: a
-/// refused accept (an aborted handshake, no descriptors left) is no reason to
-/// stop serving the tabs already open. The pause keeps a persistent failure
-/// from spinning.
-pub(crate) fn accepted<S>(
-    incoming: impl Iterator<Item = io::Result<S>>,
-) -> impl Iterator<Item = S> {
-    incoming.filter_map(|stream| match stream {
-        Ok(stream) => Some(stream),
-        Err(err) => {
-            tracing::warn!("accepting a connection failed: {err}");
-            std::thread::sleep(ACCEPT_RETRY_PAUSE);
-            None
-        }
-    })
-}
-
 impl ServerState {
     fn mint_launch_code(&self) -> io::Result<String> {
         self.mint_launch_code_at(Instant::now())
@@ -245,30 +224,6 @@ fn mint_token() -> io::Result<String> {
         let _ = write!(acc, "{b:02x}");
         acc
     }))
-}
-
-#[derive(Default)]
-struct ConnectionLimiter {
-    active: AtomicUsize,
-}
-
-impl ConnectionLimiter {
-    fn try_acquire(self: &Arc<Self>) -> Option<ConnectionPermit> {
-        self.active
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
-                (active < MAX_CONNECTIONS).then_some(active + 1)
-            })
-            .ok()
-            .map(|_| ConnectionPermit(self.clone()))
-    }
-}
-
-struct ConnectionPermit(Arc<ConnectionLimiter>);
-
-impl Drop for ConnectionPermit {
-    fn drop(&mut self) {
-        self.0.active.fetch_sub(1, Ordering::AcqRel);
-    }
 }
 
 fn serve_connection(state: &ServerState, stream: TcpStream) {
@@ -1007,13 +962,7 @@ fn answer(editor: &Editor, frame: &str) -> String {
             ),
         },
         Ok(request) => editor.handle(request),
-        Err(e) => Reply::Err {
-            op_index: None,
-            limit: None,
-            id: serde_json::from_str::<RequestId>(frame).map_or(0, |r| r.id),
-            code: ErrorCode::BadRequest,
-            message: format!("bad request: {e}"),
-        },
+        Err(e) => refuse_line(frame.as_bytes(), format!("bad request: {e}")),
     };
     serde_json::to_string(&reply).unwrap_or_else(|_| {
         r#"{"reply":"err","id":0,"code":"bad_request","message":"reply could not be serialized"}"#
@@ -1066,7 +1015,7 @@ fn read_head(
     deadline: Instant,
 ) -> Result<(HttpRequest, usize), BadRequest> {
     let mut budget = MAX_HEADER_BYTES;
-    let Some(start) = read_line(reader, &mut budget, deadline)? else {
+    let Some(start) = read_head_line(reader, &mut budget, deadline)? else {
         return Err(BadRequest::Closed);
     };
     let mut parts = start.split(' ');
@@ -1079,7 +1028,7 @@ fn read_head(
 
     let mut headers = Vec::new();
     loop {
-        let Some(line) = read_line(reader, &mut budget, deadline)? else {
+        let Some(line) = read_head_line(reader, &mut budget, deadline)? else {
             return Err(BadRequest::Malformed("headers ended without a blank line"));
         };
         if line.is_empty() {
@@ -1164,46 +1113,25 @@ fn drain_body(reader: &mut BufReader<TcpStream>, length: usize) {
     let _ = io::copy(&mut reader.by_ref().take(length as u64), &mut io::sink());
 }
 
-fn read_line(
+fn read_head_line(
     reader: &mut BufReader<TcpStream>,
     budget: &mut usize,
     deadline: Instant,
 ) -> Result<Option<String>, BadRequest> {
-    let mut line = Vec::new();
-    loop {
-        if reader.buffer().is_empty() {
-            let left = deadline.saturating_duration_since(Instant::now());
-            if left.is_zero() {
-                return Err(BadRequest::Io);
-            }
-            reader
-                .get_ref()
-                .set_read_timeout(Some(left.min(HTTP_IO_TIMEOUT)))
-                .map_err(|_| BadRequest::Io)?;
+    let wait = |stream: &TcpStream| {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(io::ErrorKind::TimedOut.into());
         }
-        let available = reader.fill_buf().map_err(|_| BadRequest::Io)?;
-        if available.is_empty() {
-            return if line.is_empty() {
-                Ok(None)
-            } else {
-                Err(BadRequest::Malformed("truncated header"))
-            };
-        }
-        let take = available
-            .iter()
-            .position(|byte| *byte == b'\n')
-            .map_or(available.len(), |pos| pos + 1);
-        if take > *budget {
-            return Err(BadRequest::HeadersTooLarge);
-        }
-        *budget -= take;
-        let terminated = available[take - 1] == b'\n';
-        line.extend_from_slice(&available[..take]);
-        reader.consume(take);
-        if terminated {
-            break;
-        }
-    }
+        stream.set_read_timeout(Some(left.min(HTTP_IO_TIMEOUT)))
+    };
+    let mut line = match read_line(reader, budget, wait) {
+        Ok(Line::Terminated(line)) => line,
+        Ok(Line::Unterminated(_)) => return Err(BadRequest::Malformed("truncated header")),
+        Ok(Line::End) => return Ok(None),
+        Err(LineError::TooLong) => return Err(BadRequest::HeadersTooLarge),
+        Err(LineError::Io) => return Err(BadRequest::Io),
+    };
     while line.last().is_some_and(|b| *b == b'\n' || *b == b'\r') {
         line.pop();
     }
@@ -1360,6 +1288,7 @@ fn decode(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::Ordering;
 
     #[test]
     fn a_dribbled_request_head_is_dropped_at_its_deadline() {
@@ -1391,17 +1320,6 @@ mod tests {
             "the head was still read"
         );
         assert!(started.elapsed() < Duration::from_secs(5));
-    }
-
-    #[test]
-    fn a_failed_accept_does_not_end_the_connections_after_it() {
-        let incoming = [
-            Err(io::Error::from(io::ErrorKind::ConnectionAborted)),
-            Ok(1),
-            Err(io::Error::other("no descriptors left")),
-            Ok(2),
-        ];
-        assert_eq!(accepted(incoming.into_iter()).collect::<Vec<_>>(), [1, 2]);
     }
 
     #[test]

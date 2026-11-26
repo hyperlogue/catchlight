@@ -4,24 +4,23 @@
 //! (where a payload is written) beside the [`Request`]: the socket client
 //! shares this process's filesystem, so bytes never ride in the line.
 
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufReader, Read, Write};
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use catchlight_core::LoadLimits;
 use catchlight_editor_discovery::default_socket_path;
-use catchlight_editor_protocol::{ErrorCode, Reply, Request, RequestId};
+use catchlight_editor_protocol::{ErrorCode, Reply, Request};
 use serde_json::Value;
 
-use super::{Attachments, Editor, Payload};
-use crate::http::accepted;
+use crate::doors::{
+    ConnectionLimiter, Line, LineError, MAX_REQUEST_BYTES, accepted, read_line, refuse_line,
+};
+use crate::{Attachments, Editor, Payload};
 
-pub(super) const MAX_SOCKET_CONNECTIONS: usize = 64;
-pub(super) const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 const SOCKET_IO_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub fn serve_unix(editor: Arc<Editor>, path: &Path) -> std::io::Result<()> {
@@ -48,30 +47,6 @@ pub fn serve_unix(editor: Arc<Editor>, path: &Path) -> std::io::Result<()> {
         });
     }
     Ok(())
-}
-
-#[derive(Default)]
-pub(super) struct ConnectionLimiter {
-    active: AtomicUsize,
-}
-
-impl ConnectionLimiter {
-    pub(super) fn try_acquire(self: &Arc<Self>) -> Option<ConnectionPermit> {
-        self.active
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
-                (active < MAX_SOCKET_CONNECTIONS).then_some(active + 1)
-            })
-            .ok()
-            .map(|_| ConnectionPermit(self.clone()))
-    }
-}
-
-pub(super) struct ConnectionPermit(Arc<ConnectionLimiter>);
-
-impl Drop for ConnectionPermit {
-    fn drop(&mut self) {
-        self.0.active.fetch_sub(1, Ordering::AcqRel);
-    }
 }
 
 pub(super) fn bind_unix_listener(path: &Path) -> std::io::Result<UnixListener> {
@@ -201,10 +176,11 @@ pub(super) fn serve_connection(editor: &Editor, stream: UnixStream) {
     let mut writer = stream;
     let mut reader = BufReader::new(read_half);
     loop {
-        let line = match read_request_line(&mut reader) {
-            Ok(Some(line)) => line,
-            Ok(None) => break,
-            Err(err) if err.kind() == std::io::ErrorKind::InvalidData => {
+        let mut budget = MAX_REQUEST_BYTES;
+        let line = match read_line(&mut reader, &mut budget, |_| Ok(())) {
+            Ok(Line::Terminated(line) | Line::Unterminated(line)) => line,
+            Ok(Line::End) | Err(LineError::Io) => break,
+            Err(LineError::TooLong) => {
                 let _ = write_reply(
                     &mut writer,
                     &Reply::Err {
@@ -212,12 +188,11 @@ pub(super) fn serve_connection(editor: &Editor, stream: UnixStream) {
                         limit: None,
                         id: 0,
                         code: ErrorCode::BadRequest,
-                        message: err.to_string(),
+                        message: format!("request exceeds {MAX_REQUEST_BYTES} bytes"),
                     },
                 );
                 break;
             }
-            Err(_) => break,
         };
         if line.iter().all(u8::is_ascii_whitespace) {
             continue;
@@ -230,16 +205,7 @@ pub(super) fn serve_connection(editor: &Editor, stream: UnixStream) {
 }
 
 fn answer_line(editor: &Editor, line: &[u8]) -> Reply {
-    // An unparsable command is still answered against the id the client is
-    // blocked on, or it would wait forever.
-    let id = || serde_json::from_slice::<RequestId>(line).map_or(0, |r| r.id);
-    let bad = |message: String| Reply::Err {
-        op_index: None,
-        limit: None,
-        id: id(),
-        code: ErrorCode::BadRequest,
-        message,
-    };
+    let bad = |message: String| refuse_line(line, message);
 
     let mut object = match serde_json::from_slice::<Value>(line) {
         Ok(Value::Object(object)) => object,
@@ -352,32 +318,6 @@ fn write_payload(path: &Path, payload: &Payload) -> std::io::Result<()> {
     std::fs::write(path, &payload.bytes)
 }
 
-fn read_request_line(reader: &mut impl BufRead) -> std::io::Result<Option<Vec<u8>>> {
-    let mut line = Vec::new();
-    loop {
-        let available = reader.fill_buf()?;
-        if available.is_empty() {
-            return Ok((!line.is_empty()).then_some(line));
-        }
-        let take = available
-            .iter()
-            .position(|byte| *byte == b'\n')
-            .map_or(available.len(), |pos| pos + 1);
-        if line.len().saturating_add(take) > MAX_REQUEST_BYTES {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("request exceeds {MAX_REQUEST_BYTES} bytes"),
-            ));
-        }
-        let terminated = available[take - 1] == b'\n';
-        line.extend_from_slice(&available[..take]);
-        reader.consume(take);
-        if terminated {
-            return Ok(Some(line));
-        }
-    }
-}
-
 fn write_reply(writer: &mut impl Write, reply: &Reply) -> std::io::Result<()> {
     let mut encoded = serde_json::to_vec(reply).map_err(std::io::Error::other)?;
     encoded.push(b'\n');
@@ -387,7 +327,8 @@ fn write_reply(writer: &mut impl Write, reply: &Reply) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::AtomicU64;
+    use std::io::BufRead;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     static SOCKET_TEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -514,19 +455,6 @@ mod tests {
         drop(listener);
         std::fs::remove_file(socket_lock_path(&path)).unwrap();
         std::fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn socket_connection_limit_releases_capacity_on_drop() {
-        let limiter = Arc::new(ConnectionLimiter::default());
-        let mut permits = (0..MAX_SOCKET_CONNECTIONS)
-            .map(|_| limiter.try_acquire().unwrap())
-            .collect::<Vec<_>>();
-        assert!(limiter.try_acquire().is_none());
-
-        permits.pop();
-
-        assert!(limiter.try_acquire().is_some());
     }
 
     #[test]
