@@ -37,6 +37,9 @@ const MAX_CONNECTIONS: usize = 64;
 /// A WebSocket re-arms this as its keepalive interval instead, because an
 /// idle tab is a live tab but a silent one is not.
 const HTTP_IO_TIMEOUT: Duration = Duration::from_secs(30);
+/// The whole request head must arrive within this, however it is dribbled:
+/// the per-read timeout alone lets a client hold a connection permit forever.
+const HEAD_DEADLINE: Duration = Duration::from_secs(10);
 const ACCEPT_RETRY_PAUSE: Duration = Duration::from_millis(50);
 const DEFAULT_MAX_UPLOAD_BYTES: usize = 256 * 1024 * 1024;
 /// Two of these with no answer and the peer is treated as gone.
@@ -218,7 +221,7 @@ fn serve_connection(state: &ServerState, stream: TcpStream) {
     let mut reader = BufReader::new(read_half);
     let mut writer = stream;
 
-    let (mut request, body_len) = match read_head(&mut reader) {
+    let (mut request, body_len) = match read_head(&mut reader, Instant::now() + HEAD_DEADLINE) {
         Ok(head) => head,
         Err(BadRequest::Closed | BadRequest::Io) => return,
         Err(err) => {
@@ -226,6 +229,13 @@ fn serve_connection(state: &ServerState, stream: TcpStream) {
             return;
         }
     };
+    if reader
+        .get_ref()
+        .set_read_timeout(Some(HTTP_IO_TIMEOUT))
+        .is_err()
+    {
+        return;
+    }
 
     // DNS rebinding: a non-loopback Host is someone else's name for this port.
     if !host_is_loopback(request.header("host")) {
@@ -924,9 +934,12 @@ impl BadRequest {
     }
 }
 
-fn read_head(reader: &mut BufReader<TcpStream>) -> Result<(HttpRequest, usize), BadRequest> {
+fn read_head(
+    reader: &mut BufReader<TcpStream>,
+    deadline: Instant,
+) -> Result<(HttpRequest, usize), BadRequest> {
     let mut budget = MAX_HEADER_BYTES;
-    let Some(start) = read_line(reader, &mut budget)? else {
+    let Some(start) = read_line(reader, &mut budget, deadline)? else {
         return Err(BadRequest::Closed);
     };
     let mut parts = start.split(' ');
@@ -939,7 +952,7 @@ fn read_head(reader: &mut BufReader<TcpStream>) -> Result<(HttpRequest, usize), 
 
     let mut headers = Vec::new();
     loop {
-        let Some(line) = read_line(reader, &mut budget)? else {
+        let Some(line) = read_line(reader, &mut budget, deadline)? else {
             return Err(BadRequest::Malformed("headers ended without a blank line"));
         };
         if line.is_empty() {
@@ -1017,9 +1030,23 @@ fn drain_body(reader: &mut BufReader<TcpStream>, length: usize) {
     let _ = io::copy(&mut reader.by_ref().take(length as u64), &mut io::sink());
 }
 
-fn read_line(reader: &mut impl BufRead, budget: &mut usize) -> Result<Option<String>, BadRequest> {
+fn read_line(
+    reader: &mut BufReader<TcpStream>,
+    budget: &mut usize,
+    deadline: Instant,
+) -> Result<Option<String>, BadRequest> {
     let mut line = Vec::new();
     loop {
+        if reader.buffer().is_empty() {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(BadRequest::Io);
+            }
+            reader
+                .get_ref()
+                .set_read_timeout(Some(left.min(HTTP_IO_TIMEOUT)))
+                .map_err(|_| BadRequest::Io)?;
+        }
         let available = reader.fill_buf().map_err(|_| BadRequest::Io)?;
         if available.is_empty() {
             return if line.is_empty() {
@@ -1195,6 +1222,38 @@ fn decode(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_dribbled_request_head_is_dropped_at_its_deadline() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let dribbling = stop.clone();
+        let client = std::thread::spawn(move || {
+            let mut stream = TcpStream::connect(addr).unwrap();
+            stream.write_all(b"GET / HTTP/1.1\r\nX-Slow: ").unwrap();
+            while !dribbling.load(Ordering::Relaxed) {
+                if stream.write_all(b"a").is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        });
+        let (stream, _) = listener.accept().unwrap();
+        stream.set_read_timeout(Some(HTTP_IO_TIMEOUT)).unwrap();
+        let started = Instant::now();
+        let head = read_head(
+            &mut BufReader::new(stream),
+            started + Duration::from_millis(300),
+        );
+        stop.store(true, Ordering::Relaxed);
+        client.join().unwrap();
+        assert!(
+            matches!(head, Err(BadRequest::Io)),
+            "the head was still read"
+        );
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
 
     #[test]
     fn a_failed_accept_does_not_end_the_connections_after_it() {
