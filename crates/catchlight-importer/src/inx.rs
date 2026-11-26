@@ -43,13 +43,13 @@ pub enum InxParseError {
     InvalidTexEncoding(u8),
 
     #[error("BC7 DDS parse failed: {0}")]
-    Bc7DdsParse(String),
+    Bc7DdsParse(#[source] image_dds::ddsfile::Error),
 
     #[error("BC7 decode failed: {0}")]
-    Bc7Decode(String),
+    Bc7Decode(#[source] image_dds::error::CreateImageError),
 
     #[error("BC7 PNG re-encode failed: {0}")]
-    Bc7Encode(String),
+    Bc7Encode(#[source] image::ImageError),
 
     #[error("{what} size {size} exceeds limit of {limit} bytes")]
     SizeExceedsLimit {
@@ -62,7 +62,7 @@ pub enum InxParseError {
     TextureTooLarge { width: u32, height: u32, limit: u32 },
 
     #[error("Failed to read texture header: {0}")]
-    TextureHeader(String),
+    TextureHeader(#[source] image::ImageError),
 
     #[error(transparent)]
     LoadLimit(#[from] LoadLimitError),
@@ -166,7 +166,7 @@ fn placeholder_texture() -> Result<EncodedTexture, InxParseError> {
     let mut png = Vec::new();
     image::DynamicImage::ImageRgba8(image::RgbaImage::new(1, 1))
         .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
-        .map_err(|e| InxParseError::TextureHeader(e.to_string()))?;
+        .map_err(InxParseError::TextureHeader)?;
     Ok(EncodedTexture {
         format: TextureFormat::Png,
         data: png.into(),
@@ -179,36 +179,20 @@ fn image_dimensions(bytes: &[u8], format: image::ImageFormat) -> Result<(u32, u3
     reader.set_format(format);
     let (width, height) = reader
         .into_dimensions()
-        .map_err(|e| InxParseError::TextureHeader(e.to_string()))?;
+        .map_err(InxParseError::TextureHeader)?;
     check_texture_dims(width, height)?;
     Ok((width, height))
 }
 
 fn decode_bc7_dds_to_png(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), InxParseError> {
-    let dds = image_dds::ddsfile::Dds::read(bytes)
-        .map_err(|e| InxParseError::Bc7DdsParse(e.to_string()))?;
+    let dds = image_dds::ddsfile::Dds::read(bytes).map_err(InxParseError::Bc7DdsParse)?;
     let (width, height) = (dds.get_width(), dds.get_height());
     check_texture_dims(width, height)?;
-    let img =
-        image_dds::image_from_dds(&dds, 0).map_err(|e| InxParseError::Bc7Decode(e.to_string()))?;
+    let img = image_dds::image_from_dds(&dds, 0).map_err(InxParseError::Bc7Decode)?;
     let mut out = Vec::new();
     img.write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
-        .map_err(|e| InxParseError::Bc7Encode(e.to_string()))?;
+        .map_err(InxParseError::Bc7Encode)?;
     Ok((out, width, height))
-}
-
-#[doc(hidden)]
-pub fn decode_texture_for_fuzz(encoding: u8, bytes: &[u8]) -> Result<Vec<u8>, InxParseError> {
-    match encoding {
-        0 => image::load_from_memory_with_format(bytes, image::ImageFormat::Png)
-            .map(|img| img.into_bytes())
-            .map_err(|e| InxParseError::Bc7Decode(e.to_string())),
-        1 => image::load_from_memory_with_format(bytes, image::ImageFormat::Tga)
-            .map(|img| img.into_bytes())
-            .map_err(|e| InxParseError::Bc7Decode(e.to_string())),
-        2 => decode_bc7_dds_to_png(bytes).map(|(png, _, _)| png),
-        n => Err(InxParseError::InvalidTexEncoding(n)),
-    }
 }
 
 fn parse_textures<R: Read>(
@@ -266,11 +250,12 @@ fn parse_vendors<R: Read>(
 }
 
 impl InxModel {
+    /// Parse `.inx` or `.inp` bytes; the two share one binary framing.
     pub fn parse<R: Read>(mut data: R) -> Result<Self, InxParseError> {
         Self::parse_with_budget(&mut data, &mut LoadBudget::default())
     }
 
-    pub fn parse_with_budget<R: Read>(
+    fn parse_with_budget<R: Read>(
         mut data: R,
         budget: &mut LoadBudget,
     ) -> Result<Self, InxParseError> {
@@ -289,14 +274,6 @@ impl InxModel {
             vendors,
         })
     }
-}
-
-// `.inp` and `.inx` share one binary framing.
-pub type InpModel = InxModel;
-pub type InpParseError = InxParseError;
-
-pub fn parse_inp<R: Read>(data: R) -> Result<InpModel, InpParseError> {
-    InxModel::parse(data)
 }
 
 #[cfg(test)]
@@ -525,7 +502,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_inp_roundtrip_produces_single_root_node() {
+    fn inp_bytes_parse_into_a_single_root_node() {
         let payload_json = br#"{
             "nodes": {
                 "uuid": 1,
@@ -542,7 +519,7 @@ mod tests {
         }"#;
         let bytes = build_minimal_inp(payload_json);
 
-        let model = parse_inp(Cursor::new(&bytes)).expect("parse .inp bytes");
+        let model = InxModel::parse(Cursor::new(&bytes)).expect("parse .inp bytes");
         assert!(model.textures.is_empty());
         assert!(model.vendors.is_empty());
 
@@ -552,10 +529,10 @@ mod tests {
     }
 
     #[test]
-    fn parse_inp_rejects_wrong_magic() {
+    fn inp_bytes_with_the_wrong_magic_are_refused() {
         let mut bytes = vec![b'N', b'O', b'P', b'E', 0, 0, 0, 0];
         bytes.extend_from_slice(&0u32.to_be_bytes());
-        let err = parse_inp(Cursor::new(bytes)).unwrap_err();
-        assert!(matches!(err, InpParseError::IncorrectMagic));
+        let err = InxModel::parse(Cursor::new(bytes)).unwrap_err();
+        assert!(matches!(err, InxParseError::IncorrectMagic));
     }
 }

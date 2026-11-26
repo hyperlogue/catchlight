@@ -17,5 +17,5 @@ pub(crate) mod to_clm;
 mod import_tests;
 
 pub use error::ImportError;
-pub use inx::{parse_inp, InpModel, InpParseError, InxModel, InxParseError, VendorData};
+pub use inx::{InxModel, InxParseError, VendorData};
 pub use to_clm::{from_inx_model, import_inx_bytes, import_inx_model};
