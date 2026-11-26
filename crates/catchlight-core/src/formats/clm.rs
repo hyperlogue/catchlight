@@ -491,7 +491,7 @@ pub(crate) struct ClmTextureSpan<'a> {
 pub(crate) struct ClmFileRef<'a> {
     pub doc: ClmStructure,
     pub textures: Vec<ClmTextureSpan<'a>>,
-    pub extensions: Vec<ClmExtensionBlob>,
+    pub extensions: CheckedExtensions<Vec<ClmExtensionBlob>>,
     pub unknown_sections: Vec<ClmUnknownSection>,
 }
 
@@ -662,18 +662,7 @@ pub fn check_extensions(doc: &ClmStructure, blobs: &[ClmExtensionBlob]) -> Resul
             .ok_or_else(|| ClmError::ExtensionBytesMissing {
                 key: key.to_string(),
             })?;
-        if blob.data.len() as u64 != marker.size {
-            return Err(ClmError::ExtensionSizeMismatch {
-                key: key.to_string(),
-                expected: marker.size,
-                actual: blob.data.len() as u64,
-            });
-        }
-        if extension_hash(&blob.data) != marker.hash {
-            return Err(ClmError::ExtensionHashMismatch {
-                key: key.to_string(),
-            });
-        }
+        check_marker(key, marker, &blob.data)?;
     }
 
     // Whatever the markers did not claim is a payload nothing names, whether
@@ -684,6 +673,46 @@ pub fn check_extensions(doc: &ClmStructure, blobs: &[ClmExtensionBlob]) -> Resul
         });
     }
     Ok(())
+}
+
+pub(crate) fn check_marker(
+    key: &ExtensionKey,
+    marker: &ClmExtensionMarker,
+    data: &[u8],
+) -> Result<(), ClmError> {
+    if data.len() as u64 != marker.size {
+        return Err(ClmError::ExtensionSizeMismatch {
+            key: key.to_string(),
+            expected: marker.size,
+            actual: data.len() as u64,
+        });
+    }
+    if extension_hash(data) != marker.hash {
+        return Err(ClmError::ExtensionHashMismatch {
+            key: key.to_string(),
+        });
+    }
+    Ok(())
+}
+
+/// Extension payloads [`check_extensions`] has held to a structure's markers,
+/// so reading them into a model hashes nothing again.
+#[derive(Debug)]
+pub(crate) struct CheckedExtensions<B>(B);
+
+impl<B: std::borrow::Borrow<[ClmExtensionBlob]>> CheckedExtensions<B> {
+    pub(crate) fn new(doc: &ClmStructure, blobs: B) -> Result<Self, ClmError> {
+        check_extensions(doc, blobs.borrow())?;
+        Ok(Self(blobs))
+    }
+
+    pub(crate) fn blobs(&self) -> &[ClmExtensionBlob] {
+        self.0.borrow()
+    }
+
+    pub(crate) fn into_inner(self) -> B {
+        self.0
+    }
 }
 
 /// Writes only known sections; [`ClmFile::encode`] also carries unrecognised
@@ -839,7 +868,7 @@ pub fn decode_with_budget(
                 data: t.data.into_owned(),
             })
             .collect(),
-        extensions: file.extensions,
+        extensions: file.extensions.into_inner(),
         unknown_sections: file.unknown_sections,
     })
 }
@@ -865,7 +894,7 @@ pub(crate) fn decode_borrowed<'a>(
         Some(b) => cbor_from_slice(b)?,
         None => Vec::new(),
     };
-    check_extensions(&doc, &extensions)?;
+    let extensions = CheckedExtensions::new(&doc, extensions)?;
     // Copied out because the model that holds them outlives `bytes`.
     let unknown_sections = file
         .sections

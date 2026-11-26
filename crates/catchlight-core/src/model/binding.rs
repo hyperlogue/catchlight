@@ -819,25 +819,20 @@ impl Model {
         match values.map(|v| &**v) {
             Some(ClmBindingValues::Deform(c)) => {
                 let identity = vec![0.0f32; self.deform_len(&key.node)];
-                let authored: Vec<((u32, u32), Vec<f32>)> = c
-                    .cells
-                    .iter()
-                    .map(|c| ((c.x, c.y), c.value.clone()))
-                    .collect();
-                DenseGrid::Deform(derive_dense(w, h, &axis_x, &axis_y, &authored, &identity))
+                let authored = c.cells.iter().map(|c| ((c.x, c.y), c.value.as_slice()));
+                DenseGrid::Deform(derive_dense(w, h, &axis_x, &axis_y, authored, &identity))
             }
             other => {
                 let identity = match key.target {
                     BindingTarget::Scalar(t) => t.identity(),
                     BindingTarget::Deform => 0.0,
                 };
-                let authored: Vec<((u32, u32), f32)> = other
+                let authored = other
                     .and_then(ClmBindingValues::scalar_cells)
                     .unwrap_or(&[])
                     .iter()
-                    .map(|c| ((c.x, c.y), c.value))
-                    .collect();
-                DenseGrid::Scalar(derive_dense(w, h, &axis_x, &axis_y, &authored, &identity))
+                    .map(|c| ((c.x, c.y), &c.value));
+                DenseGrid::Scalar(derive_dense(w, h, &axis_x, &axis_y, authored, &identity))
             }
         }
     }
@@ -920,18 +915,15 @@ impl Model {
         if flat.is_empty() || cells.is_empty() {
             return Ok(identity);
         }
-        let authored: Vec<_> = cells
-            .iter()
-            .map(|entry| {
-                entry
-                    .value
-                    .get(flat.clone())
-                    .map(|page| ((entry.x, entry.y), page.to_vec()))
-                    .ok_or(ModelError::CellOutOfRange)
-            })
-            .collect::<Result<_, _>>()?;
+        if cells.iter().any(|entry| entry.value.len() < flat.end) {
+            return Err(ModelError::CellOutOfRange);
+        }
+        let pages = cells.iter().map(|entry| {
+            let page = entry.value.get(flat.clone()).unwrap_or_default();
+            ((entry.x, entry.y), page)
+        });
         let (x, y) = self.binding_axes(key)?;
-        let mut values = derive_dense(x.len(), y.len(), &x, &y, &authored, &identity);
+        let mut values = derive_dense(x.len(), y.len(), &x, &y, pages, &identity);
         let at = cell[1] as usize * x.len() + cell[0] as usize;
         values
             .get_mut(at)

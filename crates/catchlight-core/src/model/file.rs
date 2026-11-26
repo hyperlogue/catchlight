@@ -11,9 +11,9 @@ use std::collections::{HashMap, HashSet};
 use crate::extension::{Payload, Stored, decode_registered};
 use crate::formats::clm::ClmPayload;
 use crate::formats::clm::{
-    self as clm, ClmBinding, ClmComposite, ClmExtension, ClmExtensionBlob, ClmExtensionMarker,
-    ClmFile, ClmMask, ClmMeshGroup, ClmNode, ClmNodeKind, ClmParam, ClmPart, ClmSlot, ClmSlotPair,
-    ClmSpine, ClmStructure, ClmTexture, ClmTextureRef, ClmWeld,
+    self as clm, CheckedExtensions, ClmBinding, ClmComposite, ClmExtension, ClmExtensionBlob,
+    ClmExtensionMarker, ClmFile, ClmMask, ClmMeshGroup, ClmNode, ClmNodeKind, ClmParam, ClmPart,
+    ClmSlot, ClmSlotPair, ClmSpine, ClmStructure, ClmTexture, ClmTextureRef, ClmWeld,
 };
 use crate::id::SlotId;
 use crate::load_budget::{
@@ -185,38 +185,21 @@ impl Shape {
     }
 }
 
-/// A byte payload that disagrees with its marker is refused, not trusted. A
-/// maintained extension whose key is registered is decoded now; one that does
-/// not decode is kept as stored, never refused. A value equal to the one
-/// `previous` holds under its key reuses that slot, decoded data and all.
+/// `bytes` returns the payload behind a byte marker, refusing one that
+/// disagrees with its marker. A maintained extension whose key is registered
+/// is decoded now; one that does not decode is kept as stored, never refused.
+/// A value equal to the one `previous` holds under its key reuses that slot,
+/// decoded data and all.
 fn extensions_of(
     doc: &ClmStructure,
-    bytes: impl Fn(&ExtensionKey) -> Option<Arc<[u8]>>,
+    bytes: impl Fn(&ExtensionKey, &ClmExtensionMarker) -> Result<Arc<[u8]>, clm::ClmError>,
     previous: Option<&Extensions>,
 ) -> Result<Extensions, ModelError> {
-    let checked_bytes = |key: &ExtensionKey, marker: &ClmExtensionMarker| {
-        let data = bytes(key).ok_or_else(|| clm::ClmError::ExtensionBytesMissing {
-            key: key.to_string(),
-        })?;
-        if data.len() as u64 != marker.size {
-            return Err(clm::ClmError::ExtensionSizeMismatch {
-                key: key.to_string(),
-                expected: marker.size,
-                actual: data.len() as u64,
-            });
-        }
-        if clm::extension_hash(&data) != marker.hash {
-            return Err(clm::ClmError::ExtensionHashMismatch {
-                key: key.to_string(),
-            });
-        }
-        Ok(data)
-    };
     let mut out = Extensions::default();
     for (key, value) in &doc.extensions {
         let value = match value {
             ClmExtension::Json(json) => ExtensionValue::Json(json.clone()),
-            ClmExtension::Bytes(marker) => ExtensionValue::Bytes(checked_bytes(key, marker)?),
+            ClmExtension::Bytes(marker) => ExtensionValue::Bytes(bytes(key, marker)?),
             ClmExtension::Maintained {
                 version,
                 refs,
@@ -226,7 +209,7 @@ fn extensions_of(
                 refs: refs.clone(),
                 payload: match payload {
                     ClmPayload::Json(json) => Payload::Json(json.clone()),
-                    ClmPayload::Bytes(marker) => Payload::Bytes(checked_bytes(key, marker)?),
+                    ClmPayload::Bytes(marker) => Payload::Bytes(bytes(key, marker)?),
                 },
             }),
         };
@@ -464,7 +447,9 @@ impl Model {
             };
             (t.id.clone(), texture)
         });
-        let mut model = Self::assemble(&file.doc, textures, &file.extensions, shape)?;
+        // A hand-built `ClmFile` skips decoding, so the pairing is checked here.
+        let extensions = CheckedExtensions::new(&file.doc, file.extensions.as_slice())?;
+        let mut model = Self::assemble(&file.doc, textures, &extensions, shape)?;
         model.unknown_sections.clone_from(&file.unknown_sections);
         Ok(model)
     }
@@ -488,10 +473,10 @@ impl Model {
     }
 
     /// Charges nothing: its two callers charge different things.
-    fn assemble(
+    fn assemble<B: std::borrow::Borrow<[ClmExtensionBlob]>>(
         doc: &ClmStructure,
         table: impl ExactSizeIterator<Item = (TexId, ModelTexture)>,
-        blobs: &[ClmExtensionBlob],
+        blobs: &CheckedExtensions<B>,
         shape: Shape,
     ) -> Result<Self, ModelError> {
         let mut textures = HashMap::with_capacity(table.len());
@@ -503,13 +488,18 @@ impl Model {
             texture_order.push(id);
         }
 
-        // A hand-built `ClmFile` skips decoding, so the pairing is checked here.
-        clm::check_extensions(doc, blobs)?;
         let blobs: HashMap<&ExtensionKey, &[u8]> = blobs
+            .blobs()
             .iter()
             .map(|blob| (&blob.key, blob.data.as_slice()))
             .collect();
-        let extensions = extensions_of(doc, |key| blobs.get(key).map(|d| Arc::from(*d)), None)?;
+        let held = |key: &ExtensionKey, _: &ClmExtensionMarker| {
+            blobs
+                .get(key)
+                .map(|data| Arc::from(*data))
+                .ok_or_else(|| bytes_missing(key))
+        };
+        let extensions = extensions_of(doc, held, None)?;
         Self::build(doc, textures, texture_order, extensions, shape)
     }
 
@@ -940,7 +930,12 @@ impl Model {
         }
         charge_clm_structure(&structure.doc, budget)?;
 
-        let extensions = extensions_of(&structure.doc, extension_bytes, Some(&self.extensions))?;
+        let checked = |key: &ExtensionKey, marker: &ClmExtensionMarker| {
+            let data = extension_bytes(key).ok_or_else(|| bytes_missing(key))?;
+            clm::check_marker(key, marker, &data)?;
+            Ok(data)
+        };
+        let extensions = extensions_of(&structure.doc, checked, Some(&self.extensions))?;
         let mut next = Self::build(&structure.doc, table, order, extensions, Shape::Base)?;
         next.unknown_sections = std::mem::take(&mut self.unknown_sections);
         self.become_model(next);
@@ -999,6 +994,12 @@ fn check_mesh(id: &NodeId, mesh: &ClmMesh) -> Result<(), ModelError> {
         }
         .into()),
         other => other,
+    }
+}
+
+fn bytes_missing(key: &ExtensionKey) -> clm::ClmError {
+    clm::ClmError::ExtensionBytesMissing {
+        key: key.to_string(),
     }
 }
 

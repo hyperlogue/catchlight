@@ -344,11 +344,8 @@ fn sparsify<T: FillCell + Clone>(
             }
         }
     }
-    let authored: Vec<((u32, u32), T)> = cells
-        .iter()
-        .map(|c| ((c.x, c.y), c.value.clone()))
-        .collect();
-    let derived = derive_dense(d.width, d.height, axis_x, axis_y, &authored, identity);
+    let authored = cells.iter().map(|c| ((c.x, c.y), &c.value));
+    let derived = derive_dense(d.width, d.height, axis_x, axis_y, authored, identity);
     let reproduced = derived.iter().zip(&d.data).all(|(a, b)| close(a, b));
     if reproduced {
         ClmCells { cells }

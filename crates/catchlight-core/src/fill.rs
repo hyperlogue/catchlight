@@ -50,26 +50,32 @@ fn zip_longest(a: &[f32], b: &[f32], f: impl Fn(f32, f32) -> f32) -> Vec<f32> {
 }
 
 /// Row-major (`data[y * width + x]`). Out-of-range authored cells are ignored.
-pub fn derive_dense<T: FillCell>(
+/// Authored values are borrowed and copied only into the grid, so a deform
+/// cell may be passed as a slice of a longer one.
+pub fn derive_dense<'a, T, B>(
     width: usize,
     height: usize,
     axis_x: &[f32],
     axis_y: &[f32],
-    authored: &[((u32, u32), T)],
+    authored: impl IntoIterator<Item = ((u32, u32), &'a B)>,
     identity: &T,
-) -> Vec<T> {
+) -> Vec<T>
+where
+    T: FillCell,
+    B: ToOwned<Owned = T> + ?Sized + 'a,
+{
     let total = width * height;
     let mut values: Vec<T> = vec![identity.clone(); total];
     let mut valid = vec![false; total];
     let mut valid_count = 0usize;
     for ((x, y), v) in authored {
-        let (x, y) = (*x as usize, *y as usize);
+        let (x, y) = (x as usize, y as usize);
         if x < width && y < height {
             let i = y * width + x;
             if !valid[i] {
                 valid_count += 1;
             }
-            values[i] = v.clone();
+            values[i] = v.to_owned();
             valid[i] = true;
         }
     }
@@ -356,7 +362,14 @@ mod tests {
     use super::*;
 
     fn grid(w: usize, h: usize, cells: &[((u32, u32), f32)]) -> Vec<f32> {
-        derive_dense(w, h, &pos(w), &pos(h), cells, &0.0)
+        derive_dense(
+            w,
+            h,
+            &pos(w),
+            &pos(h),
+            cells.iter().map(|(at, v)| (*at, v)),
+            &0.0,
+        )
     }
 
     fn pos(n: usize) -> Vec<f32> {
@@ -375,7 +388,8 @@ mod tests {
     #[test]
     fn empty_authored_fills_identity() {
         assert_eq!(grid(3, 1, &[]), vec![0.0; 3]);
-        let deform = derive_dense(2, 1, &[0.0, 1.0], &[0.0], &[], &vec![0.0f32; 4]);
+        let none: [((u32, u32), &[f32]); 0] = [];
+        let deform = derive_dense(2, 1, &[0.0, 1.0], &[0.0], none, &vec![0.0f32; 4]);
         assert_eq!(deform, vec![vec![0.0; 4], vec![0.0; 4]]);
     }
 
@@ -392,7 +406,7 @@ mod tests {
             1,
             &[0.0, 0.25, 1.0],
             &[0.0],
-            &[((0, 0), 0.0f32), ((2, 0), 1.0)],
+            [((0, 0), &0.0f32), ((2, 0), &1.0)],
             &0.0,
         );
         assert!((out[1] - 0.25).abs() < 1e-6);
@@ -427,7 +441,10 @@ mod tests {
             1,
             &[0.0, 1.0, 2.0],
             &[0.0],
-            &[((0, 0), vec![0.0f32, 0.0]), ((2, 0), vec![2.0, -4.0])],
+            [
+                ((0, 0), &[0.0f32, 0.0][..]),
+                ((2, 0), &[2.0, -4.0, 9.0][..2]),
+            ],
             &vec![0.0f32; 2],
         );
         assert_eq!(out[1], vec![1.0, -2.0]);
