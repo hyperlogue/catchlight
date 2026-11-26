@@ -2,7 +2,9 @@
 //! `catchlight.expressions` as a maintained extension: its codec, the core's
 //! upkeep of its reference table, its check, and addon merging.
 
-use catchlight_core::extension::{Extension, IdRef, Payload, RawExtension, RemovedRef, register};
+use catchlight_core::extension::{
+    Extension, IdRef, Payload, RawExtension, RemovedRef, register_official,
+};
 use catchlight_core::formats::clm::{ClmIndices, ClmMesh};
 use catchlight_core::{
     ExtensionValue, InstallError, Model, ModelNode, ModelNodeKind, ModelParam, ModelPart, Name,
@@ -199,8 +201,8 @@ fn map(param: &str) -> ControlMapping {
 
 #[test]
 fn check_warns_of_each_setting_that_does_not_fit() {
-    register::<Expressions>().unwrap();
-    register::<Humanoid>().unwrap();
+    register_official::<Expressions>().unwrap();
+    register_official::<Humanoid>().unwrap();
     let mut model = rig();
     let humanoid = model.extension_or_default::<Humanoid>().unwrap();
     humanoid.set("mouth_smile", map("smile"));
@@ -252,7 +254,7 @@ fn check_warns_of_each_setting_that_does_not_fit() {
 
 #[test]
 fn without_humanoid_data_unmapped_controls_warn_once_in_total() {
-    register::<Expressions>().unwrap();
+    register_official::<Expressions>().unwrap();
     let mut model = rig();
     *model.extension_or_default::<Expressions>().unwrap() = Expressions::from_expressions([
         Expression::new("a", vec![Setting::control("mouth_open", 0.5)]),
@@ -263,7 +265,7 @@ fn without_humanoid_data_unmapped_controls_warn_once_in_total() {
 
 #[test]
 fn check_leaves_missing_and_removed_params_to_the_core() {
-    register::<Expressions>().unwrap();
+    register_official::<Expressions>().unwrap();
     let mut model = rig();
     *model.extension_or_default::<Expressions>().unwrap() =
         Expressions::from_expressions([Expression::new(
@@ -292,7 +294,7 @@ fn check_leaves_missing_and_removed_params_to_the_core() {
 
 #[test]
 fn an_addons_expressions_merge_refuse_a_taken_name_and_leave_on_uninstall() {
-    register::<Expressions>().unwrap();
+    register_official::<Expressions>().unwrap();
     let mut base = rig();
     let mut addon = base.extract(&[NodeId::new("hat").unwrap()]);
     base.delete_node(&NodeId::new("hat").unwrap()).unwrap();
@@ -412,8 +414,8 @@ fn two_visemes_of_one_name_do_not_decode() {
 
 #[test]
 fn check_warns_of_a_viseme_the_way_it_warns_of_an_expression() {
-    register::<Expressions>().unwrap();
-    register::<Humanoid>().unwrap();
+    register_official::<Expressions>().unwrap();
+    register_official::<Humanoid>().unwrap();
     let mut model = rig();
     let humanoid = model.extension_or_default::<Humanoid>().unwrap();
     humanoid.set("mouth_smile", map("smile"));
@@ -495,7 +497,7 @@ fn reconcile_drops_a_removed_params_settings_from_both_groups() {
 
 #[test]
 fn an_addons_visemes_merge_beside_its_expressions_clash_per_group_and_leave_on_uninstall() {
-    register::<Expressions>().unwrap();
+    register_official::<Expressions>().unwrap();
     let mut base = rig();
     let mut addon = base.extract(&[NodeId::new("hat").unwrap()]);
     base.delete_node(&NodeId::new("hat").unwrap()).unwrap();

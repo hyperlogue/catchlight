@@ -2,7 +2,7 @@
 //! `catchlight.humanoid` as a maintained extension: its codec, the core's
 //! upkeep of its reference table, its check, and posing a puppet.
 
-use catchlight_core::extension::{Extension, IdRef, Payload, register};
+use catchlight_core::extension::{Extension, IdRef, Payload, register_official};
 use catchlight_core::{
     ExtensionValue, Model, ModelNode, ModelNodeKind, ModelParam, MotionResponse, Name, NodeId,
     ParamId, Puppet, ResponseInput, ResponseSource,
@@ -197,7 +197,7 @@ fn codes(model: &Model) -> Vec<String> {
 
 #[test]
 fn check_warns_of_shared_driven_nonstandard_and_non_finite_mappings() {
-    register::<Humanoid>().unwrap();
+    register_official::<Humanoid>().unwrap();
     let mut model = rig();
     let humanoid = model.extension_or_default::<Humanoid>().unwrap();
     humanoid.set("mouth_smile", map("smile", [-1.0, 0.0, 1.0]));
@@ -218,7 +218,7 @@ fn check_warns_of_shared_driven_nonstandard_and_non_finite_mappings() {
 
 #[test]
 fn check_leaves_missing_params_to_the_core() {
-    register::<Humanoid>().unwrap();
+    register_official::<Humanoid>().unwrap();
     let mut model = rig();
     model
         .extension_or_default::<Humanoid>()

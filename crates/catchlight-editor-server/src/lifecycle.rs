@@ -314,9 +314,9 @@ fn register_official_extensions() -> Result<(), EditorError> {
     static REGISTERED: OnceLock<Result<(), String>> = OnceLock::new();
     REGISTERED
         .get_or_init(|| {
-            catchlight_core::extension::register::<Animations>()
-                .and_then(|()| catchlight_core::extension::register::<Humanoid>())
-                .and_then(|()| catchlight_core::extension::register::<Expressions>())
+            catchlight_core::extension::register_official::<Animations>()
+                .and_then(|()| catchlight_core::extension::register_official::<Humanoid>())
+                .and_then(|()| catchlight_core::extension::register_official::<Expressions>())
                 .map_err(|e| e.to_string())
         })
         .clone()

@@ -2,7 +2,7 @@
 //! `catchlight.animations` as a maintained extension: its codec, the core's
 //! upkeep of its reference table, its check, and addon merging.
 
-use catchlight_core::extension::{Extension, IdRef, Payload, register};
+use catchlight_core::extension::{Extension, IdRef, Payload, register_official};
 use catchlight_core::formats::clm::{ClmIndices, ClmMesh};
 use catchlight_core::{
     ExtensionValue, InstallError, InterpolateMode, Model, ModelNode, ModelNodeKind, ModelParam,
@@ -187,7 +187,7 @@ fn a_renamed_param_carries_its_lanes_and_a_deleted_one_drops_them() {
 
 #[test]
 fn check_warns_of_driven_params_and_leaves_missing_ones_to_the_core() {
-    register::<Animations>().unwrap();
+    register_official::<Animations>().unwrap();
     let mut model = rig();
     let root = model.root().unwrap().clone();
     model
@@ -228,7 +228,7 @@ fn check_warns_of_driven_params_and_leaves_missing_ones_to_the_core() {
 
 #[test]
 fn an_addons_clips_merge_on_install_refuse_a_taken_name_and_leave_on_uninstall() {
-    register::<Animations>().unwrap();
+    register_official::<Animations>().unwrap();
     let mut base = rig();
     let mut addon = base.extract(&[NodeId::new("hat").unwrap()]);
     assert!(

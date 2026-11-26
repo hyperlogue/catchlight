@@ -210,6 +210,9 @@ fn renumber(refs: &mut Vec<IdRef>, at: &mut HashMap<IdRef, u32>, r: &IdRef) -> u
     })
 }
 
+impl catchlight_core::extension::sealed::Sealed for Humanoid {}
+impl catchlight_core::extension::Official for Humanoid {}
+
 impl Extension for Humanoid {
     const KEY: &'static str = "catchlight.humanoid";
     const VERSION: u32 = 1;

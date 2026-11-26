@@ -784,6 +784,9 @@ fn renumber(refs: &mut Vec<IdRef>, at: &mut HashMap<IdRef, u32>, r: &IdRef) -> u
     })
 }
 
+impl catchlight_core::extension::sealed::Sealed for Expressions {}
+impl catchlight_core::extension::Official for Expressions {}
+
 impl Extension for Expressions {
     const KEY: &'static str = "catchlight.expressions";
     const VERSION: u32 = 1;

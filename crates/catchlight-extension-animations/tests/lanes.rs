@@ -2,7 +2,7 @@
 //! Lanes on controls, expressions and visemes: their storage, their check,
 //! and one frame applied in the shared order with the live inputs.
 
-use catchlight_core::extension::{Extension, IdRef, Payload, RawExtension, register};
+use catchlight_core::extension::{Extension, IdRef, Payload, RawExtension, register_official};
 use catchlight_core::formats::clm::{ClmIndices, ClmMesh};
 use catchlight_core::{
     InterpolateMode, Model, ModelNode, ModelNodeKind, ModelParam, ModelPart, Name, NodeId, ParamId,
@@ -427,7 +427,7 @@ fn strangers() -> Animations {
 
 #[test]
 fn check_warns_of_a_lane_on_a_name_the_model_lacks() {
-    register::<Animations>().unwrap();
+    register_official::<Animations>().unwrap();
     let mut model = rig();
     *model.extension_or_default::<Animations>().unwrap() = strangers();
     assert_eq!(
@@ -457,7 +457,7 @@ fn check_warns_of_a_lane_on_a_name_the_model_lacks() {
 
 #[test]
 fn a_fragments_named_lanes_are_left_to_the_base() {
-    register::<Animations>().unwrap();
+    register_official::<Animations>().unwrap();
     let base = rig();
     let mut addon = base.extract(&[NodeId::new("hat").unwrap()]);
     assert!(addon.is_fragment());

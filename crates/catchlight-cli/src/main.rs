@@ -537,9 +537,9 @@ fn interruptible() -> Result<Cancellation, Error> {
 }
 
 fn run(stdout: &mut dyn Write) -> Result<u8, Error> {
-    catchlight_core::extension::register::<Animations>()?;
-    catchlight_core::extension::register::<Humanoid>()?;
-    catchlight_core::extension::register::<Expressions>()?;
+    catchlight_core::extension::register_official::<Animations>()?;
+    catchlight_core::extension::register_official::<Humanoid>()?;
+    catchlight_core::extension::register_official::<Expressions>()?;
     let matches = Cli::command().get_matches();
     let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
     match cli.cmd {

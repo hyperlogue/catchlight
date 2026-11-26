@@ -11,8 +11,9 @@
 use std::sync::Arc;
 
 use catchlight_core::extension::{
-    DecodeError, Extension, ExtensionError, IdRef, MergeRefused, MigrationError, Payload,
+    DecodeError, Extension, ExtensionError, IdRef, MergeRefused, MigrationError, Official, Payload,
     RawExtension, Receipt, RegisterError, RemovedRef, Unread, Warning, codes, register,
+    register_official, sealed,
 };
 use catchlight_core::formats::clm::{ClmIndices, ClmMesh, TextureAlpha, TextureEncoding};
 use catchlight_core::{
@@ -176,6 +177,9 @@ notes_extension!(AddonUnregistered, "test.addon-unregistered");
 notes_extension!(Twice, "test.twice");
 notes_extension!(TwiceOther, "test.twice");
 notes_extension!(Reserved, "catchlight.reserved-by-test");
+notes_extension!(ReservedOfficial, "catchlight.official-by-test");
+impl sealed::Sealed for ReservedOfficial {}
+impl Official for ReservedOfficial {}
 notes_extension!(Plain, "test.plain");
 notes_extension!(Removable, "test.removable");
 notes_extension!(ReservedRemovable, "catchlight.removable-by-test");
@@ -913,8 +917,15 @@ fn register_is_idempotent_per_type_and_refuses_a_taken_or_reserved_key() {
     ));
     assert!(matches!(
         register::<Reserved>(),
+        Err(RegisterError::Reserved {
+            key: "catchlight.reserved-by-test"
+        })
+    ));
+    assert!(matches!(
+        register::<ReservedOfficial>(),
         Err(RegisterError::Reserved { .. })
     ));
+    register_official::<ReservedOfficial>().unwrap();
 }
 
 #[test]

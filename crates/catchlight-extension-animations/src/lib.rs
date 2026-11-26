@@ -509,6 +509,9 @@ fn renumber(refs: &mut Vec<IdRef>, at: &mut HashMap<IdRef, u32>, r: &IdRef) -> u
     })
 }
 
+impl catchlight_core::extension::sealed::Sealed for Animations {}
+impl catchlight_core::extension::Official for Animations {}
+
 impl Extension for Animations {
     const KEY: &'static str = "catchlight.animations";
     const VERSION: u32 = 1;

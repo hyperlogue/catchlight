@@ -101,9 +101,9 @@ impl ReplicaState {
         // A connected tab builds only replicas, and must check the official
         // extensions as the editor does. Registering the same types again is
         // a no-op, and no other type takes these keys.
-        let _ = catchlight_core::extension::register::<Animations>()
-            .and_then(|()| catchlight_core::extension::register::<Humanoid>())
-            .and_then(|()| catchlight_core::extension::register::<Expressions>());
+        let _ = catchlight_core::extension::register_official::<Animations>()
+            .and_then(|()| catchlight_core::extension::register_official::<Humanoid>())
+            .and_then(|()| catchlight_core::extension::register_official::<Expressions>());
         let model = Model::new();
         let puppet = Puppet::new(&model);
         Self {

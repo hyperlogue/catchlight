@@ -21,7 +21,7 @@ use crate::id::{NodeId, ParamId, SlotId, TexId};
 use crate::model::Model;
 
 pub(crate) use registry::decode_registered;
-pub use registry::{RegisterError, register};
+pub use registry::{Official, RegisterError, register, register_official, sealed};
 pub use store::decode_as;
 pub use store::{Extensions, Iter};
 pub(crate) use store::{Stored, Typed};
