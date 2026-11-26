@@ -37,6 +37,7 @@ const MAX_CONNECTIONS: usize = 64;
 /// A WebSocket re-arms this as its keepalive interval instead, because an
 /// idle tab is a live tab but a silent one is not.
 const HTTP_IO_TIMEOUT: Duration = Duration::from_secs(30);
+const ACCEPT_RETRY_PAUSE: Duration = Duration::from_millis(50);
 const DEFAULT_MAX_UPLOAD_BYTES: usize = 256 * 1024 * 1024;
 /// Two of these with no answer and the peer is treated as gone.
 const DEFAULT_PING_INTERVAL: Duration = Duration::from_secs(30);
@@ -132,8 +133,7 @@ pub fn serve_http(editor: Arc<Editor>, addr: SocketAddr, options: HttpOptions) -
 
 impl HttpServer {
     pub fn serve(self) -> io::Result<()> {
-        for stream in self.listener.incoming() {
-            let mut stream = stream?;
+        for mut stream in accepted(self.listener.incoming()) {
             let Some(permit) = self.state.connections.try_acquire() else {
                 let _ = write_response(
                     &mut stream,
@@ -149,6 +149,23 @@ impl HttpServer {
         }
         Ok(())
     }
+}
+
+/// The connections `incoming` yields, past any that failed to arrive: a
+/// refused accept (an aborted handshake, no descriptors left) is no reason to
+/// stop serving the tabs already open. The pause keeps a persistent failure
+/// from spinning.
+pub(crate) fn accepted<S>(
+    incoming: impl Iterator<Item = io::Result<S>>,
+) -> impl Iterator<Item = S> {
+    incoming.filter_map(|stream| match stream {
+        Ok(stream) => Some(stream),
+        Err(err) => {
+            tracing::warn!("accepting a connection failed: {err}");
+            std::thread::sleep(ACCEPT_RETRY_PAUSE);
+            None
+        }
+    })
 }
 
 /// A guessable token is no token: every page the browser loads can reach
@@ -1178,6 +1195,17 @@ fn decode(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_accept_does_not_end_the_connections_after_it() {
+        let incoming = [
+            Err(io::Error::from(io::ErrorKind::ConnectionAborted)),
+            Ok(1),
+            Err(io::Error::other("no descriptors left")),
+            Ok(2),
+        ];
+        assert_eq!(accepted(incoming.into_iter()).collect::<Vec<_>>(), [1, 2]);
+    }
 
     #[test]
     fn a_reply_in_a_header_is_ascii_and_still_the_same_json() {

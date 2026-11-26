@@ -16,6 +16,7 @@ use catchlight_editor_protocol::{ErrorCode, Reply, Request, RequestId};
 use serde_json::Value;
 
 use super::{carries_bytes, Attachments, Editor, Payload};
+use crate::http::accepted;
 
 pub(super) const MAX_SOCKET_CONNECTIONS: usize = 64;
 pub(super) const MAX_REQUEST_BYTES: usize = 1024 * 1024;
@@ -24,8 +25,7 @@ const SOCKET_IO_TIMEOUT: Duration = Duration::from_secs(30);
 pub fn serve_unix(editor: Arc<Editor>, path: &Path) -> std::io::Result<()> {
     let listener = bind_unix_listener(path)?;
     let connections = Arc::new(ConnectionLimiter::default());
-    for stream in listener.incoming() {
-        let mut stream = stream?;
+    for mut stream in accepted(listener.incoming()) {
         let Some(_permit) = connections.try_acquire() else {
             let _ = write_reply(
                 &mut stream,
