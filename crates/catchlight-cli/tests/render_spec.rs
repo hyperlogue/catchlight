@@ -784,7 +784,11 @@ fn spec_errors_keep_their_sources() {
             ..
         }
     ));
-    assert!(error.source().is_some_and(|s| s.is::<serde_json::Error>()));
+    assert!(
+        error
+            .source()
+            .is_some_and(<dyn std::error::Error>::is::<serde_json::Error>)
+    );
     let error = parse(json!({"schema":1,
         "animations":{"a":{"timestep":0.1,"length":2,
             "lanes":[{"param":"missing","interpolation":"Linear","keyframes":[{"frame":0,"value":1}]}]}},
