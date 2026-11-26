@@ -5,7 +5,7 @@ use crate::RendererError;
 #[test]
 fn a_wrapped_error_is_printed_once_in_a_chain() {
     let error = RendererError::from(catchlight_core::LoadLimitError {
-        resource: "decoded_texture_bytes",
+        resource: catchlight_core::LoadResource::DecodedTextureBytes,
         limit: 1,
         got: 2,
     });
@@ -17,6 +17,6 @@ fn a_wrapped_error_is_printed_once_in_a_chain() {
     }
     assert_eq!(
         chain,
-        "preparing a model's textures: decoded_texture_bytes exceeded load limit: 2 > 1",
+        "preparing a model's textures: decoded texture bytes exceeded load limit: 2 > 1",
     );
 }
