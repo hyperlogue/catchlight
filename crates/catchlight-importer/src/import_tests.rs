@@ -518,6 +518,28 @@ fn a_param_that_cannot_be_posed_against_is_widened_by_one() {
 
     let model = reread(&file);
     assert_eq!(model.param_ids().len(), 3);
+
+    let large = import(
+        json!({
+            "nodes": {"uuid": 1, "name": "root", "type": "Node"},
+            "param": [
+                {"uuid": 10, "name": "far", "min": [1e30, 0.0], "max": [1e30, 0.0]},
+                {"uuid": 11, "name": "edge", "min": [f32::MAX, 0.0], "max": [f32::MAX, 0.0]}
+            ]
+        }),
+        0,
+    )
+    .expect("a collapsed range too large to widen by one still widens");
+    for p in &large.doc.params {
+        assert!(
+            p.min < p.max && p.max.is_finite(),
+            "{}: {}..{}",
+            p.name,
+            p.min,
+            p.max
+        );
+    }
+    reread(&large);
 }
 
 #[test]

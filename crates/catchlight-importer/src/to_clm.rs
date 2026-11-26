@@ -307,12 +307,18 @@ fn usable_range(id: &ParamId, name: &str, min: f32, max: f32) -> Result<(f32, f3
     } else {
         0.0
     };
+    // Past 2^24, `base + 1.0` rounds back to `base`; step to the next float.
+    let widened = match (base + 1.0).max(base.next_up()) {
+        hi if hi.is_finite() => (base, hi),
+        _ => (base.next_down(), base),
+    };
     tracing::warn!(
         "param {id} ({name:?}): the range {min}..{max} cannot be posed against; widening it to \
-         {base}..{}",
-        base + 1.0
+         {}..{}",
+        widened.0,
+        widened.1
     );
-    Ok((base, base + 1.0))
+    Ok(widened)
 }
 
 fn mesh_of(kind: &ClmNodeKind) -> Option<&ClmMesh> {
