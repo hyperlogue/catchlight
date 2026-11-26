@@ -206,7 +206,7 @@ pub fn run(
             let mut trace = directory
                 .as_ref()
                 .filter(|_| request.animation.is_some())
-                .map(|dir| tempfile::NamedTempFile::new_in(dir).map_err(|e| Error::io(dir, e)))
+                .map(|dir| crate::file::temp_beside(&dir.join(format!("{name}--trace.jsonl")), ""))
                 .transpose()?;
             let video_path = request.video.as_ref().and_then(|spec| match &destination {
                 Destination::Directory(dir) => {
@@ -328,15 +328,8 @@ pub fn run(
                 }
             }
             if let (Some(trace), Some(dir)) = (trace, directory.as_ref()) {
-                trace.as_file().sync_all().map_err(|e| Error::io(dir, e))?;
                 let filename = format!("{name}--trace.jsonl");
-                trace
-                    .persist(dir.join(&filename))
-                    .map_err(|e| Error::io(dir, e.error))?;
-                #[cfg(unix)]
-                std::fs::File::open(dir)
-                    .and_then(|f| f.sync_all())
-                    .map_err(|e| Error::io(dir, e))?;
+                crate::file::persist(trace.into_temp_path(), &dir.join(&filename))?;
                 record(&mut manifest, name, filename, None, OutputKind::Trace);
             }
             if let Some(run) = &mut manifest {

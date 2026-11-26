@@ -92,7 +92,7 @@ pub fn get(path: &Path, key: &str, out: Option<&Path>) -> Result<Got, Error> {
             let text = serde_json::to_string(&clips.clips())
                 .unwrap_or_else(|_| "<unrenderable>".to_string());
             if let Some(out) = out {
-                std::fs::write(out, text.as_bytes()).map_err(|e| Error::io(out, e))?;
+                file::write(out, text.as_bytes())?;
                 return Ok(Got::Json(String::new()));
             }
             return Ok(Got::Json(text));
@@ -102,7 +102,7 @@ pub fn get(path: &Path, key: &str, out: Option<&Path>) -> Result<Got, Error> {
         ClmExtension::Json(value) => {
             if let Some(out) = out {
                 let text = render_json(value);
-                std::fs::write(out, text.as_bytes()).map_err(|e| Error::io(out, e))?;
+                file::write(out, text.as_bytes())?;
                 return Ok(Got::Json(String::new()));
             }
             Ok(Got::Json(render_json(value)))
@@ -118,7 +118,7 @@ pub fn get(path: &Path, key: &str, out: Option<&Path>) -> Result<Got, Error> {
                 "payload": value,
             }));
             if let Some(out) = out {
-                std::fs::write(out, text.as_bytes()).map_err(|e| Error::io(out, e))?;
+                file::write(out, text.as_bytes())?;
                 return Ok(Got::Json(String::new()));
             }
             Ok(Got::Json(text))
@@ -162,7 +162,7 @@ fn write_blob(
             kind: "extension payload",
             id: key.to_string(),
         })?;
-    std::fs::write(out, &blob.data).map_err(|e| Error::io(out, e))?;
+    file::write(out, &blob.data)?;
     Ok(blob.data.clone())
 }
 

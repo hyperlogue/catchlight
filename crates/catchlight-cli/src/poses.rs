@@ -107,7 +107,7 @@ pub fn run(path: &Path, out: &Path) -> Result<Written, Error> {
         path: out.to_path_buf(),
         source,
     })?;
-    std::fs::write(out, &bytes).map_err(|source| Error::io(out, source))?;
+    crate::file::write(out, &bytes)?;
     Ok(Written {
         out: out.to_path_buf(),
         bytes: bytes.len(),

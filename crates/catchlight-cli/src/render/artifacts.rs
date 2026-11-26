@@ -572,31 +572,11 @@ pub(super) fn schema_example(kind: &str) -> Result<serde_json::Value, Error> {
 }
 
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), Error> {
-    atomic(path, |file| {
-        file.write_all(bytes).map_err(|e| Error::io(path, e))
-    })
-}
-fn atomic(
-    path: &Path,
-    write: impl FnOnce(&mut std::fs::File) -> Result<(), Error>,
-) -> Result<(), Error> {
-    let dir = path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    let mut temp = tempfile::NamedTempFile::new_in(dir).map_err(|e| Error::io(path, e))?;
-    write(temp.as_file_mut())?;
-    temp.as_file().sync_all().map_err(|e| Error::io(path, e))?;
-    temp.persist(path).map_err(|e| Error::io(path, e.error))?;
-    #[cfg(unix)]
-    std::fs::File::open(dir)
-        .and_then(|f| f.sync_all())
-        .map_err(|e| Error::io(path, e))?;
-    Ok(())
+    crate::file::write(path, bytes)
 }
 pub fn atomic_json(path: &Path, value: &impl Serialize) -> Result<(), Error> {
     // Stream into the destination rather than buffering the whole record.
-    atomic(path, |file| {
+    crate::file::write_atomic(path, |file| {
         let mut writer = std::io::BufWriter::new(file);
         serde_json::to_writer_pretty(&mut writer, value)?;
         writer.flush().map_err(|e| Error::io(path, e))

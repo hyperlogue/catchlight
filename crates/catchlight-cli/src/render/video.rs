@@ -41,15 +41,8 @@ impl VideoSink {
         interval: f64,
         background: &Background,
     ) -> Result<Self, Error> {
-        let dir = path
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or(Path::new("."));
-        let temp = tempfile::Builder::new()
-            .suffix(&format!(".{}", format.extension()))
-            .tempfile_in(dir)
-            .map_err(|e| Error::io(path, e))?
-            .into_temp_path();
+        let temp =
+            crate::file::temp_beside(path, &format!(".{}", format.extension()))?.into_temp_path();
         let mut command = Command::new(program());
         command
             .args(["-hide_banner", "-loglevel", "error", "-nostdin", "-y"])
@@ -140,17 +133,7 @@ impl VideoSink {
             .temp
             .take()
             .ok_or_else(|| bad("video already finished"))?;
-        std::fs::File::open(&temp)
-            .and_then(|f| f.sync_all())
-            .map_err(|e| Error::io(&path, e))?;
-        temp.persist(&path).map_err(|e| Error::io(&path, e.error))?;
-        #[cfg(unix)]
-        if let Some(dir) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-            std::fs::File::open(dir)
-                .and_then(|f| f.sync_all())
-                .map_err(|e| Error::io(dir, e))?;
-        }
-        Ok(())
+        crate::file::persist(temp, &path)
     }
 
     fn failure(&mut self) -> Error {
