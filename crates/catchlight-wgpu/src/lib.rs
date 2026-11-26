@@ -150,7 +150,7 @@ pub async fn create_surface_context(
         .await?;
     let (device, queue) =
         request_device(&adapter, wgpu::Features::ADDRESS_MODE_CLAMP_TO_BORDER).await?;
-    let context = configure_surface(&adapter, &device, surface, width, height);
+    let context = configure_surface(&adapter, &device, surface, width, height)?;
     Ok((device, queue, context))
 }
 
@@ -162,8 +162,13 @@ pub fn configure_surface(
     surface: wgpu::Surface<'static>,
     width: u32,
     height: u32,
-) -> SurfaceContext {
+) -> RendererResult<SurfaceContext> {
     let caps = surface.get_capabilities(adapter);
+    let (Some(&first_format), Some(&first_alpha)) =
+        (caps.formats.first(), caps.alpha_modes.first())
+    else {
+        return Err(RendererError::SurfaceUnsupported);
+    };
     // WebGPU canvases advertise only non-sRGB formats, so render through an
     // sRGB view of the native format.
     let (surface_format, render_format, view_formats) =
@@ -174,7 +179,7 @@ pub fn configure_surface(
                 .formats
                 .iter()
                 .find(|f| f.add_srgb_suffix() != **f)
-                .unwrap_or(&caps.formats[0]);
+                .unwrap_or(&first_format);
             let srgb = base.add_srgb_suffix();
             (base, srgb, vec![srgb])
         };
@@ -186,7 +191,7 @@ pub fn configure_surface(
         .iter()
         .copied()
         .find(|m| *m == wgpu::CompositeAlphaMode::Opaque)
-        .unwrap_or(caps.alpha_modes[0]);
+        .unwrap_or(first_alpha);
 
     let config = wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -200,12 +205,12 @@ pub fn configure_surface(
     };
     surface.configure(device, &config);
 
-    SurfaceContext {
+    Ok(SurfaceContext {
         surface,
         config,
         surface_format,
         render_format,
-    }
+    })
 }
 
 /// `Backends::PRIMARY`, not `all()`: the workspace-unified `webgl` feature

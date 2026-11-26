@@ -94,6 +94,9 @@ pub enum RendererError {
     #[error("preparing a model's textures: {0}")]
     LoadLimit(catchlight_core::LoadLimitError),
 
+    #[error("the surface has no format or alpha mode in common with the adapter")]
+    SurfaceUnsupported,
+
     #[error("no usable GPU adapter: {0}")]
     Adapter(wgpu::RequestAdapterError),
 

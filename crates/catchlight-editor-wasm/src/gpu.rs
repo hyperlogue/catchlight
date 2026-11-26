@@ -95,7 +95,8 @@ impl Gpu {
             (canvas.width(), canvas.height()),
             device.limits().max_texture_dimension_2d,
         );
-        let surface = configure_surface(&adapter, &device, surface, width, height);
+        let surface = configure_surface(&adapter, &device, surface, width, height)
+            .map_err(|e| e.to_string())?;
         let stage = GlStage::new(canvas, surface, &device);
         Ok(Gpu {
             instance,

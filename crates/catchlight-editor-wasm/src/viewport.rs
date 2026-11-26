@@ -18,7 +18,7 @@ use std::rc::{Rc, Weak};
 
 use catchlight_wgpu::{
     configure_surface, create_orthographic_camera_at, FrameTargets, RenderList, RenderTarget,
-    SurfaceContext,
+    RendererError, SurfaceContext,
 };
 use wasm_bindgen::prelude::*;
 
@@ -915,15 +915,15 @@ impl Viewport {
             }
             None => {
                 let surface = gpu.surface_for(canvas).map_err(|e| JsValue::from_str(&e))?;
-                // Caught here because `configure_surface` would index an empty
-                // capability list instead of saying so.
-                if surface.get_capabilities(&gpu.adapter).formats.is_empty() {
-                    return Err(JsValue::from_str(
-                        "this canvas has no surface format in common with the adapter",
-                    ));
-                }
                 let mut surface =
-                    configure_surface(&gpu.adapter, &gpu.device, surface, size.0, size.1);
+                    configure_surface(&gpu.adapter, &gpu.device, surface, size.0, size.1).map_err(
+                        |e| match e {
+                            RendererError::SurfaceUnsupported => JsValue::from_str(
+                                "this canvas has no surface format in common with the adapter",
+                            ),
+                            other => JsValue::from_str(&other.to_string()),
+                        },
+                    )?;
                 // `COPY_SRC` lets `readback` copy the frame. WebGPU only: a GL surface
                 // refuses any usage but `RENDER_ATTACHMENT`.
                 surface.config.usage |= wgpu::TextureUsages::COPY_SRC;
