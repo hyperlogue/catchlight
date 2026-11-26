@@ -311,7 +311,8 @@ fn redirected_terminal_mode_emits_listing_only_and_never_creates_implicit_files(
     ]);
     assert_eq!(code, 0, "{stderr}");
     assert!(stdout.contains("Render list:"));
-    assert!(stdout.contains("--out"));
+    assert!(!stdout.contains("--out"), "{stdout}");
+    assert!(stderr.contains("--out"), "{stderr}");
     assert!(!stdout.contains('\u{1b}'));
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
 }

@@ -276,7 +276,7 @@ pub fn run(
                                 terminal::present(&png(&pixels, framing.size)?, std::io::stdout())
                                     .map_err(|e| bad(format!("terminal image: {e}")))?;
                             } else {
-                                println!("Use --out image.png or --out-dir directory to save this render.");
+                                eprintln!("Use --out image.png or --out-dir directory to save this render.");
                             }
                         }
                         Destination::Directory(dir) => {
