@@ -120,6 +120,17 @@ class ReleaseNotesTests(unittest.TestCase):
                      '## [1.1.0] - 2026-01-01\n\n- old\n\n[1.2.0]: https://x/v1.2.0\n')
         self.assertEqual(self.notes(changelog), '### New\n\n- **A.** a\n')
 
+    def test_wrapped_paragraphs_and_items_fill_one_line_each(self):
+        changelog = ('# Changelog\n\n## [1.2.0] - 2026-01-02\n\nBreaking for\ncallers.\n\n'
+                     '### New\n\n- **A.** Run `tool\n  --flag` and\n  see.\n- **B.** b\n'
+                     '  - nested\n    item\n\n```sh\ncargo build\ncargo test\n```\n\n'
+                     '| a | b |\n| - | - |\n')
+        self.assertEqual(
+            self.notes(changelog),
+            'Breaking for callers.\n\n### New\n\n- **A.** Run `tool --flag` and see.\n'
+            '- **B.** b\n  - nested item\n\n```sh\ncargo build\ncargo test\n```\n\n'
+            '| a | b |\n| - | - |\n')
+
     def test_a_missing_section_is_an_error(self):
         with self.assertRaises(ValueError):
             self.notes('# Changelog\n\n## [1.1.0]\n\n- old\n')

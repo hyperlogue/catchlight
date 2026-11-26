@@ -1,7 +1,7 @@
 """Check the shared public release version before building or publishing.
 
 `--notes` prints that version's CHANGELOG.md section instead: the GitHub
-release body, so the release page carries the reviewed notes verbatim.
+release body, so the release page carries the reviewed notes.
 """
 import json
 from pathlib import Path
@@ -45,10 +45,32 @@ def release_notes(version, root=ROOT):
             inside = line.startswith(f'## [{version}]')
         elif inside and not re.match(r'\[[^\]]+\]: ', line):
             lines.append(line)
-    notes = '\n'.join(lines).strip()
+    notes = unwrap('\n'.join(lines).strip())
     if not notes:
         raise ValueError(f'CHANGELOG.md has no notes under ## [{version}]')
     return notes + '\n'
+
+
+BLOCK_START = re.compile(r'#{1,6} |[-*+] |\d+[.)] |\||>')
+NO_CONTINUATION = re.compile(r'#{1,6} |\||```')
+
+
+def unwrap(text):
+    """Joins each paragraph and list item onto one line. A GitHub release
+    body breaks the line at every newline, so the changelog's 72-column
+    wrapping would show as ragged short lines."""
+    out, fenced = [], False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith('```'):
+            fenced = not fenced
+            out.append(line)
+        elif (fenced or not stripped or BLOCK_START.match(stripped) or not out
+              or not out[-1].strip() or NO_CONTINUATION.match(out[-1].strip())):
+            out.append(line)
+        else:
+            out[-1] += ' ' + stripped
+    return '\n'.join(out)
 
 
 if __name__ == '__main__':
