@@ -598,8 +598,7 @@ pub fn atomic_json(path: &Path, value: &impl Serialize) -> Result<(), Error> {
     // Stream into the destination rather than buffering the whole record.
     atomic(path, |file| {
         let mut writer = std::io::BufWriter::new(file);
-        serde_json::to_writer_pretty(&mut writer, value)
-            .map_err(|e| bad(format!("JSON encoding: {e}")))?;
+        serde_json::to_writer_pretty(&mut writer, value)?;
         writer.flush().map_err(|e| Error::io(path, e))
     })
 }

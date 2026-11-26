@@ -563,6 +563,43 @@ fn mkv_video_decodes_to_the_kept_frames_bit_for_bit() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn an_encoder_that_dies_silently_is_reported_with_its_exit_status() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = common::tmp("render-execution-dying-ffmpeg");
+    write_model(&dir.join("model.clm"));
+    let fake = dir.join("fake-ffmpeg");
+    std::fs::write(
+        &fake,
+        "#!/bin/sh\n[ \"$1\" = -version ] && exit 0\nexit 3\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut s = spec();
+    s["animations"] = json!({"hold":{"name":"Hold","timestep":0.05,"length":2,
+        "lanes":[]}});
+    s["requests"]["a"]["animation"] = json!({"source":"spec","name":"hold"});
+    s["requests"]["a"]["video"] = json!({"format":"gif"});
+    std::fs::write(dir.join("spec.json"), serde_json::to_vec(&s).unwrap()).unwrap();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_catchlight-cli"))
+        .env("CATCHLIGHT_FFMPEG", &fake)
+        .args([
+            "render",
+            "model.clm",
+            "--spec",
+            "spec.json",
+            "--out-dir",
+            "out",
+        ])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("exit status: 3"), "{stderr}");
+}
+
 #[test]
 fn missing_ffmpeg_fails_before_rendering_with_an_honest_manifest() {
     let dir = common::tmp("render-execution-no-ffmpeg");

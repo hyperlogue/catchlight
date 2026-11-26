@@ -94,7 +94,10 @@ impl VideoSink {
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
-        let mut child = command.spawn().map_err(|e| bad(format!("ffmpeg: {e}")))?;
+        let mut child = command.spawn().map_err(|source| Error::Spawn {
+            program: program(),
+            source,
+        })?;
         let stdin = child.stdin.take();
         // Drain stderr concurrently so a chatty encoder cannot block the pipe.
         let stderr = child.stderr.take().map(|mut pipe| {
@@ -151,7 +154,10 @@ impl VideoSink {
     }
 
     fn failure(&mut self) -> Error {
-        let _ = self.child.wait();
+        let status = match self.child.wait() {
+            Ok(status) => status.to_string(),
+            Err(e) => format!("status unknown: {e}"),
+        };
         let message = self
             .stderr
             .take()
@@ -159,7 +165,7 @@ impl VideoSink {
             .map(|b| String::from_utf8_lossy(&b).trim().to_owned())
             .unwrap_or_default();
         bad(format!(
-            "ffmpeg failed encoding {}: {message}",
+            "ffmpeg failed encoding {} ({status}): {message}",
             self.path.display()
         ))
     }

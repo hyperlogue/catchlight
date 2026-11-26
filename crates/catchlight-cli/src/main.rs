@@ -399,10 +399,7 @@ fn run_extension(cmd: ExtensionCmd) -> Result<i32, Error> {
 }
 
 fn print_json(value: &impl serde::Serialize) -> Result<(), Error> {
-    println!(
-        "{}",
-        serde_json::to_string_pretty(value).map_err(|e| Error::Storage(e.to_string()))?
-    );
+    println!("{}", serde_json::to_string_pretty(value)?);
     Ok(())
 }
 
@@ -591,10 +588,7 @@ fn run() -> Result<i32, Error> {
         }
         Cmd::Storage { file } => {
             let report = storage::run(&file)?;
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&report).map_err(|e| Error::Storage(e.to_string()))?
-            );
+            println!("{}", serde_json::to_string_pretty(&report)?);
         }
     }
     Ok(0)

@@ -60,6 +60,14 @@ pub enum Error {
         #[source]
         source: std::io::Error,
     },
+    #[error("{} could not be started: {source}", .program.to_string_lossy())]
+    Spawn {
+        program: std::ffi::OsString,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("JSON encoding: {0}")]
+    Json(#[from] serde_json::Error),
     #[error(
         "{} is a Git LFS pointer, not the file it names; fetch it with `git lfs pull`",
         .path.display()

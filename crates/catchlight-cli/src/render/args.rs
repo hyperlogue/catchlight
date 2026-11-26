@@ -423,9 +423,6 @@ impl BoundsArgs {
     }
 }
 fn print_json(value: &impl serde::Serialize) -> Result<(), Error> {
-    println!(
-        "{}",
-        serde_json::to_string_pretty(value).map_err(|e| spec::bad(e.to_string()))?
-    );
+    println!("{}", serde_json::to_string_pretty(value)?);
     Ok(())
 }
