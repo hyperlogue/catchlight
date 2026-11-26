@@ -2,7 +2,6 @@
 
 use std::collections::HashSet;
 
-use catchlight_core::LoadLimits;
 use catchlight_extension_animations::Animations;
 use catchlight_extension_expressions::Expressions;
 use catchlight_extension_humanoid::Humanoid;
@@ -28,7 +27,6 @@ impl Editor {
             validate_title(name)?;
         }
         check_source_attachments(source.as_ref(), attachments)?;
-        check_attachment_budget(attachments)?;
         let (model, derived_name) = match source {
             None => (Model::new(), None),
             Some(SessionSource::Clm {}) => {
@@ -257,7 +255,6 @@ impl Editor {
         textures: Vec<ImportTexture>,
         attachments: &mut Attachments,
     ) -> Result<Captured<ResponseBody>, EditorError> {
-        check_attachment_budget(attachments)?;
         let structure = required_attachment(attachments, "structure")?;
         let images = attachments.take_family("texture");
         let file = clm_file_from_json(&structure, &textures, images)?;
@@ -310,21 +307,6 @@ fn check_source_attachments(
                 "this session source does not use attachment {name}"
             )));
         }
-    }
-    Ok(())
-}
-
-fn check_attachment_budget(attachments: &Attachments) -> Result<(), EditorError> {
-    let requested = attachments.0.values().fold(0u64, |total, bytes| {
-        total.saturating_add(bytes.len() as u64)
-    });
-    let limit = LoadLimits::default().encoded_bytes;
-    if requested > limit {
-        return Err(EditorError::Limit {
-            resource: "encoded_bytes",
-            limit,
-            requested,
-        });
     }
     Ok(())
 }

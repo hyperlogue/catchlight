@@ -4,7 +4,7 @@
 //! (where a payload is written) beside the [`Request`]: the socket client
 //! shares this process's filesystem, so bytes never ride in the line.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use catchlight_core::LoadLimits;
 use catchlight_editor_protocol::{ErrorCode, Reply, Request, RequestId};
 use serde_json::Value;
 
@@ -276,15 +277,30 @@ fn read_files(files: Option<Value>) -> Result<Attachments, FilesError> {
             "`files` maps an attachment name to a path".into(),
         ));
     };
+    let limit = LoadLimits::default().encoded_bytes;
+    let mut total = 0u64;
     for (name, path) in files {
         let Value::String(path) = path else {
             return Err(FilesError::Bad(format!(
                 "the `files` entry for {name:?} is not a path"
             )));
         };
-        let bytes = std::fs::read(&path)
-            .map_err(|e| FilesError::Io(format!("reading {name:?} from {path}: {e}")))?;
+        let io = |e: std::io::Error| FilesError::Io(format!("reading {name:?} from {path}: {e}"));
+        let file = std::fs::File::open(&path).map_err(io)?;
+        if !file.metadata().map_err(io)?.is_file() {
+            return Err(FilesError::Bad(format!(
+                "the `files` entry for {name:?} is not a regular file: {path}"
+            )));
+        }
+        // One byte past the budget is enough for the editor to refuse it.
+        let room = limit.saturating_sub(total).saturating_add(1);
+        let mut bytes = Vec::new();
+        file.take(room).read_to_end(&mut bytes).map_err(io)?;
+        total = total.saturating_add(bytes.len() as u64);
         attachments.insert(name, bytes);
+        if total > limit {
+            break;
+        }
     }
     Ok(attachments)
 }

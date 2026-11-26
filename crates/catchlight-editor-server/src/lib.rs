@@ -46,7 +46,7 @@ use catchlight_core::formats::clm::{
     self as clm, ClmIndices, ClmMesh, TextureAlpha, TextureEncoding as CoreTextureEncoding,
 };
 use catchlight_core::id::{HexSource as _, Name, SeededHex};
-use catchlight_core::LoadBudget;
+use catchlight_core::{LoadBudget, LoadLimits};
 
 use catchlight_core::{
     BindingKey, BindingTarget as CoreBindingTarget, ExtensionValue, InstallError, Mat4, Model,
@@ -523,7 +523,8 @@ pub type Observer = Box<dyn Fn(&Event) + Send + Sync>;
 
 type SharedObserver = Arc<dyn Fn(&Event) + Send + Sync>;
 
-/// Checked against [`COMMAND_BYTES`] before any command runs.
+/// Their names are checked against [`COMMAND_BYTES`] and their total against
+/// [`LoadLimits::encoded_bytes`] before any command runs.
 #[derive(Debug, Default)]
 pub struct Attachments(std::collections::BTreeMap<String, Vec<u8>>);
 
@@ -664,6 +665,7 @@ impl Editor {
         let mut payload = None;
         let dispatched = limits::json_size(&req, "request_bytes", limits::MAX_REQUEST_JSON_BYTES)
             .and_then(|()| check_attachments(&req.command, &attachments))
+            .and_then(|()| check_attachment_budget(&attachments))
             .and_then(|()| self.dispatch(req.command, &mut attachments, &mut payload));
         let reply = match dispatched {
             Ok(captured) => Reply::Ok {
@@ -2476,6 +2478,21 @@ fn check_attachments(cmd: &Command, attachments: &Attachments) -> Result<(), Edi
     Ok(())
 }
 
+fn check_attachment_budget(attachments: &Attachments) -> Result<(), EditorError> {
+    let requested = attachments.0.values().fold(0u64, |total, bytes| {
+        total.saturating_add(bytes.len() as u64)
+    });
+    let limit = LoadLimits::default().encoded_bytes;
+    if requested > limit {
+        return Err(EditorError::Limit {
+            resource: "encoded_bytes",
+            limit,
+            requested,
+        });
+    }
+    Ok(())
+}
+
 pub fn carries_bytes(cmd: &Command) -> Option<&'static Bytes> {
     cmd.carries_bytes()
 }
@@ -2601,6 +2618,85 @@ mod tests {
                 if message.contains("request exceeds")
         ));
         server_thread.join().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn socket_files_must_name_regular_files() {
+        let (client, server) = UnixStream::pair().unwrap();
+        let server_thread = std::thread::spawn(move || {
+            let editor = Editor::new();
+            serve_connection(&editor, server);
+        });
+        let mut writer = client.try_clone().unwrap();
+        let mut reader = BufReader::new(client);
+        for (id, path) in [(1u64, "/dev/zero"), (2, "/")] {
+            let line = serde_json::json!({
+                "id": id,
+                "cmd": "texture_add",
+                "session": 1,
+                "node": "face",
+                "files": { "texture": path },
+            });
+            writer.write_all(format!("{line}\n").as_bytes()).unwrap();
+            let mut reply = String::new();
+            reader.read_line(&mut reply).unwrap();
+            match serde_json::from_str::<Reply>(&reply).unwrap() {
+                Reply::Err {
+                    id: got,
+                    code,
+                    message,
+                    ..
+                } => {
+                    assert_eq!(got, id);
+                    assert_eq!(code, ErrorCode::BadRequest, "{message}");
+                    assert!(message.contains("not a regular file"), "{message}");
+                }
+                other => panic!("{path} was read: {other:?}"),
+            }
+        }
+        drop(writer);
+        drop(reader);
+        server_thread.join().unwrap();
+    }
+
+    #[test]
+    fn every_command_that_carries_bytes_is_held_to_the_attachment_budget() {
+        let ed = Editor::new();
+        let s = session_of(body(ed.handle(req(
+            1,
+            Command::SessionNew {
+                name: None,
+                source: None,
+            },
+        ))));
+        let limit = LoadLimits::default().encoded_bytes;
+        let mut attachments = Attachments::none();
+        // Zeroed, so the pages are never touched.
+        attachments.insert("texture", vec![0; limit as usize + 1]);
+        let (reply, _) = ed.handle_with(
+            req(
+                2,
+                Command::TextureAdd {
+                    session: s,
+                    node: "face".parse().unwrap(),
+                    encoding: TextureEncoding::Png,
+                    texture: None,
+                },
+            ),
+            attachments,
+        );
+        match reply {
+            Reply::Err {
+                code: ErrorCode::LimitExceeded,
+                limit: Some(info),
+                ..
+            } => {
+                assert_eq!(info.resource, "encoded_bytes");
+                assert_eq!(info.requested, limit + 1);
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     /// A bad Id must be refused with the request's id: a client blocking on
