@@ -41,9 +41,10 @@ Ids:
   is a reading aid, not a path.
 
 Exit status:
-  0  the command succeeded; for `diff`, the two files are identical
-  1  `diff` only: the two files differ
-  2  the command failed";
+  0    the command succeeded; for `diff`, the two files are identical
+  1    `diff` only: the two files differ
+  2    the command failed
+  141  a reader closed the output pipe before the command finished writing";
 
 #[derive(Parser)]
 #[command(
