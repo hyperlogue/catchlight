@@ -226,7 +226,7 @@ pub(super) fn execute(cli: &Cli, stream: &mut transport::Transport) -> Result<Op
                     node,
                     cell,
                     file,
-                } => (params, node, parse_cell(cell)?, read_offsets(file)?),
+                } => (params, node, *cell, read_offsets(file)?),
                 DeformCmd::Set {
                     params,
                     node,
@@ -238,19 +238,11 @@ pub(super) fn execute(cli: &Cli, stream: &mut transport::Transport) -> Result<Op
                     let mesh = remote.mesh(node)?;
                     let offsets = affine_offsets(
                         &mesh,
-                        translate
-                            .as_deref()
-                            .map(parse_vec2)
-                            .transpose()?
-                            .unwrap_or([0.0; 2]),
+                        translate.unwrap_or([0.0; 2]),
                         rotate.unwrap_or(0.0),
-                        scale
-                            .as_deref()
-                            .map(parse_vec2)
-                            .transpose()?
-                            .unwrap_or([1.0; 2]),
+                        scale.unwrap_or([1.0; 2]),
                     );
-                    (params, node, parse_cell(cell)?, offsets)
+                    (params, node, *cell, offsets)
                 }
             };
             remote.batch(vec![cell_write(
@@ -437,7 +429,7 @@ fn binding_command(remote: &mut CapturedClient<'_>, action: &BindingCmd) -> Resu
             params.wire(),
             (*target).into(),
             vec![BindingCellWrite {
-                cell: parse_cell(cell)?,
+                cell: *cell,
                 value: BindingCellValue::Scalar(*value),
             }],
         )]),
@@ -450,7 +442,7 @@ fn binding_command(remote: &mut CapturedClient<'_>, action: &BindingCmd) -> Resu
             node: node.clone(),
             params: params.wire(),
             target: *target,
-            cells: vec![parse_cell(cell)?],
+            cells: vec![*cell],
         }]),
         BindingCmd::Reset {
             params,
@@ -470,10 +462,7 @@ fn binding_command(remote: &mut CapturedClient<'_>, action: &BindingCmd) -> Resu
                 node,
                 params.wire(),
                 *target,
-                vec![BindingCellWrite {
-                    cell: parse_cell(cell)?,
-                    value,
-                }],
+                vec![BindingCellWrite { cell: *cell, value }],
             )])
         }
         BindingCmd::CopyKey {
@@ -484,13 +473,7 @@ fn binding_command(remote: &mut CapturedClient<'_>, action: &BindingCmd) -> Resu
             to,
             derived,
         } => {
-            let cells = remote.cells(
-                node,
-                params.wire(),
-                *target,
-                vec![parse_cell(from)?],
-                *derived,
-            )?;
+            let cells = remote.cells(node, params.wire(), *target, vec![*from], *derived)?;
             let read = cells
                 .into_iter()
                 .next()
@@ -500,10 +483,7 @@ fn binding_command(remote: &mut CapturedClient<'_>, action: &BindingCmd) -> Resu
                 node,
                 params.wire(),
                 *target,
-                vec![BindingCellWrite {
-                    cell: parse_cell(to)?,
-                    value,
-                }],
+                vec![BindingCellWrite { cell: *to, value }],
             )])
         }
         BindingCmd::Invert {

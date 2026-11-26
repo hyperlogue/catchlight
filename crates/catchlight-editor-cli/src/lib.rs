@@ -238,17 +238,17 @@ enum Cmd {
         #[arg(long)]
         out: String,
         /// Pose a param: `--param <id>=0.5` (repeatable).
-        #[arg(long = "param")]
-        params: Vec<String>,
+        #[arg(long = "param", value_parser = parse_param)]
+        params: Vec<ParamPose>,
         /// Output size, e.g. `512x512`.
-        #[arg(long)]
-        size: Option<String>,
+        #[arg(long, value_parser = parse_size)]
+        size: Option<[u32; 2]>,
         /// Orthographic height in world units (defaults to the editor's).
         #[arg(long = "camera-height")]
         camera_height: Option<f32>,
         /// Camera centre, e.g. `0,120`. Needs `--camera-height`.
-        #[arg(long = "camera-center")]
-        camera_center: Option<String>,
+        #[arg(long = "camera-center", value_parser = parse_vec2)]
+        camera_center: Option<[f32; 2]>,
     },
 }
 
@@ -298,8 +298,8 @@ enum NodeCmd {
         #[arg(long)]
         parent: NodeId,
         /// group | part | composite | meshgroup
-        #[arg(long)]
-        kind: String,
+        #[arg(long, value_parser = parse_kind)]
+        kind: NodeKindArg,
         #[arg(long)]
         name: Option<String>,
         /// The Id to create it under; without one the editor draws a free one.
@@ -313,14 +313,14 @@ enum NodeCmd {
         #[arg(long)]
         name: Option<String>,
         /// `x,y,z`
-        #[arg(long, allow_hyphen_values = true)]
-        translate: Option<String>,
+        #[arg(long, allow_hyphen_values = true, value_parser = parse_vec3)]
+        translate: Option<[f32; 3]>,
         /// `x,y,z` (radians)
-        #[arg(long, allow_hyphen_values = true)]
-        rotate: Option<String>,
+        #[arg(long, allow_hyphen_values = true, value_parser = parse_vec3)]
+        rotate: Option<[f32; 3]>,
         /// `x,y`
-        #[arg(long, allow_hyphen_values = true)]
-        scale: Option<String>,
+        #[arg(long, allow_hyphen_values = true, value_parser = parse_vec2)]
+        scale: Option<[f32; 2]>,
         #[arg(long, allow_hyphen_values = true)]
         z_order: Option<f32>,
         #[arg(long, allow_hyphen_values = true)]
@@ -338,11 +338,11 @@ enum NodeCmd {
         #[arg(long = "blend-mode", value_parser = wire_enum::<BlendMode>)]
         blend_mode: Option<BlendMode>,
         /// `r,g,b`
-        #[arg(long, allow_hyphen_values = true)]
-        tint: Option<String>,
+        #[arg(long, allow_hyphen_values = true, value_parser = parse_vec3)]
+        tint: Option<[f32; 3]>,
         /// `r,g,b`
-        #[arg(long = "screen-tint", allow_hyphen_values = true)]
-        screen_tint: Option<String>,
+        #[arg(long = "screen-tint", allow_hyphen_values = true, value_parser = parse_vec3)]
+        screen_tint: Option<[f32; 3]>,
         #[arg(long = "mask-threshold")]
         mask_threshold: Option<f32>,
         #[arg(long = "propagate-meshgroup")]
@@ -478,8 +478,8 @@ enum WeldCmd {
         a: NodeId,
         #[arg(long)]
         b: NodeId,
-        #[arg(long = "pair")]
-        pairs: Vec<String>,
+        #[arg(long = "pair", value_parser = parse_pair)]
+        pairs: Vec<SlotPair>,
     },
     /// Set one weld pair's weight: `--slot` is on `--a`, and `--weight` is
     /// `--a`'s share in 0..=1, whichever way round the weld is stored.
@@ -638,8 +638,8 @@ enum BindingCmd {
         node: NodeId,
         #[arg(long, value_parser = wire_enum::<ScalarTarget>)]
         target: ScalarTarget,
-        #[arg(long)]
-        cell: String,
+        #[arg(long, value_parser = parse_cell)]
+        cell: [u32; 2],
         #[arg(long, allow_hyphen_values = true)]
         value: f32,
     },
@@ -651,8 +651,8 @@ enum BindingCmd {
         node: NodeId,
         #[arg(long, value_parser = wire_enum::<BindingTarget>)]
         target: BindingTarget,
-        #[arg(long)]
-        cell: String,
+        #[arg(long, value_parser = parse_cell)]
+        cell: [u32; 2],
     },
     /// Author the identity value at a keypoint.
     Reset {
@@ -662,8 +662,8 @@ enum BindingCmd {
         node: NodeId,
         #[arg(long, value_parser = wire_enum::<BindingTarget>)]
         target: BindingTarget,
-        #[arg(long)]
-        cell: String,
+        #[arg(long, value_parser = parse_cell)]
+        cell: [u32; 2],
     },
     /// Delete a whole binding.
     Delete {
@@ -707,10 +707,10 @@ enum BindingCmd {
         node: NodeId,
         #[arg(long, value_parser = wire_enum::<BindingTarget>)]
         target: BindingTarget,
-        #[arg(long)]
-        from: String,
-        #[arg(long)]
-        to: String,
+        #[arg(long, value_parser = parse_cell)]
+        from: [u32; 2],
+        #[arg(long, value_parser = parse_cell)]
+        to: [u32; 2],
         #[arg(long)]
         derived: bool,
     },
@@ -754,8 +754,8 @@ enum MaskCmd {
 enum PresenceCmd {
     /// Publish pose / selection. `--param <id>=<value>` (repeatable).
     Set {
-        #[arg(long = "param", allow_hyphen_values = true)]
-        params: Vec<String>,
+        #[arg(long = "param", allow_hyphen_values = true, value_parser = parse_param)]
+        params: Vec<ParamPose>,
         #[arg(long)]
         select: Option<NodeId>,
     },
@@ -772,16 +772,16 @@ enum DeformCmd {
         params: BindingParamsArg,
         #[arg(long)]
         node: NodeId,
-        #[arg(long)]
-        cell: String,
+        #[arg(long, value_parser = parse_cell)]
+        cell: [u32; 2],
         /// `x,y`
-        #[arg(long, allow_hyphen_values = true)]
-        translate: Option<String>,
+        #[arg(long, allow_hyphen_values = true, value_parser = parse_vec2)]
+        translate: Option<[f32; 2]>,
         #[arg(long, allow_hyphen_values = true)]
         rotate: Option<f32>,
         /// `x,y`
-        #[arg(long, allow_hyphen_values = true)]
-        scale: Option<String>,
+        #[arg(long, allow_hyphen_values = true, value_parser = parse_vec2)]
+        scale: Option<[f32; 2]>,
     },
     /// Write exact per-vertex offsets from a JSON array; no pose conversion.
     Vertices {
@@ -789,8 +789,8 @@ enum DeformCmd {
         params: BindingParamsArg,
         #[arg(long)]
         node: NodeId,
-        #[arg(long)]
-        cell: String,
+        #[arg(long, value_parser = parse_cell)]
+        cell: [u32; 2],
         #[arg(long)]
         file: String,
     },
@@ -1197,7 +1197,7 @@ fn build_command(cli: &Cli) -> Result<Command> {
                     session,
                     a: a.clone(),
                     b: b.clone(),
-                    pairs: pairs.iter().map(|p| parse_pair(p)).collect::<Result<_>>()?,
+                    pairs: pairs.clone(),
                 },
                 WeldCmd::Weight { .. } => unreachable!("composed before building"),
                 WeldCmd::Delete { a, b } => Command::WeldDelete {
@@ -1234,10 +1234,7 @@ fn build_command(cli: &Cli) -> Result<Command> {
                 PresenceCmd::Set { params, select } => Command::PresenceSet {
                     session,
                     presence: Presence {
-                        pose: params
-                            .iter()
-                            .map(|p| parse_param(p))
-                            .collect::<Result<_>>()?,
+                        pose: params.clone(),
                         camera: None,
                         selection: select.clone(),
                     },
@@ -1272,23 +1269,12 @@ fn build_command(cli: &Cli) -> Result<Command> {
             camera_center,
         } => Command::Preview {
             session: resolve_session(cli)?,
-            pose: params
-                .iter()
-                .map(|p| parse_param(p))
-                .collect::<Result<_>>()?,
-            size: size.as_deref().map(parse_size).transpose()?,
-            camera: camera_height
-                .map(|height| -> Result<Camera> {
-                    Ok(Camera {
-                        center: camera_center
-                            .as_deref()
-                            .map(parse_center)
-                            .transpose()?
-                            .unwrap_or([0.0, 0.0]),
-                        height,
-                    })
-                })
-                .transpose()?,
+            pose: params.clone(),
+            size: *size,
+            camera: camera_height.map(|height| Camera {
+                center: camera_center.unwrap_or([0.0, 0.0]),
+                height,
+            }),
         },
     })
 }
@@ -1309,7 +1295,7 @@ fn build_node_command(cli: &Cli, action: &NodeCmd) -> Result<Command> {
         } => Command::NodeAdd {
             session,
             parent: parent.clone(),
-            kind: parse_kind(kind)?,
+            kind: *kind,
             name: name.clone(),
             node: id.clone(),
         },
@@ -1336,9 +1322,9 @@ fn build_node_command(cli: &Cli, action: &NodeCmd) -> Result<Command> {
             node: node.clone(),
             patch: NodePatch {
                 name: name.clone(),
-                translate: translate.as_deref().map(parse_vec3).transpose()?,
-                rotate: rotate.as_deref().map(parse_vec3).transpose()?,
-                scale: scale.as_deref().map(parse_vec2).transpose()?,
+                translate: *translate,
+                rotate: *rotate,
+                scale: *scale,
                 z_order: *z_order,
                 opacity: *opacity,
                 enabled: *enabled,
@@ -1349,8 +1335,8 @@ fn build_node_command(cli: &Cli, action: &NodeCmd) -> Result<Command> {
                 },
                 lock_to_root: *lock_to_root,
                 blend_mode: *blend_mode,
-                tint: tint.as_deref().map(parse_vec3).transpose()?,
-                screen_tint: screen_tint.as_deref().map(parse_vec3).transpose()?,
+                tint: *tint,
+                screen_tint: *screen_tint,
                 mask_threshold: *mask_threshold,
                 propagate_meshgroup: *propagate_meshgroup,
                 mg_translate_children: *mg_translate_children,
@@ -1436,17 +1422,21 @@ fn read_command_json(reader: impl Read) -> Result<String> {
 }
 
 fn parse_cell(s: &str) -> Result<[u32; 2]> {
-    let (x, y) = s
-        .split_once(',')
-        .ok_or_else(|| anyhow!("cell must look like x,y, got {s:?}"))?;
-    Ok([x.trim().parse()?, y.trim().parse()?])
+    let bad = || anyhow!("cell must look like x,y, got {s:?}");
+    let (x, y) = s.split_once(',').ok_or_else(bad)?;
+    Ok([
+        x.trim().parse().map_err(|_| bad())?,
+        y.trim().parse().map_err(|_| bad())?,
+    ])
 }
 
 fn parse_size(s: &str) -> Result<[u32; 2]> {
-    let (w, h) = s
-        .split_once(['x', 'X'])
-        .ok_or_else(|| anyhow!("size must look like 512x512, got {s:?}"))?;
-    Ok([w.trim().parse()?, h.trim().parse()?])
+    let bad = || anyhow!("size must look like 512x512, got {s:?}");
+    let (w, h) = s.split_once(['x', 'X']).ok_or_else(bad)?;
+    Ok([
+        w.trim().parse().map_err(|_| bad())?,
+        h.trim().parse().map_err(|_| bad())?,
+    ])
 }
 
 /// The server's working directory is not this process's.
@@ -1478,14 +1468,6 @@ fn describe_extension(value: &ExtensionValueInfo) -> String {
             format!("version {version}  refs {refs}  {payload}")
         }
     }
-}
-
-/// `<x>,<y>` in world units.
-fn parse_center(s: &str) -> Result<[f32; 2]> {
-    let (x, y) = s
-        .split_once(',')
-        .ok_or_else(|| anyhow!("a camera centre must look like 0,120, got {s:?}"))?;
-    Ok([x.trim().parse()?, y.trim().parse()?])
 }
 
 fn parse_param(s: &str) -> Result<ParamPose> {
@@ -2019,6 +2001,71 @@ mod tests {
             panic!("a space is not an id");
         };
         assert!(err.to_string().contains("invalid byte"), "{err}");
+    }
+
+    #[test]
+    fn a_malformed_value_is_refused_while_parsing_the_arguments() {
+        for (args, want) in [
+            (
+                &["preview", "--out", "p.png", "--param", "head.x"][..],
+                "head.x",
+            ),
+            (&["preview", "--out", "p.png", "--size", "512"], "512x512"),
+            (
+                &["preview", "--out", "p.png", "--camera-center", "0;1"],
+                "0;1",
+            ),
+            (&["node", "set", "hat", "--translate", "1,2"], "3"),
+            (
+                &["node", "add", "--parent", "root", "--kind", "blob"],
+                "blob",
+            ),
+            (
+                &["weld", "set", "--a", "a", "--b", "b", "--pair", "s1:s2"],
+                "s1:s2",
+            ),
+            (
+                &[
+                    "binding", "unset", "--param", "p", "--node", "n", "--target", "tx", "--cell",
+                    "1,x",
+                ],
+                "1,x",
+            ),
+        ] {
+            let mut argv = vec!["cli", "--session", "1"];
+            argv.extend(args);
+            let Err(err) = Cli::try_parse_from(&argv) else {
+                panic!("{args:?} parses");
+            };
+            assert!(err.to_string().contains(want), "{args:?}: {err}");
+        }
+        let cli = Cli::try_parse_from([
+            "cli",
+            "--session",
+            "1",
+            "preview",
+            "--out",
+            "p.png",
+            "--param",
+            "head.x=-0.5",
+            "--size",
+            "64x32",
+            "--camera-height",
+            "100",
+            "--camera-center",
+            "0, 120",
+        ])
+        .unwrap();
+        match build_command(&cli).unwrap() {
+            Command::Preview {
+                pose, size, camera, ..
+            } => {
+                assert_eq!(pose[0].value, -0.5);
+                assert_eq!(size, Some([64, 32]));
+                assert_eq!(camera.unwrap().center, [0.0, 120.0]);
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

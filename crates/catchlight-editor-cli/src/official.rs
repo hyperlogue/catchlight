@@ -29,8 +29,8 @@ pub(super) enum HumanoidCmd {
         /// Without it a two-sided control spans the param's min, default and
         /// max, and a one-sided control rests at the default and reaches the
         /// end of the range farther from it.
-        #[arg(long)]
-        stops: Option<String>,
+        #[arg(long, value_parser = parse_floats::<3>)]
+        stops: Option<[f32; 3]>,
         /// Keep a control name outside the standard list.
         #[arg(long)]
         nonstandard: bool,
@@ -201,7 +201,7 @@ pub(super) fn humanoid(
                 session,
                 control: control.clone(),
                 param: param.clone(),
-                stops: stops.as_deref().map(parse_floats::<3>).transpose()?,
+                stops: *stops,
                 nonstandard: *nonstandard,
             },
             HUMANOID,
