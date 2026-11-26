@@ -477,6 +477,25 @@ pub enum BlendMode {
 }
 
 impl BlendMode {
+    /// Every blend mode, in declaration order.
+    pub const ALL: &[Self] = &[
+        Self::Normal,
+        Self::Multiply,
+        Self::ColorDodge,
+        Self::LinearDodge,
+        Self::Screen,
+        Self::ClipToLower,
+        Self::SliceFromLower,
+        Self::Overlay,
+        Self::ColorBurn,
+        Self::LinearBurn,
+        Self::Darken,
+        Self::Lighten,
+        Self::Add,
+        Self::Inverse,
+        Self::Subtract,
+    ];
+
     pub fn from_name(s: &str) -> Option<Self> {
         Some(match s {
             "Normal" => Self::Normal,

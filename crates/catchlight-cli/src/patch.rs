@@ -9,7 +9,6 @@ use catchlight_core::components::BlendMode;
 use catchlight_core::formats::clm::{ClmFile, ClmNode, ClmNodeKind, ClmParam, ClmTexture};
 use catchlight_core::id::{MAX_NAME_BYTES, TexId};
 
-use crate::diff::enum_name;
 use crate::{Error, file};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -198,24 +197,6 @@ enum Slot<'a> {
     Albedo(&'a mut Option<TexId>),
 }
 
-const BLEND_MODES: &[&str] = &[
-    "Normal",
-    "Multiply",
-    "ColorDodge",
-    "LinearDodge",
-    "Screen",
-    "ClipToLower",
-    "SliceFromLower",
-    "Overlay",
-    "ColorBurn",
-    "LinearBurn",
-    "Darken",
-    "Lighten",
-    "Add",
-    "Inverse",
-    "Subtract",
-];
-
 const COMMON_FIELDS: &[&str] = &[
     "enabled",
     "lock_to_root",
@@ -398,10 +379,13 @@ fn apply(
             (before, format!("{slot:?}"))
         }
         Slot::Blend(slot) => {
-            let parsed = parse_enum(value).ok_or_else(|| bad(&one_of(BLEND_MODES)))?;
-            let before = enum_name(slot);
+            let parsed = BlendMode::from_name(value).ok_or_else(|| {
+                let names: Vec<_> = BlendMode::ALL.iter().map(|m| m.as_str()).collect();
+                bad(&one_of(&names))
+            })?;
+            let before = slot.as_str().to_owned();
             *slot = parsed;
-            (before, enum_name(slot))
+            (before, slot.as_str().to_owned())
         }
         Slot::Albedo(slot) => {
             let parsed = match value {
@@ -428,10 +412,6 @@ fn apply(
     })
 }
 
-fn parse_enum<T: serde::de::DeserializeOwned>(value: &str) -> Option<T> {
-    serde_json::from_value(serde_json::Value::String(value.to_string())).ok()
-}
-
 fn one_of(names: &[&str]) -> String {
     format!("one of {}", names.join(", "))
 }
@@ -440,10 +420,13 @@ fn one_of(names: &[&str]) -> String {
 mod tests {
 
     use super::*;
+    use crate::diff::enum_name;
 
     #[test]
     fn every_listed_field_resolves_to_a_slot() {
-        use catchlight_core::formats::clm::{ClmComposite, ClmMeshGroup, ClmPart, ClmTransform};
+        use catchlight_core::formats::clm::{
+            ClmComposite, ClmMeshGroup, ClmPart, ClmSpine, ClmTransform,
+        };
         use catchlight_core::id::NodeId;
 
         let kinds = [
@@ -471,6 +454,11 @@ mod tests {
             ClmNodeKind::MeshGroup(ClmMeshGroup {
                 mesh: Default::default(),
                 translate_children: false,
+            }),
+            ClmNodeKind::MotionResponse(catchlight_core::MotionResponse::default()),
+            ClmNodeKind::Spine(ClmSpine {
+                joints: vec![[0.0, 1.0]],
+                targets: Vec::new(),
             }),
         ];
 
@@ -510,13 +498,21 @@ mod tests {
     }
 
     #[test]
-    fn an_enum_is_parsed_by_the_name_it_serializes_as() {
-        assert_eq!(
-            parse_enum::<BlendMode>("Multiply"),
-            Some(BlendMode::Multiply)
-        );
-        assert_eq!(parse_enum::<BlendMode>("multiply"), None);
-        assert_eq!(parse_enum::<BlendMode>("nonsense"), None);
-        assert_eq!(enum_name(&BlendMode::ColorDodge), "ColorDodge");
+    fn a_blend_mode_is_parsed_by_the_name_it_serializes_as() {
+        for &mode in BlendMode::ALL {
+            assert_eq!(BlendMode::from_name(&enum_name(&mode)), Some(mode));
+        }
+        assert_eq!(BlendMode::from_name("multiply"), None);
+    }
+
+    #[test]
+    fn a_bad_blend_mode_lists_every_mode() {
+        let mut blend_mode = BlendMode::Normal;
+        let error = apply(Slot::Blend(&mut blend_mode), "blend_mode", "nonsense", &[])
+            .unwrap_err()
+            .to_string();
+        for mode in BlendMode::ALL {
+            assert!(error.contains(mode.as_str()), "{error}");
+        }
     }
 }
