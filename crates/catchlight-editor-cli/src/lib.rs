@@ -13,7 +13,7 @@ mod version;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use catchlight_editor_protocol::*;
 use clap::{Parser, Subcommand};
 
@@ -1100,7 +1100,10 @@ fn build_command(cli: &Cli) -> Result<Command> {
                         #[serde(default)]
                         origin: [f32; 2],
                     }
-                    let m: MeshJson = serde_json::from_str(&std::fs::read_to_string(file)?)?;
+                    let text =
+                        std::fs::read_to_string(file).with_context(|| format!("reading {file}"))?;
+                    let m: MeshJson =
+                        serde_json::from_str(&text).with_context(|| format!("parsing {file}"))?;
                     Command::MeshSet {
                         if_rev: cli.if_rev,
                         deform_mapping: None,
@@ -1416,7 +1419,8 @@ fn read_json(path: &str) -> Result<String> {
     if path == "-" {
         read_command_json(std::io::stdin().lock())
     } else {
-        read_command_json(std::fs::File::open(path)?)
+        let file = std::fs::File::open(path).with_context(|| format!("reading {path}"))?;
+        read_command_json(file).with_context(|| format!("reading {path}"))
     }
 }
 
@@ -1513,7 +1517,8 @@ fn parse_pair(s: &str) -> Result<SlotPair> {
 }
 
 fn read_offsets(path: &str) -> Result<Vec<[f32; 2]>> {
-    Ok(serde_json::from_str(&std::fs::read_to_string(path)?)?)
+    let text = std::fs::read_to_string(path).with_context(|| format!("reading {path}"))?;
+    serde_json::from_str(&text).with_context(|| format!("parsing {path}"))
 }
 
 fn resolve_session(cli: &Cli) -> Result<SessionId> {
@@ -1904,20 +1909,22 @@ fn current_path() -> PathBuf {
 }
 
 fn read_current() -> Result<Option<SessionId>> {
-    match std::fs::read_to_string(current_path()) {
+    let path = current_path();
+    match std::fs::read_to_string(&path) {
         Ok(s) => Ok(s.trim().parse::<u64>().ok().map(SessionId)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e.into()),
+        Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
     }
 }
 
 fn write_current(session: SessionId) -> Result<()> {
     let path = current_path();
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
     }
-    std::fs::write(path, session.0.to_string())?;
-    Ok(())
+    std::fs::write(&path, session.0.to_string())
+        .with_context(|| format!("writing {}", path.display()))
 }
 
 #[cfg(test)]
@@ -1934,6 +1941,17 @@ mod tests {
         let exact = std::io::repeat(b' ').take(MAX_COMMAND_BYTES as u64);
         assert_eq!(read_command_json(exact).unwrap().len(), MAX_COMMAND_BYTES);
         assert!(read_command_json(&[0xff][..]).is_err());
+    }
+
+    #[test]
+    fn a_missing_input_file_is_named_in_the_error() {
+        let missing = "no-such-dir/edits.json";
+        for error in [
+            read_json(missing).unwrap_err(),
+            read_offsets(missing).unwrap_err(),
+        ] {
+            assert!(format!("{error:#}").contains(missing), "{error:#}");
+        }
     }
 
     #[cfg(unix)]
