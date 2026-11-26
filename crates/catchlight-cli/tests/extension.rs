@@ -12,6 +12,33 @@ fn payload() -> Vec<u8> {
 }
 
 #[test]
+fn get_cannot_write_over_the_model_it_reads() {
+    let dir = common::tmp("extension-onto-input");
+    let model = common::copy_fixture("welded_seam", &dir);
+    let (code, _, stderr) = common::run(&[
+        "extension",
+        "set",
+        model.to_str().unwrap(),
+        "acme.camera",
+        "--json",
+        "{}",
+    ]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let before = common::read(&model);
+    let (code, _, stderr) = common::run(&[
+        "extension",
+        "get",
+        model.to_str().unwrap(),
+        "acme.camera",
+        "--out",
+        model.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 2, "stderr: {stderr}");
+    assert!(stderr.contains("is the input model"), "{stderr}");
+    assert_eq!(common::read(&model), before);
+}
+
+#[test]
 fn both_kinds_round_trip_through_the_binary() {
     let dir = common::tmp("extension-roundtrip");
     let model = common::copy_fixture("welded_seam", &dir);

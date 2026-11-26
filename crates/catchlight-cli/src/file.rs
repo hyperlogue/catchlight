@@ -84,6 +84,17 @@ pub fn encode(file: &ClmFile, path: &Path) -> Result<Vec<u8>, Error> {
     })
 }
 
+/// An output path, or an alias of one, must never replace the model it was
+/// derived from.
+pub fn check_output_path(input: &Path, output: &Path) -> Result<(), Error> {
+    if let (Ok(input), Ok(output)) = (input.canonicalize(), output.canonicalize()) {
+        if input == output {
+            return Err(Error::OutputIsInput { path: output });
+        }
+    }
+    Ok(())
+}
+
 /// Atomic: see [`write_atomic`].
 pub fn write(path: &Path, bytes: &[u8]) -> Result<(), Error> {
     write_atomic(path, |file| {

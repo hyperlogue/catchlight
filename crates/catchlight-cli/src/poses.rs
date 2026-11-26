@@ -100,6 +100,7 @@ impl std::fmt::Display for Written {
 }
 
 pub fn run(path: &Path, out: &Path) -> Result<Written, Error> {
+    crate::file::check_output_path(path, out)?;
     let model = crate::file::load_model(path)?;
     let poses = build(&model)?;
     let mut bytes = Vec::new();

@@ -335,7 +335,7 @@ impl RenderArgs {
         }
         let output = self.out;
         if let Some(output) = &output {
-            super::execute::check_output_path(file, output)?;
+            crate::file::check_output_path(file, output)?;
         }
         let destination = match (&output, &self.out_dir) {
             (Some(path), _) if VideoFormat::from_extension(path).is_some() => {

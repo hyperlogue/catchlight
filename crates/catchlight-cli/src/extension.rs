@@ -78,6 +78,9 @@ pub fn list(path: &Path) -> Result<Vec<Listed>, Error> {
 /// A maintained extension this program has a type for prints as that type
 /// decodes it, so its byte payload stays inspectable.
 pub fn get(path: &Path, key: &str, out: Option<&Path>) -> Result<Got, Error> {
+    if let Some(out) = out {
+        file::check_output_path(path, out)?;
+    }
     let key = ExtensionKey::new(key).map_err(|source| Error::BadId {
         value: key.to_string(),
         source,

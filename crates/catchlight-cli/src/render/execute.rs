@@ -95,16 +95,6 @@ pub fn hash(bytes: &[u8]) -> String {
     out
 }
 
-/// An output alias must never replace the model that was inspected.
-pub fn check_output_path(input: &Path, output: &Path) -> Result<(), Error> {
-    if let (Ok(input), Ok(output)) = (input.canonicalize(), output.canonicalize()) {
-        if input == output {
-            return Err(bad("PNG output must not replace the input model"));
-        }
-    }
-    Ok(())
-}
-
 pub struct Execution {
     pub listings: Vec<String>,
     pub manifest: Option<RunManifest>,

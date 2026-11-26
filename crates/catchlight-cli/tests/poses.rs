@@ -216,6 +216,22 @@ fn two_runs_write_the_same_bytes() {
 }
 
 #[test]
+fn the_output_cannot_replace_the_input_model() {
+    let dir = common::tmp("poses-onto-input");
+    let model = common::copy_fixture("two_param_grid", &dir);
+    let before = common::read(&model);
+    let (code, _, stderr) = common::run(&[
+        "poses",
+        model.to_str().unwrap(),
+        "--out",
+        model.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 2, "stderr: {stderr}");
+    assert!(stderr.contains("is the input model"), "{stderr}");
+    assert_eq!(common::read(&model), before);
+}
+
+#[test]
 fn a_file_that_is_not_a_clm_is_refused() {
     let dir = common::tmp("poses-not-a-clm");
     let input = dir.join("model.inx");

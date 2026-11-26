@@ -70,6 +70,8 @@ pub enum Error {
     Json(#[from] serde_json::Error),
     #[error("writing output: {0}")]
     Stdout(#[source] std::io::Error),
+    #[error("{} is the input model; write the output somewhere else", .path.display())]
+    OutputIsInput { path: PathBuf },
     #[error(
         "{} is a Git LFS pointer, not the file it names; fetch it with `git lfs pull`",
         .path.display()
