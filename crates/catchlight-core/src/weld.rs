@@ -11,14 +11,14 @@ use crate::puppet::{Arena, GlobalTransforms};
 
 /// Each unordered `{a, b}` pair appears in at most one record.
 #[derive(Debug, Clone)]
-pub struct Weld {
+pub(crate) struct Weld {
     pub a: NodeIdx,
     pub b: NodeIdx,
     pub pairs: Vec<WeldPair>,
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct WeldPair {
+pub(crate) struct WeldPair {
     pub a_vert: u32,
     pub b_vert: u32,
     /// A's share of the meeting point: 1.0 pins A, 0.0 pins B.

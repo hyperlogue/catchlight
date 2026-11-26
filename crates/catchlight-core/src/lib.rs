@@ -15,7 +15,7 @@ pub mod node;
 pub mod puppet;
 pub mod spine;
 pub mod texture;
-pub mod weld;
+pub(crate) mod weld;
 
 pub use components::{
     BlendMode, CompositeData, DecodedTexture, Mask, MaskMode, Mesh, MeshGroupData, MeshIndices,
@@ -50,7 +50,6 @@ pub use spine::SpineData;
 pub use texture::{
     prepare_textures, EncodedTexture, PreppedTexture, TextureError, TextureFormat, UvCrop,
 };
-pub use weld::{Weld, WeldPair};
 
 pub type Vec2 = glam::Vec2;
 pub type Vec3 = glam::Vec3;
