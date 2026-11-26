@@ -14,13 +14,16 @@
 //! `deserialize_with` while building with `ts` are expected and harmless.
 
 pub mod python;
+pub mod source;
 pub mod typescript;
 
 use std::collections::BTreeSet;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use catchlight_editor_protocol as proto;
 use ts_rs::{Config, Dependency, TS};
+
+use source::Source;
 
 pub fn run(args: &[String]) -> Result<()> {
     let target = match args {
@@ -28,16 +31,14 @@ pub fn run(args: &[String]) -> Result<()> {
         [one] => Some(one.as_str()),
         [_, other, ..] => bail!("unexpected argument: {other}"),
     };
-    let cfg = config();
-    let decls = declarations(&cfg);
-    check_closed(&decls)?;
+    let protocol = Protocol::load()?;
     match target {
         None => {
-            typescript::write(&decls)?;
-            python::write(&decls)?;
+            typescript::write(&protocol)?;
+            python::write(&protocol)?;
         }
-        Some("typescript") => typescript::write(&decls)?,
-        Some("python") => python::write(&decls)?,
+        Some("typescript") => typescript::write(&protocol)?,
+        Some("python") => python::write(&protocol)?,
         Some(other) => bail!("unknown generate target: {other} (want typescript or python)"),
     }
     Ok(())
@@ -45,6 +46,34 @@ pub fn run(args: &[String]) -> Result<()> {
 
 fn config() -> Config {
     Config::new().with_large_int("number")
+}
+
+/// What both emitters write from: the `ts-rs` declarations, the parsed Rust
+/// source, and the `cmd` tag of each command, already held against the
+/// protocol's command tables.
+pub struct Protocol {
+    pub decls: Vec<Decl>,
+    pub source: Source,
+    pub tags: Vec<String>,
+}
+
+impl Protocol {
+    pub fn load() -> Result<Self> {
+        let decls = declarations(&config());
+        check_closed(&decls)?;
+        let root = crate::workspace_root()?;
+        let foreign: Vec<_> = FOREIGN_SOURCES.iter().map(|path| root.join(path)).collect();
+        let source = Source::read(&root.join(PROTOCOL_ROOT), &foreign)?;
+        let tags = source.command_tags()?;
+        check_classified(&tags)?;
+        check_aliased(&tags)?;
+        check_byte_bearing(&tags)?;
+        Ok(Self {
+            decls,
+            source,
+            tags,
+        })
+    }
 }
 
 pub struct Decl {
@@ -64,6 +93,12 @@ macro_rules! decls {
         }),*]
     };
 }
+
+/// The protocol crate's root; its `mod` declarations are followed from here.
+const PROTOCOL_ROOT: &str = "crates/catchlight-editor-protocol/src/lib.rs";
+
+/// Files outside the protocol crate that declare wire types it re-exports.
+const FOREIGN_SOURCES: &[&str] = &["crates/catchlight-core/src/motion_response.rs"];
 
 pub fn declarations(cfg: &Config) -> Vec<Decl> {
     decls![
@@ -184,30 +219,7 @@ pub fn check_closed(decls: &[Decl]) -> Result<()> {
     Ok(())
 }
 
-/// Read back from the rendered union so [`check_classified`] checks against
-/// the real enum, not a second copy.
-pub fn command_tags(decls: &[Decl]) -> Result<Vec<String>> {
-    let command = decls
-        .iter()
-        .find(|d| d.ident == "Command")
-        .context("the generated module has no `Command` type to split by kind")?;
-    let mut tags = Vec::new();
-    let mut rest = command.body.as_str();
-    while let Some(at) = rest.find("\"cmd\": \"") {
-        rest = &rest[at + 8..];
-        let end = rest
-            .find('"')
-            .context("a `cmd` tag in the Command union is not terminated")?;
-        tags.push(rest[..end].to_string());
-        rest = &rest[end..];
-    }
-    if tags.is_empty() {
-        bail!("the Command union carries no `cmd` tags; the tagging changed");
-    }
-    Ok(tags)
-}
-
-/// Holds the tags one emitter found against `COMMAND_KINDS`, both directions.
+/// Holds the `Command` enum's tags against `COMMAND_KINDS`, both directions.
 pub fn check_classified(tags: &[String]) -> Result<()> {
     let known: BTreeSet<&str> = proto::COMMAND_KINDS.iter().map(|(tag, _)| *tag).collect();
     let found: BTreeSet<&str> = tags.iter().map(String::as_str).collect();
@@ -418,8 +430,7 @@ mod tests {
 
     #[test]
     fn every_command_is_classified_exactly_once() {
-        let decls = declarations(&config());
-        let tags = command_tags(&decls).expect("the Command union carries cmd tags");
+        let tags = Protocol::load().expect("the protocol loads").tags;
         assert_eq!(
             tags.len(),
             proto::COMMAND_KINDS.len(),

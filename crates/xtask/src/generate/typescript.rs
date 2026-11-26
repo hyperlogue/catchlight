@@ -6,27 +6,24 @@
 
 use anyhow::{Context, Result};
 
-use super::{
-    BYTES_DOC, Decl, KINDS, QUERY_UNION_DOC, byte_rows, check_aliased, check_byte_bearing,
-    check_classified, command_tags, tags_of,
-};
+use super::{BYTES_DOC, KINDS, Protocol, QUERY_UNION_DOC, byte_rows, tags_of};
 
 const OUT: &str = "packages/core/src/protocol.gen.ts";
 
-pub fn write(decls: &[Decl]) -> Result<()> {
-    let module = render(decls)?;
+pub fn write(protocol: &Protocol) -> Result<()> {
+    let module = render(protocol);
     let out = crate::workspace_root()?.join(OUT);
     if let Some(dir) = out.parent() {
         std::fs::create_dir_all(dir)?;
     }
     std::fs::write(&out, &module).with_context(|| format!("writing {OUT}"))?;
-    eprintln!("wrote {OUT} ({} types)", decls.len());
+    eprintln!("wrote {OUT} ({} types)", protocol.decls.len());
     Ok(())
 }
 
-fn render(decls: &[Decl]) -> Result<String> {
+fn render(protocol: &Protocol) -> String {
     let mut out = String::from(HEADER);
-    for decl in decls {
+    for decl in &protocol.decls {
         out.push('\n');
         if let Some(docs) = &decl.docs {
             // `docs()` hands back the comment already wrapped in `/** … */`.
@@ -37,17 +34,14 @@ fn render(decls: &[Decl]) -> Result<String> {
         out.push_str(pretty(&decl.body).trim_end().trim_end_matches(';'));
         out.push_str(";\n");
     }
-    let tags = command_tags(decls)?;
-    out.push_str(&kind_aliases(&tags)?);
-    out.push_str(&command_bytes(&tags)?);
-    Ok(out)
+    out.push_str(&kind_aliases(&protocol.tags));
+    out.push_str(&command_bytes());
+    out
 }
 
 /// A value, not a type: the tab looks it up at run time to decide what to
 /// attach.
-fn command_bytes(tags: &[String]) -> Result<String> {
-    check_byte_bearing(tags)?;
-
+fn command_bytes() -> String {
     let mut out = String::from("\n");
     push_comment(&mut out, &block_comment(BYTES_DOC), 0);
     out.push_str(
@@ -76,13 +70,10 @@ fn command_bytes(tags: &[String]) -> Result<String> {
         out.push_str(&format!("],\n    payload: {},\n  }},\n", row.payload));
     }
     out.push_str("};\n");
-    Ok(out)
+    out
 }
 
-fn kind_aliases(tags: &[String]) -> Result<String> {
-    check_classified(tags)?;
-    check_aliased(tags)?;
-
+fn kind_aliases(tags: &[String]) -> String {
     let mut out = String::new();
     for kind in KINDS {
         out.push('\n');
@@ -102,7 +93,7 @@ fn kind_aliases(tags: &[String]) -> Result<String> {
         "\nexport type QueryCommandTag = ReplicaQueryCommandTag | ServerQueryCommandTag;\n\
          export type QueryCommand = ReplicaQueryCommand | ServerQueryCommand;\n",
     );
-    Ok(out)
+    out
 }
 
 fn block_comment(lines: &[&str]) -> String {
@@ -292,7 +283,6 @@ const HEADER: &str = "\
 
 #[cfg(test)]
 mod tests {
-    use super::super::{config, declarations};
     use super::*;
 
     #[test]
@@ -337,7 +327,7 @@ mod tests {
 
     #[test]
     fn the_committed_module_matches_the_rust_types() {
-        let module = render(&declarations(&config())).expect("the module renders");
+        let module = render(&Protocol::load().expect("the protocol loads"));
         let out = crate::workspace_root().expect("a workspace root").join(OUT);
         let committed =
             std::fs::read_to_string(&out).unwrap_or_else(|e| panic!("reading {OUT}: {e}"));
@@ -350,7 +340,7 @@ mod tests {
 
     #[test]
     fn every_kind_reaches_typescript_as_its_own_alias() {
-        let module = render(&declarations(&config())).expect("the module renders");
+        let module = render(&Protocol::load().expect("the protocol loads"));
         for kind in KINDS {
             assert!(
                 module.contains(&format!("export type {}Tag =", kind.name)),
@@ -363,7 +353,7 @@ mod tests {
 
     #[test]
     fn the_byte_table_reaches_typescript_as_a_value() {
-        let module = render(&declarations(&config())).expect("the module renders");
+        let module = render(&Protocol::load().expect("the protocol loads"));
         assert!(module.contains("export const COMMAND_BYTES: Record<"));
         assert!(module.contains(r#"{ kind: "fixed", name: "texture" }"#));
         assert!(module.contains("payload: true"));

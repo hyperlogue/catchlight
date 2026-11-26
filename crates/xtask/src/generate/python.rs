@@ -12,30 +12,24 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, bail};
 use catchlight_editor_protocol as proto;
-use syn::{Attribute, Expr, Fields, File, Item, Lit, Meta, Type};
+use syn::{Attribute, Expr, Fields, Item, Lit, Meta, Type};
 
-use super::{
-    BYTES_DOC, Decl, KINDS, QUERY_UNION_DOC, byte_rows, check_aliased, check_byte_bearing,
-    check_classified, tags_of,
-};
+use super::source::{Source, serde_attrs, snake_case, variant_wire};
+use super::{BYTES_DOC, Decl, KINDS, Protocol, QUERY_UNION_DOC, byte_rows, tags_of};
 
 /// Not `protocol.gen.py`: a Python module name must be an identifier.
 const OUT: &str = "python/catchlight/protocol_gen.py";
 
-/// Parsed alongside the shared core response types. Unsupported shapes are a
-/// build error naming the type.
-const SOURCE: &str = "crates/catchlight-editor-protocol/src/lib.rs";
-
-pub fn write(decls: &[Decl]) -> Result<()> {
-    let module = render(decls)?;
+pub fn write(protocol: &Protocol) -> Result<()> {
+    let module = render(protocol)?;
     let out = crate::workspace_root()?.join(OUT);
     if let Some(dir) = out.parent() {
         std::fs::create_dir_all(dir)?;
     }
     std::fs::write(&out, &module).with_context(|| format!("writing {OUT}"))?;
-    eprintln!("wrote {OUT} ({} types)", decls.len());
+    eprintln!("wrote {OUT} ({} types)", protocol.decls.len());
     Ok(())
 }
 
@@ -85,112 +79,6 @@ enum Default_ {
     Factory(String),
 }
 
-struct Source {
-    file: File,
-    items: BTreeMap<String, Item>,
-}
-
-impl Source {
-    fn read() -> Result<Self> {
-        let path = crate::workspace_root()?.join(SOURCE);
-        let text = std::fs::read_to_string(&path).with_context(|| format!("reading {SOURCE}"))?;
-        let mut file = syn::parse_file(&text).with_context(|| format!("parsing {SOURCE}"))?;
-        let path = crate::workspace_root()?.join("crates/catchlight-core/src/motion_response.rs");
-        let source = std::fs::read_to_string(&path)
-            .with_context(|| format!("reading {}", path.display()))?;
-        file.items.extend(syn::parse_file(&source)?.items);
-        let mut items = BTreeMap::new();
-        for item in &file.items {
-            let ident = match item {
-                Item::Struct(s) => s.ident.to_string(),
-                Item::Enum(e) => e.ident.to_string(),
-                _ => continue,
-            };
-            items.insert(ident, item.clone());
-        }
-        Ok(Self { file, items })
-    }
-
-    fn literal_default(&self, name: &str) -> Result<String> {
-        for item in &self.file.items {
-            let Item::Fn(f) = item else { continue };
-            if f.sig.ident != name {
-                continue;
-            }
-            if let [syn::Stmt::Expr(expr, None)] = f.block.stmts.as_slice() {
-                return py_literal(expr);
-            }
-            bail!("`{name}` is a serde default {OUT} cannot read: its body must be one literal");
-        }
-        bail!("{SOURCE} has no `{name}` to read a serde default from")
-    }
-}
-
-#[derive(Default)]
-struct Serde {
-    tag: Option<String>,
-    rename: Option<String>,
-    rename_all: Option<String>,
-    transparent: bool,
-    untagged: bool,
-    flatten: bool,
-    /// `Some(None)` is `#[serde(default)]`; `Some(Some(f))` is
-    /// `#[serde(default = "f")]`.
-    default: Option<Option<String>>,
-}
-
-/// `item` names what carries `attrs`, for the error on a key this generator
-/// does not translate.
-fn serde_attrs(attrs: &[Attribute], item: &dyn std::fmt::Display) -> Result<Serde> {
-    let mut found = Serde::default();
-    for attr in attrs {
-        if !attr.path().is_ident("serde") {
-            continue;
-        }
-        attr.parse_nested_meta(|meta| {
-            if meta.path.is_ident("tag") {
-                found.tag = Some(meta.value()?.parse::<syn::LitStr>()?.value());
-            } else if meta.path.is_ident("rename") {
-                found.rename = Some(meta.value()?.parse::<syn::LitStr>()?.value());
-            } else if meta.path.is_ident("rename_all") {
-                found.rename_all = Some(meta.value()?.parse::<syn::LitStr>()?.value());
-            } else if meta.path.is_ident("untagged") {
-                found.untagged = true;
-            } else if meta.path.is_ident("transparent") {
-                found.transparent = true;
-            } else if meta.path.is_ident("flatten") {
-                found.flatten = true;
-            } else if meta.path.is_ident("default") {
-                found.default = Some(if meta.input.peek(syn::Token![=]) {
-                    Some(meta.value()?.parse::<syn::LitStr>()?.value())
-                } else {
-                    None
-                });
-            } else if meta.path.is_ident("deny_unknown_fields") {
-            } else if meta.path.is_ident("skip_serializing_if")
-                || meta.path.is_ident("deserialize_with")
-            {
-                let _: syn::LitStr = meta.value()?.parse()?;
-            } else {
-                let key = meta
-                    .path
-                    .segments
-                    .iter()
-                    .map(|s| s.ident.to_string())
-                    .collect::<Vec<_>>()
-                    .join("::");
-                return Err(meta.error(format!(
-                    "{item} uses #[serde({key})], which {OUT} does not translate; teach \
-                     serde_attrs in crates/xtask/src/generate/python.rs what it means"
-                )));
-            }
-            Ok(())
-        })
-        .map_err(|e| anyhow!("reading a #[serde(…)] in {SOURCE}: {e}"))?;
-    }
-    Ok(found)
-}
-
 fn doc_lines(attrs: &[Attribute]) -> Vec<String> {
     let mut lines: Vec<String> = attrs
         .iter()
@@ -212,9 +100,17 @@ fn doc_lines(attrs: &[Attribute]) -> Vec<String> {
     lines
 }
 
+/// The value the serde default function `name` returns, spelled in Python.
+fn literal_default(source: &Source, name: &str) -> Result<String> {
+    match source.function(name)?.block.stmts.as_slice() {
+        [syn::Stmt::Expr(expr, None)] => py_literal(expr),
+        _ => bail!("`{name}` is a serde default {OUT} cannot read: its body must be one literal"),
+    }
+}
+
 fn py_literal(expr: &Expr) -> Result<String> {
     let Expr::Lit(syn::ExprLit { lit, .. }) = expr else {
-        bail!("a serde default in {SOURCE} is not a literal")
+        bail!("a serde default in the protocol source is not a literal")
     };
     match lit {
         Lit::Bool(b) => Ok(if b.value { "True" } else { "False" }.to_string()),
@@ -222,7 +118,10 @@ fn py_literal(expr: &Expr) -> Result<String> {
         Lit::Float(f) => Ok(f.base10_digits().to_string()),
         Lit::Str(s) => Ok(format!("{:?}", s.value())),
         other => {
-            bail!("a serde default in {SOURCE} is a literal Python has no spelling for: {other:?}")
+            bail!(
+                "a serde default in the protocol source is a literal Python has no spelling \
+                 for: {other:?}"
+            )
         }
     }
 }
@@ -456,8 +355,8 @@ fn string_alias(decl: &Decl) -> Result<String> {
     match body.rsplit_once('=').map(|(_, rhs)| rhs.trim()) {
         Some("string") => Ok("str".into()),
         _ => bail!(
-            "`{}` is not declared in {SOURCE} and is not a plain string alias, so this \
-             generator has no Python type for it. Declare it there or teach \
+            "`{}` is not declared in the protocol source and is not a plain string alias, so \
+             this generator has no Python type for it. Declare it there or teach \
              crates/xtask/src/generate/python.rs what it is.",
             decl.ident
         ),
@@ -481,16 +380,6 @@ fn ts_docs(decl: &Decl) -> Vec<String> {
         .filter(|line| *line != "/**" && *line != "*/")
         .map(|line| line.trim_start_matches('*').trim_start().to_string())
         .collect()
-}
-
-fn variant_wire(variant: &syn::Variant, rename_all: Option<&str>) -> Result<String> {
-    let attrs = serde_attrs(&variant.attrs, &format_args!("variant `{}`", variant.ident))?;
-    Ok(match (attrs.rename, rename_all) {
-        (Some(name), _) => name,
-        (None, Some("snake_case")) => snake_case(&variant.ident.to_string()),
-        (None, None) => variant.ident.to_string(),
-        (None, Some(other)) => bail!("this generator does not know the rename rule `{other}`"),
-    })
 }
 
 fn struct_fields(item: &Item, source: &Source, known: &BTreeSet<String>) -> Result<Vec<Field>> {
@@ -569,7 +458,7 @@ fn push_field(
         // `#[serde(flatten)]` splices fields so `to_wire()` stays one level deep.
         let ty = py_type(&field.ty, known)?;
         let Some(item @ Item::Struct(_)) = source.items.get(&ty) else {
-            bail!("`{ident}` flattens `{ty}`, which is not a struct in {SOURCE}")
+            bail!("`{ident}` flattens `{ty}`, which is not a struct in the protocol source")
         };
         for spliced in struct_fields(item, source, known)? {
             if into.iter().any(|f| f.py == spliced.py) {
@@ -591,7 +480,7 @@ fn push_field(
     } else {
         match &attrs.default {
             None => None,
-            Some(Some(path)) => Some(Default_::Value(source.literal_default(path)?)),
+            Some(Some(path)) => Some(Default_::Value(literal_default(source, path)?)),
             Some(None) => Some(match ty.as_str() {
                 "bool" => Default_::Value("False".into()),
                 "int" => Default_::Value("0".into()),
@@ -620,21 +509,6 @@ fn push_field(
     Ok(())
 }
 
-fn snake_case(name: &str) -> String {
-    let mut out = String::new();
-    for (i, ch) in name.char_indices() {
-        if ch.is_uppercase() {
-            if i > 0 {
-                out.push('_');
-            }
-            out.extend(ch.to_lowercase());
-        } else {
-            out.push(ch);
-        }
-    }
-    out
-}
-
 const KEYWORDS: &[&str] = &[
     "False", "None", "True", "and", "as", "assert", "async", "await", "break", "class", "continue",
     "def", "del", "elif", "else", "except", "finally", "for", "from", "global", "if", "import",
@@ -650,14 +524,9 @@ fn escape_keyword(name: &str) -> String {
     }
 }
 
-fn render(decls: &[Decl]) -> Result<String> {
-    let source = Source::read()?;
-    let wires = build(decls, &source)?;
-
-    let tags = command_wire_tags(&wires)?;
-    check_classified(&tags)?;
-    check_aliased(&tags)?;
-    check_byte_bearing(&tags)?;
+fn render(protocol: &Protocol) -> Result<String> {
+    let wires = build(&protocol.decls, &protocol.source)?;
+    let tags = &protocol.tags;
 
     let mut out = String::from(HEADER);
     out.push_str(PREAMBLE);
@@ -674,7 +543,7 @@ fn render(decls: &[Decl]) -> Result<String> {
         "CommandBytes".into(),
     ];
     for wire in &wires {
-        out.push_str(&render_wire(wire, &tags, &mut exports)?);
+        out.push_str(&render_wire(wire, tags, &mut exports)?);
     }
 
     out.push_str("\n__all__ = [\n");
@@ -683,17 +552,6 @@ fn render(decls: &[Decl]) -> Result<String> {
     }
     out.push_str("]\n");
     Ok(out)
-}
-
-fn command_wire_tags(wires: &[Wire]) -> Result<Vec<String>> {
-    let command = wires
-        .iter()
-        .find(|w| w.name == "Command")
-        .context("the protocol has no `Command` type to split by kind")?;
-    let Shape::Union { variants, .. } = &command.shape else {
-        bail!("`Command` is not a tagged union")
-    };
-    Ok(variants.iter().map(|v| v.wire.clone()).collect())
 }
 
 fn render_kind_enum() -> String {
@@ -1241,45 +1099,7 @@ def _decode_class(cls: Any, data: Mapping[str, Any]) -> Any:
 
 #[cfg(test)]
 mod tests {
-    use super::super::{config, declarations};
     use super::*;
-
-    #[test]
-    fn snake_case_follows_serdes_rule() {
-        assert_eq!(snake_case("NodeAdd"), "node_add");
-        assert_eq!(snake_case("Io"), "io");
-        assert_eq!(snake_case("ResponseBody"), "response_body");
-        assert_eq!(snake_case("UnfilledSlots"), "unfilled_slots");
-    }
-
-    #[test]
-    fn a_serde_key_the_generator_does_not_translate_is_refused() {
-        for (attr, key) in [
-            ("#[serde(skip)]", "skip"),
-            ("#[serde(alias = \"b\")]", "alias"),
-            ("#[serde(with = \"m\")]", "with"),
-        ] {
-            let item: syn::ItemStruct =
-                syn::parse_str(&format!("struct S {{ {attr} a: u32 }}")).unwrap();
-            let field = item.fields.iter().next().unwrap();
-            let Err(error) = serde_attrs(&field.attrs, &"field `a`") else {
-                panic!("{attr} is refused");
-            };
-            let error = error.to_string();
-            assert!(
-                error.contains("field `a`") && error.contains(&format!("#[serde({key})]")),
-                "{error}"
-            );
-        }
-        let item: syn::ItemStruct = syn::parse_str(
-            "#[serde(tag = \"t\", rename_all = \"snake_case\", deny_unknown_fields)] struct S { \
-             #[serde(default, deserialize_with = \"f\", skip_serializing_if = \"g\")] a: u32 }",
-        )
-        .unwrap();
-        assert!(serde_attrs(&item.attrs, &"`S`").is_ok());
-        let field = item.fields.iter().next().unwrap();
-        assert!(serde_attrs(&field.attrs, &"field `a`").is_ok());
-    }
 
     #[test]
     fn a_python_keyword_is_not_a_field_name() {
@@ -1289,8 +1109,7 @@ mod tests {
 
     #[test]
     fn a_colliding_command_variant_is_named_by_its_enum() {
-        let source = Source::read().expect("the protocol source parses");
-        let decls = declarations(&config());
+        let Protocol { decls, source, .. } = Protocol::load().expect("the protocol loads");
         let known: BTreeSet<String> = decls.iter().map(|d| d.ident.clone()).collect();
         let named = name_variants(&decls, &source, &known).expect("every variant is named");
         assert_eq!(
@@ -1315,7 +1134,8 @@ mod tests {
 
     #[test]
     fn the_committed_module_matches_the_rust_types() {
-        let module = render(&declarations(&config())).expect("the module renders");
+        let module =
+            render(&Protocol::load().expect("the protocol loads")).expect("the module renders");
         let out = crate::workspace_root().expect("a workspace root").join(OUT);
         let committed =
             std::fs::read_to_string(&out).unwrap_or_else(|e| panic!("reading {OUT}: {e}"));
@@ -1328,7 +1148,8 @@ mod tests {
 
     #[test]
     fn every_kind_reaches_python_as_its_own_alias() {
-        let module = render(&declarations(&config())).expect("the module renders");
+        let module =
+            render(&Protocol::load().expect("the protocol loads")).expect("the module renders");
         for kind in KINDS {
             assert!(
                 module.contains(&format!("\n{} = ", kind.name)),
@@ -1342,7 +1163,8 @@ mod tests {
 
     #[test]
     fn a_count_is_an_int_and_a_measurement_is_a_float() {
-        let module = render(&declarations(&config())).expect("the module renders");
+        let module =
+            render(&Protocol::load().expect("the protocol loads")).expect("the module renders");
         assert!(module.contains("    node_count: int\n"), "node_count");
         assert!(module.contains("    height: float\n"), "Camera.height");
         assert!(
