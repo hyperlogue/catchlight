@@ -259,14 +259,13 @@ fn serve(options: Serve) -> Result<ExitCode> {
     let page = page_url(&url, &server.launch_code()?);
     let on_signal = file.clone();
     // Dropping the file is what removes it; a signal skips destructors.
-    // `ctrlc`'s `termination` feature covers SIGTERM and SIGHUP too.
-    ctrlc::set_handler(move || {
+    on_termination(move |code| {
         if let Ok(mut file) = on_signal.lock() {
             file.take();
         }
-        std::process::exit(130);
+        std::process::exit(code);
     })
-    .context("installing the Ctrl-C handler")?;
+    .context("installing the signal handler")?;
 
     eprintln!("{NAME}: {url}");
     eprintln!(
@@ -285,6 +284,32 @@ fn serve(options: Serve) -> Result<ExitCode> {
     }
     served.context("serving the editor")?;
     Ok(ExitCode::SUCCESS)
+}
+
+/// Runs `stop` with the shell's exit code for the first SIGINT, SIGTERM or
+/// SIGHUP: 128 plus the signal's number.
+#[cfg(unix)]
+fn on_termination(stop: impl FnOnce(i32) + Send + 'static) -> std::io::Result<()> {
+    use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
+    let mut signals = signal_hook::iterator::Signals::new([SIGINT, SIGTERM, SIGHUP])?;
+    std::thread::spawn(move || {
+        if let Some(signal) = signals.forever().next() {
+            stop(128 + signal);
+        }
+    });
+    Ok(())
+}
+
+/// Windows names no signal, so every way of stopping exits as Ctrl-C does.
+#[cfg(not(unix))]
+fn on_termination(stop: impl FnOnce(i32) + Send + 'static) -> std::io::Result<()> {
+    let mut stop = Some(stop);
+    ctrlc::set_handler(move || {
+        if let Some(stop) = stop.take() {
+            stop(130);
+        }
+    })
+    .map_err(std::io::Error::other)
 }
 
 /// Where reviews and versions are kept, from `--keep` or `CATCHLIGHT_KEEP`.

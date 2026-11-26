@@ -78,6 +78,8 @@ getrandom = "0.3"
 # Command lines
 clap = { version = "4", features = ["derive"] }
 ctrlc = "3"
+# Tells the launcher which signal stopped it, which `ctrlc` does not.
+signal-hook = { version = "0.4", default-features = false, features = ["iterator"] }
 tempfile = "3"
 rustix = "1"
 
