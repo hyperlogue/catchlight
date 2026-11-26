@@ -8,21 +8,21 @@ description = "Workspace build + release automation. Run via `cargo xtask <cmd>`
 publish = false
 
 [dependencies]
-anyhow = { workspace = true }
-catchlight-core = { path = "../catchlight-core" }
+anyhow.workspace = true
+catchlight-core.workspace = true
 # The strand fixture fits its spine with the editor's geometry routine.
-catchlight-editor-core = { workspace = true }
+catchlight-editor-core.workspace = true
 # Feature unification turns `ts` on in `cargo test --workspace` too; that is
 # deliberate, so the feature-gated derives are checked on every CI run.
-catchlight-editor-protocol = { path = "../catchlight-editor-protocol", features = ["ts"] }
-ts-rs = { workspace = true }
-image = { workspace = true }
+catchlight-editor-protocol = { workspace = true, features = ["ts"] }
+ts-rs.workspace = true
+image.workspace = true
 # The Python generator parses Rust source because `ts-rs` output loses the
 # `u32`/`f32` distinction.
 syn = { version = "2.0", features = ["full", "extra-traits"] }
 
 [dev-dependencies]
-serde_json = { workspace = true }
+serde_json.workspace = true
 
 [lints]
 workspace = true

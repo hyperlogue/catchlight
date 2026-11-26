@@ -15,13 +15,13 @@ name = "visual-tests"
 path = "src/bin/visual-tests.rs"
 
 [dependencies]
-catchlight-core = { workspace = true }
-catchlight-wgpu = { workspace = true }
-wgpu = { workspace = true }
-glam = { workspace = true }
-image = { workspace = true }
-anyhow = { workspace = true }
-pollster = { workspace = true }
+catchlight-core.workspace = true
+catchlight-wgpu.workspace = true
+wgpu.workspace = true
+glam.workspace = true
+image.workspace = true
+anyhow.workspace = true
+pollster.workspace = true
 
 [lints]
 workspace = true

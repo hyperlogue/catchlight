@@ -4,20 +4,20 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
 description = "Wire types for the catchlight editor: transport-agnostic request/reply/event over newline-delimited JSON"
 
 [dependencies]
-serde_json = { workspace = true }
+serde_json.workspace = true
 # The Id types, so the wire and the model file share one definition.
-catchlight-core = { workspace = true }
-serde = { workspace = true }
+catchlight-core.workspace = true
+serde.workspace = true
 ts-rs = { workspace = true, optional = true }
 
 [features]
 # TypeScript declarations; only `cargo xtask generate` needs them.
 ts = ["dep:ts-rs", "catchlight-core/ts"]
-
-[dev-dependencies]
 
 [lints]
 workspace = true

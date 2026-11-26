@@ -4,20 +4,22 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
 description = "Core library for catchlight 2.5D character animation"
 
 [dependencies]
-indextree = { workspace = true }
-glam = { workspace = true }
-thiserror = { workspace = true }
-tracing = { workspace = true }
+indextree.workspace = true
+glam.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 image.workspace = true
-bytemuck = "1.25.2"
-smallvec = { version = "1.15", features = ["union"] }
-ciborium = "0.2.2"
-serde_bytes = "0.11.19"
+bytemuck.workspace = true
+smallvec.workspace = true
+ciborium.workspace = true
+serde_bytes.workspace = true
 # The content hash on an extension's byte marker. blake3 over sha2 because it
 # is already in the workspace tree (bevy_asset pulls it) and its licence chain
 # is already cleared; `default-features = false` drops std and rayon, which
@@ -25,7 +27,7 @@ serde_bytes = "0.11.19"
 blake3 = { version = "1", default-features = false }
 ts-rs = { workspace = true, optional = true }
 
-schemars = { version = "1", optional = true }
+schemars = { workspace = true, optional = true }
 
 [features]
 schema = ["dep:schemars"]
@@ -33,9 +35,6 @@ schema = ["dep:schemars"]
 # IDs and motion responses. Off by default: nothing in a normal build, a wasm build
 # or a consumer's dependency graph pulls it in. `cargo xtask generate` turns it on.
 ts = ["dep:ts-rs"]
-
-[dev-dependencies]
-serde_json.workspace = true
 
 # The puppet-tick benchmark: std only, its own `main`, no harness. `test =
 # false` keeps `cargo test` out of it — a bench target is test-run by default,

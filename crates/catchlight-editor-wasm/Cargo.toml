@@ -11,35 +11,35 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-catchlight-core = { workspace = true }
+catchlight-core.workspace = true
 # For `manifest_requirements`: reading a manifest is a pure function, and the
 # tab needs the answer without a session.
-catchlight-editor-core = { workspace = true }
-catchlight-editor-server = { workspace = true }
-catchlight-editor-protocol = { workspace = true }
+catchlight-editor-core.workspace = true
+catchlight-editor-server.workspace = true
+catchlight-editor-protocol.workspace = true
 # Registered where a replica is built, so the tab checks them as the editor does.
-catchlight-extension-animations = { workspace = true }
-catchlight-extension-expressions = { workspace = true }
-catchlight-extension-humanoid = { workspace = true }
-serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true }
+catchlight-extension-animations.workspace = true
+catchlight-extension-expressions.workspace = true
+catchlight-extension-humanoid.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 # Only to author a one-pixel PNG for the texture tests; nothing in the crate
 # decodes an image.
-image = { workspace = true }
+image.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-wasm-bindgen = { workspace = true }
+wasm-bindgen.workspace = true
 console_error_panic_hook = "0.1"
 # Browser-only: a wgpu surface comes from a canvas.
-catchlight-wgpu = { workspace = true }
+catchlight-wgpu.workspace = true
 # `webgl` so a browser with no WebGPU still draws. Under resolver 2 this
 # reaches wgpu only on wasm32, so native tests get no forced GL backend.
 wgpu = { workspace = true, features = ["webgl"] }
-glam = { workspace = true }
-wasm-bindgen-futures = { workspace = true }
-js-sys = { workspace = true }
+glam.workspace = true
+wasm-bindgen-futures.workspace = true
+js-sys.workspace = true
 web-sys = { workspace = true, features = [
     "Window",
     "HtmlCanvasElement",

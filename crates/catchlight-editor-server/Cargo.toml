@@ -4,39 +4,41 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
 description = "Multi-session editor server for catchlight: a Model per session plus a warm headless renderer, driven in-process or over a Unix socket"
 
 [dependencies]
-catchlight-editor-core = { workspace = true }
-catchlight-editor-protocol = { workspace = true }
-catchlight-core = { workspace = true }
-catchlight-extension-animations = { workspace = true }
-catchlight-extension-expressions = { workspace = true }
-catchlight-extension-humanoid = { workspace = true }
-image = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-sha2 = "0.11"
-thiserror = { workspace = true }
-tracing = { workspace = true }
+catchlight-editor-core.workspace = true
+catchlight-editor-protocol.workspace = true
+catchlight-core.workspace = true
+catchlight-extension-animations.workspace = true
+catchlight-extension-expressions.workspace = true
+catchlight-extension-humanoid.workspace = true
+image.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
 
 # The headless preview renderer is native-only; the wasm build keeps just the
 # model/session core (the browser GUI renders on its own device).
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-catchlight-wgpu = { workspace = true }
-glam = { workspace = true }
-wgpu = { workspace = true }
-anyhow = { workspace = true }
-pollster = { workspace = true }
+catchlight-wgpu.workspace = true
+glam.workspace = true
+wgpu.workspace = true
+anyhow.workspace = true
+pollster.workspace = true
 # WebSocket framing for the browser transport. Default features carry the
 # handshake helpers (`derive_accept_key`); no TLS -- this listens on loopback.
 tungstenite = "0.30"
 # The per-launch bearer token has to be unguessable, so it comes from the OS.
-getrandom = "0.3"
+getrandom.workspace = true
 # `PUT /files/{key}` carries its storage key in the path, percent-encoded.
 percent-encoding = "2.3"
 # The binary removes its `--connection-file` on Ctrl-C, SIGTERM and SIGHUP.
-ctrlc = { version = "3", features = ["termination"] }
+ctrlc = { workspace = true, features = ["termination"] }
 
 [lints]
 workspace = true

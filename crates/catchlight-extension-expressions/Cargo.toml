@@ -4,12 +4,14 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
 description = "The official catchlight.expressions extension: named expressions, visemes and emotions, over humanoid controls and params"
 readme = "README.md"
 
 [dependencies]
-catchlight-core = { workspace = true }
-catchlight-extension-humanoid = { workspace = true }
+catchlight-core.workspace = true
+catchlight-extension-humanoid.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

@@ -4,38 +4,40 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
 description = "The catchlight command line over a .clm model file: inspect, edit, rig and render it"
 
 [dependencies]
 catchlight-core = { workspace = true, features = ["schema"] }
-catchlight-extension-animations = { workspace = true }
-catchlight-extension-expressions = { workspace = true }
-catchlight-extension-humanoid = { workspace = true }
-clap = { version = "4", features = ["derive"] }
-serde = { workspace = true }
-serde_json = { workspace = true }
-schemars = "1"
-thiserror = { workspace = true }
+catchlight-extension-animations.workspace = true
+catchlight-extension-expressions.workspace = true
+catchlight-extension-humanoid.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+schemars.workspace = true
+thiserror.workspace = true
 # Render provenance, atomic artifacts, terminal PNG transport, and cancellation.
-sha2 = "0.11"
+sha2.workspace = true
 tempfile = "3"
-base64 = "0.22"
-ctrlc = "3"
+base64.workspace = true
+ctrlc.workspace = true
 
 # `render` (and the rest of the inspection subcommands) draw on a headless
 # device through `catchlight_wgpu::RenderContext`. The renderer is below the
 # line this crate keeps -- the editor server, its protocol and its clients are
 # not; see src/lib.rs.
-catchlight-wgpu = { workspace = true }
-glam = { workspace = true }
-wgpu = { workspace = true }
-image = { workspace = true }
-pollster = { workspace = true }
+catchlight-wgpu.workspace = true
+glam.workspace = true
+wgpu.workspace = true
+image.workspace = true
+pollster.workspace = true
 
 # `poses` writes its own CBOR schema. Same versions catchlight-core reads
 # `.clm` with, so the workspace resolves one of each.
-ciborium = "0.2.2"
-serde_bytes = "0.11.19"
+ciborium.workspace = true
+serde_bytes.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 # Safe terminal mode/polling for the bounded Kitty capability query.
