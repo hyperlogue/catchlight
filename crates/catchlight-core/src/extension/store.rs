@@ -178,10 +178,8 @@ impl Extensions {
         self.map.get(key.as_ref()).map(Stored::as_value)
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (&ExtensionKey, &ExtensionValue)> {
-        self.map
-            .iter()
-            .map(|(key, stored)| (key, stored.as_value()))
+    pub fn iter(&self) -> Iter<'_> {
+        Iter(self.map.iter())
     }
 
     /// The reference table of a maintained extension; `None` for a plain value
@@ -202,12 +200,30 @@ impl Extensions {
     }
 }
 
+/// The values of an [`Extensions`] in key order.
+#[derive(Debug, Clone)]
+pub struct Iter<'a>(std::collections::btree_map::Iter<'a, ExtensionKey, Stored>);
+
+impl<'a> Iterator for Iter<'a> {
+    type Item = (&'a ExtensionKey, &'a ExtensionValue);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.next().map(|(key, stored)| (key, stored.as_value()))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.0.size_hint()
+    }
+}
+
+impl ExactSizeIterator for Iter<'_> {}
+
 impl<'a> IntoIterator for &'a Extensions {
     type Item = (&'a ExtensionKey, &'a ExtensionValue);
-    type IntoIter = Box<dyn Iterator<Item = Self::Item> + 'a>;
+    type IntoIter = Iter<'a>;
 
     fn into_iter(self) -> Self::IntoIter {
-        Box::new(self.iter())
+        self.iter()
     }
 }
 

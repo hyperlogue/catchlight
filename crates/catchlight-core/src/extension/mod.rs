@@ -23,7 +23,7 @@ use crate::model::Model;
 pub(crate) use registry::decode_registered;
 pub use registry::{register, RegisterError};
 pub use store::decode_as;
-pub use store::Extensions;
+pub use store::{Extensions, Iter};
 pub(crate) use store::{Stored, Typed};
 
 /// Implemented on the data type itself. Typed access needs only the type in
