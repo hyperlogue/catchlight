@@ -1,4 +1,9 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "a test aborts on a broken fixture"
+)]
 
 //! JSON session construction and guarded subtree import share core validation.
 
@@ -243,7 +248,7 @@ fn a_structure_installs_under_the_parent_the_command_names() {
     let ed = editor();
     let session = session(create_json(&ed, &as_json(&file)));
     let before = ed
-        .with_model(session, |m| m.node_count())
+        .with_model(session, catchlight_core::Model::node_count)
         .expect("the session is open");
 
     // Cut a subtree out and re-import it under the root, with fresh Ids so it
@@ -266,7 +271,7 @@ fn a_structure_installs_under_the_parent_the_command_names() {
     ));
 
     let after = ed
-        .with_model(session, |m| m.node_count())
+        .with_model(session, catchlight_core::Model::node_count)
         .expect("the session is open");
     assert!(after > before, "the subtree landed: {before} -> {after}");
 
@@ -278,7 +283,8 @@ fn a_structure_installs_under_the_parent_the_command_names() {
         },
     )));
     assert_eq!(
-        ed.with_model(session, |m| m.node_count()).unwrap(),
+        ed.with_model(session, catchlight_core::Model::node_count)
+            .unwrap(),
         before,
         "one undo takes the install back"
     );

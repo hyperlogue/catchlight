@@ -65,7 +65,7 @@ fn query() -> std::io::Result<bool> {
     })();
     // Restore on success, timeout and I/O failure before returning to the shell.
     let restore = tcsetattr(&tty, OptionalActions::Now, &original).map_err(std::io::Error::from);
-    result.and_then(|value| restore.map(|_| value))
+    result.and_then(|value| restore.map(|()| value))
 }
 #[cfg(any(unix, test))]
 fn acknowledged(bytes: &[u8]) -> bool {
@@ -89,7 +89,6 @@ pub fn present(png: &[u8], mut out: impl Write) -> std::io::Result<()> {
     out.flush()
 }
 #[cfg(test)]
-#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     #[test]

@@ -1,4 +1,8 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test aborts on a broken fixture"
+)]
 //! Synthetic end-to-end artifacts exercise shared GPU state, selection, clocks,
 //! discovery and failure handling without private models or imported fixtures.
 mod common;
@@ -205,7 +209,7 @@ fn animation_decimation_reuses_native_clock_and_preserves_motion_responses_and_i
     .unwrap();
     let driver = NodeId::new("follow").unwrap();
     m.add_node_with_id(
-        driver.clone(),
+        driver,
         &NodeId::new("parent").unwrap(),
         ModelNode::new(
             "Follow",

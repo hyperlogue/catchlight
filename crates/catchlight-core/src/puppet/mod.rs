@@ -392,7 +392,7 @@ impl Puppet {
         let buf = stack.source_buf_mut(DeformSource::Scratch);
         let n = buf.len().min(offsets.len());
         buf[..n].copy_from_slice(&offsets[..n]);
-        for v in buf[n..].iter_mut() {
+        for v in &mut buf[n..] {
             *v = Vec2::ZERO;
         }
         self.invalidate_fold();
@@ -511,19 +511,12 @@ impl Puppet {
             Some(slot) => self.param_values.get(slot as usize).copied().flatten(),
             None => self.param_values_overflow.get(param).copied(),
         };
-        let slot = match slot {
-            Some(slot) => slot,
-            None => return base,
-        };
+        let Some(slot) = slot else { return base };
         let claims = self.slot_claims.get(slot as usize).map_or(&[][..], |c| c);
         if claims.is_empty() {
             return base;
         }
-        let default = self
-            .params
-            .get(slot as usize)
-            .map(|p| p.default)
-            .unwrap_or(0.0);
+        let default = self.params.get(slot as usize).map_or(0.0, |p| p.default);
         Some(resolve_contributions(
             &self.param_contributions,
             claims,
@@ -560,7 +553,7 @@ impl Puppet {
                 if self
                     .param_values
                     .get_mut(slot as usize)
-                    .and_then(|v| v.take())
+                    .and_then(Option::take)
                     .is_some()
                 {
                     self.bump_param_generation(slot);
@@ -653,9 +646,7 @@ impl Puppet {
         }
         self.mesh_groups_dirty = true;
         self.param_generation = self.param_generation.wrapping_add(1);
-        for flag in self.param_contributed.iter_mut() {
-            *flag = false;
-        }
+        self.param_contributed.fill(false);
     }
 
     fn param_base(&self, slot: u32) -> Option<f32> {
@@ -913,7 +904,6 @@ mod tests {
     use super::*;
 
     #[test]
-    #[allow(clippy::unwrap_used)]
     fn unrelated_input_reuses_the_group_deforms_and_shifts_of_the_posed_model() {
         let mut model = Model::from_clm_bytes(
             &std::fs::read(concat!(
@@ -942,7 +932,7 @@ mod tests {
             .clone();
         let opacity = crate::BindingKey::new(
             control.clone(),
-            part.clone(),
+            part,
             crate::BindingTarget::Scalar(crate::ScalarTarget::Opacity),
         );
         model.set_binding_key(&opacity, [0, 0], 0.).unwrap();
@@ -1373,7 +1363,7 @@ mod tests {
         puppet.clear_param_contributions();
         assert!(puppet.param_contributions.is_empty());
         assert!(
-            puppet.slot_claims.iter().all(|row| row.is_empty()),
+            puppet.slot_claims.iter().all(smallvec::SmallVec::is_empty),
             "a cleared claim leaves no row behind",
         );
         claim_index_agrees(&puppet);

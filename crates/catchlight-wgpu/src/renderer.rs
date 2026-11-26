@@ -201,7 +201,7 @@ enum RenderBuffer {
     Deform,
 }
 
-/// Dense `Vec<Option<V>>` keyed by small ids, avoiding SipHash on the
+/// Dense `Vec<Option<V>>` keyed by small ids, avoiding `SipHash` on the
 /// per-drawable hot path.
 #[derive(Default)]
 struct DenseMap<V> {
@@ -321,7 +321,10 @@ impl WgpuRenderer {
     ) -> Self {
         // `Arc`, not `Rc`: catchlight-bevy needs `Pipelines` Send + Sync, which it
         // lacks only on wasm32 with wgpu's `webgl` feature.
-        #[allow(clippy::arc_with_non_send_sync)]
+        #[allow(
+            clippy::arc_with_non_send_sync,
+            reason = "fires only on wasm32, where wgpu types are not Send"
+        )]
         let shared = std::sync::Arc::new(Pipelines::new(&device, surface_format));
         Self::from_pipelines(device, queue, shared)
     }
@@ -356,7 +359,7 @@ impl WgpuRenderer {
 
         let camera_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Camera Buffer"),
-            size: shared.camera_stride * CAMERA_RING_SLOTS as u64,
+            size: shared.camera_stride * u64::from(CAMERA_RING_SLOTS),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -367,7 +370,7 @@ impl WgpuRenderer {
                 resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                     buffer: &camera_buffer,
                     offset: 0,
-                    size: std::num::NonZeroU64::new(std::mem::size_of::<CameraUniform>() as u64),
+                    size: std::num::NonZeroU64::new(size_of::<CameraUniform>() as u64),
                 }),
             }],
             label: Some("camera_bind_group"),

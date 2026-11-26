@@ -25,7 +25,10 @@ pub(super) const COMPOSITE_PASSES: PassLabels = PassLabels {
 impl WgpuRenderer {
     /// Sampled-mask path only; the stencil path folds the mask write and blit
     /// into one pass (`blit_composite_with_masks`).
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a pass takes the encoder, its targets and per-draw state separately"
+    )]
     pub(super) fn blit_composite_masked(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -110,7 +113,10 @@ impl WgpuRenderer {
         render_pass.draw(0..3, 0..1);
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a pass takes the encoder, its targets and per-draw state separately"
+    )]
     pub(super) fn blit_composite_dst_in_shader(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -198,7 +204,10 @@ impl WgpuRenderer {
     }
 
     /// Gives the dst-in-shader blit a src texture independent of the framebuffer.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a pass takes the encoder, its targets and per-draw state separately"
+    )]
     pub(super) fn render_part_to_composite_slot(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -285,7 +294,10 @@ impl WgpuRenderer {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a pass takes the encoder, its targets and per-draw state separately"
+    )]
     pub(crate) fn blit_composite_with_masks(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -391,7 +403,10 @@ impl WgpuRenderer {
 
     /// Serves root and nested composites identically. The caller must have
     /// flushed its pending runs and ended the sink's pass.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a pass takes the encoder, its targets and per-draw state separately"
+    )]
     pub(super) fn render_composite_drawable(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -543,7 +558,10 @@ impl WgpuRenderer {
 
     /// Draws `drawables` into `target`, spending `clear_color` exactly once even
     /// when nothing draws. Serves the frame target and every composite slot.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a pass takes the encoder, its targets and per-draw state separately"
+    )]
     pub(super) fn render_to_target(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -601,7 +619,10 @@ impl WgpuRenderer {
     /// Splits at drawables that read the target's own contents (composites
     /// and dst-in-shader parts); each records its own passes between part
     /// runs, which keeps z-order.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a pass takes the encoder, its targets and per-draw state separately"
+    )]
     pub(super) fn render_drawables(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -719,6 +740,6 @@ impl WgpuRenderer {
             }
         }
 
-        self.render_children_run(encoder, sink, &drawables[run_start..], width, height)
+        self.render_children_run(encoder, sink, &drawables[run_start..], width, height);
     }
 }

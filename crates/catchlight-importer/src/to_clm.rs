@@ -201,24 +201,24 @@ enum Slot {
 impl Slot {
     fn params(&self) -> Vec<ParamId> {
         match self {
-            Slot::One(id) => vec![id.clone()],
-            Slot::Pair(x, y) => vec![x.clone(), y.clone()],
+            Self::One(id) => vec![id.clone()],
+            Self::Pair(x, y) => vec![x.clone(), y.clone()],
         }
     }
 
     /// inochi2d reads a lane `target` of 0 as x and anything else as y.
     fn axis(&self, target: u8) -> Option<&ParamId> {
         match (self, target) {
-            (Slot::One(id), 0) => Some(id),
-            (Slot::One(_), _) => None,
-            (Slot::Pair(x, _), 0) => Some(x),
-            (Slot::Pair(_, y), _) => Some(y),
+            (Self::One(id), 0) => Some(id),
+            (Self::One(_), _) => None,
+            (Self::Pair(x, _), 0) => Some(x),
+            (Self::Pair(_, y), _) => Some(y),
         }
     }
 
     fn head(&self) -> &ParamId {
         match self {
-            Slot::One(id) | Slot::Pair(id, _) => id,
+            Self::One(id) | Self::Pair(id, _) => id,
         }
     }
 }
@@ -570,8 +570,7 @@ fn convert_animations(json: Option<&serde_json::Value>, refs: &Refs<'_>) -> Vec<
                 let name = v
                     .get("name")
                     .and_then(|n| n.as_str())
-                    .map(String::from)
-                    .unwrap_or_else(|| format!("anim-{i}"));
+                    .map_or_else(|| format!("anim-{i}"), String::from);
                 (name, v)
             })
             .collect(),
@@ -610,15 +609,12 @@ fn convert_animation_lane(
     lane: &SchemaAnimationLane,
     refs: &Refs<'_>,
 ) -> Option<Lane> {
-    let slot = match lane.uuid.and_then(|uuid| refs.slot_of_uuid(uuid)) {
-        Some(slot) => slot,
-        None => {
-            tracing::warn!(
-                "animation {animation:?}: dropping a lane whose param {:?} is not in this rig",
-                lane.uuid
-            );
-            return None;
-        }
+    let Some(slot) = lane.uuid.and_then(|uuid| refs.slot_of_uuid(uuid)) else {
+        tracing::warn!(
+            "animation {animation:?}: dropping a lane whose param {:?} is not in this rig",
+            lane.uuid
+        );
+        return None;
     };
     let target = lane.target.unwrap_or(0);
     let Some(param) = slot.axis(target) else {

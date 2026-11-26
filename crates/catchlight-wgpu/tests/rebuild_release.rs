@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(clippy::expect_used, reason = "a test aborts on a broken fixture")]
 
 //! A [`RenderCache`] rebuild releases GPU state the new build does not name,
 //! and keeps textures it names again.

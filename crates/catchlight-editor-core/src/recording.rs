@@ -178,7 +178,7 @@ impl Recording {
             .map(|(target, _)| {
                 let value = model
                     .eval_scalar(&key(BindingTarget::Scalar(target)), &pose)
-                    .unwrap_or(target.identity());
+                    .unwrap_or_else(|| target.identity());
                 (target, value)
             })
             .collect();
@@ -243,7 +243,7 @@ impl Recording {
                 .keys
                 .iter()
                 .find(|(t, _)| *t == target)
-                .map_or(target.identity(), |(_, v)| *v);
+                .map_or_else(|| target.identity(), |(_, v)| *v);
             result.push((target, record_value(target, current, before, after)?));
         }
         Ok(result)
@@ -281,8 +281,12 @@ impl Recording {
         };
         let unauthored = self.model.binding(&key).is_none_or(|b| {
             b.values().scalar_cells().map_or_else(
-                || b.values().deform_cells().is_none_or(|c| c.is_empty()),
-                |c| c.is_empty(),
+                || {
+                    b.values()
+                        .deform_cells()
+                        .is_none_or(<[catchlight_core::formats::clm::ClmCell<Vec<f32>>]>::is_empty)
+                },
+                <[catchlight_core::formats::clm::ClmCell<f32>]>::is_empty,
             )
         });
         let mut model = self.model.clone();
@@ -492,7 +496,7 @@ mod tests {
         for cell in &write.cells {
             match &cell.value {
                 RecordingValue::Scalar(value) => {
-                    model.set_binding_key(&key, cell.cell, *value).unwrap()
+                    model.set_binding_key(&key, cell.cell, *value).unwrap();
                 }
                 RecordingValue::Offsets(value) => model
                     .set_deform_vertices(&key, cell.cell, value.concat())
@@ -538,7 +542,7 @@ mod tests {
             BindingTarget::Scalar(ScalarTarget::Tx),
         );
         for (position, expected) in [(0.4, 0.0), (0.7, 10.0)] {
-            let pose = [(param.clone(), position)].into_iter().collect();
+            let pose = std::iter::once((param.clone(), position)).collect();
             assert_eq!(model.eval_scalar(&key, &pose), Some(expected));
         }
     }
@@ -579,7 +583,7 @@ mod tests {
         for (target, value) in [(ScalarTarget::Tx, 13.0), (ScalarTarget::Ty, 17.0)] {
             let key = BindingKey::new(param.clone(), node.clone(), BindingTarget::Scalar(target));
             assert_eq!(model.scalar_value_at(&key, [3, 0]).unwrap(), 20.0);
-            let pose = [(param.clone(), 0.5)].into_iter().collect();
+            let pose = std::iter::once((param.clone(), 0.5)).collect();
             assert_eq!(model.eval_scalar(&key, &pose), Some(value));
         }
     }

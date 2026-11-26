@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(clippy::unwrap_used, reason = "a test aborts on a broken fixture")]
 //! Small deform pages bound evaluator work and keep all returned values finite.
 
 use catchlight_core::formats::clm::{ClmIndices, ClmMesh};

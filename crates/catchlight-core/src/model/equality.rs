@@ -129,7 +129,6 @@ fn binding_eq(a: &ModelBinding, b: &ModelBinding) -> bool {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use crate::{
         BindingKey, BindingTarget, BlendMode, ExtensionKey, ExtensionValue, InterpolateMode,
@@ -315,7 +314,7 @@ mod tests {
                 "transform",
                 Box::new(|m, r, _| {
                     m.update_node(&r.lower, |n| n.transform.rotation[2] = 0.5)
-                        .unwrap()
+                        .unwrap();
                 }),
             ),
             (
@@ -334,7 +333,7 @@ mod tests {
                             p.opacity = 0.5;
                         }
                     })
-                    .unwrap()
+                    .unwrap();
                 }),
             ),
             (
@@ -345,7 +344,7 @@ mod tests {
                             c.blend_mode = BlendMode::Multiply;
                         }
                     })
-                    .unwrap()
+                    .unwrap();
                 }),
             ),
             (
@@ -356,7 +355,7 @@ mod tests {
                             mg.translate_children = false;
                         }
                     })
-                    .unwrap()
+                    .unwrap();
                 }),
             ),
             (
@@ -391,7 +390,7 @@ mod tests {
                 "weld weight",
                 Box::new(|m, r, _| {
                     m.set_weld_slot_weight(&r.upper, &r.lower, &slot("seam"), 0.75)
-                        .unwrap()
+                        .unwrap();
                 }),
             ),
             (
@@ -425,7 +424,7 @@ mod tests {
                 "deform cell",
                 Box::new(|m, r, _| {
                     m.set_deform_vertices(&r.deform, [0, 0], vec![0.5; 8])
-                        .unwrap()
+                        .unwrap();
                 }),
             ),
             (
@@ -436,7 +435,7 @@ mod tests {
                 "interpolation",
                 Box::new(|m, r, _| {
                     m.set_binding_interpolate(&r.tx, InterpolateMode::Stepped)
-                        .unwrap()
+                        .unwrap();
                 }),
             ),
             (
@@ -447,21 +446,21 @@ mod tests {
                         r.lower.clone(),
                         BindingTarget::Scalar(ScalarTarget::Opacity),
                     ))
-                    .unwrap()
+                    .unwrap();
                 }),
             ),
             (
                 "spine joints",
                 Box::new(|m, r, _| {
                     m.set_spine_joints(&r.spine, vec![[0.0, -5.0], [0.0, -9.0]])
-                        .unwrap()
+                        .unwrap();
                 }),
             ),
             (
                 "spine targets",
                 Box::new(|m, r, _| {
                     m.set_spine_targets(&r.spine, vec![None, Some(r.x.clone())])
-                        .unwrap()
+                        .unwrap();
                 }),
             ),
             (
@@ -474,7 +473,7 @@ mod tests {
                             ..MotionResponse::default()
                         },
                     )
-                    .unwrap()
+                    .unwrap();
                 }),
             ),
             (
@@ -503,7 +502,7 @@ mod tests {
                         ExtensionKey::new("test.note").unwrap(),
                         ExtensionValue::Json(serde_json::json!(1)),
                     )
-                    .unwrap()
+                    .unwrap();
                 }),
             ),
             (

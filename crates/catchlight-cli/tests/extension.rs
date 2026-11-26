@@ -1,5 +1,3 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-
 //! `extension` over a real file, and how `patch`, `diff` and `merge` treat it.
 
 mod common;

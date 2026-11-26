@@ -80,7 +80,7 @@ pub fn read(path: &Path) -> Result<ClmFile, Error> {
 pub fn encode(file: &ClmFile, path: &Path) -> Result<Vec<u8>, Error> {
     file.encode().map_err(|source| Error::Encode {
         path: path.to_path_buf(),
-        source: catchlight_core::ModelError::from(source),
+        source: ModelError::from(source),
     })
 }
 
@@ -163,7 +163,7 @@ fn rename_into_place(temp: tempfile::TempPath, path: &Path) -> Result<(), Error>
 fn parent_dir(path: &Path) -> &Path {
     path.parent()
         .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."))
+        .unwrap_or_else(|| Path::new("."))
 }
 
 /// Decodes no textures and builds no puppet.
@@ -206,7 +206,6 @@ pub fn write_model(model: &Model, path: &Path) -> Result<(), Error> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
     use catchlight_core::formats::clm::{ClmNode, ClmNodeKind, ClmTransform};

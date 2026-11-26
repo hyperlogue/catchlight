@@ -1,4 +1,8 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(
+    clippy::expect_used,
+    clippy::panic,
+    reason = "a test aborts on a broken fixture"
+)]
 
 //! Resource-lifecycle invariants of `WgpuRenderer`, asserted on calls and
 //! buffer state: each breaks only once a frame grows, so no pixel baseline
@@ -407,7 +411,7 @@ fn shared_composite_pool_costs_the_deepest_puppet_not_the_sum() {
     let mut stage = Stage::new();
 
     let mut alone = Vec::new();
-    for stem in stems.iter() {
+    for stem in &stems {
         let mut pool = FrameTargets::new();
         let mut renderer = stage.renderer();
         let mut scene = stage.admit(&mut renderer, load_test_model(stem));

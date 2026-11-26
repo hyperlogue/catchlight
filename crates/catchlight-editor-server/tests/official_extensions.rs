@@ -1,4 +1,8 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "a test aborts on a broken fixture"
+)]
 
 //! A session checks the official extensions by their own rules: building one
 //! registers them.

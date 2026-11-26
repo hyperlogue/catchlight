@@ -210,7 +210,7 @@ impl LoadBudget {
         left: u64,
         right: u64,
     ) -> Result<u64, LoadLimitError> {
-        let amount = left.checked_mul(right).ok_or(LoadLimitError {
+        let amount = left.checked_mul(right).ok_or_else(|| LoadLimitError {
             resource,
             limit: self.limits.of(resource),
             got: u64::MAX,
@@ -227,8 +227,8 @@ impl LoadBudget {
         if width > MAX_TEXTURE_DIMENSION || height > MAX_TEXTURE_DIMENSION {
             return Err(LoadLimitError {
                 resource: LoadResource::TextureDimension,
-                limit: MAX_TEXTURE_DIMENSION as u64,
-                got: width.max(height) as u64,
+                limit: u64::from(MAX_TEXTURE_DIMENSION),
+                got: u64::from(width.max(height)),
             });
         }
         let pixels = u64::from(width)
@@ -248,7 +248,7 @@ pub const MAX_BINDING_GRID_CELLS: u64 = 65_536;
 pub(crate) fn binding_grid_cells(
     mut axis_lengths: impl Iterator<Item = u64>,
 ) -> Result<u64, LoadLimitError> {
-    let cells = axis_lengths.try_fold(1u64, |acc, len| acc.checked_mul(len));
+    let cells = axis_lengths.try_fold(1u64, u64::checked_mul);
     match cells {
         Some(cells) if cells <= MAX_BINDING_GRID_CELLS => Ok(cells),
         got => Err(LoadLimitError {
@@ -374,7 +374,10 @@ pub fn charge_clm_structure(
         };
         budget.charge(LoadResource::ExtensionBytes, size)?;
         if let ClmExtension::Maintained { refs, .. } = value {
-            let refs: usize = refs.iter().map(|r| r.encoded_len_hint()).sum();
+            let refs: usize = refs
+                .iter()
+                .map(super::extension::IdRef::encoded_len_hint)
+                .sum();
             budget.charge(LoadResource::ExtensionBytes, refs as u64)?;
         }
     }

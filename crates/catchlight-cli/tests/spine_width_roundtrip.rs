@@ -1,4 +1,3 @@
-#![allow(clippy::unwrap_used)]
 //! File operations preserve a spine's paired width fields and companions.
 
 #[path = "../../../tests/support/spine_width.rs"]

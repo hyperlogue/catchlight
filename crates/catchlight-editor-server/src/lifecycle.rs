@@ -105,8 +105,8 @@ impl Editor {
     pub(super) fn open_session(&self, path: String) -> Result<Captured<ResponseBody>, EditorError> {
         let model = Model::from_clm_bytes(&self.storage.read(&path)?)?;
         let title = key_stem(&path);
-        let review = crate::review::ReviewKeeping::open(&*self.kept_store, &path, &model);
-        let versions = crate::versions::Versions::open(&*self.kept_store, &path);
+        let review = review::ReviewKeeping::open(&*self.kept_store, &path, &model);
+        let versions = versions::Versions::open(&*self.kept_store, &path);
         self.publish_session_with(model, Some(title), Some(path), None, |session| {
             (session.review, session.review_keeping) = review;
             session.versions = versions;

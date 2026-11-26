@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(clippy::unwrap_used, reason = "a test aborts on a broken fixture")]
 //! A player posing a puppet from outside it.
 
 use catchlight_core::id::SeededHex;
@@ -220,9 +220,7 @@ fn a_lane_on_a_driven_param_is_skipped() {
                 "spring",
                 ModelNodeKind::MotionResponse(MotionResponse {
                     inputs: vec![ResponseInput {
-                        source: ResponseSource::PoseParam {
-                            param: input.clone(),
-                        },
+                        source: ResponseSource::PoseParam { param: input },
                         gain: 1.0,
                     }],
                     output_param: Some(output.clone()),

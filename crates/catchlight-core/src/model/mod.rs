@@ -135,7 +135,7 @@ pub enum ModelError {
     #[error("mesh is malformed: {0}")]
     MalformedMesh(&'static str),
     #[error(".clm codec: {0}")]
-    Clm(#[from] crate::formats::clm::ClmError),
+    Clm(#[from] clm::ClmError),
     #[error("invalid .clm: {0}")]
     InvalidClm(#[from] ClmLoadError),
     #[error(transparent)]
@@ -153,7 +153,7 @@ pub struct ModelTexture {
 
 impl From<&ModelTexture> for crate::texture::EncodedTexture {
     fn from(tex: &ModelTexture) -> Self {
-        crate::texture::EncodedTexture {
+        Self {
             format: match tex.encoding {
                 TextureEncoding::Png => crate::texture::TextureFormat::Png,
                 TextureEncoding::Tga => crate::texture::TextureFormat::Tga,
@@ -166,7 +166,7 @@ impl From<&ModelTexture> for crate::texture::EncodedTexture {
 
 /// An extension as stored. JSON values travel inline with the structure;
 /// bytes live in their own section and travel by hash.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExtensionValue {
     /// A plain annotation: carried, never maintained.
     Json(serde_json::Value),
@@ -227,7 +227,7 @@ pub const DEFAULT_SLOT_WEIGHT: f32 = 0.5;
 
 /// A named handle on a part, filled by one of its vertices or unfilled until
 /// the part's author refills it after a re-mesh.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Slot {
     id: SlotId,
     vertex: Option<u32>,
@@ -496,7 +496,7 @@ impl Default for ModelComposite {
 
 /// The source is a part or composite other than the node it clips; in a
 /// fragment it may be a base node, which [`Model::install`] checks.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelMask {
     source: NodeId,
     mode: MaskMode,
@@ -2083,46 +2083,43 @@ impl Model {
     }
 
     pub fn estimated_size_bytes(&self) -> usize {
-        let mut bytes =
-            std::mem::size_of::<Self>()
-                .saturating_add(self.nodes.len().saturating_mul(
-                    std::mem::size_of::<ModelNode>() + std::mem::size_of::<NodeId>(),
-                ))
-                .saturating_add(self.params.len().saturating_mul(
-                    std::mem::size_of::<ModelParam>() + std::mem::size_of::<ParamId>(),
-                ))
-                .saturating_add(self.textures.len().saturating_mul(
-                    std::mem::size_of::<ModelTexture>() + std::mem::size_of::<TexId>(),
-                ))
-                .saturating_add(
-                    self.param_order
-                        .capacity()
-                        .saturating_mul(std::mem::size_of::<ParamId>()),
-                )
-                .saturating_add(
-                    self.texture_order
-                        .capacity()
-                        .saturating_mul(std::mem::size_of::<TexId>()),
-                )
-                .saturating_add(
-                    self.welds
-                        .capacity()
-                        .saturating_mul(std::mem::size_of::<ModelWeld>()),
-                )
-                .saturating_add(
-                    self.bindings
-                        .capacity()
-                        .saturating_mul(std::mem::size_of::<ModelBinding>()),
-                );
+        let mut bytes = size_of::<Self>()
+            .saturating_add(
+                self.nodes
+                    .len()
+                    .saturating_mul(size_of::<ModelNode>() + size_of::<NodeId>()),
+            )
+            .saturating_add(
+                self.params
+                    .len()
+                    .saturating_mul(size_of::<ModelParam>() + size_of::<ParamId>()),
+            )
+            .saturating_add(
+                self.textures
+                    .len()
+                    .saturating_mul(size_of::<ModelTexture>() + size_of::<TexId>()),
+            )
+            .saturating_add(
+                self.param_order
+                    .capacity()
+                    .saturating_mul(size_of::<ParamId>()),
+            )
+            .saturating_add(
+                self.texture_order
+                    .capacity()
+                    .saturating_mul(size_of::<TexId>()),
+            )
+            .saturating_add(self.welds.capacity().saturating_mul(size_of::<ModelWeld>()))
+            .saturating_add(
+                self.bindings
+                    .capacity()
+                    .saturating_mul(size_of::<ModelBinding>()),
+            );
         for weld in &self.welds {
             bytes = bytes
                 .saturating_add(weld.a.as_str().len())
                 .saturating_add(weld.b.as_str().len())
-                .saturating_add(
-                    weld.pairs
-                        .capacity()
-                        .saturating_mul(std::mem::size_of::<SlotPair>()),
-                );
+                .saturating_add(weld.pairs.capacity().saturating_mul(size_of::<SlotPair>()));
             for pair in weld.pairs.iter() {
                 bytes = bytes
                     .saturating_add(pair.a.as_str().len())
@@ -2133,24 +2130,16 @@ impl Model {
             bytes = bytes
                 .saturating_add(id.as_str().len())
                 .saturating_add(node.name.as_str().len())
-                .saturating_add(
-                    node.children
-                        .capacity()
-                        .saturating_mul(std::mem::size_of::<NodeId>()),
-                );
+                .saturating_add(node.children.capacity().saturating_mul(size_of::<NodeId>()));
             if let Some(mesh) = node.mesh() {
                 bytes = bytes.saturating_add(mesh_size(mesh));
             }
             if let Some(masks) = node.masks() {
-                bytes = bytes
-                    .saturating_add(masks.len().saturating_mul(std::mem::size_of::<ModelMask>()));
+                bytes = bytes.saturating_add(masks.len().saturating_mul(size_of::<ModelMask>()));
             }
             if let ModelNodeKind::Part(part) = &node.kind {
-                bytes = bytes.saturating_add(
-                    part.slots
-                        .capacity()
-                        .saturating_mul(std::mem::size_of::<Slot>()),
-                );
+                bytes =
+                    bytes.saturating_add(part.slots.capacity().saturating_mul(size_of::<Slot>()));
                 for slot in part.slots.iter() {
                     bytes = bytes.saturating_add(slot.id.as_str().len());
                 }
@@ -2163,10 +2152,9 @@ impl Model {
         }
         for binding in &self.bindings {
             bytes = bytes.saturating_add(binding_values_size(&binding.values));
-            bytes = bytes
-                .saturating_add(binding.key_positions.capacity() * std::mem::size_of::<Vec<f32>>());
+            bytes = bytes.saturating_add(binding.key_positions.capacity() * size_of::<Vec<f32>>());
             for axis in &binding.key_positions {
-                bytes = bytes.saturating_add(axis.capacity() * std::mem::size_of::<f32>());
+                bytes = bytes.saturating_add(axis.capacity() * size_of::<f32>());
             }
         }
         for (id, texture) in &self.textures {
@@ -2326,17 +2314,13 @@ fn validate_mesh(mesh: &ClmMesh) -> Result<(), ModelError> {
 
 fn mesh_size(mesh: &ClmMesh) -> usize {
     let indices = match &mesh.indices {
-        clm::ClmIndices::U16(indices) => indices
-            .capacity()
-            .saturating_mul(std::mem::size_of::<u16>()),
-        clm::ClmIndices::U32(indices) => indices
-            .capacity()
-            .saturating_mul(std::mem::size_of::<u32>()),
+        clm::ClmIndices::U16(indices) => indices.capacity().saturating_mul(size_of::<u16>()),
+        clm::ClmIndices::U32(indices) => indices.capacity().saturating_mul(size_of::<u32>()),
     };
     mesh.verts
         .capacity()
         .saturating_add(mesh.uvs.capacity())
-        .saturating_mul(std::mem::size_of::<f32>())
+        .saturating_mul(size_of::<f32>())
         .saturating_add(indices)
 }
 
@@ -2346,13 +2330,9 @@ fn binding_values_size(values: &ClmBindingValues) -> usize {
         V::Deform(cells) => cells
             .cells
             .capacity()
-            .saturating_mul(std::mem::size_of::<clm::ClmCell<Vec<f32>>>())
+            .saturating_mul(size_of::<clm::ClmCell<Vec<f32>>>())
             .saturating_add(cells.cells.iter().fold(0usize, |bytes, cell| {
-                bytes.saturating_add(
-                    cell.value
-                        .capacity()
-                        .saturating_mul(std::mem::size_of::<f32>()),
-                )
+                bytes.saturating_add(cell.value.capacity().saturating_mul(size_of::<f32>()))
             })),
         V::ZOrder(cells)
         | V::TransformTX(cells)
@@ -2372,7 +2352,7 @@ fn binding_values_size(values: &ClmBindingValues) -> usize {
         | V::ScreenTintB(cells) => cells
             .cells
             .capacity()
-            .saturating_mul(std::mem::size_of::<clm::ClmCell<f32>>()),
+            .saturating_mul(size_of::<clm::ClmCell<f32>>()),
     }
 }
 
@@ -2559,7 +2539,7 @@ mod tests {
         assert_eq!(r.model.generation(), before, "a refused edit is no edit");
         match &r.model.node(&spine).unwrap().kind {
             ModelNodeKind::Spine(sp) => {
-                assert_eq!(sp.joints(), [[0.0, -50.0], [0.0, -100.0]])
+                assert_eq!(sp.joints(), [[0.0, -50.0], [0.0, -100.0]]);
             }
             other => panic!("not a spine: {other:?}"),
         }
@@ -2813,7 +2793,10 @@ mod tests {
     /// A new mutating method belongs in this list.
     #[test]
     fn generation_bumps_on_every_mutating_method() {
-        #[allow(clippy::type_complexity)]
+        #[expect(
+            clippy::type_complexity,
+            reason = "a table of named edits reads clearer inline than behind an alias"
+        )]
         let edits: Vec<(&str, Box<dyn Fn(&mut Fixture)>)> = vec![
             (
                 "update_node",
@@ -2863,7 +2846,7 @@ mod tests {
                 Box::new(|r| {
                     r.model
                         .rename_node_id(&r.part, NodeId::new("renamed").unwrap())
-                        .unwrap()
+                        .unwrap();
                 }),
             ),
             (
@@ -2871,7 +2854,7 @@ mod tests {
                 Box::new(|r| {
                     r.model
                         .rename_param_id(&r.param, ParamId::new("renamed").unwrap())
-                        .unwrap()
+                        .unwrap();
                 }),
             ),
             (
@@ -2879,7 +2862,7 @@ mod tests {
                 Box::new(|r| {
                     r.model
                         .rename_tex_id(&r.tex, TexId::new("renamed").unwrap())
-                        .unwrap()
+                        .unwrap();
                 }),
             ),
             (
@@ -2887,7 +2870,7 @@ mod tests {
                 Box::new(|r| {
                     r.model
                         .set_part_albedo(&r.part, Some(r.tex.clone()))
-                        .unwrap()
+                        .unwrap();
                 }),
             ),
             (
@@ -2907,7 +2890,7 @@ mod tests {
                                 ..Default::default()
                             },
                         )
-                        .unwrap()
+                        .unwrap();
                 }),
             ),
             (
@@ -2916,7 +2899,7 @@ mod tests {
                     let spine = r.spine();
                     r.model
                         .set_spine_targets(&spine, vec![Some(r.param.clone()), None])
-                        .unwrap()
+                        .unwrap();
                 }),
             ),
             (
@@ -2925,7 +2908,7 @@ mod tests {
                     let spine = r.spine();
                     r.model
                         .set_spine_joints(&spine, vec![[0.0, -10.0]])
-                        .unwrap()
+                        .unwrap();
                 }),
             ),
             (
@@ -2979,7 +2962,7 @@ mod tests {
                 Box::new(|r| {
                     r.model
                         .mask_add(&r.composite, &r.other, MaskMode::Mask)
-                        .unwrap()
+                        .unwrap();
                 }),
             ),
             (
@@ -2987,7 +2970,7 @@ mod tests {
                 Box::new(|r| {
                     r.model
                         .mask_set_mode(&r.composite, 0, MaskMode::DodgeMask)
-                        .unwrap()
+                        .unwrap();
                 }),
             ),
             (
@@ -3010,7 +2993,7 @@ mod tests {
                 Box::new(|r| {
                     r.model
                         .add_param_with_id(ParamId::new("chosen").unwrap(), param("q"))
-                        .unwrap()
+                        .unwrap();
                 }),
             ),
             (
@@ -3029,7 +3012,7 @@ mod tests {
                 Box::new(|r| {
                     r.model
                         .add_texture_with_id(TexId::new("chosen").unwrap(), &r.part, texture())
-                        .unwrap()
+                        .unwrap();
                 }),
             ),
             (
@@ -3045,7 +3028,7 @@ mod tests {
                             r.other.clone(),
                             Vec::new(),
                         )])
-                        .unwrap()
+                        .unwrap();
                 }),
             ),
             (
@@ -3057,7 +3040,7 @@ mod tests {
                 Box::new(|r| {
                     r.model
                         .set_binding_key(&scalar_key(r), [1, 0], 5.0)
-                        .unwrap()
+                        .unwrap();
                 }),
             ),
             (
@@ -3115,7 +3098,7 @@ mod tests {
                 Box::new(|r| {
                     r.model
                         .set_deform_vertices(&deform_key(r), [1, 0], vec![1.0; 8])
-                        .unwrap()
+                        .unwrap();
                 }),
             ),
             (
@@ -3129,7 +3112,7 @@ mod tests {
                             0.0,
                             [1.0, 1.0],
                         )
-                        .unwrap()
+                        .unwrap();
                 }),
             ),
             (
@@ -3137,7 +3120,7 @@ mod tests {
                 Box::new(|r| {
                     r.model
                         .set_param_name(&r.param, Name::truncated("renamed"))
-                        .unwrap()
+                        .unwrap();
                 }),
             ),
             (
@@ -3672,7 +3655,7 @@ mod tests {
 
         assert_eq!(
             r.model.texture_dropped_by_repointing(&other, None),
-            Some(old.clone())
+            Some(old)
         );
         let new = r.model.add_texture(&other, texture(), &mut r.hex).unwrap();
 
@@ -3734,7 +3717,10 @@ mod tests {
 
     #[test]
     fn no_edit_leaves_a_texture_with_no_part_drawing_it() {
-        #[allow(clippy::type_complexity)]
+        #[expect(
+            clippy::type_complexity,
+            reason = "a table of named edits reads clearer inline than behind an alias"
+        )]
         let edits: Vec<(&str, Box<dyn Fn(&mut Fixture)>)> = vec![
             (
                 "set_part_albedo(None)",

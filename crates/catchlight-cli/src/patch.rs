@@ -438,7 +438,6 @@ fn one_of(names: &[&str]) -> String {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
 

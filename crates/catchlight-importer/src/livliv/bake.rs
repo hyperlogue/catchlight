@@ -1,4 +1,4 @@
-//! Bake settled LivLiv poses into existing one/two-param deform bindings.
+//! Bake settled `LivLiv` poses into existing one/two-param deform bindings.
 //!
 //! Yaw/pitch share a grid to preserve their nonlinear interaction. Other
 //! controls contribute neutral-relative offsets plus pairwise residual grids.
@@ -43,7 +43,7 @@ pub(super) fn add_params(doc: &mut ClmStructure) -> Result<()> {
 }
 
 pub(super) fn mesh(l: &Layer, canvas: [u32; 2]) -> (ClmMesh, Vec<[f64; 2]>) {
-    let cell = ((canvas[0].max(canvas[1]) as f64 / 128.).round() as u32).max(6);
+    let cell = ((f64::from(canvas[0].max(canvas[1])) / 128.).round() as u32).max(6);
     let axis = |lo: u32, size: u32| {
         let mut out = vec![lo];
         let mut v = (lo / cell + 1) * cell;
@@ -60,7 +60,7 @@ pub(super) fn mesh(l: &Layer, canvas: [u32; 2]) -> (ClmMesh, Vec<[f64; 2]>) {
     let mut mesh = ClmMesh::default();
     for &y in &ys {
         for &x in &xs {
-            points.push([x as f64, y as f64]);
+            points.push([f64::from(x), f64::from(y)]);
             mesh.verts.extend([
                 x as f32 - canvas[0] as f32 / 2.,
                 canvas[1] as f32 / 2. - y as f32,
@@ -112,7 +112,7 @@ impl Table {
         };
         let width = self.axes[0].len();
         let value =
-            |x: usize, y: usize, k: usize| self.values[y * width + x][vertex * 2 + k] as f64;
+            |x: usize, y: usize, k: usize| f64::from(self.values[y * width + x][vertex * 2 + k]);
         let mut out = [0., 0.];
         for (k, v) in out.iter_mut().enumerate() {
             let a = value(x, y, k) * (1. - tx) + value(x + 1, y, k) * tx;
@@ -173,7 +173,7 @@ pub(super) fn layer(
             runtime,
             index,
             &vertices,
-            vec![mouth_axis, axis.clone()],
+            vec![mouth_axis, axis],
             vec![12, 12],
             true,
             false,
@@ -275,7 +275,10 @@ pub(super) fn layer(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the inputs are independent, with no type that groups them"
+)]
 fn table(
     runtime: &Runtime,
     layer: usize,
@@ -305,7 +308,7 @@ fn table(
                 } else {
                     p.0[i] = PARAMETERS[i].1
                         + (PARAMETERS[i].2 - PARAMETERS[i].1)
-                            * axes[axis][if axis == 0 { x } else { y }] as f64;
+                            * f64::from(axes[axis][if axis == 0 { x } else { y }]);
                 }
             }
             let mut offsets = Vec::with_capacity(vertices.len() * 2);

@@ -1,4 +1,8 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test aborts on a broken fixture"
+)]
 
 mod common;
 
@@ -59,11 +63,10 @@ fn deform_source_changes_pixels_end_to_end() {
     let diff: u64 = baseline
         .iter()
         .zip(shifted.iter())
-        .map(|(a, b)| (*a as i32 - *b as i32).unsigned_abs() as u64)
+        .map(|(a, b)| u64::from((i32::from(*a) - i32::from(*b)).unsigned_abs()))
         .sum();
     assert!(
         diff > 1_000_000,
-        "expected a big CPU->GPU->shader shift, got summed |diff| = {}",
-        diff
+        "expected a big CPU->GPU->shader shift, got summed |diff| = {diff}"
     );
 }

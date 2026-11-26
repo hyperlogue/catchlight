@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(clippy::expect_used, reason = "a test aborts on a broken fixture")]
 
 //! What the collector makes of a model's shape.
 //!

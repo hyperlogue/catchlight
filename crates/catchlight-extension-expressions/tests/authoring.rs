@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(clippy::unwrap_used, reason = "a test aborts on a broken fixture")]
 //! The checked edits a tool makes on a person's behalf: what each does, and
 //! each request it refuses.
 

@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(clippy::unwrap_used, reason = "a test aborts on a broken fixture")]
 //! Model-file, live editing and puppet interfaces on one two-spring fixture.
 use catchlight_core::{
     BindingKey, BindingTarget, Model, ModelNode, ModelNodeKind, ModelParam, MotionResponse, Name,

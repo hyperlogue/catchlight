@@ -74,7 +74,7 @@ impl WorkingMesh {
             }
         };
         match &mesh.indices {
-            ClmIndices::U16(v) => tris(&mut v.iter().map(|&i| i as u32)),
+            ClmIndices::U16(v) => tris(&mut v.iter().map(|&i| u32::from(i))),
             ClmIndices::U32(v) => tris(&mut v.iter().copied()),
         }
         Self {
@@ -216,7 +216,7 @@ impl WorkingMesh {
         for i in 0..self.vertex_count() {
             let p = self.pos(i as u32);
             let h = cdt
-                .insert(Point2::new(p[0] as f64, p[1] as f64))
+                .insert(Point2::new(f64::from(p[0]), f64::from(p[1])))
                 .map_err(|_| MeshError::Triangulation)?;
             handles.push(h);
         }
@@ -268,7 +268,7 @@ impl WorkingMesh {
             None => tris,
         };
         let flat: Vec<u32> = kept.into_iter().flatten().collect();
-        let indices = if self.vertex_count() <= u16::MAX as usize {
+        let indices = if u16::try_from(self.vertex_count()).is_ok() {
             ClmIndices::U16(flat.iter().map(|&i| i as u16).collect())
         } else {
             ClmIndices::U32(flat)
@@ -314,8 +314,8 @@ impl UvMap {
             let mut spp = 0.0f64;
             let mut spq = 0.0f64;
             for i in 0..n {
-                let p = get_p(verts, i) as f64;
-                let q = get_q(uvs, i) as f64;
+                let p = f64::from(get_p(verts, i));
+                let q = f64::from(get_q(uvs, i));
                 sp += p;
                 sq += q;
                 spp += p * p;
@@ -384,7 +384,7 @@ impl AlphaMask {
     }
 
     fn at(&self, x: i64, y: i64) -> u8 {
-        if x < 0 || y < 0 || x >= self.width as i64 || y >= self.height as i64 {
+        if x < 0 || y < 0 || x >= i64::from(self.width) || y >= i64::from(self.height) {
             return 0;
         }
         self.alpha[(y as u32 * self.width + x as u32) as usize]
@@ -559,7 +559,7 @@ pub fn contour_automesh(
         MAX_CONTOUR_MARGIN,
         knobs.margin as usize,
     )?;
-    let (w, h) = (alpha.width as i64, alpha.height as i64);
+    let (w, h) = (i64::from(alpha.width), i64::from(alpha.height));
     let mut solid = vec![false; (w * h) as usize];
     for y in 0..h {
         for x in 0..w {
@@ -567,7 +567,7 @@ pub fn contour_automesh(
         }
     }
     if knobs.margin > 0 {
-        solid = dilate(&solid, w, h, knobs.margin as i64);
+        solid = dilate(&solid, w, h, i64::from(knobs.margin));
     }
 
     let loops = trace_components(&solid, w, h);
@@ -602,12 +602,10 @@ pub fn contour_automesh(
         let mut ids = Vec::with_capacity(simplified.len());
         for p in &simplified {
             let local = uv_map.local([p[0] / alpha.width as f32, p[1] / alpha.height as f32]);
-            match mesh.add_vertex(local) {
-                Ok(id) => {
-                    ids.push(id);
-                    free.record(*p);
-                }
-                Err(_) => continue, // coincident with an earlier contour point
+            // An `Err` is a point coincident with an earlier contour point.
+            if let Ok(id) = mesh.add_vertex(local) {
+                ids.push(id);
+                free.record(*p);
             }
         }
         for k in 0..ids.len() {
@@ -636,7 +634,7 @@ pub fn contour_automesh(
     }
 
     if knobs.spacing > 0 {
-        let s = knobs.spacing as i64;
+        let s = i64::from(knobs.spacing);
         let mut y = s / 2;
         while y < h {
             let mut x = s / 2;
@@ -713,7 +711,7 @@ pub fn grid_automesh(
             within(LoadResource::GridLines, MAX_GRID_DIVISIONS + 1, axis.len())?;
         }
     }
-    let (w, h) = (alpha.width as i64, alpha.height as i64);
+    let (w, h) = (i64::from(alpha.width), i64::from(alpha.height));
     let mut min = [i64::MAX, i64::MAX];
     let mut max = [i64::MIN, i64::MIN];
     for y in 0..h {
@@ -1012,7 +1010,7 @@ pub fn refit_deform_offsets(old: &ClmMesh, new_verts: &[f32], old_offsets: &[f32
             .as_chunks::<3>()
             .0
             .iter()
-            .map(|t| [t[0] as u32, t[1] as u32, t[2] as u32])
+            .map(|t| [u32::from(t[0]), u32::from(t[1]), u32::from(t[2])])
             .collect(),
         ClmIndices::U32(v) => v
             .as_chunks::<3>()
@@ -1065,14 +1063,14 @@ pub fn refit_deform_offsets(old: &ClmMesh, new_verts: &[f32], old_offsets: &[f32
                 oa[0] * clamped[0] + ob[0] * clamped[1] + oc[0] * clamped[2],
                 oa[1] * clamped[0] + ob[1] * clamped[1] + oc[1] * clamped[2],
             ];
-            if best.map(|(bd, _)| d < bd).unwrap_or(true) {
+            if best.is_none_or(|(bd, _)| d < bd) {
                 best = Some((d, off));
             }
             if d <= f32::EPSILON {
                 break;
             }
         }
-        let off = best.map(|(_, o)| o).unwrap_or([0.0, 0.0]);
+        let off = best.map_or([0.0, 0.0], |(_, o)| o);
         out.extend_from_slice(&off);
     }
     out

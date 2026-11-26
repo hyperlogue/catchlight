@@ -55,7 +55,7 @@ impl MgTriangleBins {
         }
         let mut min = Vec2::splat(f32::MAX);
         let mut max = Vec2::splat(f32::MIN);
-        for v in mesh.vertices.iter() {
+        for v in &mesh.vertices {
             let p = *v - mesh.origin;
             min = min.min(p);
             max = max.max(p);
@@ -372,10 +372,13 @@ fn translate_children_targets(tree: &NodeTree, mg_id: NodeIdx, arena: &Arena) ->
     targets.retain(|&id| {
         !matches!(
             arena.get(id).map(|n| &n.kind),
-            Some(NodeKind::Part(_))
-                | Some(NodeKind::Composite(_))
-                | Some(NodeKind::MeshGroup(_))
-                | Some(NodeKind::Spine(_) | NodeKind::MotionResponse)
+            Some(
+                NodeKind::Part(_)
+                    | NodeKind::Composite(_)
+                    | NodeKind::MeshGroup(_)
+                    | NodeKind::Spine(_)
+                    | NodeKind::MotionResponse
+            )
         )
     });
     targets
@@ -570,8 +573,8 @@ pub(crate) fn propagate_mesh_group_deforms(
 /// under each.
 ///
 ///   centerMatrix = MG.global.inverse * parent.global
-///   cVertex      = centerMatrix * local_translation
-///   newPos       = (in-lattice) deformed_triangle_warp(cVertex)
+///   cVertex      = centerMatrix * `local_translation`
+///   newPos       = (in-lattice) `deformed_triangle_warp(cVertex)`
 ///   delta        = (parent.global.inv * MG.global)_linear * (newPos - cVertex)
 ///   transform.translation += delta
 ///
@@ -694,7 +697,10 @@ fn warp_at(arena: &Arena, mg_id: NodeIdx, p: Vec2, mg_local: &[Vec2]) -> Option<
     Some(combined[a] * w[0] + combined[b] * w[1] + combined[c] * w[2])
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the inputs are independent, with no type that groups them"
+)]
 fn propagate_to_child(
     arena: &mut Arena,
     mg_id: NodeIdx,
@@ -809,7 +815,7 @@ fn propagate_to_child(
         };
         if let Some(vertices) = &pins.observed_vertices {
             scratch.resize(n, Vec2::ZERO);
-            for &index in vertices.iter() {
+            for &index in vertices {
                 if let Some(dst) = scratch.get_mut(index) {
                     *dst = offset(index);
                 }
@@ -1497,8 +1503,8 @@ mod tests {
             panic!()
         };
         let c = part.deform_stack.combined()[0];
-        assert!((c.x - 4.4).abs() < 1e-4, "got {:?}", c);
-        assert!(c.y.abs() < 1e-4, "got {:?}", c);
+        assert!((c.x - 4.4).abs() < 1e-4, "got {c:?}");
+        assert!(c.y.abs() < 1e-4, "got {c:?}");
     }
 
     #[test]

@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(clippy::unwrap_used, reason = "a test aborts on a broken fixture")]
 //! Binding-owned sampling grids preserve independent authoring over shared
 //! inputs.
 
@@ -49,7 +49,7 @@ fn shared_param_has_independent_positions_in_model_and_puppet() {
             model.set_binding_key(key, [cell, 0], value).unwrap();
         }
     }
-    let pose: Pose = [(param.clone(), 0.25)].into_iter().collect();
+    let pose: Pose = std::iter::once((param.clone(), 0.25)).collect();
     assert_eq!(model.eval_scalar(&tx, &pose), Some(10.0));
     assert!((model.eval_scalar(&ty, &pose).unwrap() - 10.0 / 3.0).abs() < 1e-5);
     let mut puppet = Puppet::new(&model);
@@ -100,7 +100,7 @@ fn two_param_axis_edits_keep_other_bindings_holes_and_values() {
     let binding = BindingKey::pair(
         x.clone(),
         y.clone(),
-        node.clone(),
+        node,
         BindingTarget::Scalar(ScalarTarget::Opacity),
     );
     model
@@ -245,7 +245,7 @@ fn grid_budget_and_file_validation_use_binding_axes() {
         bad.doc.bindings[0].key_positions = bad_axes;
         assert!(Model::from_clm_file(&bad).is_err());
     }
-    let mut bad = file.clone();
+    let mut bad = file;
     bad.doc.bindings[0].values = clm::ClmBindingValues::TransformTX(clm::ClmCells {
         cells: vec![clm::ClmCell {
             x: 256,

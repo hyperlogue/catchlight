@@ -71,7 +71,7 @@ enum Cmd {
         file: PathBuf,
         /// The node or param id.
         id: String,
-        /// The field, e.g. z_order, enabled, name, translation.x, opacity, min.
+        /// The field, e.g. `z_order`, enabled, name, translation.x, opacity, min.
         field: String,
         /// The new value.
         value: String,
@@ -135,7 +135,7 @@ enum Cmd {
     Diff { a: PathBuf, b: PathBuf },
     /// Report encoded storage by section, texture, node and binding as JSON.
     /// No images are decoded. Element sizes use canonical serialization;
-    /// canonical_matches_input says whether those bytes match the input exactly.
+    /// `canonical_matches_input` says whether those bytes match the input exactly.
     Storage { file: PathBuf },
     /// Read or write the vendor annotations a file carries.
     #[command(subcommand)]
@@ -610,13 +610,13 @@ fn run(stdout: &mut dyn Write) -> Result<u8, Error> {
             let set = matches
                 .subcommand_matches("expression")
                 .and_then(|m| m.subcommand_matches("set"));
-            run_expression(cmd, set, stdout)?
+            run_expression(cmd, set, stdout)?;
         }
         Cmd::Viseme(cmd) => {
             let set = matches
                 .subcommand_matches("viseme")
                 .and_then(|m| m.subcommand_matches("set"));
-            run_viseme(cmd, set, stdout)?
+            run_viseme(cmd, set, stdout)?;
         }
         Cmd::Diff { a, b } => {
             let lines = diff::run(&a, &b)?;

@@ -165,7 +165,7 @@ impl Model {
                 out.push(ExtensionWarning {
                     key: key.clone(),
                     warning,
-                })
+                });
             };
             for r in refs {
                 // In a fragment, a missing node, param or slot is a

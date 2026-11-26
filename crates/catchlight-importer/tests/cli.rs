@@ -1,5 +1,5 @@
 #![cfg(feature = "cli")]
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(clippy::unwrap_used, reason = "a test aborts on a broken fixture")]
 
 use serde_json::json;
 use std::path::PathBuf;

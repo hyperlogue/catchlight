@@ -97,7 +97,7 @@ impl Default for Limits {
 }
 
 /// Missing inherits; null resets; a value replaces the entire parent setting.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum Setting<T> {
     #[default]
     Inherit,
@@ -305,7 +305,7 @@ impl Default for Background {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MotionResponseMode {
     Off {},
@@ -483,7 +483,7 @@ pub struct Framing {
     pub center: [f32; 2],
     /// Effective height in world units for the renderer's existing camera.
     pub height: f32,
-    /// Rows mapping [world_x, world_y, 1] to top-left/Y-down pixel edges.
+    /// Rows mapping [`world_x`, `world_y`, 1] to top-left/Y-down pixel edges.
     pub world_to_pixel: [[f64; 3]; 2],
 }
 impl Framing {

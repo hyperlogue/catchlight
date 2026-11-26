@@ -114,11 +114,42 @@ pollster = "0.3"
 # `Send`/`Sync`. Code that wants unsafe needs a different design, not an allow.
 [workspace.lints.rust]
 unsafe_code = "forbid"
+unused_qualifications = "warn"
+unused_lifetimes = "warn"
+unused_macro_rules = "warn"
+redundant_lifetimes = "warn"
 
 [workspace.lints.clippy]
 unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+# Every allowance says why it is there, and `#[expect]` is preferred so a
+# stale one is reported.
+allow_attributes_without_reason = "warn"
+use_self = "warn"
+redundant_clone = "warn"
+cast_lossless = "warn"
+semicolon_if_nothing_returned = "warn"
+redundant_closure_for_method_calls = "warn"
+map_unwrap_or = "warn"
+uninlined_format_args = "warn"
+explicit_iter_loop = "warn"
+checked_conversions = "warn"
+unnested_or_patterns = "warn"
+ignored_unit_patterns = "warn"
+derive_partial_eq_without_eq = "warn"
+manual_let_else = "warn"
+needless_continue = "warn"
+iter_on_single_items = "warn"
+assigning_clones = "warn"
+or_fun_call = "warn"
+doc_markdown = "warn"
+match_bool = "warn"
+if_not_else = "warn"
+enum_glob_use = "warn"
 
 # Size-optimized profile for a future wasm bundle. Kept separate so the
 # default `release` profile stays untouched.

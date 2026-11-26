@@ -17,13 +17,13 @@ use crate::EditorError;
 
 impl From<humanoid::AuthoringError> for EditorError {
     fn from(e: humanoid::AuthoringError) -> Self {
-        EditorError::Humanoid(e)
+        Self::Humanoid(e)
     }
 }
 
 impl From<expressions::AuthoringError> for EditorError {
     fn from(e: expressions::AuthoringError) -> Self {
-        EditorError::Expressions(e)
+        Self::Expressions(e)
     }
 }
 
@@ -210,8 +210,8 @@ pub(crate) fn expression_list(model: &Model) -> Result<ResponseBody, EditorError
     Ok(ResponseBody::Expressions {
         expressions: members(Group::Expression),
         visemes: members(Group::Viseme),
-        emotion_names: EMOTIONS.iter().map(|n| n.to_string()).collect(),
-        viseme_names: VISEMES.iter().map(|n| n.to_string()).collect(),
+        emotion_names: EMOTIONS.iter().map(ToString::to_string).collect(),
+        viseme_names: VISEMES.iter().map(ToString::to_string).collect(),
     })
 }
 

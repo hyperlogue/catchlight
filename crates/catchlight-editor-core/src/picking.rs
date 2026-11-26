@@ -145,7 +145,7 @@ mod tests {
     /// The texture is never decoded here (a part is culled by whether its
     /// albedo slot resolves), so its bytes are a placeholder.
     struct Fixture {
-        model: catchlight_core::Model,
+        model: Model,
         hex: SeededHex,
         tex: Option<TexId>,
         root: NodeId,
@@ -153,7 +153,7 @@ mod tests {
 
     impl Fixture {
         fn new() -> Self {
-            let model = catchlight_core::Model::new();
+            let model = Model::new();
             let hex = SeededHex::new(7);
             let root = model.root().expect("a fresh model has one root").clone();
             Self {

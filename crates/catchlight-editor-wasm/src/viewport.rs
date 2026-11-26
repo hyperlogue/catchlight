@@ -71,9 +71,9 @@ impl GlStage {
         canvas: web_sys::HtmlCanvasElement,
         surface: SurfaceContext,
         device: &wgpu::Device,
-    ) -> GlStage {
+    ) -> Self {
         let blit = SurfaceBlit::new(device, surface.render_format);
-        GlStage {
+        Self {
             canvas,
             surface: RefCell::new(surface),
             blit,
@@ -245,7 +245,7 @@ struct SurfaceBlit {
 }
 
 impl SurfaceBlit {
-    fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> SurfaceBlit {
+    fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("catchlight surface blit"),
             source: wgpu::ShaderSource::Wgsl(BLIT_WGSL.into()),
@@ -307,7 +307,7 @@ impl SurfaceBlit {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
-        SurfaceBlit {
+        Self {
             pipeline,
             layout,
             sampler,
@@ -428,12 +428,12 @@ impl Extra {
         device: &wgpu::Device,
         canvas: &web_sys::HtmlCanvasElement,
         size: (u32, u32),
-    ) -> Result<Extra, String> {
+    ) -> Result<Self, String> {
         let context = context_2d(canvas)?;
         let rendered = capped(size, stage.size());
         let (texture, view) = colour_target(device, stage.render_format(), rendered);
         let bind = stage.blit.bind(device, &view);
-        Ok(Extra {
+        Ok(Self {
             stage,
             texture,
             view,
@@ -765,7 +765,7 @@ impl Capture {
         texture: &wgpu::Texture,
         width: u32,
         height: u32,
-    ) -> Capture {
+    ) -> Self {
         let bytes_per_row = (width * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("catchlight viewport readback"),
@@ -794,7 +794,7 @@ impl Capture {
                 depth_or_array_layers: 1,
             },
         );
-        Capture {
+        Self {
             buffer,
             width,
             height,
@@ -880,7 +880,7 @@ impl Viewport {
         gpu: &Gpu,
         replica: &Replica,
         canvas: web_sys::HtmlCanvasElement,
-    ) -> Result<Viewport, JsValue> {
+    ) -> Result<Self, JsValue> {
         let max_dimension = gpu.device.limits().max_texture_dimension_2d;
         let size = fit_device((canvas.width(), canvas.height()), max_dimension);
 

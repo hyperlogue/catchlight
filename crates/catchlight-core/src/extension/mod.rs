@@ -70,7 +70,7 @@ pub trait Extension: Clone + Default + fmt::Debug + Send + Sync + 'static {
 }
 
 /// A maintained extension as stored: the only place its Ids appear is `refs`.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawExtension {
     pub version: u32,
     pub refs: Vec<IdRef>,
@@ -79,7 +79,7 @@ pub struct RawExtension {
 
 /// JSON rides inline in every structure feed; bytes live in the file's
 /// `Extensions` section and reach a browser tab by hash.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Payload {
     Json(serde_json::Value),
     Bytes(Arc<[u8]>),
@@ -134,13 +134,13 @@ pub enum RemovedRef {
 
 impl IdRef {
     /// What this entry becomes once its Id is removed.
-    pub fn removed(&self) -> IdRef {
-        IdRef::Removed(match self {
+    pub fn removed(&self) -> Self {
+        Self::Removed(match self {
             Self::Node(id) => RemovedRef::Node(id.clone()),
             Self::Param(id) => RemovedRef::Param(id.clone()),
             Self::Texture(id) => RemovedRef::Texture(id.clone()),
             Self::Slot(node, slot) => RemovedRef::Slot(node.clone(), slot.clone()),
-            Self::Removed(gone) => return IdRef::Removed(gone.clone()),
+            Self::Removed(gone) => return Self::Removed(gone.clone()),
         })
     }
 
@@ -166,7 +166,7 @@ impl IdRef {
             Self::Param(id) => id.as_str().len(),
             Self::Texture(id) => id.as_str().len(),
             Self::Slot(node, slot) => node.as_str().len() + slot.as_str().len(),
-            Self::Removed(gone) => IdRef::from(gone.clone()).encoded_len_hint(),
+            Self::Removed(gone) => Self::from(gone.clone()).encoded_len_hint(),
         }
     }
 }
@@ -196,7 +196,7 @@ impl fmt::Display for IdRef {
                     node.as_str()
                 )
             }
-            Self::Removed(gone) => write!(f, "removed {}", IdRef::from(gone.clone())),
+            Self::Removed(gone) => write!(f, "removed {}", Self::from(gone.clone())),
         }
     }
 }
@@ -349,7 +349,7 @@ impl<T: Extension> DynExtension for T {
     }
 
     fn dyn_reconcile(&mut self, model: &Model) {
-        Extension::reconcile(self, model)
+        Extension::reconcile(self, model);
     }
 
     fn dyn_merge_addon(
@@ -364,7 +364,7 @@ impl<T: Extension> DynExtension for T {
     }
 
     fn dyn_unmerge_addon(&mut self, receipt: &Receipt) {
-        Extension::unmerge_addon(self, receipt)
+        Extension::unmerge_addon(self, receipt);
     }
 
     fn dyn_clone(&self) -> Box<dyn DynExtension> {

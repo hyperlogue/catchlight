@@ -206,7 +206,10 @@ impl WgpuRenderer {
     // Alpha path: a same-signature masked run is one mask-alpha write pass
     // plus one sampled masked-draw pass. `clear_target` folds a composite-slot
     // clear into the masked-draw pass. Returns whether that pass was emitted.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a pass takes the encoder, its targets and per-draw state separately"
+    )]
     pub(super) fn render_masked_prepared_parts_to(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,

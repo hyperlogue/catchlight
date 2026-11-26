@@ -83,10 +83,10 @@ impl SurfaceContext {
 
     pub fn acquire(&self) -> Option<(wgpu::SurfaceTexture, wgpu::TextureView)> {
         // `None` tells the caller to re-acquire.
-        let frame = match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(t)
-            | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
-            _ => return None,
+        let (wgpu::CurrentSurfaceTexture::Success(frame)
+        | wgpu::CurrentSurfaceTexture::Suboptimal(frame)) = self.surface.get_current_texture()
+        else {
+            return None;
         };
         let view = frame.texture.create_view(&wgpu::TextureViewDescriptor {
             format: Some(self.render_format),

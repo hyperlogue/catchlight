@@ -20,7 +20,7 @@ const Z_EPS: f32 = 1e-4;
 const MAX_SAMPLES: u64 = 100_000;
 const MAX_SAMPLE_WORK: u64 = 250_000_000;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeEntry {
     pub id: NodeId,
     pub name: String,
@@ -274,7 +274,7 @@ impl Full {
         }
     }
 
-    fn diff(&self, rest: &Full) -> Cap {
+    fn diff(&self, rest: &Self) -> Cap {
         let moved = |(a, b): (&Vec<f32>, &Vec<f32>)| {
             a.len() != b.len() || a.iter().zip(b).any(|(x, y)| (x - y).abs() > VERT_EPS)
         };

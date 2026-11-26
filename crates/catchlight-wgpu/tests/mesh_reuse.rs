@@ -1,4 +1,8 @@
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test aborts on a broken fixture"
+)]
 
 mod common;
 use common::apply_uniform_scratch_deform;
@@ -69,7 +73,7 @@ fn edits_reuse_geometry_and_keep_three_puppets_equal_to_fresh_uploads() {
             1 => {
                 model
                     .update_node(&first, |node| {
-                        node.name = catchlight_core::Name::truncated("renamed")
+                        node.name = catchlight_core::Name::truncated("renamed");
                     })
                     .unwrap();
                 (0, 2)
@@ -107,7 +111,7 @@ fn edits_reuse_geometry_and_keep_three_puppets_equal_to_fresh_uploads() {
             _ => {
                 model
                     .update_node(&first, |node| {
-                        node.name = catchlight_core::Name::truncated("plain")
+                        node.name = catchlight_core::Name::truncated("plain");
                     })
                     .unwrap();
                 (0, 1)
@@ -170,7 +174,7 @@ fn rebuild_reuploads_meshes_the_renderer_dropped() {
     ctx.renderer.clear_meshes();
     model
         .update_node(&part, |node| {
-            node.name = catchlight_core::Name::truncated("renamed")
+            node.name = catchlight_core::Name::truncated("renamed");
         })
         .unwrap();
     let uploads = cache.stats().mesh_uploads;

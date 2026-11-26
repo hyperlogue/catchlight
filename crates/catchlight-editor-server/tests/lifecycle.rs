@@ -1,6 +1,10 @@
 //! Atomic session construction, independent forks and captured model transfer.
 
-#![allow(clippy::unwrap_used, clippy::panic)]
+#![expect(
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "a test aborts on a broken fixture"
+)]
 
 use std::{
     collections::HashMap,
@@ -82,7 +86,7 @@ fn authored_model() -> Model {
     let root = model.root().unwrap().clone();
     model
         .update_node(&root, |node| {
-            node.name = Name::truncated("Source character")
+            node.name = Name::truncated("Source character");
         })
         .unwrap();
     let mut hex = SeededHex::new(25);
@@ -182,7 +186,7 @@ fn empty_and_clm_creation_publish_finished_clean_roots_once() {
     let events = Arc::new(Mutex::new(Vec::new()));
     let received = events.clone();
     editor.subscribe(Box::new(move |event| {
-        received.lock().unwrap().push(event.clone())
+        received.lock().unwrap().push(event.clone());
     }));
     let empty = create(&editor, None, None, Attachments::none());
     assert_eq!(history(&editor, empty), (0, 0));
@@ -245,7 +249,7 @@ fn all_source_failures_leave_no_visible_session_or_event() {
     let events = Arc::new(Mutex::new(Vec::new()));
     let received = events.clone();
     editor.subscribe(Box::new(move |event| {
-        received.lock().unwrap().push(event.clone())
+        received.lock().unwrap().push(event.clone());
     }));
     let mut extra = Attachments::none();
     extra.insert("model", vec![]);
@@ -603,7 +607,7 @@ impl Storage for MemoryStore {
             .unwrap()
             .get(key)
             .cloned()
-            .ok_or(io::ErrorKind::NotFound.into())
+            .ok_or_else(|| io::ErrorKind::NotFound.into())
     }
     fn write(&self, key: &str, bytes: &[u8]) -> io::Result<()> {
         self.0.lock().unwrap().insert(key.into(), bytes.to_vec());
@@ -701,12 +705,7 @@ fn guarded_structure_installation_is_atomic_undoable_and_preserves_destination()
             .0
     };
     assert_eq!(ok(install(0)).0, 1);
-    assert_eq!(
-        editor
-            .with_model(session, |model| model.node_count())
-            .unwrap(),
-        2
-    );
+    assert_eq!(editor.with_model(session, Model::node_count).unwrap(), 2);
     assert_eq!(history(&editor, session), (1, 0));
     assert!(matches!(
         install(0),
@@ -725,10 +724,5 @@ fn guarded_structure_installation_is_atomic_undoable_and_preserves_destination()
     assert_eq!(editor.revision(session), Some(1));
     assert_eq!(history(&editor, session), (1, 0));
     assert_eq!(ok(send(&editor, Command::Undo { session, if_rev: 1 })).0, 2);
-    assert_eq!(
-        editor
-            .with_model(session, |model| model.node_count())
-            .unwrap(),
-        1
-    );
+    assert_eq!(editor.with_model(session, Model::node_count).unwrap(), 1);
 }

@@ -1,4 +1,3 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! Checked-in `.clm` files are Git LFS objects. A checkout without
 //! `git lfs pull` leaves pointer text in their place, and every test that
 //! reads one then fails as bad magic; this names the cause once.

@@ -1,4 +1,8 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test aborts on a broken fixture"
+)]
 
 //! `expression` and `viseme` over copies of the committed fixtures. `two_param_grid` has
 //! `param-0` in 0..1, `param-1` in -2..2 and `param-2` in 0..10.
@@ -41,7 +45,7 @@ fn ok_in(command: &str, args: &[&str], path: &Path) -> (Value, String) {
 }
 
 fn refused(args: &[&str], path: &Path, want: &str) {
-    refused_in("expression", args, path, want)
+    refused_in("expression", args, path, want);
 }
 
 fn refused_in(command: &str, args: &[&str], path: &Path, want: &str) {

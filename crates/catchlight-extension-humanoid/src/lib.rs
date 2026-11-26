@@ -90,7 +90,7 @@ mod stored {
         pub(crate) stops: [f32; 3],
     }
 
-    /// JSON has no NaN or infinity: serde_json writes them as null, which
+    /// JSON has no NaN or infinity: `serde_json` writes them as null, which
     /// reads back as NaN so the data still loads.
     fn stops<'de, D: Deserializer<'de>>(d: D) -> Result<[f32; 3], D::Error> {
         let stops = <[Option<f32>; 3]>::deserialize(d)?;

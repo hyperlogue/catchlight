@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(clippy::expect_used, reason = "a test aborts on a broken fixture")]
 
 //! The render half of the split, with a real render app and no window.
 //!
@@ -121,7 +121,7 @@ fn readback(app: &App, target: &Handle<Image>) -> Vec<u8> {
                 rows_per_image: Some(SIZE),
             },
         },
-        wgpu::Extent3d {
+        Extent3d {
             width: SIZE,
             height: SIZE,
             depth_or_array_layers: 1,
@@ -265,7 +265,7 @@ fn two_puppets_of_one_model_share_one_cache_and_both_reach_the_target() {
     let right = app
         .world_mut()
         .spawn((
-            CatchlightPuppet::new(model.clone()),
+            CatchlightPuppet::new(model),
             Transform::from_xyz(60.0, 0.0, 1.0).with_scale(Vec3::splat(0.25)),
         ))
         .id();

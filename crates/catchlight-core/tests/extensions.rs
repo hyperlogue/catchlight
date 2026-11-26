@@ -1,4 +1,8 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test aborts on a broken fixture"
+)]
 
 //! Extensions: what a file carries for a vendor, and what the reader refuses.
 
@@ -142,8 +146,7 @@ fn a_reserved_key_is_refused_to_an_author_and_accepted_from_a_file() {
     assert!(model.delete_extension(&reserved).is_err());
 
     let doc = ClmStructure {
-        extensions: [(reserved.clone(), ClmExtension::Json(serde_json::json!(1)))]
-            .into_iter()
+        extensions: std::iter::once((reserved.clone(), ClmExtension::Json(serde_json::json!(1))))
             .collect(),
         ..root_structure()
     };
@@ -397,7 +400,7 @@ fn extract_leaves_extensions_behind_and_install_refuses_one() {
         "an addon carries no extensions"
     );
 
-    let mut carrier = addon.clone();
+    let mut carrier = addon;
     carrier.set_extension(key("acme.camera"), json()).unwrap();
     let mut target = Model::new();
     let err = target.install(&carrier).unwrap_err();

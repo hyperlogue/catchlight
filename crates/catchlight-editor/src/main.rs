@@ -242,7 +242,7 @@ fn serve(options: Serve) -> Result<ExitCode> {
     };
     let loopback = |port| SocketAddr::from(([127, 0, 0, 1], port));
     let server = match options.port {
-        Some(port) => bind_http(editor.clone(), loopback(port), http_options())
+        Some(port) => bind_http(editor, loopback(port), http_options())
             .with_context(|| format!("listening on 127.0.0.1:{port}"))?,
         None => bind_http(editor.clone(), loopback(DEFAULT_PORT), http_options())
             .or_else(|_| bind_http(editor.clone(), loopback(0), http_options()))
@@ -302,7 +302,7 @@ impl Keep {
     }
 
     /// The flag wins over the environment.
-    fn chosen(flag: Option<Keep>) -> Self {
+    fn chosen(flag: Option<Self>) -> Self {
         flag.or_else(|| {
             std::env::var_os("CATCHLIGHT_KEEP")
                 .filter(|v| !v.is_empty())
@@ -466,7 +466,7 @@ fn page_url(url: &str, token: &str) -> String {
 }
 
 fn launch_lock(connection: &Path) -> Result<std::fs::File> {
-    let parent = connection.parent().unwrap_or(Path::new("."));
+    let parent = connection.parent().unwrap_or_else(|| Path::new("."));
     let mut dir = std::fs::DirBuilder::new();
     dir.recursive(true);
     #[cfg(unix)]

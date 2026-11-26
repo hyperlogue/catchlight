@@ -98,7 +98,7 @@ impl Entry {
         }
         // Core's estimate does not include extension entries. A decoded
         // extension is charged as it encodes, which core caches per version.
-        for (key, value) in model.extensions().iter() {
+        for (key, value) in model.extensions() {
             own_bytes = own_bytes
                 .saturating_add(size_of_val(key))
                 .saturating_add(key.as_str().len())
@@ -407,7 +407,6 @@ impl ModelHistory {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use catchlight_core::{
         ExtensionKey, ModelNode, ModelNodeKind, ModelPart, ModelTexture, Name, SeededHex,

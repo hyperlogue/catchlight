@@ -340,7 +340,7 @@ impl WgpuRenderer {
                 usage: wgpu::BufferUsages::VERTEX,
             });
 
-        let deform_size = (vertex_count * std::mem::size_of::<DeformAttr>()) as u64;
+        let deform_size = (vertex_count * size_of::<DeformAttr>()) as u64;
         let deform_offset = self.reserve_deform_buffer(deform_size);
         let deform_start = deform_offset as usize;
         let deform_end = deform_start + deform_size as usize;

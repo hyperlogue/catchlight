@@ -57,7 +57,9 @@ pub fn register<T: Extension>() -> Result<(), RegisterError> {
             type_name,
         });
     }
-    let mut registry = REGISTRY.write().unwrap_or_else(|e| e.into_inner());
+    let mut registry = REGISTRY
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some(entry) = registry.get(T::KEY) {
         if entry.type_id == TypeId::of::<T>() {
             return Ok(());
@@ -89,7 +91,7 @@ pub(crate) fn decode_registered(
 ) -> Option<Result<Arc<Typed>, Unread>> {
     let decode = REGISTRY
         .read()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get(key)?
         .decode;
     Some(decode(raw.clone()))

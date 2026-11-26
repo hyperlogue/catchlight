@@ -1,6 +1,6 @@
 use crate::ControlValues;
 
-/// ARKit's 52 face blend shapes, by ARKit's own names. Its left and right
+/// `ARKit`'s 52 face blend shapes, by `ARKit`'s own names. Its left and right
 /// are the face's own, as ours are.
 pub const ARKIT_BLEND_SHAPES: [&str; 52] = [
     "browDownLeft",
@@ -57,8 +57,8 @@ pub const ARKIT_BLEND_SHAPES: [&str; 52] = [
     "tongueOut",
 ];
 
-/// The face controls from ARKit blend shape coefficients, each 0..1, which
-/// `shape` looks up by ARKit name (0 for a shape the source lacks). Head,
+/// The face controls from `ARKit` blend shape coefficients, each 0..1, which
+/// `shape` looks up by `ARKit` name (0 for a shape the source lacks). Head,
 /// body, leg and blush controls have no blend shape and stay unset.
 pub fn controls_from_arkit(shape: impl Fn(&str) -> f32) -> ControlValues {
     let mean = |a: &str, b: &str| (shape(a) + shape(b)) / 2.0;

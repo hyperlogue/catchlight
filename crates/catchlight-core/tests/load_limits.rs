@@ -1,4 +1,8 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(
+    clippy::expect_used,
+    clippy::panic,
+    reason = "a test aborts on a broken fixture"
+)]
 //! What the load budget charges for a `.clm`, and when.
 
 use std::path::{Path, PathBuf};

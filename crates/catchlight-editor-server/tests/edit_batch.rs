@@ -1,4 +1,8 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "a test aborts on a broken fixture"
+)]
 //! Public-protocol composition: exact sparse cells, isolated validation, atomic
 //! rollback/no-ops, mapped topology and one-step history publication.
 

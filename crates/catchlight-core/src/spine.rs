@@ -552,7 +552,10 @@ fn clear_turn(arena: &mut Arena, spine_id: NodeIdx, child_id: NodeIdx) {
 
 /// Reads the current position rather than rest so the vertex's own deform
 /// bindings and the spine's turn compose.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the inputs are independent, with no type that groups them"
+)]
 fn turn_child(
     arena: &mut Arena,
     spine_id: NodeIdx,

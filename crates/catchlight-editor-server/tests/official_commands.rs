@@ -1,4 +1,8 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "a test aborts on a broken fixture"
+)]
 
 //! The official extensions' typed commands: each edit is one undo step that
 //! refuses what the extension crates' checked functions refuse, and each read
@@ -117,7 +121,7 @@ impl Fixture {
     }
 
     fn model(&self) -> Model {
-        self.editor.with_model(self.session, |m| m.clone()).unwrap()
+        self.editor.with_model(self.session, Clone::clone).unwrap()
     }
 
     fn map(&self, control: &str, param: &str) -> Command {
@@ -274,7 +278,7 @@ fn humanoid_unmap_removes_the_extension_with_the_last_mapping() {
 
     match f.ok(unmap(&f, "head_yaw")) {
         ResponseBody::HumanoidUnmapped { mapping: removed } => {
-            assert_eq!(removed, mapping("head_yaw", "turn", [-2.0, -2.0, 2.0]))
+            assert_eq!(removed, mapping("head_yaw", "turn", [-2.0, -2.0, 2.0]));
         }
         other => panic!("{other:?}"),
     }

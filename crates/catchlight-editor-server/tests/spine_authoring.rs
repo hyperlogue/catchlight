@@ -1,4 +1,8 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "a test aborts on a broken fixture"
+)]
 
 //! Authoring a spine through the protocol.
 
@@ -133,7 +137,7 @@ fn a_spine_reads_back_as_what_was_added() {
     assert_eq!(
         spine,
         SpineInfo {
-            joints: joints.clone(),
+            joints,
             targets: vec![Some(bend), None],
         }
     );

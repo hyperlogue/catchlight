@@ -1,4 +1,8 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test aborts on a broken fixture"
+)]
 
 //! A browser replica rebuilds its `Model` on every commit; the rebuild must
 //! cost no texture work unless a texture changed.

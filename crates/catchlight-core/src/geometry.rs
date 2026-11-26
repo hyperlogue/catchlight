@@ -196,7 +196,7 @@ impl<'a> EvaluatedMesh<'a> {
                         bounds = Some(Bounds2 {
                             min: point,
                             max: point,
-                        })
+                        });
                     }
                 }
             }

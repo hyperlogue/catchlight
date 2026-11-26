@@ -83,7 +83,7 @@ impl Storage for WrittenBytes {
 /// A poisoned map's bytes are still intact; keep going rather than cascade a
 /// second panic across the wasm boundary.
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(|e| e.into_inner())
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
@@ -143,9 +143,7 @@ impl CatchlightEditor {
                 Reply::Err {
                     op_index: None,
                     limit: None,
-                    id: serde_json::from_str::<RequestId>(request_json)
-                        .map(|r| r.id)
-                        .unwrap_or(0),
+                    id: serde_json::from_str::<RequestId>(request_json).map_or(0, |r| r.id),
                     code: ErrorCode::BadRequest,
                     message: e.to_string(),
                 },
@@ -241,7 +239,6 @@ impl CatchlightEditor {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
     use serde_json::json;
@@ -352,7 +349,7 @@ mod tests {
 
     fn one_pixel_png() -> Vec<u8> {
         let image = image::RgbaImage::from_pixel(1, 1, image::Rgba([7, 7, 7, 255]));
-        let mut out = std::io::Cursor::new(Vec::new());
+        let mut out = io::Cursor::new(Vec::new());
         image::DynamicImage::ImageRgba8(image)
             .write_to(&mut out, image::ImageFormat::Png)
             .expect("encode png");

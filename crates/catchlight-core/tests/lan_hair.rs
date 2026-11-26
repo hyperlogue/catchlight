@@ -1,4 +1,9 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "a test aborts on a broken fixture"
+)]
 //! Lan's hair responses under head motion. Requires the Lan Git LFS object.
 
 use catchlight_core::{Model, NodeId, ParamId, Puppet, Vec2, Vec3};

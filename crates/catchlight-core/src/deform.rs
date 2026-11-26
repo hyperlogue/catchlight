@@ -76,7 +76,7 @@ impl DeformStack {
     /// Deactivate every source a fold produces. [`DeformSource::Scratch`]
     /// survives: it is an edit in progress that no fold can rebuild.
     pub fn reset(&mut self) {
-        for slot in self.sources.iter_mut() {
+        for slot in &mut self.sources {
             if slot.source != DeformSource::Scratch {
                 slot.active = false;
             }
@@ -128,19 +128,16 @@ impl DeformStack {
     pub fn param_buf_mut(&mut self, source: DeformSource, val: Vec2) -> Option<&mut [Vec2]> {
         let vert_count = self.vert_count;
         let pos = self.sources.iter().position(|s| s.source == source);
-        let idx = match pos {
-            Some(i) => i,
-            None => {
-                self.dirty = true;
-                self.sources.push(SourceSlot {
-                    source,
-                    offsets: vec![Vec2::ZERO; vert_count],
-                    active: true,
-                    last_val: Some(val),
-                });
-                let last = self.sources.len() - 1;
-                return Some(&mut self.sources[last].offsets);
-            }
+        let Some(idx) = pos else {
+            self.dirty = true;
+            self.sources.push(SourceSlot {
+                source,
+                offsets: vec![Vec2::ZERO; vert_count],
+                active: true,
+                last_val: Some(val),
+            });
+            let last = self.sources.len() - 1;
+            return Some(&mut self.sources[last].offsets);
         };
         let slot = &mut self.sources[idx];
         slot.active = true;
@@ -265,9 +262,7 @@ impl DeformStack {
                 }
             }
             _ => {
-                for v in self.combined.iter_mut() {
-                    *v = Vec2::ZERO;
-                }
+                self.combined.fill(Vec2::ZERO);
                 for slot in self.sources.iter().filter(|s| s.active) {
                     for (out, d) in self.combined.iter_mut().zip(slot.offsets.iter()) {
                         *out += *d;
@@ -464,8 +459,7 @@ mod tests {
             .sources
             .iter()
             .find(|slot| slot.source == DeformSource::Param(7))
-            .map(|slot| slot.offsets.capacity())
-            .unwrap_or(0);
+            .map_or(0, |slot| slot.offsets.capacity());
         s.reset();
         {
             let buf = s.source_buf_mut(DeformSource::Param(7));
@@ -475,8 +469,7 @@ mod tests {
             .sources
             .iter()
             .find(|slot| slot.source == DeformSource::Param(7))
-            .map(|slot| slot.offsets.capacity())
-            .unwrap_or(0);
+            .map_or(0, |slot| slot.offsets.capacity());
         assert_eq!(cap_before, cap_after, "pool must reuse allocation");
     }
 

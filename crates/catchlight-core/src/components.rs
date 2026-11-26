@@ -34,9 +34,9 @@ pub struct DecodedTexture {
 impl DecodedTexture {
     /// Half-resolution copy via the same linear-space box filter renderers use
     /// for mip generation, so it is texel-identical to mip 1.
-    pub fn halved(&self) -> DecodedTexture {
+    pub fn halved(&self) -> Self {
         let (width, height, rgba) = downsample_box_filter(&self.rgba, self.width, self.height);
-        DecodedTexture {
+        Self {
             width,
             height,
             rgba: rgba.into(),
@@ -70,7 +70,7 @@ pub fn downsample_box_filter(src: &[u8], w: u32, h: u32) -> (u32, u32, Vec<u8>) 
                     rgb[0] += decode[src[i] as usize];
                     rgb[1] += decode[src[i + 1] as usize];
                     rgb[2] += decode[src[i + 2] as usize];
-                    a += src[i + 3] as f32;
+                    a += f32::from(src[i + 3]);
                     n += 1.0;
                 }
             }
@@ -152,7 +152,7 @@ pub enum NodeKind {
 }
 
 const _: () = assert!(
-    std::mem::size_of::<NodeKind>() <= 48,
+    size_of::<NodeKind>() <= 48,
     "NodeKind is too large - consider boxing new variants"
 );
 
@@ -312,8 +312,8 @@ pub enum MeshIndices {
 impl MeshIndices {
     pub fn len(&self) -> usize {
         match self {
-            MeshIndices::U16(v) => v.len(),
-            MeshIndices::U32(v) => v.len(),
+            Self::U16(v) => v.len(),
+            Self::U32(v) => v.len(),
         }
     }
 
@@ -323,22 +323,22 @@ impl MeshIndices {
 
     pub fn iter_u32(&self) -> MeshIndicesIter<'_> {
         match self {
-            MeshIndices::U16(v) => MeshIndicesIter::U16(v.iter()),
-            MeshIndices::U32(v) => MeshIndicesIter::U32(v.iter()),
+            Self::U16(v) => MeshIndicesIter::U16(v.iter()),
+            Self::U32(v) => MeshIndicesIter::U32(v.iter()),
         }
     }
 
     pub fn as_bytes(&self) -> &[u8] {
         match self {
-            MeshIndices::U16(v) => bytemuck::cast_slice(v),
-            MeshIndices::U32(v) => bytemuck::cast_slice(v),
+            Self::U16(v) => bytemuck::cast_slice(v),
+            Self::U32(v) => bytemuck::cast_slice(v),
         }
     }
 
     pub fn get(&self, i: usize) -> Option<u32> {
         match self {
-            MeshIndices::U16(v) => v.get(i).map(|&n| n as u32),
-            MeshIndices::U32(v) => v.get(i).copied(),
+            Self::U16(v) => v.get(i).map(|&n| u32::from(n)),
+            Self::U32(v) => v.get(i).copied(),
         }
     }
 
@@ -347,16 +347,16 @@ impl MeshIndices {
         iter: impl IntoIterator<Item = usize>,
     ) -> Result<Self, MeshIndexOutOfRange> {
         let iter = iter.into_iter();
-        let mut out = MeshIndices::U16(Vec::with_capacity(iter.size_hint().0));
+        let mut out = Self::U16(Vec::with_capacity(iter.size_hint().0));
         for index in iter {
-            if let MeshIndices::U16(v) = &mut out {
+            if let Self::U16(v) = &mut out {
                 if let Ok(index) = u16::try_from(index) {
                     v.push(index);
                     continue;
                 }
-                out = MeshIndices::U32(v.iter().map(|&i| u32::from(i)).collect());
+                out = Self::U32(v.iter().map(|&i| u32::from(i)).collect());
             }
-            if let MeshIndices::U32(v) = &mut out {
+            if let Self::U32(v) = &mut out {
                 v.push(u32::try_from(index).map_err(|_| MeshIndexOutOfRange(index))?);
             }
         }
@@ -397,7 +397,7 @@ impl ExactSizeIterator for MeshIndicesIter<'_> {}
 
 impl Default for MeshIndices {
     fn default() -> Self {
-        MeshIndices::U16(Vec::new())
+        Self::U16(Vec::new())
     }
 }
 
@@ -479,21 +479,21 @@ pub enum BlendMode {
 impl BlendMode {
     pub fn from_name(s: &str) -> Option<Self> {
         Some(match s {
-            "Normal" => BlendMode::Normal,
-            "Multiply" => BlendMode::Multiply,
-            "ColorDodge" => BlendMode::ColorDodge,
-            "LinearDodge" => BlendMode::LinearDodge,
-            "Screen" => BlendMode::Screen,
-            "ClipToLower" => BlendMode::ClipToLower,
-            "SliceFromLower" => BlendMode::SliceFromLower,
-            "Overlay" => BlendMode::Overlay,
-            "ColorBurn" => BlendMode::ColorBurn,
-            "LinearBurn" => BlendMode::LinearBurn,
-            "Darken" => BlendMode::Darken,
-            "Lighten" => BlendMode::Lighten,
-            "Add" => BlendMode::Add,
-            "Inverse" => BlendMode::Inverse,
-            "Subtract" => BlendMode::Subtract,
+            "Normal" => Self::Normal,
+            "Multiply" => Self::Multiply,
+            "ColorDodge" => Self::ColorDodge,
+            "LinearDodge" => Self::LinearDodge,
+            "Screen" => Self::Screen,
+            "ClipToLower" => Self::ClipToLower,
+            "SliceFromLower" => Self::SliceFromLower,
+            "Overlay" => Self::Overlay,
+            "ColorBurn" => Self::ColorBurn,
+            "LinearBurn" => Self::LinearBurn,
+            "Darken" => Self::Darken,
+            "Lighten" => Self::Lighten,
+            "Add" => Self::Add,
+            "Inverse" => Self::Inverse,
+            "Subtract" => Self::Subtract,
             _ => return None,
         })
     }
@@ -502,21 +502,21 @@ impl BlendMode {
 impl BlendMode {
     pub fn as_str(self) -> &'static str {
         match self {
-            BlendMode::Normal => "Normal",
-            BlendMode::Multiply => "Multiply",
-            BlendMode::ColorDodge => "ColorDodge",
-            BlendMode::LinearDodge => "LinearDodge",
-            BlendMode::Screen => "Screen",
-            BlendMode::ClipToLower => "ClipToLower",
-            BlendMode::SliceFromLower => "SliceFromLower",
-            BlendMode::Overlay => "Overlay",
-            BlendMode::ColorBurn => "ColorBurn",
-            BlendMode::LinearBurn => "LinearBurn",
-            BlendMode::Darken => "Darken",
-            BlendMode::Lighten => "Lighten",
-            BlendMode::Add => "Add",
-            BlendMode::Inverse => "Inverse",
-            BlendMode::Subtract => "Subtract",
+            Self::Normal => "Normal",
+            Self::Multiply => "Multiply",
+            Self::ColorDodge => "ColorDodge",
+            Self::LinearDodge => "LinearDodge",
+            Self::Screen => "Screen",
+            Self::ClipToLower => "ClipToLower",
+            Self::SliceFromLower => "SliceFromLower",
+            Self::Overlay => "Overlay",
+            Self::ColorBurn => "ColorBurn",
+            Self::LinearBurn => "LinearBurn",
+            Self::Darken => "Darken",
+            Self::Lighten => "Lighten",
+            Self::Add => "Add",
+            Self::Inverse => "Inverse",
+            Self::Subtract => "Subtract",
         }
     }
 }
@@ -659,8 +659,7 @@ mod tests {
         let size = size_of::<NodeKind>();
         assert!(
             size <= 48,
-            "NodeKind is {} bytes, should be <= 48. Box large variants.",
-            size
+            "NodeKind is {size} bytes, should be <= 48. Box large variants."
         );
     }
 
@@ -677,7 +676,7 @@ mod tests {
         let over = u16::MAX as usize + 1;
         let indices = MeshIndices::from_usize_iter([0, 1, over]).unwrap();
         let MeshIndices::U32(_) = &indices else {
-            panic!("expected U32 variant, got {:?}", indices);
+            panic!("expected U32 variant, got {indices:?}");
         };
         assert_eq!(indices.len(), 3);
         assert_eq!(indices.as_bytes().len(), 3 * 4);

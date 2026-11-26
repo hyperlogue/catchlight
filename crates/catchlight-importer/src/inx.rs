@@ -76,7 +76,7 @@ fn check_texture_dims(width: u32, height: u32) -> Result<(), InxParseError> {
             limit: MAX_TEXTURE_DIMENSION,
         });
     }
-    if width as u64 * height as u64 > MAX_TEXTURE_PIXELS {
+    if u64::from(width) * u64::from(height) > MAX_TEXTURE_PIXELS {
         return Err(InxParseError::TextureTooLarge {
             width,
             height,
@@ -94,7 +94,7 @@ fn check_size(what: &'static str, size: usize, limit: usize) -> Result<(), InxPa
     }
 }
 
-/// Raw bytes of one EXT_SECT entry. The reference stores vendor
+/// Raw bytes of one `EXT_SECT` entry. The reference stores vendor
 /// payloads opaquely (`puppet.extData[name] = bytes`); they may be
 /// binary, so no JSON decoding happens here.
 #[derive(Debug, Clone)]
@@ -268,7 +268,7 @@ impl InxModel {
         let textures = parse_textures(&mut data, budget)?;
         let vendors = parse_vendors(&mut data, budget)?;
 
-        Ok(InxModel {
+        Ok(Self {
             payload,
             textures,
             vendors,
@@ -277,7 +277,6 @@ impl InxModel {
 }
 
 #[cfg(test)]
-#[allow(clippy::identity_op)]
 mod tests {
     use super::*;
     use std::io::Cursor;
@@ -310,8 +309,7 @@ mod tests {
                     ..
                 }
             ),
-            "expected payload size limit, got {:?}",
-            err
+            "expected payload size limit, got {err:?}"
         );
     }
 
@@ -333,8 +331,7 @@ mod tests {
                     ..
                 }
             ),
-            "expected texture count limit, got {:?}",
-            err
+            "expected texture count limit, got {err:?}"
         );
     }
 
@@ -418,8 +415,7 @@ mod tests {
                     ..
                 }
             ),
-            "expected TextureTooLarge, got {:?}",
-            err
+            "expected TextureTooLarge, got {err:?}"
         );
     }
 
@@ -485,8 +481,7 @@ mod tests {
                     e,
                     InxParseError::TextureTooLarge { .. } | InxParseError::TextureHeader(_)
                 ),
-                "at-limit dims must pass gate, got {:?}",
-                e
+                "at-limit dims must pass gate, got {e:?}"
             );
         }
     }

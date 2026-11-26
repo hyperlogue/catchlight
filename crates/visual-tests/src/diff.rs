@@ -112,15 +112,16 @@ fn histogram_metrics(
 fn build_overlay(expected: &RgbaImage, differences: &[u8]) -> RgbaImage {
     let mut output = expected.clone();
     for (pixel, &difference) in output.pixels_mut().zip(differences) {
-        let luminance =
-            (0.2126 * pixel[0] as f32 + 0.7152 * pixel[1] as f32 + 0.0722 * pixel[2] as f32) as u8;
+        let luminance = (0.2126 * f32::from(pixel[0])
+            + 0.7152 * f32::from(pixel[1])
+            + 0.0722 * f32::from(pixel[2])) as u8;
         let dimmed = luminance / 2 + 64;
         if difference <= PIXEL_THRESHOLD {
             *pixel = image::Rgba([dimmed, dimmed, dimmed, 255]);
         } else {
-            let strength = ((difference - PIXEL_THRESHOLD) as f32 / 48.0).clamp(0.0, 1.0);
-            let red = (dimmed as f32 * (1.0 - strength) + 255.0 * strength) as u8;
-            let other = (dimmed as f32 * (1.0 - strength)) as u8;
+            let strength = (f32::from(difference - PIXEL_THRESHOLD) / 48.0).clamp(0.0, 1.0);
+            let red = (f32::from(dimmed) * (1.0 - strength) + 255.0 * strength) as u8;
+            let other = (f32::from(dimmed) * (1.0 - strength)) as u8;
             *pixel = image::Rgba([red, other, other, 255]);
         }
     }

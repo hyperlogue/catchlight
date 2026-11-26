@@ -9,7 +9,7 @@ use super::{Error, Result};
 pub(super) const MAX_PACKAGE: usize = 256 * 1024 * 1024;
 const MAX_ENTRIES: usize = 2048;
 
-/// A LivLiv package, with paths relative to its manifest.
+/// A `LivLiv` package, with paths relative to its manifest.
 #[derive(Debug)]
 pub struct Package {
     pub(super) files: BTreeMap<String, Vec<u8>>,

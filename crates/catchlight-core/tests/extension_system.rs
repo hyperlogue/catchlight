@@ -1,4 +1,8 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "a test aborts on a broken fixture"
+)]
 
 //! Typed extensions: decoding, versioning, reference maintenance, checking
 //! and addon merging. The registry is process-wide, so every extension type
@@ -385,7 +389,7 @@ fn a_failed_migration_or_decode_is_carried_unchanged_and_warned_about() {
     register::<BadMigration>().unwrap();
     register::<BadDecode>().unwrap();
     let r = rig();
-    let mut model = r.model.clone();
+    let mut model = r.model;
     let no_pairs = RawExtension {
         version: 1,
         refs: Vec::new(),
@@ -564,7 +568,7 @@ fn extension_mut_unshares_only_when_shared_and_bumps_the_generation() {
 
     let snapshot = model.clone();
     let c = model.extension_mut::<Shared>().unwrap();
-    c.0.add(IdRef::Param(r.param.clone()), "second");
+    c.0.add(IdRef::Param(r.param), "second");
     let c = c as *const Shared;
     assert_ne!(b, c, "a shared slot is copied before the write");
     assert_eq!(snapshot.extension::<Shared>().unwrap().0.texts(), ["first"]);
@@ -580,7 +584,7 @@ fn extension_mut_unshares_only_when_shared_and_bumps_the_generation() {
 #[test]
 fn remove_extension_drops_the_key_reserved_or_not_and_bumps_only_when_present() {
     let r = rig();
-    let mut model = r.model.clone();
+    let mut model = r.model;
     model.extension_or_default::<Removable>().unwrap();
     model.extension_or_default::<ReservedRemovable>().unwrap();
     let before = model.generation();
@@ -598,7 +602,7 @@ fn remove_extension_drops_the_key_reserved_or_not_and_bumps_only_when_present() 
 fn check_reports_dangling_references_own_warnings_and_unregistered_keys() {
     register::<Checked>().unwrap();
     let r = rig();
-    let mut model = r.model.clone();
+    let mut model = r.model;
     let ghost = ParamId::new("param-ghost").unwrap();
     model
         .set_extension(
@@ -674,7 +678,7 @@ fn install_merges_through_the_extension_and_uninstall_takes_back_its_receipt() {
         .extension_mut::<AddonMerge>()
         .unwrap()
         .0
-        .add(IdRef::Node(r.part.clone()), "base");
+        .add(IdRef::Node(r.part), "base");
     let before = base.clone();
     match base.install(&clash) {
         Err(InstallError::ExtensionRefused { key, why }) => {
@@ -701,7 +705,7 @@ fn install_merges_into_empty_data_when_the_base_lacks_it_and_uninstall_keeps_lat
     base.extension_mut::<AddonAdded>()
         .unwrap()
         .0
-        .add(IdRef::Param(r.param.clone()), "scarf");
+        .add(IdRef::Param(r.param), "scarf");
     base.uninstall(&installed);
     assert_eq!(base.extension::<AddonAdded>().unwrap().0.texts(), ["scarf"]);
 }
@@ -714,12 +718,12 @@ fn install_refuses_an_unregistered_extension_by_key() {
         .extension_or_default::<AddonUnregistered>()
         .unwrap()
         .0
-        .add(IdRef::Node(r.part.clone()), "hat");
+        .add(IdRef::Node(r.part), "hat");
     // Through a file, so the addon holds raw data rather than a decoded copy.
     let addon = Model::from_clm_bytes_fragment(&addon.to_clm_bytes().unwrap()).unwrap();
     match base.install(&addon) {
         Err(InstallError::ExtensionNotRegistered { key }) => {
-            assert_eq!(key, AddonUnregistered::KEY)
+            assert_eq!(key, AddonUnregistered::KEY);
         }
         other => panic!("{other:?}"),
     }
@@ -750,7 +754,7 @@ fn an_addons_requirements_include_what_its_reference_tables_name_except_textures
         .filter(|req| req.field == "extension reference")
         .map(|req| req.id.clone())
         .collect();
-    assert_eq!(from_extensions, [Required::Param(r.param.clone())]);
+    assert_eq!(from_extensions, [Required::Param(r.param)]);
     let dangling: Vec<Vec<IdRef>> = addon
         .extension_warnings()
         .into_iter()

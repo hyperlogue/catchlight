@@ -22,7 +22,7 @@ fn upload_mesh_rejects_vertex_uv_length_mismatch() {
             vertices: 3,
             uvs: 2,
         }) => {}
-        other => panic!("expected VertexUvMismatch, got {:?}", other),
+        other => panic!("expected VertexUvMismatch, got {other:?}"),
     }
 }
 
@@ -69,7 +69,7 @@ fn upload_mesh_rejects_out_of_bounds_index() {
             index: 9,
             vertices: 3,
         }) => {}
-        other => panic!("expected IndexOutOfBounds, got {:?}", other),
+        other => panic!("expected IndexOutOfBounds, got {other:?}"),
     }
 }
 

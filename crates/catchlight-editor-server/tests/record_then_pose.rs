@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(clippy::panic, reason = "a test aborts on a broken fixture")]
 
 //! Regression for the GUI recording flow: add a param, record a key via
 //! an explicit rest/key batch at a keypoint, then pose the param on the rebaked puppet and
@@ -123,7 +123,7 @@ fn recorded_binding_moves_the_rebaked_puppet() {
             if_rev: ed.revision(session).unwrap(),
             session,
             params: BindingParams::one(param.clone()),
-            node: node.clone(),
+            node,
             target: BindingTarget::Tx,
             cells: vec![[1, 0]],
         },

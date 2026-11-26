@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(clippy::unwrap_used, reason = "a test aborts on a broken fixture")]
 //! `catchlight.animations` as a maintained extension: its codec, the core's
 //! upkeep of its reference table, its check, and addon merging.
 

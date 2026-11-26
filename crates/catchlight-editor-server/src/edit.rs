@@ -317,7 +317,7 @@ fn write_cells(
         match cell.value {
             BindingCellValue::Scalar(value) => model.set_binding_key(key, cell.cell, value)?,
             BindingCellValue::Offsets(offsets) => {
-                model.set_deform_vertices(key, cell.cell, offsets.concat())?
+                model.set_deform_vertices(key, cell.cell, offsets.concat())?;
             }
         }
     }

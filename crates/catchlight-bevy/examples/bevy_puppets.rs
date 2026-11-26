@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(clippy::expect_used, reason = "a test aborts on a broken fixture")]
 
 //! Stress example: 50 puppets of **one** model in a Bevy 2D scene.
 //!
@@ -15,7 +15,9 @@ use std::path::Path;
 use std::time::Duration;
 
 use bevy::app::AppExit;
-use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin};
+use bevy::diagnostic::{
+    Diagnostic, DiagnosticsStore, FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin,
+};
 use bevy::prelude::*;
 use bevy::render::RenderPlugin;
 use catchlight_bevy::{
@@ -207,11 +209,11 @@ fn log_fps_on_exit(mut exit_events: MessageReader<AppExit>, diagnostics: Res<Dia
     }
     let fps = diagnostics
         .get(&FrameTimeDiagnosticsPlugin::FPS)
-        .and_then(|d| d.average())
+        .and_then(Diagnostic::average)
         .unwrap_or(0.0);
     let frame_time = diagnostics
         .get(&FrameTimeDiagnosticsPlugin::FRAME_TIME)
-        .and_then(|d| d.average())
+        .and_then(Diagnostic::average)
         .unwrap_or(0.0);
     info!(
         "exit: averaged fps={:.2}, frame_time={:.2}ms over {} puppets",

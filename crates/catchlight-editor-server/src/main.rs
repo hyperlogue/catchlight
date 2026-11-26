@@ -55,7 +55,7 @@ mod native {
         }
 
         /// The flag wins over the environment.
-        fn chosen(flag: Option<Keep>) -> Self {
+        fn chosen(flag: Option<Self>) -> Self {
             flag.or_else(|| {
                 let value = std::env::var_os("CATCHLIGHT_KEEP").filter(|v| !v.is_empty())?;
                 Some(match value.to_str() {

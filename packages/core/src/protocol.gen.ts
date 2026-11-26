@@ -1227,7 +1227,7 @@ export type SessionOrigin = {
 
 export type LimitInfo = {
   /**
-   * Stable budget name, such as request_bytes or derived_cell_vertices.
+   * Stable budget name, such as `request_bytes` or `derived_cell_vertices`.
    */
   resource: string,
   /**
@@ -1788,7 +1788,7 @@ export type ResponseBody =
   | {
     "result": "model_structure",
     /**
-     * The current core ClmStructure JSON, including authored cells and extension markers.
+     * The current core `ClmStructure` JSON, including authored cells and extension markers.
      */
     structure: unknown,
     textures: Array<ModelTextureHeader>,

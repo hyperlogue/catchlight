@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(clippy::unwrap_used, reason = "a test aborts on a broken fixture")]
 //! Render planning runs entirely on synthetic model structure, with no GPU,
 //! texture decoding, editor dependency or private/LFS fixtures.
 
@@ -1025,7 +1025,7 @@ fn a_spec_clips_lanes_ramp_an_expression_and_cross_fade_two_visemes() {
     }
 
     // A request's own weight yields to the lane on the same name.
-    let mut with_weights = talk.clone();
+    let mut with_weights = talk;
     with_weights.visemes = BTreeMap::from([("pp".into(), 1.0)]);
     with_weights.expressions = BTreeMap::from([("happy".into(), 1.0)]);
     let runtime = catchlight_cli::render::frame::FrameRuntime::new(&m, &with_weights).unwrap();

@@ -1,4 +1,8 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(
+    clippy::expect_used,
+    clippy::panic,
+    reason = "a test aborts on a broken fixture"
+)]
 
 //! Local Puppet scratch previews a drag without publishing an editor revision.
 //! The final exact-cell write is one undoable model edit.
@@ -108,7 +112,7 @@ fn a_hundred_drag_events_and_one_commit_leave_one_undo_entry() {
                 if_rev: ed.revision(session).unwrap(),
                 session,
                 params: BindingParams::one(param),
-                node: node.clone(),
+                node,
                 target: catchlight_editor_protocol::BindingTarget::Deform,
                 cells: vec![catchlight_editor_protocol::BindingCellWrite {
                     cell: [0, 0],

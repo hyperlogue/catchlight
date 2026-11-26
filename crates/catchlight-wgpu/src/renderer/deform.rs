@@ -106,7 +106,7 @@ impl WgpuRenderer {
     /// Where `set`'s copy of the mesh layout starts. Derived rather than
     /// stored, so a rebuild that changes the stride moves every set at once.
     pub(super) fn deform_base(&self, set: DeformSet) -> u64 {
-        set.0 as u64 * self.deform_stride()
+        u64::from(set.0) * self.deform_stride()
     }
 
     /// Take a deform set for one more puppet of this renderer's model. Release
@@ -249,7 +249,7 @@ impl WgpuRenderer {
         ranges.sort_unstable_by_key(|&(start, _)| start);
         let mut written = 0u64;
         let mut run: Option<(u64, u64)> = None;
-        for &(start, end) in ranges.iter() {
+        for &(start, end) in &ranges {
             match run {
                 Some((run_start, run_end)) if start <= run_end + DEFORM_MERGE_GAP => {
                     run = Some((run_start, run_end.max(end)));

@@ -1,4 +1,9 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "a test aborts on a broken fixture"
+)]
 
 //! The browser's channels: messages over a WebSocket or one POST, bytes over
 //! HTTP.
@@ -141,8 +146,7 @@ fn http(
     let length: usize = headers
         .iter()
         .find(|(n, _)| n == "content-length")
-        .map(|(_, v)| v.parse().unwrap())
-        .unwrap_or(0);
+        .map_or(0, |(_, v)| v.parse().unwrap());
     let mut body = vec![0u8; length];
     reader.read_exact(&mut body).unwrap();
     HttpResponse {
@@ -221,7 +225,7 @@ fn read_frame(socket: &mut Socket) -> Reply {
         match socket.read().unwrap() {
             Message::Text(text) => return serde_json::from_str(text.as_str()).unwrap(),
             Message::Close(_) => panic!("the server closed the connection"),
-            _ => continue,
+            _ => {}
         }
     }
 }

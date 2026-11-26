@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(clippy::panic, reason = "a test aborts on a broken fixture")]
 
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};

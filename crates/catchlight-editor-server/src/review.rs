@@ -1511,7 +1511,6 @@ impl Editor {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::panic)]
 
     use std::sync::{Arc, Mutex};
 
@@ -1879,7 +1878,7 @@ mod tests {
         };
         let node = NodeId::new("nope").unwrap();
         assert_eq!(
-            f.refused(add(ReviewTarget::Node { node: node.clone() })),
+            f.refused(add(ReviewTarget::Node { node })),
             ErrorCode::NoNode
         );
         assert_eq!(
@@ -3063,7 +3062,7 @@ mod tests {
     #[test]
     fn an_editor_without_a_review_store_says_reviews_last_for_the_session() {
         let models: Arc<MemoryModels> = Default::default();
-        let editor = Editor::with_storage(models.clone());
+        let editor = Editor::with_storage(models);
         let session = match editor.handle(Request {
             id: 1,
             command: Command::SessionNew {

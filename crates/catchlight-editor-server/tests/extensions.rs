@@ -1,4 +1,8 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "a test aborts on a broken fixture"
+)]
 
 //! Extensions on the wire: carried, never interpreted.
 
@@ -455,7 +459,7 @@ fn a_maintained_vendor_extension_is_set_listed_and_fetched_with_its_references()
     let mut f = Fixture::new();
     let eye = f.add_param("eye");
     let refs = vec![
-        ExtensionRef::Param(eye.clone()),
+        ExtensionRef::Param(eye),
         ExtensionRef::Param(ParamId::new("ghost").unwrap()),
     ];
     let reply = f.set_maintained("acme.framing", refs.clone(), Some(json!({"shot": 0})), None);

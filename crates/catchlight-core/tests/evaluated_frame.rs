@@ -1,4 +1,8 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test aborts on a broken fixture"
+)]
 //! What a tick evaluates, pinned against a committed baseline.
 //!
 //! Synthetic fixtures reach what the committed `.clm` fixtures do not; every
@@ -6,7 +10,7 @@
 //! is compared against `tests/fixtures/evaluated_frame.json`.
 //!
 //! Regenerate after an intentional behaviour change:
-//!   UPDATE_FRAME_BASELINE=1 cargo test -p catchlight-core --test evaluated_frame
+//!   `UPDATE_FRAME_BASELINE=1` cargo test -p catchlight-core --test `evaluated_frame`
 
 use catchlight_core::components::{BlendMode, MaskMode};
 use catchlight_core::formats::clm::{
@@ -38,7 +42,7 @@ struct Fixture {
 }
 
 impl Fixture {
-    fn load(file: FixtureFile) -> Fixture {
+    fn load(file: FixtureFile) -> Self {
         let model = Model::from_clm_file(&file.file).expect("model build");
         let puppet = Puppet::new(&model);
         let nodes = file
@@ -48,7 +52,7 @@ impl Fixture {
             .iter()
             .map(|n| puppet.node_idx(&n.id).expect("baked node"))
             .collect();
-        Fixture {
+        Self {
             file,
             model,
             puppet,
@@ -265,14 +269,8 @@ struct FixtureParam {
 }
 
 impl FixtureParam {
-    fn scalar(
-        name: &'static str,
-        min: f32,
-        max: f32,
-        default: f32,
-        keys: Vec<f32>,
-    ) -> FixtureParam {
-        FixtureParam {
+    fn scalar(name: &'static str, min: f32, max: f32, default: f32, keys: Vec<f32>) -> Self {
+        Self {
             name,
             vec2: false,
             min: [min, 0.0],
@@ -291,8 +289,8 @@ impl FixtureParam {
         defaults: [f32; 2],
         keys_x: Vec<f32>,
         keys_y: Vec<f32>,
-    ) -> FixtureParam {
-        FixtureParam {
+    ) -> Self {
+        Self {
             name,
             vec2: true,
             min,
@@ -304,7 +302,7 @@ impl FixtureParam {
         }
     }
 
-    fn driving(mut self, bindings: Vec<ClmBinding>) -> FixtureParam {
+    fn driving(mut self, bindings: Vec<ClmBinding>) -> Self {
         self.bindings = bindings;
         self
     }

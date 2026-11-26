@@ -1,4 +1,3 @@
-#![allow(clippy::unwrap_used, clippy::panic)]
 //! Import/export preserves the same width fields the runtime tests evaluate.
 
 #[path = "../../../tests/support/spine_width.rs"]

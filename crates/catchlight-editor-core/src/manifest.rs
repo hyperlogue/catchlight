@@ -132,14 +132,11 @@ fn unit2() -> [f32; 2] {
 }
 
 impl Manifest {
-    pub fn from_json(s: &str) -> Result<Manifest, ManifestError> {
+    pub fn from_json(s: &str) -> Result<Self, ManifestError> {
         Self::from_json_with_budget(s, &mut LoadBudget::default())
     }
 
-    pub fn from_json_with_budget(
-        s: &str,
-        budget: &mut LoadBudget,
-    ) -> Result<Manifest, ManifestError> {
+    pub fn from_json_with_budget(s: &str, budget: &mut LoadBudget) -> Result<Self, ManifestError> {
         budget.charge(LoadResource::EncodedBytes, s.len() as u64)?;
         Ok(serde_json::from_str(s)?)
     }
@@ -170,7 +167,7 @@ impl ModelManifestExt for Model {
     fn from_manifest(
         manifest: &Manifest,
         data: &HashMap<String, TextureData>,
-    ) -> Result<Model, ManifestError> {
+    ) -> Result<Self, ManifestError> {
         Self::from_manifest_with_budget(manifest, data, &mut LoadBudget::default())
     }
 
@@ -178,12 +175,12 @@ impl ModelManifestExt for Model {
         manifest: &Manifest,
         data: &HashMap<String, TextureData>,
         budget: &mut LoadBudget,
-    ) -> Result<Model, ManifestError> {
+    ) -> Result<Self, ManifestError> {
         budget.charge(LoadResource::Textures, manifest.textures.len() as u64)?;
         budget.charge(LoadResource::Nodes, manifest.nodes.len() as u64)?;
         budget.charge(LoadResource::Params, manifest.params.len() as u64)?;
         let mut hex = SeededHex::new(IMPORT_SEED);
-        let mut m = Model::new();
+        let mut m = Self::new();
 
         // A texture goes to the part that draws it, so a manifest texture no node
         // names never reaches the model.
@@ -459,12 +456,12 @@ fn grid_mesh(
     budget.charge(LoadResource::Indices, index_count)?;
     let cols = u32::try_from(cols).map_err(|_| LoadLimitError {
         resource: LoadResource::ManifestGridColumns,
-        limit: u32::MAX as u64,
+        limit: u64::from(u32::MAX),
         got: cols,
     })?;
     let rows = u32::try_from(rows).map_err(|_| LoadLimitError {
         resource: LoadResource::ManifestGridRows,
-        limit: u32::MAX as u64,
+        limit: u64::from(u32::MAX),
         got: rows,
     })?;
     let scalar_count = usize::try_from(vertex_count.checked_mul(2).ok_or(LoadLimitError {
@@ -503,7 +500,7 @@ fn grid_mesh(
             idx.extend_from_slice(&[a, b, d, a, d, c]);
         }
     }
-    let indices = if vertex_count <= u16::MAX as u64 {
+    let indices = if u16::try_from(vertex_count).is_ok() {
         ClmIndices::U16(idx.iter().map(|&i| i as u16).collect())
     } else {
         ClmIndices::U32(idx)
@@ -729,7 +726,7 @@ mod tests {
                 "ghost",
                 ModelNodeKind::Part(ModelPart::new(ClmMesh::default())),
             ),
-            &mut catchlight_core::id::SeededHex::new(0),
+            &mut SeededHex::new(0),
         )
         .unwrap();
         let warnings = m.check();

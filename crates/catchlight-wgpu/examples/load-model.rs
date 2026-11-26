@@ -1,4 +1,8 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test aborts on a broken fixture"
+)]
 
 //! winit viewer for a `.clm` model. `--control` (or `C`) opens per-param
 //! sliders and stops animation playback.
@@ -271,7 +275,7 @@ impl ApplicationHandler for App {
                     );
                     self.cache = Some(cache);
                 }
-                Err(e) => eprintln!("Failed to prepare the render cache: {}", e),
+                Err(e) => eprintln!("Failed to prepare the render cache: {e}"),
             }
 
             let aspect = size.width as f32 / size.height as f32;
@@ -426,7 +430,7 @@ impl ApplicationHandler for App {
                     );
                     self.puppet.tick(&self.model, dt);
                     if let Err(e) = cache.refresh(renderer, &self.model, &self.puppet) {
-                        eprintln!("Failed to refresh the render cache: {}", e);
+                        eprintln!("Failed to refresh the render cache: {e}");
                     }
                     cache.collect_into(&self.puppet, &mut self.render_list);
 

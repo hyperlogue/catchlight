@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(clippy::expect_used, reason = "a test aborts on a broken fixture")]
 
 //! The collector and `Puppet` report the same z and opacity, so
 //! `catchlight-cli poses` describes the frame the renderer draws.

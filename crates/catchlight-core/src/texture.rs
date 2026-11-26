@@ -26,8 +26,8 @@ pub enum TextureFormat {
 impl TextureFormat {
     pub fn to_image_format(self) -> image::ImageFormat {
         match self {
-            TextureFormat::Png => image::ImageFormat::Png,
-            TextureFormat::Tga => image::ImageFormat::Tga,
+            Self::Png => image::ImageFormat::Png,
+            Self::Tga => image::ImageFormat::Tga,
         }
     }
 }
@@ -131,9 +131,9 @@ pub fn unpremultiply_srgb_inplace(rgba: &mut [u8]) {
         if a == 255 {
             continue;
         }
-        let inv = 255.0 / a as f32;
+        let inv = 255.0 / f32::from(a);
         for c in &mut px[..3] {
-            *c = (*c as f32 * inv).round().min(255.0) as u8;
+            *c = (f32::from(*c) * inv).round().min(255.0) as u8;
         }
     }
 }
@@ -153,7 +153,7 @@ pub fn premultiply_linear_into_srgb_inplace(rgba: &mut [u8]) {
         if a == 255 {
             continue;
         }
-        let af = a as f32 / 255.0;
+        let af = f32::from(a) / 255.0;
         for c in &mut px[..3] {
             let premul = decode[*c as usize] * af;
             *c = srgb_encode_to_byte(premul);
@@ -181,7 +181,7 @@ pub fn unpremultiply_linear_from_srgb_inplace(rgba: &mut [u8]) {
         if a == 255 {
             continue;
         }
-        let inv = 255.0 / a as f32;
+        let inv = 255.0 / f32::from(a);
         for c in &mut px[..3] {
             *c = srgb_encode_to_byte((decode[*c as usize] * inv).min(1.0));
         }
@@ -206,7 +206,7 @@ struct Plan {
     crop: Option<(i64, i64, u32, u32)>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UvCrop {
     src_w: u32,
     src_h: u32,
@@ -219,10 +219,10 @@ pub struct UvCrop {
 impl UvCrop {
     /// In f64: f32 loses a texel of precision at the far edge of a 4k texture.
     pub fn map(&self, uv: crate::Vec2) -> crate::Vec2 {
-        let (tw, th) = (self.src_w as f64, self.src_h as f64);
+        let (tw, th) = (f64::from(self.src_w), f64::from(self.src_h));
         crate::Vec2::new(
-            ((uv.x as f64 * tw - self.x as f64) / self.w as f64) as f32,
-            ((uv.y as f64 * th - self.y as f64) / self.h as f64) as f32,
+            ((f64::from(uv.x) * tw - self.x as f64) / f64::from(self.w)) as f32,
+            ((f64::from(uv.y) * th - self.y as f64) / f64::from(self.h)) as f32,
         )
     }
 }
@@ -376,7 +376,7 @@ fn alpha_crop_rect(tex: &DecodedTexture, max_dimension: u32) -> Option<(i64, i64
     Some((x0, y0, (x1 - x0) as u32, (y1 - y0) as u32))
 }
 
-/// Out-of-source texels stay at the transparent zero-fill (ClampToBorder).
+/// Out-of-source texels stay at the transparent zero-fill (`ClampToBorder`).
 fn crop(tex: &DecodedTexture, x: i64, y: i64, w: u32, h: u32) -> DecodedTexture {
     let mut rgba = vec![0u8; (w as usize) * (h as usize) * 4];
     blit(&mut rgba, w, tex, [0, 0], [x, y], [w, h]);
@@ -416,28 +416,27 @@ fn blit(
     let [dst_x, dst_y] = dst;
     let [src_x, src_y] = src;
     let [w, h] = size;
-    let (tw, th) = (tex.width as i64, tex.height as i64);
-    for row in 0..h as i64 {
+    let (tw, th) = (i64::from(tex.width), i64::from(tex.height));
+    for row in 0..i64::from(h) {
         let sy = src_y + row;
         if sy < 0 || sy >= th {
             continue;
         }
         let cx0 = src_x.max(0);
-        let cx1 = (src_x + w as i64).min(tw);
+        let cx1 = (src_x + i64::from(w)).min(tw);
         if cx0 >= cx1 {
             continue;
         }
         let src_off = ((sy * tw + cx0) * 4) as usize;
         let src_len = ((cx1 - cx0) * 4) as usize;
-        let dst_row = dst_y as i64 + row;
-        let dst_col = dst_x as i64 + (cx0 - src_x);
-        let dst_off = ((dst_row * out_w as i64 + dst_col) * 4) as usize;
+        let dst_row = i64::from(dst_y) + row;
+        let dst_col = i64::from(dst_x) + (cx0 - src_x);
+        let dst_off = ((dst_row * i64::from(out_w) + dst_col) * 4) as usize;
         out[dst_off..dst_off + src_len].copy_from_slice(&tex.rgba[src_off..src_off + src_len]);
     }
 }
 
 #[cfg(test)]
-#[allow(clippy::identity_op)]
 mod tests {
     use super::*;
 
@@ -496,11 +495,11 @@ mod tests {
         for y in 0..4i64 {
             for x in 0..4i64 {
                 let src = ((y * 4 + x) * 4) as usize;
-                let dst = (((48 + 16 + y) * OUT as i64 + 32 + 16 + x) * 4) as usize;
+                let dst = (((48 + 16 + y) * i64::from(OUT) + 32 + 16 + x) * 4) as usize;
                 assert_eq!(&out[dst..dst + 4], &rgba[src..src + 4]);
             }
         }
-        let rim = ((48 * OUT as i64 + 32) * 4) as usize;
+        let rim = ((48 * i64::from(OUT) + 32) * 4) as usize;
         assert_eq!(&out[rim..rim + 4], &[0, 0, 0, 0]);
     }
 
@@ -653,8 +652,8 @@ mod tests {
     fn crop_rect_brackets_opaque_with_aligned_margin() {
         let (x, y, w, h) = alpha_crop_rect(&tex(256, 256, &[(40, 50)]), ROOMY).unwrap();
         assert_eq!((x, y, w, h), (16, 32, 48, 48));
-        assert!(x < 40 && (x + w as i64) > 40);
-        assert!(y < 50 && (y + h as i64) > 50);
+        assert!(x < 40 && (x + i64::from(w)) > 40);
+        assert!(y < 50 && (y + i64::from(h)) > 50);
     }
 
     #[test]
@@ -751,8 +750,8 @@ mod tests {
         let (cx, cy, cw, ch) = alpha_crop_rect(&source, ROOMY).unwrap();
         let remap = |u: f64, v: f64| {
             (
-                ((u * 256.0 - cx as f64) / cw as f64) as f32,
-                ((v * 256.0 - cy as f64) / ch as f64) as f32,
+                ((u * 256.0 - cx as f64) / f64::from(cw)) as f32,
+                ((v * 256.0 - cy as f64) / f64::from(ch)) as f32,
             )
         };
         let (ox, oy) = remap(140.5 / 256.0, 150.5 / 256.0);
@@ -796,8 +795,8 @@ mod tests {
 
         let by_hand = |uv: Vec2| {
             Vec2::new(
-                ((uv.x as f64 * 64.0 - cx as f64) / cw as f64) as f32,
-                ((uv.y as f64 * 64.0 - cy as f64) / ch as f64) as f32,
+                ((f64::from(uv.x) * 64.0 - cx as f64) / f64::from(cw)) as f32,
+                ((f64::from(uv.y) * 64.0 - cy as f64) / f64::from(ch)) as f32,
             )
         };
         for uv in [
@@ -886,13 +885,13 @@ mod tests {
         unpremultiply_srgb_inplace(&mut px);
         assert_eq!(&px[0..4], &[200, 100, 50, 255]);
         assert_eq!(&px[4..8], &[0, 0, 0, 0]);
-        assert!((px[4 + 4] as i32 - 127).abs() <= 1);
-        assert!((px[5 + 4] as i32 - 127).abs() <= 1);
-        assert!((px[6 + 4] as i32 - 127).abs() <= 1);
+        assert!((i32::from(px[4 + 4]) - 127).abs() <= 1);
+        assert!((i32::from(px[5 + 4]) - 127).abs() <= 1);
+        assert!((i32::from(px[6 + 4]) - 127).abs() <= 1);
         assert_eq!(px[7 + 4], 128);
-        assert!((px[12] as i32 - 128).abs() <= 1);
-        assert!((px[13] as i32 - 64).abs() <= 1);
-        assert!((px[14] as i32 - 26).abs() <= 1);
+        assert!((i32::from(px[12]) - 128).abs() <= 1);
+        assert!((i32::from(px[13]) - 64).abs() <= 1);
+        assert!((i32::from(px[14]) - 26).abs() <= 1);
         assert_eq!(px[15], 20);
     }
 
@@ -921,10 +920,8 @@ mod tests {
         premultiply_linear_into_srgb_inplace(&mut px);
         for (c, &v) in px[..3].iter().enumerate() {
             assert!(
-                (v as i32 - 138).abs() <= 1,
-                "channel {} = {}, expected ~138",
-                c,
-                v,
+                (i32::from(v) - 138).abs() <= 1,
+                "channel {c} = {v}, expected ~138",
             );
         }
         assert_eq!(px[3], 128, "alpha unchanged");

@@ -560,7 +560,10 @@ fn binding_info(model: &Model, binding: &ModelBinding) -> Result<BindingInfo, Ed
             },
             catchlight_core::BindingTarget::Deform => BindingIdentity::Deform {
                 offset: [0.0; 2],
-                vertex_count: model.node_mesh(&key.node).map_or(0, |m| m.vertex_count()) as u32,
+                vertex_count: model
+                    .node_mesh(&key.node)
+                    .map_or(0, catchlight_core::formats::clm::ClmMesh::vertex_count)
+                    as u32,
             },
         },
         target: key.target.into(),

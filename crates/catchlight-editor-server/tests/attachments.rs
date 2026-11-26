@@ -1,4 +1,9 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "a test aborts on a broken fixture"
+)]
 
 //! Bytes arrive inside the command that uses them.
 
@@ -164,7 +169,7 @@ fn png(rgba: [u8; 4]) -> Vec<u8> {
 /// so this is also how big the part is in world units.
 fn png_of(side: u32, rgba: [u8; 4]) -> Vec<u8> {
     let image = image::RgbaImage::from_pixel(side, side, image::Rgba(rgba));
-    let mut out = std::io::Cursor::new(Vec::new());
+    let mut out = io::Cursor::new(Vec::new());
     image::DynamicImage::ImageRgba8(image)
         .write_to(&mut out, image::ImageFormat::Png)
         .expect("encode png");
@@ -348,7 +353,7 @@ fn handle_alone_cannot_carry_a_byte_bearing_command() {
 fn assert_clean_and_unundoable(ed: &Editor, id: u64, session: SessionId) {
     match ok(ed.handle(req(id, Command::Status { session }))) {
         ResponseBody::Status { status } => {
-            assert!(!status.dirty, "an import leaves the session clean")
+            assert!(!status.dirty, "an import leaves the session clean");
         }
         other => panic!("expected Status, got {other:?}"),
     }
@@ -391,7 +396,7 @@ fn a_fragment_installs_under_the_parent_the_command_names() {
     let root = root_of(&ed, 2, s);
     let head = add_part(&ed, 3, s, &root, "head");
 
-    let reply = install(&ed, s, head.clone(), a_fragment());
+    let reply = install(&ed, s, head, a_fragment());
     ok(reply);
 
     match ok(ed.handle(req(
@@ -402,7 +407,7 @@ fn a_fragment_installs_under_the_parent_the_command_names() {
         },
     ))) {
         ResponseBody::NodeInfo { node } => {
-            assert_eq!(node.parent.as_ref().map(|p| p.as_str()), Some("head"))
+            assert_eq!(node.parent.as_ref().map(NodeId::as_str), Some("head"));
         }
         other => panic!("expected NodeInfo, got {other:?}"),
     }
@@ -439,7 +444,7 @@ fn a_fragment_is_re_parented_onto_the_node_the_command_names() {
         },
     ))) {
         ResponseBody::NodeInfo { node } => {
-            assert_eq!(node.parent.as_ref().map(|p| p.as_str()), Some("belt"))
+            assert_eq!(node.parent.as_ref().map(NodeId::as_str), Some("belt"));
         }
         other => panic!("expected NodeInfo, got {other:?}"),
     }

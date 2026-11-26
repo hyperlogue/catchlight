@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(clippy::unwrap_used, reason = "a test aborts on a broken fixture")]
 //! A program that never registers `Animations`, as the registry is
 //! process-wide: its raw slot is maintained by the core alone.
 

@@ -107,9 +107,7 @@ pub fn derive_dense<T: FillCell>(
         if valid_count == total {
             break;
         }
-        for b in newly_set.iter_mut() {
-            *b = false;
-        }
+        newly_set.fill(false);
 
         let mut did_work = false;
         for second_pass in [false, true] {
@@ -159,7 +157,10 @@ pub fn derive_dense<T: FillCell>(
     values
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the inputs are independent, with no type that groups them"
+)]
 fn interpolate_pass<T: FillCell>(
     second_pass: bool,
     width: usize,
@@ -273,7 +274,10 @@ fn extrapolate_corners<T: FillCell>(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the inputs are independent, with no type that groups them"
+)]
 fn extend_pass<T: FillCell>(
     second_pass: bool,
     width: usize,

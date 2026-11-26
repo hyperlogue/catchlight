@@ -144,7 +144,7 @@ impl Store {
                     probe(&dir)?;
                     return Ok(dir);
                 }
-                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
                 Err(err) => {
                     failed.push(format!("{}: {err}", dir.display()));
                     break;
@@ -409,7 +409,7 @@ mod tests {
         // The worker's write to the replaced registration is dropped.
         store
             .update(&registration("claude:a", None), |r| {
-                r.failure = Some("x".into())
+                r.failure = Some("x".into());
             })
             .unwrap();
         assert_eq!(store.read(&mine.name()).unwrap().unwrap().failure, None);

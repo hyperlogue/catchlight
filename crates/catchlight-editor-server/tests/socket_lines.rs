@@ -1,4 +1,9 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "a test aborts on a broken fixture"
+)]
 #![cfg(unix)]
 
 //! The Unix socket's own glue: `files` in, `out` out.
@@ -101,7 +106,7 @@ impl Fixture {
             let reply: Reply = serde_json::from_str(buf).unwrap();
             match &reply {
                 Reply::Ok { id: at, .. } | Reply::Err { id: at, .. } if *at == id => return reply,
-                _ => continue,
+                _ => {}
             }
         }
     }

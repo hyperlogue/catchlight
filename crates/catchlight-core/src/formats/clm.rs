@@ -73,7 +73,7 @@ impl ClmMesh {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ClmIndices {
     U16(Vec<u16>),
     U32(Vec<u32>),
@@ -81,7 +81,7 @@ pub enum ClmIndices {
 
 impl Default for ClmIndices {
     fn default() -> Self {
-        ClmIndices::U16(Vec::new())
+        Self::U16(Vec::new())
     }
 }
 
@@ -109,14 +109,14 @@ pub enum ClmBindingValues {
 }
 
 /// Kept sorted by `(y, x)` so save→save stays byte-stable.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct ClmCells<T> {
     #[serde(default)]
     pub cells: Vec<ClmCell<T>>,
 }
 
 /// One authored keypoint: `(x, y)` indexes the binding's key grid.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClmCell<T> {
     pub x: u32,
     pub y: u32,
@@ -252,7 +252,7 @@ pub struct ClmStructure {
 
 /// Externally tagged: a marker is itself a JSON object, so an untagged value
 /// would be ambiguous.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ClmExtension {
     /// Non-finite floats are refused rather than rewritten as `null`.
@@ -267,7 +267,7 @@ pub enum ClmExtension {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ClmPayload {
     Json(#[serde(deserialize_with = "json_value")] serde_json::Value),
@@ -392,7 +392,7 @@ impl<'de> serde::de::Visitor<'de> for JsonValue {
 
     fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
         let mut items = Vec::new();
-        while let Some(item) = seq.next_element_seed(JsonValue)? {
+        while let Some(item) = seq.next_element_seed(Self)? {
             items.push(item);
         }
         Ok(serde_json::Value::Array(items))
@@ -401,7 +401,7 @@ impl<'de> serde::de::Visitor<'de> for JsonValue {
     fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
         let mut entries = serde_json::Map::new();
         while let Some(key) = map.next_key::<String>()? {
-            entries.insert(key, map.next_value_seed(JsonValue)?);
+            entries.insert(key, map.next_value_seed(Self)?);
         }
         Ok(serde_json::Value::Object(entries))
     }
@@ -447,7 +447,7 @@ pub fn extension_hash(bytes: &[u8]) -> String {
 }
 
 /// A texture as the author supplied it: never decoded, never re-encoded.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClmTexture {
     pub id: TexId,
     pub encoding: TextureEncoding,
@@ -541,7 +541,7 @@ pub struct ClmPart {
     pub slots: Vec<ClmSlot>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClmSlot {
     pub id: SlotId,
     /// `None` for a slot whose part was re-meshed since it was filled.
@@ -579,7 +579,7 @@ pub struct ClmSpine {
     pub targets: Vec<Option<ParamId>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClmMask {
     pub source: NodeId,
     pub mode: MaskMode,
@@ -1080,7 +1080,7 @@ mod tests {
             }],
             bindings: vec![ClmBinding {
                 key_positions: vec![vec![0.0, 1.0]],
-                params: vec![mouth.clone()],
+                params: vec![mouth],
                 node: body,
                 interpolate_mode: InterpolateMode::Linear,
                 values: ClmBindingValues::Deform(ClmCells {

@@ -2,7 +2,7 @@
 //! Conversion lives in the library; this target owns arguments and file IO.
 //! Recognized container magic takes precedence over extensions. Extensions
 //! only select a validator when no signature is recognized; they never bypass
-//! that format's validation. ZIP inputs must still contain a LivLiv package.
+//! that format's validation. ZIP inputs must still contain a `LivLiv` package.
 use anyhow::{Context, Result, bail};
 use catchlight_importer::livliv::{Options, Package};
 use std::ffi::OsString;
@@ -61,12 +61,12 @@ fn parse(args: impl Iterator<Item = OsString>) -> Result<Option<Args>> {
             }
             Some("--") => positional = true,
             Some("-o" | "--out") => {
-                output = Some(PathBuf::from(args.next().context("-o requires a path")?))
+                output = Some(PathBuf::from(args.next().context("-o requires a path")?));
             }
             Some("--report") => {
                 report = Some(PathBuf::from(
                     args.next().context("--report requires a path")?,
-                ))
+                ));
             }
             Some("--inspect") => inspect = true,
             Some("--allow-lossy") => allow_lossy = true,
@@ -126,7 +126,7 @@ fn detect(input: &Path) -> Result<Format> {
         let parent = input
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or(Path::new("."));
+            .unwrap_or_else(|| Path::new("."));
         return Ok(Format::LivlivDirectory(parent.to_path_buf()));
     }
     match input
@@ -228,7 +228,7 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
     let dir = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
+        .unwrap_or_else(|| Path::new("."));
     let mut builder = tempfile::Builder::new();
     builder.prefix(".catchlight-importer-");
     // tempfile's own default is owner-only; a new output takes the umask's.

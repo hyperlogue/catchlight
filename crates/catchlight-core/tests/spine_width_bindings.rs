@@ -1,4 +1,8 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "a test aborts on a broken fixture"
+)]
 //! The projected-width recipe uses the public binding/spine interface.
 
 #[path = "../../../tests/support/spine_width.rs"]

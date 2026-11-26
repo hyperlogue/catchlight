@@ -1,4 +1,3 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use super::*;
 use catchlight_core::formats::clm::{ClmExtension, ClmNodeKind, TextureAlpha};
 use catchlight_core::{Model, NodeId, ParamId};
@@ -207,7 +206,7 @@ fn rejects_traversal_corruption_and_unbounded_zip_directory() {
 fn keyforms_reject_wrong_decoded_lengths() {
     let mut files = files();
     change(&mut files, |m| {
-        m["files"] = json!({"keyforms":"keyforms.json"})
+        m["files"] = json!({"keyforms":"keyforms.json"});
     });
     files.insert("keyforms.json".into(), serde_json::to_vec(&json!({"version":1,"cell":8,"cols":2,"rows":2,"units":1,"turn":1,"nod":1,"keys":[{"param":"angleX","value":30,"fields":{"head":"AA=="}}]})).unwrap());
     assert!(
@@ -433,7 +432,7 @@ fn baked_bindings_reproduce_key_poses_after_save_and_load() {
     let model = Model::from_clm_bytes(&converted.model.to_clm_bytes().unwrap()).unwrap();
     let mut puppet = catchlight_core::puppet::Puppet::new(&model);
     for (layer, l) in package.model.layers.iter().enumerate() {
-        let (_, points) = super::bake::mesh(l, package.model.canvas);
+        let (_, points) = bake::mesh(l, package.model.canvas);
         let vertices = runtime.prepare(layer, &points).unwrap();
         let idx = puppet
             .node_idx(&NodeId::new(format!("layer-{layer}/frame-0")).unwrap())
@@ -468,8 +467,8 @@ fn baked_bindings_reproduce_key_poses_after_save_and_load() {
             for (i, v) in vertices.iter().enumerate() {
                 let expected = runtime.position(layer, v, pose);
                 let actual = [
-                    v.rest[0] + deform[i].x as f64,
-                    v.rest[1] - deform[i].y as f64,
+                    v.rest[0] + f64::from(deform[i].x),
+                    v.rest[1] - f64::from(deform[i].y),
                 ];
                 assert!(
                     (expected[0] - actual[0]).hypot(expected[1] - actual[1]) < 0.0001,
@@ -644,11 +643,11 @@ fn official_sample_motion_tables_fit_the_bake_budget() {
         .unwrap()
         .validate()
         .unwrap();
-    let runtime = super::runtime::Runtime::new(&package).unwrap();
-    let mut summary = super::bake::BakeSummary::default();
+    let runtime = runtime::Runtime::new(&package).unwrap();
+    let mut summary = BakeSummary::default();
     let mut doc = catchlight_core::formats::clm::ClmStructure::default();
     for (i, l) in package.model.layers.iter().enumerate() {
-        let (_, points) = super::bake::mesh(l, package.model.canvas);
+        let (_, points) = bake::mesh(l, package.model.canvas);
         let copies = if l.role.as_deref() == Some("mouth") {
             l.frames.len()
         } else {
@@ -657,7 +656,7 @@ fn official_sample_motion_tables_fit_the_bake_budget() {
         let nodes: Vec<_> = (0..copies)
             .map(|j| NodeId::new(format!("layer-{i}/frame-{j}")).unwrap())
             .collect();
-        super::bake::layer(&runtime, i, &points, &nodes, &mut doc, &mut summary).unwrap();
+        bake::layer(&runtime, i, &points, &nodes, &mut doc, &mut summary).unwrap();
         doc.bindings.clear();
     }
     assert!(summary.deform_bindings > 0);
@@ -704,13 +703,13 @@ fn motion_keyform_package() -> ValidatedPackage {
 #[test]
 fn bake_limits_are_checked_before_allocating_tables() {
     let package = validated();
-    let runtime = super::runtime::Runtime::new(&package).unwrap();
-    let mut summary = super::bake::BakeSummary {
+    let runtime = runtime::Runtime::new(&package).unwrap();
+    let mut summary = BakeSummary {
         stored_offset_components: 32_000_000,
         ..Default::default()
     };
     let mut doc = catchlight_core::formats::clm::ClmStructure::default();
-    let error = super::bake::layer(
+    let error = bake::layer(
         &runtime,
         0,
         &[[16., 12.]],
@@ -747,7 +746,7 @@ fn baked_combined_controls_are_evaluated_by_the_normal_puppet() {
     puppet.tick(&model, 0.);
     let mut max_error = 0f64;
     for (layer, l) in package.model.layers.iter().enumerate() {
-        let (_, points) = super::bake::mesh(l, package.model.canvas);
+        let (_, points) = bake::mesh(l, package.model.canvas);
         let vertices = runtime.prepare(layer, &points).unwrap();
         let idx = puppet
             .node_idx(&NodeId::new(format!("layer-{layer}/frame-0")).unwrap())
@@ -756,7 +755,8 @@ fn baked_combined_controls_are_evaluated_by_the_normal_puppet() {
         for (v, d) in vertices.iter().zip(deforms) {
             let expected = runtime.position(layer, v, pose);
             max_error = max_error.max(
-                (v.rest[0] + d.x as f64 - expected[0]).hypot(v.rest[1] - d.y as f64 - expected[1]),
+                (v.rest[0] + f64::from(d.x) - expected[0])
+                    .hypot(v.rest[1] - f64::from(d.y) - expected[1]),
             );
         }
     }

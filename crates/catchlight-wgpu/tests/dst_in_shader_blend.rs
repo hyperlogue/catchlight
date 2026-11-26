@@ -1,7 +1,7 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(clippy::expect_used, reason = "a test aborts on a broken fixture")]
 
-//! End-to-end blend-math tests in linear color space. Overlay / ColorBurn /
-//! LinearBurn are dst-in-shader; Inverse is the fixed-function counter-case.
+//! End-to-end blend-math tests in linear color space. Overlay / `ColorBurn` /
+//! `LinearBurn` are dst-in-shader; Inverse is the fixed-function counter-case.
 //! Assertions read the centre pixel: alpha-cropping makes the quad's edge
 //! fragments straddle the crop boundary.
 
@@ -99,10 +99,10 @@ async fn render_model_with(model: Model, bg_rgba_u8: [u8; 4], snapshot: Snapshot
 
     // Clear colors are linear floats, sRGB-encoded on store.
     let clear = wgpu::Color {
-        r: srgb_to_linear(bg_rgba_u8[0] as f32 / 255.0) as f64,
-        g: srgb_to_linear(bg_rgba_u8[1] as f32 / 255.0) as f64,
-        b: srgb_to_linear(bg_rgba_u8[2] as f32 / 255.0) as f64,
-        a: bg_rgba_u8[3] as f64 / 255.0,
+        r: f64::from(srgb_to_linear(f32::from(bg_rgba_u8[0]) / 255.0)),
+        g: f64::from(srgb_to_linear(f32::from(bg_rgba_u8[1]) / 255.0)),
+        b: f64::from(srgb_to_linear(f32::from(bg_rgba_u8[2]) / 255.0)),
+        a: f64::from(bg_rgba_u8[3]) / 255.0,
     };
     renderer
         .frame()
@@ -176,8 +176,7 @@ fn assert_pixel_close(actual: [u8; 4], expected_linear: [f32; 3], label: &str) {
         && approx_eq(actual[2], exp[2], 2);
     assert!(
         ok,
-        "{label}: actual={:?}, expected={:?} (linear {:?})",
-        actual, exp, expected_linear,
+        "{label}: actual={actual:?}, expected={exp:?} (linear {expected_linear:?})",
     );
 }
 
@@ -357,10 +356,10 @@ fn overlay_with_normal_fallback_differs_from_overlay_with_snapshot() {
                 },
                 &mut targets,
                 Some(wgpu::Color {
-                    r: bg[0] as f64 / 255.0,
-                    g: bg[1] as f64 / 255.0,
-                    b: bg[2] as f64 / 255.0,
-                    a: bg[3] as f64 / 255.0,
+                    r: f64::from(bg[0]) / 255.0,
+                    g: f64::from(bg[1]) / 255.0,
+                    b: f64::from(bg[2]) / 255.0,
+                    a: f64::from(bg[3]) / 255.0,
                 }),
             )
             .submit();
@@ -372,15 +371,12 @@ fn overlay_with_normal_fallback_differs_from_overlay_with_snapshot() {
     });
 
     let max_diff = (0..3)
-        .map(|c| (with_snapshot_center[c] as i32 - fallback_center[c] as i32).abs())
+        .map(|c| (i32::from(with_snapshot_center[c]) - i32::from(fallback_center[c])).abs())
         .max()
         .unwrap();
     assert!(
         max_diff > 5,
-        "snapshot-path center {:?} too close to fallback center {:?} (max ch diff {})",
-        with_snapshot_center,
-        fallback_center,
-        max_diff,
+        "snapshot-path center {with_snapshot_center:?} too close to fallback center {fallback_center:?} (max ch diff {max_diff})",
     );
 }
 

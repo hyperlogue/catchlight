@@ -347,7 +347,11 @@ fn texture_fields(t: &ClmTexture) -> Fields {
 }
 
 fn binding_key(b: &ClmBinding) -> String {
-    let params: Vec<&str> = b.params.iter().map(|p| p.as_str()).collect();
+    let params: Vec<&str> = b
+        .params
+        .iter()
+        .map(catchlight_core::ParamId::as_str)
+        .collect();
     format!(
         "[{}] {:?} {}",
         params.join(", "),

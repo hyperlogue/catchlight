@@ -3429,7 +3429,7 @@ class SessionOrigin:
 
 @dataclass(frozen=True, kw_only=True)
 class LimitInfo:
-    # Stable budget name, such as request_bytes or derived_cell_vertices.
+    # Stable budget name, such as `request_bytes` or `derived_cell_vertices`.
     resource: str
     # Maximum permitted count in the resource's units.
     limit: int
@@ -4290,7 +4290,7 @@ class ResponseBodyModelStructure:
     TAG_FIELD: ClassVar[str] = "result"
     TAG: ClassVar[str] = "model_structure"
 
-    # The current core ClmStructure JSON, including authored cells and extension markers.
+    # The current core `ClmStructure` JSON, including authored cells and extension markers.
     structure: Any
     textures: list[ModelTextureHeader]
 

@@ -84,7 +84,6 @@ pub fn encoding_of(path: &Path, bytes: &[u8]) -> Option<TextureEncoding> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
 

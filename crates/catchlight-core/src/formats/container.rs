@@ -219,7 +219,7 @@ pub fn read<'a>(
         let base = HEADER_LEN + i * SECTION_ENTRY_LEN;
         let kind = le_u32(bytes, base).ok_or(ContainerError::Truncated)?;
         let offset = le_u64(bytes, base + 4).ok_or(ContainerError::Truncated)?;
-        let len = le_u32(bytes, base + 12).ok_or(ContainerError::Truncated)? as u64;
+        let len = u64::from(le_u32(bytes, base + 12).ok_or(ContainerError::Truncated)?);
 
         check_section_len(kind, len)?;
         let oob = ContainerError::SectionOutOfBounds {

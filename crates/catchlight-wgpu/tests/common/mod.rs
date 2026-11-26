@@ -1,7 +1,10 @@
 //! Shared helpers for the wgpu integration tests. Synthetic textures are PNGs
 //! and get alpha-cropped like a `.clm`'s; read exact texels away from the
 //! crop boundary.
-#![allow(dead_code)]
+#![allow(
+    dead_code,
+    reason = "each test binary uses a different subset of these helpers"
+)]
 
 use catchlight_core::formats::clm::{ClmIndices, ClmMesh};
 use catchlight_core::formats::clm::{TextureAlpha, TextureEncoding};

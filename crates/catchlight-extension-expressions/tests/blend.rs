@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(clippy::unwrap_used, reason = "a test aborts on a broken fixture")]
 //! Playing expressions by weight onto controls and params.
 
 use catchlight_core::{
@@ -81,7 +81,7 @@ fn weights_clamp_to_zero_through_one_and_a_zero_weight_changes_nothing() {
     let w = weights(&[("aa", 3.0), ("uw", -1.0), ("ghost", 1.0)]);
     assert_eq!(w.get("aa"), Some(1.0));
     assert_eq!(w.get("uw"), Some(0.0));
-    let mut c: ControlValues = [("mouth_open", 0.3)].into_iter().collect();
+    let mut c: ControlValues = std::iter::once(("mouth_open", 0.3)).collect();
     visemes().blend_controls(&w, &none(), &mut c);
     assert_eq!(c.get("mouth_open"), Some(1.0));
     assert_eq!(c.get("mouth_width"), Some(0.5));

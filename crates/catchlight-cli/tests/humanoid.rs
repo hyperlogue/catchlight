@@ -1,4 +1,8 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test aborts on a broken fixture"
+)]
 
 //! `humanoid` over copies of the committed fixtures. `two_param_grid` has
 //! `param-0` in 0..1 resting at 0 and `param-1` in -2..2 resting at -2.
@@ -205,7 +209,7 @@ fn an_edit_keeps_textures_and_every_other_extension_byte_for_byte() {
     for key in ["acme.camera", "acme.thumb"] {
         assert_eq!(after.doc.extensions[key], before.doc.extensions[key]);
     }
-    let mut stripped = after.doc.clone();
+    let mut stripped = after.doc;
     stripped.extensions.remove(Humanoid::KEY);
     assert_eq!(stripped, before.doc, "only the humanoid key changed");
 }

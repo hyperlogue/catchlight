@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(clippy::unwrap_used, reason = "a test aborts on a broken fixture")]
 //! Playback against motion responses: a clip's cuts restart the responses
 //! that read the cut param, and seamless playback matches direct input.
 

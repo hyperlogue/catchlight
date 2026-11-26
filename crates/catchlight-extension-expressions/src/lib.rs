@@ -64,7 +64,7 @@ pub enum Group {
 
 impl Group {
     /// In blending order.
-    pub const ALL: [Group; 2] = [Group::Expression, Group::Viseme];
+    pub const ALL: [Self; 2] = [Self::Expression, Self::Viseme];
 
     /// What one member is called: `expression` or `viseme`.
     pub fn noun(self) -> &'static str {
@@ -79,7 +79,7 @@ impl Group {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target {
     /// A humanoid control by name; the value is in the control's range.
     Control(String),
@@ -257,7 +257,7 @@ mod stored {
         }
     }
 
-    /// JSON has no NaN or infinity: serde_json writes them as null, which
+    /// JSON has no NaN or infinity: `serde_json` writes them as null, which
     /// reads back as NaN so the data still loads.
     fn value<'de, D: Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
         Ok(Option::<f32>::deserialize(d)?.unwrap_or(f32::NAN))

@@ -10,7 +10,7 @@ pub(super) struct Vertex {
 impl Vertex {
     pub(super) fn desc() -> wgpu::VertexBufferLayout<'static> {
         wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
+            array_stride: size_of::<Self>() as wgpu::BufferAddress,
             step_mode: wgpu::VertexStepMode::Vertex,
             attributes: &[
                 wgpu::VertexAttribute {
@@ -19,7 +19,7 @@ impl Vertex {
                     format: wgpu::VertexFormat::Float32x2,
                 },
                 wgpu::VertexAttribute {
-                    offset: std::mem::size_of::<[f32; 2]>() as wgpu::BufferAddress,
+                    offset: size_of::<[f32; 2]>() as wgpu::BufferAddress,
                     shader_location: 1,
                     format: wgpu::VertexFormat::Float32x2,
                 },
@@ -37,7 +37,7 @@ pub(super) struct DeformAttr {
 impl DeformAttr {
     pub(super) fn desc() -> wgpu::VertexBufferLayout<'static> {
         wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<DeformAttr>() as wgpu::BufferAddress,
+            array_stride: size_of::<Self>() as wgpu::BufferAddress,
             step_mode: wgpu::VertexStepMode::Vertex,
             attributes: &[wgpu::VertexAttribute {
                 offset: 0,
@@ -70,7 +70,7 @@ impl InstanceRaw {
 
     pub(super) fn desc() -> wgpu::VertexBufferLayout<'static> {
         wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<InstanceRaw>() as wgpu::BufferAddress,
+            array_stride: size_of::<Self>() as wgpu::BufferAddress,
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &[
                 wgpu::VertexAttribute {
@@ -79,12 +79,12 @@ impl InstanceRaw {
                     format: wgpu::VertexFormat::Float32x4,
                 },
                 wgpu::VertexAttribute {
-                    offset: std::mem::size_of::<[f32; 4]>() as wgpu::BufferAddress,
+                    offset: size_of::<[f32; 4]>() as wgpu::BufferAddress,
                     shader_location: 3,
                     format: wgpu::VertexFormat::Float32x4,
                 },
                 wgpu::VertexAttribute {
-                    offset: std::mem::size_of::<[f32; 8]>() as wgpu::BufferAddress,
+                    offset: size_of::<[f32; 8]>() as wgpu::BufferAddress,
                     shader_location: 4,
                     format: wgpu::VertexFormat::Float32x4,
                 },
@@ -93,7 +93,7 @@ impl InstanceRaw {
     }
 }
 
-pub(super) const INSTANCE_STRIDE: u64 = std::mem::size_of::<InstanceRaw>() as u64;
+pub(super) const INSTANCE_STRIDE: u64 = size_of::<InstanceRaw>() as u64;
 
 pub(super) fn part_uniform_bind_group(
     device: &wgpu::Device,
@@ -107,7 +107,7 @@ pub(super) fn part_uniform_bind_group(
             resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                 buffer,
                 offset: 0,
-                size: std::num::NonZeroU64::new(std::mem::size_of::<PartUniform>() as u64),
+                size: std::num::NonZeroU64::new(size_of::<PartUniform>() as u64),
             }),
         }],
         label: Some("part_uniform_bind_group"),

@@ -86,7 +86,7 @@ struct Cli {
     /// Expected revision for guarded edits and composed read/write operations.
     #[arg(long, global = true)]
     if_rev: Option<u64>,
-    /// The editor's HTTP door, e.g. http://127.0.0.1:7323.
+    /// The editor's HTTP door, e.g. <http://127.0.0.1:7323>.
     #[arg(long, global = true, env = "CATCHLIGHT_EDITOR_URL")]
     server: Option<String>,
     /// Bearer token for --server; read from the connection file when omitted.
@@ -112,11 +112,11 @@ enum Cmd {
         /// Attach local bytes as NAME=PATH (repeatable).
         #[arg(long = "attachment")]
         attachments: Vec<String>,
-        /// File for a binary reply, such as model_export or preview_render.
+        /// File for a binary reply, such as `model_export` or `preview_render`.
         #[arg(long)]
         out: Option<String>,
     },
-    /// Apply an atomic JSON array of EditOp values, or validate it only.
+    /// Apply an atomic JSON array of `EditOp` values, or validate it only.
     Edit {
         file: String,
         #[arg(long)]
@@ -334,7 +334,7 @@ enum NodeCmd {
         clear_texture: bool,
         #[arg(long = "lock-to-root")]
         lock_to_root: Option<bool>,
-        /// normal | multiply | color_dodge | …
+        /// normal | multiply | `color_dodge` | …
         #[arg(long = "blend-mode", value_parser = wire_enum::<BlendMode>)]
         blend_mode: Option<BlendMode>,
         /// `r,g,b`
@@ -1589,8 +1589,7 @@ fn print_reply(cli: &Cli, reply: &Reply) {
 
 fn code_name(code: ErrorCode) -> String {
     serde_json::to_string(&code)
-        .map(|s| s.trim_matches('"').to_string())
-        .unwrap_or_else(|_| "error".into())
+        .map_or_else(|_| "error".into(), |s| s.trim_matches('"').to_string())
 }
 
 fn print_body(body: &ResponseBody) {
@@ -1728,7 +1727,7 @@ fn print_body(body: &ResponseBody) {
             }
         }
         ResponseBody::Preview { preview } => {
-            println!("preview {}x{}", preview.width, preview.height)
+            println!("preview {}x{}", preview.width, preview.height);
         }
 
         ResponseBody::Saved { path } => println!("saved -> {path}"),
@@ -1745,8 +1744,7 @@ fn print_body(body: &ResponseBody) {
                     pose.join(","),
                     p.selection
                         .as_ref()
-                        .map(|n| n.to_string())
-                        .unwrap_or_else(|| "-".into())
+                        .map_or_else(|| "-".into(), ToString::to_string)
                 );
             }
         },
@@ -1827,8 +1825,7 @@ fn print_node_info(node: &NodeInfo) {
         node.name,
         node.parent
             .as_ref()
-            .map(|p| p.to_string())
-            .unwrap_or_else(|| "-".into())
+            .map_or_else(|| "-".into(), ToString::to_string)
     );
     let [tx, ty, tz] = node.translate;
     let [rx, ry, rz] = node.rotate;
@@ -1953,7 +1950,7 @@ mod tests {
                 .unwrap();
             let reply = Reply::Err {
                 id: 1,
-                code: catchlight_editor_protocol::ErrorCode::NoNode,
+                code: ErrorCode::NoNode,
                 message: "no node".into(),
                 op_index: None,
                 limit: None,

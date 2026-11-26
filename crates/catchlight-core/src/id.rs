@@ -219,7 +219,7 @@ impl SeededHex {
 }
 
 impl HexSource for SeededHex {
-    /// SplitMix32: a Weyl step, then the murmur3 finalizer.
+    /// `SplitMix32`: a Weyl step, then the murmur3 finalizer.
     fn next_bits(&mut self) -> u32 {
         self.0 = self.0.wrapping_add(0x9E37_79B9);
         let mut z = self.0;
@@ -236,7 +236,7 @@ impl NodeId {
 
     /// Generates `<parent>/<kind>-<8 hex>`. Uniqueness within the model is the
     /// caller's to check.
-    pub fn generate(parent: &NodeId, kind: NodeIdKind, hex: &mut impl HexSource) -> Self {
+    pub fn generate(parent: &Self, kind: NodeIdKind, hex: &mut impl HexSource) -> Self {
         Self(generated(format!(
             "{}/{}-{:08x}",
             parent.as_str(),
@@ -556,13 +556,11 @@ mod tests {
         ] {
             let id = NodeId::generate(&parent, kind, &mut hex);
             let s = id.as_str();
-            let rest = match s.strip_prefix("head/") {
-                Some(rest) => rest,
-                None => panic!("{s} should carry its parent as a prefix"),
+            let Some(rest) = s.strip_prefix("head/") else {
+                panic!("{s} should carry its parent as a prefix")
             };
-            let digits = match rest.strip_prefix(&format!("{segment}-")) {
-                Some(digits) => digits,
-                None => panic!("{s} should name its kind"),
+            let Some(digits) = rest.strip_prefix(&format!("{segment}-")) else {
+                panic!("{s} should name its kind")
             };
             assert_eq!(digits.len(), 8, "{s} should end in 8 hex digits");
             assert!(digits.bytes().all(|b| b.is_ascii_hexdigit()), "{s}");

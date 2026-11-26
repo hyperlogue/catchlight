@@ -2,7 +2,7 @@
 //! Pass a scenario substring to select individual workloads.
 
 // A bench is not a test, so the workspace deny on these does not lift.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(clippy::unwrap_used, reason = "a test aborts on a broken fixture")]
 
 use std::f32::consts::{PI, TAU};
 use std::hint::black_box;
@@ -134,10 +134,7 @@ const SCENARIOS: &[Scenario] = &[
 
 fn main() {
     let filter = std::env::args().skip(1).find(|a| !a.starts_with('-'));
-    println!(
-        "puppet tick, dt {:.4} s, {TICKS} timed ticks after {WARMUP} warm-up",
-        DT
-    );
+    println!("puppet tick, dt {DT:.4} s, {TICKS} timed ticks after {WARMUP} warm-up");
     println!(
         "{:<26}{:>8}{:>7}{:>8}{:>10}{:>12}{:>10}",
         "scenario", "strands", "links", "verts", "min us", "median us", "p90 us"

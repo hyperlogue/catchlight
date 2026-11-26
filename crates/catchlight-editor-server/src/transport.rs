@@ -188,9 +188,8 @@ pub(super) fn serve_connection(editor: &Editor, stream: UnixStream) {
     {
         return;
     }
-    let read_half = match stream.try_clone() {
-        Ok(s) => s,
-        Err(_) => return,
+    let Ok(read_half) = stream.try_clone() else {
+        return;
     };
     let mut writer = stream;
     let mut reader = BufReader::new(read_half);

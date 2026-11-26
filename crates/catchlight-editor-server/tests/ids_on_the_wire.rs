@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(clippy::panic, reason = "a test aborts on a broken fixture")]
 
 //! The protocol names things by the Id the `.clm` stores, and `RenameId` is
 //! the one command that changes what a name means; the new Id is what every
@@ -273,7 +273,7 @@ fn a_renamed_param_keeps_the_binding_that_named_it() {
             Command::BindingCellsUnset {
                 if_rev: ed.revision(session).unwrap(),
                 session,
-                params: BindingParams::one(pull.clone()),
+                params: BindingParams::one(pull),
                 node,
                 target: BindingTarget::Tx,
                 cells: vec![[1, 0]],
@@ -413,7 +413,7 @@ fn a_slot_survives_a_mesh_edit_and_says_what_it_lost() {
     // stacking one the model would refuse.
     step(Command::WeldSet {
         session,
-        a: hem_part.clone(),
+        a: hem_part,
         b: body_part.clone(),
         pairs: pairs(catchlight_core::DEFAULT_SLOT_WEIGHT),
     });
@@ -428,7 +428,7 @@ fn a_slot_survives_a_mesh_edit_and_says_what_it_lost() {
         ResponseBody::Emptied { node, slots } => {
             assert_eq!(node, body_part);
             assert_eq!(
-                slots.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                slots.iter().map(ToString::to_string).collect::<Vec<_>>(),
                 vec!["left".to_string(), "right".to_string()],
             );
         }
@@ -527,12 +527,12 @@ fn a_slot_can_be_added_without_naming_one() {
 
     match step(Command::Slots {
         session,
-        node: part.clone(),
+        node: part,
     }) {
         ResponseBody::Slots { slots } => {
             assert_eq!(
                 slots.iter().map(|s| s.id.clone()).collect::<Vec<_>>(),
-                vec![named, drawn.slot.clone()],
+                vec![named, drawn.slot],
             );
         }
         other => panic!("{other:?}"),
@@ -595,7 +595,7 @@ fn renaming_a_slot_carries_its_weld_pairs_and_refuses_a_name_in_use() {
     step(Command::WeldSet {
         session,
         a: top.clone(),
-        b: bottom.clone(),
+        b: bottom,
         pairs: vec![SlotPair {
             a: slot.clone(),
             b: slot.clone(),
@@ -647,8 +647,8 @@ fn renaming_a_slot_carries_its_weld_pairs_and_refuses_a_name_in_use() {
         ),
         (
             Rename::Slot {
-                node: top.clone(),
-                from: neck.clone(),
+                node: top,
+                from: neck,
                 to: slot.clone(),
             },
             ErrorCode::DuplicateSlot,
@@ -1045,10 +1045,10 @@ fn the_slot_errors_a_client_reacts_to_have_their_own_codes() {
             Command::WeldSet {
                 session,
                 a: part.clone(),
-                b: other.clone(),
+                b: other,
                 pairs: vec![SlotPair {
                     a: slot.clone(),
-                    b: slot.clone(),
+                    b: slot,
                     weight: 1.5,
                 }],
             }

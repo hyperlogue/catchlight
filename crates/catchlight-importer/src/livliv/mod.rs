@@ -1,4 +1,4 @@
-//! LivLiv format 4 package validation and conversion.
+//! `LivLiv` format 4 package validation and conversion.
 //!
 //! The upstream contract is pinned to [`UPSTREAM_REVISION`]. Format 3 is
 //! refused explicitly: its omitted rights information cannot be inferred.
@@ -144,8 +144,8 @@ impl Package {
         let mut dimensions = BTreeMap::new();
         let mut decoded = 0u64;
         for layer in &model.layers {
-            if layer.x as u64 + layer.w as u64 > model.canvas[0] as u64
-                || layer.y as u64 + layer.h as u64 > model.canvas[1] as u64
+            if u64::from(layer.x) + u64::from(layer.w) > u64::from(model.canvas[0])
+                || u64::from(layer.y) + u64::from(layer.h) > u64::from(model.canvas[1])
             {
                 return Err(Error::Invalid(format!(
                     "layer {} lies outside canvas",
@@ -198,7 +198,7 @@ impl Package {
                     }
                     continue;
                 }
-                decoded = decoded.saturating_add(layer.w as u64 * layer.h as u64 * 4);
+                decoded = decoded.saturating_add(u64::from(layer.w) * u64::from(layer.h) * 4);
                 if decoded > 512 * 1024 * 1024 {
                     return Err(Error::Invalid("decoded images exceed 512 MiB".into()));
                 }

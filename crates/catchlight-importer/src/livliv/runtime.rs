@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Portions copyright 2026 LivLiv; adapted for import-time sampling.
-//! Import-time pose evaluator derived from LivLiv Player's Apache-2.0
-//! `src/runtime/puppet.ts` at UPSTREAM_REVISION (see THIRD-PARTY-NOTICES.md).
+//! Import-time pose evaluator derived from `LivLiv` Player's Apache-2.0
+//! `src/runtime/puppet.ts` at `UPSTREAM_REVISION` (see THIRD-PARTY-NOTICES.md).
 //! No evaluator is shipped in the .clm: bake.rs samples it into native bindings.
 //! A sample is a settled pose: torso follow has reached its target, spring
 //! displacement and wind are zero, and expressions have reached their target.
@@ -372,13 +372,13 @@ impl Runtime {
                         .as_chunks::<2>()
                         .0
                         .iter()
-                        .map(|p| i16::from_le_bytes([p[0], p[1]]) as f64)
+                        .map(|p| f64::from(i16::from_le_bytes([p[0], p[1]])))
                         .collect();
                     let mask = k
                         .mask
                         .get(group)
                         .map(|s| {
-                            decode(s).map(|b| b.into_iter().map(|x| x as f64 / 255.).collect())
+                            decode(s).map(|b| b.into_iter().map(|x| f64::from(x) / 255.).collect())
                         })
                         .transpose()?;
                     Ok(Some(SampledField { values: data, mask }))
@@ -400,9 +400,9 @@ impl Runtime {
                         {
                             let mut p = Pose::default();
                             if key.param == "angleX" {
-                                p.0[0] = key.value
+                                p.0[0] = key.value;
                             } else if key.param == "angleY" {
-                                p.0[1] = key.value
+                                p.0[1] = key.value;
                             }
                             let own = self.rig_position(layer, &v, p);
                             let dx = sample(field, k, point, 2, 0) * k.units;

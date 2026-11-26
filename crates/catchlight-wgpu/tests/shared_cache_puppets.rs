@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(clippy::expect_used, reason = "a test aborts on a broken fixture")]
 
 //! One [`RenderCache`] serving several puppets: `write_buffer` batches at
 //! submit start, so one puppet's deforms must not overwrite another's.

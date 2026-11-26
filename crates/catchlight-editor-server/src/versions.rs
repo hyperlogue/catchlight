@@ -51,7 +51,7 @@ fn chunk_name(hash: &str) -> String {
     format!("versions/chunks/{hash}")
 }
 
-/// Content-defined chunking with a gear hash, as FastCDC does without its
+/// Content-defined chunking with a gear hash, as `FastCDC` does without its
 /// normalisation: a cut lands where the hash of the last 64 bytes has its
 /// top 16 bits clear, so about every 64 KiB past the minimum.
 mod chunking {
@@ -299,7 +299,10 @@ impl Versions {
 
     /// The version saved, and whether this saved it rather than repeat a
     /// keyed save. A store that refuses leaves the versions as they were.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the inputs are independent, with no type that groups them"
+    )]
     pub(crate) fn save(
         &mut self,
         store: &dyn KeptStore,
@@ -498,7 +501,7 @@ impl Versions {
             let piece = read.ok_or_else(|| {
                 bad(format!(
                     "version {version} is missing a piece: {}",
-                    key.map_or(name.clone(), |key| store.place(key, &name))
+                    key.map_or_else(|| name.clone(), |key| store.place(key, &name))
                 ))
             })?;
             bytes.extend_from_slice(&piece);
@@ -616,7 +619,6 @@ impl Editor {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::panic)]
 
     use std::path::{Path, PathBuf};
     use std::sync::Mutex;
@@ -782,7 +784,7 @@ mod tests {
                 ResponseBody::Node { node, .. } => node,
                 other => panic!("{other:?}"),
             };
-            let attachments: Attachments = [("texture".to_owned(), png)].into_iter().collect();
+            let attachments: Attachments = std::iter::once(("texture".to_owned(), png)).collect();
             let (reply, _) = self.editor.handle_with(
                 Request {
                     id: 98,
@@ -819,7 +821,7 @@ mod tests {
         });
         let mut png = Vec::new();
         image
-            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .write_to(&mut io::Cursor::new(&mut png), image::ImageFormat::Png)
             .unwrap();
         png
     }
@@ -874,7 +876,7 @@ mod tests {
         );
         let at_first = f.model();
         assert_eq!(first.byte_length, at_first.len() as u64);
-        assert_eq!(first.sha256, crate::lifecycle::sha256(&at_first));
+        assert_eq!(first.sha256, sha256(&at_first));
 
         f.group("b");
         let second = f.saved(None);
@@ -1133,7 +1135,7 @@ mod tests {
 
     impl IsOk for Reply {
         fn is_ok_reply(&self) -> bool {
-            matches!(self, Reply::Ok { .. })
+            matches!(self, Self::Ok { .. })
         }
     }
 
@@ -1189,7 +1191,7 @@ mod tests {
             author: agent("claude"),
             key: None,
         };
-        let (code, limit) = f.refused(save.clone());
+        let (code, limit) = f.refused(save);
         assert_eq!(code, ErrorCode::LimitExceeded);
         let limit = limit.unwrap();
         assert_eq!(
@@ -1231,7 +1233,7 @@ mod tests {
         f.saved(None);
         match f.ok(open(Some(1))) {
             ResponseBody::ReviewThread { thread } => {
-                assert_eq!(thread.comments[0].version, Some(1))
+                assert_eq!(thread.comments[0].version, Some(1));
             }
             other => panic!("{other:?}"),
         }

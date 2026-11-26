@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(clippy::expect_used, reason = "a test aborts on a broken fixture")]
 //! Workspace dependency rules that no single crate's manifest can state; they
 //! are checked against the resolved graph so transitive violations fail too.
 

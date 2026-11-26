@@ -62,10 +62,10 @@ pub(crate) struct Arena {
     pub(crate) tree: Arc<NodeTree>,
     next_id: u32,
     // Frame-persistent scratch, sized by the largest child vert_count seen.
-    pub(crate) mg_propagate_scratch: Vec<glam::Vec2>,
-    pub(crate) mg_cur_deform_scratch: Vec<glam::Vec2>,
-    pub(crate) mg_deformed_vertices_scratch: Vec<glam::Vec2>,
-    pub(crate) mg_local_scratch: Vec<glam::Vec2>,
+    pub(crate) mg_propagate_scratch: Vec<Vec2>,
+    pub(crate) mg_cur_deform_scratch: Vec<Vec2>,
+    pub(crate) mg_deformed_vertices_scratch: Vec<Vec2>,
+    pub(crate) mg_local_scratch: Vec<Vec2>,
     pub(crate) mg_written_sources: Vec<(NodeIdx, NodeIdx)>,
     pub(crate) mg_shifts: Vec<(NodeIdx, Vec2)>,
     // Saves ~60-100ns of quat/mat ops per node with no delta this frame.
@@ -77,13 +77,13 @@ pub(crate) struct Arena {
     pub(crate) deform_node_ids: Vec<NodeIdx>,
     /// Solve order is list order.
     pub(crate) welds: Arc<Vec<crate::weld::Weld>>,
-    pub(crate) weld_cur_a_scratch: Vec<glam::Vec2>,
-    pub(crate) weld_cur_b_scratch: Vec<glam::Vec2>,
-    pub(crate) weld_before_scratch: Vec<Vec<glam::Vec2>>,
+    pub(crate) weld_cur_a_scratch: Vec<Vec2>,
+    pub(crate) weld_cur_b_scratch: Vec<Vec2>,
+    pub(crate) weld_before_scratch: Vec<Vec<Vec2>>,
     /// `Baked::spine_targets` is parallel to this.
     pub(crate) spine_node_ids: Vec<NodeIdx>,
-    pub(crate) spine_scratch: Vec<glam::Vec2>,
-    pub(crate) spine_cur_deform_scratch: Vec<glam::Vec2>,
+    pub(crate) spine_scratch: Vec<Vec2>,
+    pub(crate) spine_cur_deform_scratch: Vec<Vec2>,
     pub(crate) mesh_group_node_ids: Vec<NodeIdx>,
 }
 
@@ -214,10 +214,8 @@ impl Arena {
     /// Call at the start of a frame so deltas don't accumulate across frames.
     pub(crate) fn reset_dynamic_state(&mut self) {
         let _span = tracing::trace_span!("reset_dynamic_state").entered();
-        for d in self.node_transform_dirty.iter_mut() {
-            *d = false;
-        }
-        for node in self.nodes.iter_mut() {
+        self.node_transform_dirty.fill(false);
+        for node in &mut self.nodes {
             node.transform = node.base_transform;
             node.z_order = node.base_z_order;
             match &mut node.kind {
@@ -368,15 +366,14 @@ impl Arena {
             let slot = id.0 as usize;
             let node = self.nodes.get(slot);
             let local_matrix = self.local_matrix(slot, node);
-            let lock_to_root = node.map(|n| n.lock_to_root).unwrap_or(false);
+            let lock_to_root = node.is_some_and(|n| n.lock_to_root);
 
             let parent_matrix = if lock_to_root {
                 root
             } else {
                 self.tree
                     .get_parent(id)
-                    .map(|parent| out.get(parent))
-                    .unwrap_or(root)
+                    .map_or(root, |parent| out.get(parent))
             };
 
             let global_matrix = parent_matrix * local_matrix;
@@ -415,13 +412,12 @@ impl Arena {
             let slot = id.0 as usize;
             let node = self.nodes.get(slot);
             let local_matrix = self.local_matrix(slot, node);
-            let parent_matrix = if node.map(|n| n.lock_to_root).unwrap_or(false) {
+            let parent_matrix = if node.is_some_and(|n| n.lock_to_root) {
                 root
             } else {
                 self.tree
                     .get_parent(id)
-                    .map(|parent| out.get(parent))
-                    .unwrap_or(root)
+                    .map_or(root, |parent| out.get(parent))
             };
             out.insert(id, parent_matrix * local_matrix);
         }

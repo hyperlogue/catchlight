@@ -79,10 +79,7 @@ const MAX_PREVIEW_PIXELS: u64 = 8192 * 8192;
 #[derive(Debug, thiserror::Error)]
 pub enum EditorError {
     #[error("operation {index}: {source}")]
-    Operation {
-        index: u32,
-        source: Box<EditorError>,
-    },
+    Operation { index: u32, source: Box<Self> },
     #[error("{resource} requires {requested}, exceeding the limit {limit}")]
     Limit {
         resource: &'static str,
@@ -178,14 +175,16 @@ impl EditorError {
                 limit: *limit,
                 requested: *requested,
             }),
-            Self::Edit(ModelError::LoadLimit(limit))
-            | Self::Edit(ModelError::Clm(clm::ClmError::LoadLimit(limit)))
+            Self::Edit(
+                ModelError::LoadLimit(limit) | ModelError::Clm(clm::ClmError::LoadLimit(limit)),
+            )
             | Self::Mesh(MeshError::Limit(limit))
-            | Self::Manifest(ManifestError::LoadLimit(limit))
-            | Self::Manifest(ManifestError::Model(ModelError::LoadLimit(limit)))
-            | Self::Manifest(ManifestError::Model(ModelError::Clm(clm::ClmError::LoadLimit(
-                limit,
-            )))) => Some(LimitInfo {
+            | Self::Manifest(
+                ManifestError::LoadLimit(limit)
+                | ManifestError::Model(
+                    ModelError::LoadLimit(limit) | ModelError::Clm(clm::ClmError::LoadLimit(limit)),
+                ),
+            ) => Some(LimitInfo {
                 resource: limit.resource.name().into(),
                 limit: limit.limit,
                 requested: limit.got,
@@ -1126,7 +1125,7 @@ impl Editor {
             | Command::ExpressionList { session }
             | Command::ClipList { session } => self.with_session_captured(session, |s| {
                 query::check_revision(&cmd, s.rev)?;
-                query::replica_query(&s.model, &cmd)
+                replica_query(&s.model, &cmd)
             }),
             Command::BindingCellsSet {
                 session,
@@ -1258,7 +1257,7 @@ impl Editor {
                     Rename::Param { from, to } => s.model.rename_param_id(from, to.clone())?,
                     Rename::Texture { from, to } => s.model.rename_tex_id(from, to.clone())?,
                     Rename::Slot { node, from, to } => {
-                        s.model.rename_slot(node, from, to.clone())?
+                        s.model.rename_slot(node, from, to.clone())?;
                     }
                 }
                 s.review.rename(&rename);
@@ -1827,10 +1826,13 @@ impl Editor {
         }
         // Explicit or the default, never the presence: a script's output must
         // not depend on what some tab last looked at.
-        let framing = camera.map_or(Framing::centered(DEFAULT_CAMERA_HEIGHT), |c| Framing {
-            center: glam::Vec2::new(c.center[0], c.center[1]),
-            height: c.height,
-        });
+        let framing = camera.map_or_else(
+            || Framing::centered(DEFAULT_CAMERA_HEIGHT),
+            |c| Framing {
+                center: glam::Vec2::new(c.center[0], c.center[1]),
+                height: c.height,
+            },
+        );
         let handle = self.session(session)?;
         // Cloned (shallow, same identity and generation) so the session lock
         // is not held across the GPU render.
@@ -1896,7 +1898,7 @@ use transport::{
 };
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(|p| p.into_inner())
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn binding_key(
@@ -1916,7 +1918,7 @@ fn check_spine_joints(joints: &[[f32; 2]]) -> Result<(), EditorError> {
     ModelSpine::check_joints(joints).map_err(|e| EditorError::BadTarget(e.to_string()))
 }
 
-fn clm_transform_matrix(t: &catchlight_core::formats::clm::ClmTransform) -> Mat4 {
+fn clm_transform_matrix(t: &clm::ClmTransform) -> Mat4 {
     catchlight_core::Transform::from(t).to_matrix()
 }
 
@@ -2104,7 +2106,7 @@ fn build_mesh(
         return Err(EditorError::BadTarget("malformed mesh".into()));
     }
     let flat: Vec<u32> = indices.concat();
-    let indices = if flat.iter().max().copied().unwrap_or(0) <= u16::MAX as u32 {
+    let indices = if u16::try_from(flat.iter().max().copied().unwrap_or(0)).is_ok() {
         ClmIndices::U16(flat.iter().map(|&i| i as u16).collect())
     } else {
         ClmIndices::U32(flat)
@@ -2757,7 +2759,7 @@ mod tests {
         let weak = Arc::downgrade(&ed);
         let handle = ed.subscribe(Box::new(move |event| {
             if let (Event::ModelChanged { session, .. }, Some(ed)) = (event, weak.upgrade()) {
-                ed.with_model(*session, |m| m.node_count()).unwrap();
+                ed.with_model(*session, Model::node_count).unwrap();
             }
             lock(&sink).push(event.clone());
         }));
@@ -2917,7 +2919,7 @@ mod tests {
         entered_rx.recv().unwrap();
 
         let (done_tx, done_rx) = std::sync::mpsc::channel();
-        let querying_editor = editor.clone();
+        let querying_editor = editor;
         let query = std::thread::spawn(move || {
             done_tx.send(querying_editor.is_dirty(second)).unwrap();
         });
@@ -3122,7 +3124,7 @@ mod tests {
             },
         ))) {
             ResponseBody::Node { dropped, .. } => {
-                assert!(dropped.is_empty(), "the other part still draws it")
+                assert!(dropped.is_empty(), "the other part still draws it");
             }
             other => panic!("{other:?}"),
         }
@@ -3289,7 +3291,7 @@ mod tests {
         ));
         match body(ed.handle(req(3, Command::PresenceGet { session: s }))) {
             ResponseBody::Presence { presence: Some(p) } => {
-                assert_eq!(p.pose[0].param.as_str(), "x")
+                assert_eq!(p.pose[0].param.as_str(), "x");
             }
             other => panic!("{other:?}"),
         }

@@ -28,7 +28,7 @@ const DEFAULT_AGENT: &str = "agent";
 pub(super) struct ReviewArgs {
     /// The name the person sees on your comments. Defaults to your harness
     /// (claude, codex, antigravity), else "agent". Who you are is separate:
-    /// the harness session, or CATCHLIGHT_AGENT_SESSION.
+    /// the harness session, or `CATCHLIGHT_AGENT_SESSION`.
     #[arg(long, global = true, env = "CATCHLIGHT_AGENT")]
     name: Option<String>,
     #[command(subcommand)]
@@ -63,7 +63,7 @@ fn identity(name: Option<&str>, env: &dyn Fn(&str) -> Option<String>) -> ReviewI
     // the worker polls as the identity the agent fetches with; only without
     // one does the first harness id found count.
     #[cfg(unix)]
-    let listening = crate::listen::detected_session(env).and_then(|id| {
+    let listening = listen::detected_session(env).and_then(|id| {
         let label = ["claude", "codex", "antigravity"]
             .into_iter()
             .find(|h| id.strip_prefix(h).is_some_and(|r| r.starts_with(':')))?;
@@ -80,7 +80,7 @@ fn identity(name: Option<&str>, env: &dyn Fn(&str) -> Option<String>) -> ReviewI
     let name = name
         .map(str::trim)
         .filter(|n| !n.is_empty())
-        .or(detected.map(|(label, _)| label))
+        .or_else(|| detected.map(|(label, _)| label))
         .unwrap_or(DEFAULT_AGENT);
     ReviewIdentity {
         id,
@@ -454,11 +454,17 @@ fn message(given: &Option<String>, attach: &[PathBuf]) -> Result<String> {
 }
 
 /// Runs the commands that need no editor; `None` for the others.
-#[cfg_attr(not(unix), allow(unused_variables))]
+#[cfg_attr(
+    not(unix),
+    allow(
+        unused_variables,
+        reason = "only the unix review listener reads every argument"
+    )
+)]
 pub(super) fn run_local(cli: &Cli, args: &ReviewArgs) -> Result<Option<i32>> {
     match &args.action {
         #[cfg(unix)]
-        ReviewCmd::Worker { action } => crate::listen::worker_command(action, cli.json).map(Some),
+        ReviewCmd::Worker { action } => listen::worker_command(action, cli.json).map(Some),
         #[cfg(unix)]
         ReviewCmd::Unlisten => {
             let editor = match (&cli.socket, &cli.server) {
@@ -472,8 +478,7 @@ pub(super) fn run_local(cli: &Cli, args: &ReviewArgs) -> Result<Option<i32>> {
                 (None, None) => None,
             };
             let who = identity(args.name.as_deref(), &|name| std::env::var(name).ok());
-            crate::listen::unlisten(editor.as_ref(), resolve_session(cli)?, &who, cli.json)
-                .map(Some)
+            listen::unlisten(editor.as_ref(), resolve_session(cli)?, &who, cli.json).map(Some)
         }
         #[cfg(not(unix))]
         ReviewCmd::Listen | ReviewCmd::Unlisten | ReviewCmd::Worker { .. } => {
@@ -501,14 +506,23 @@ pub(super) fn refused(reply: &Reply) -> i32 {
 }
 
 /// How this command reached the editor, for `listen`.
-#[cfg_attr(not(unix), allow(dead_code))]
+#[cfg_attr(
+    not(unix),
+    allow(dead_code, reason = "only the unix review listener uses it")
+)]
 pub(super) struct Reached<'a> {
     pub program: &'a str,
     pub endpoint: &'a transport::Endpoint,
 }
 
 /// The process exit code.
-#[cfg_attr(not(unix), allow(unused_variables))]
+#[cfg_attr(
+    not(unix),
+    allow(
+        unused_variables,
+        reason = "only the unix review listener reads every argument"
+    )
+)]
 pub(super) fn run(
     cli: &Cli,
     args: &ReviewArgs,
@@ -574,7 +588,7 @@ pub(super) fn run(
                 reach.push("--server".into());
                 reach.push(server.clone());
             }
-            let how = crate::listen::Listening {
+            let how = listen::Listening {
                 program: reached.program,
                 reach,
                 endpoint: reached.endpoint,
@@ -582,7 +596,7 @@ pub(super) fn run(
                 who: &who,
                 json: cli.json,
             };
-            return crate::listen::listen(&how, client.stream);
+            return listen::listen(&how, client.stream);
         }
         #[cfg(unix)]
         ReviewCmd::Unlisten | ReviewCmd::Worker { .. } => unreachable!("run_local answers these"),

@@ -261,54 +261,52 @@ impl ScalarTarget {
 
 impl ClmBindingValues {
     pub fn target(&self) -> BindingTarget {
-        use ClmBindingValues as V;
         BindingTarget::Scalar(match self {
-            V::Deform(_) => return BindingTarget::Deform,
-            V::TransformTX(_) => ScalarTarget::Tx,
-            V::TransformTY(_) => ScalarTarget::Ty,
-            V::TransformTZ(_) => ScalarTarget::Tz,
-            V::TransformSX(_) => ScalarTarget::Sx,
-            V::TransformSY(_) => ScalarTarget::Sy,
-            V::TransformRX(_) => ScalarTarget::Rx,
-            V::TransformRY(_) => ScalarTarget::Ry,
-            V::TransformRZ(_) => ScalarTarget::Rz,
-            V::ZOrder(_) => ScalarTarget::ZOrder,
-            V::Opacity(_) => ScalarTarget::Opacity,
-            V::TintR(_) => ScalarTarget::TintR,
-            V::TintG(_) => ScalarTarget::TintG,
-            V::TintB(_) => ScalarTarget::TintB,
-            V::ScreenTintR(_) => ScalarTarget::ScreenTintR,
-            V::ScreenTintG(_) => ScalarTarget::ScreenTintG,
-            V::ScreenTintB(_) => ScalarTarget::ScreenTintB,
+            Self::Deform(_) => return BindingTarget::Deform,
+            Self::TransformTX(_) => ScalarTarget::Tx,
+            Self::TransformTY(_) => ScalarTarget::Ty,
+            Self::TransformTZ(_) => ScalarTarget::Tz,
+            Self::TransformSX(_) => ScalarTarget::Sx,
+            Self::TransformSY(_) => ScalarTarget::Sy,
+            Self::TransformRX(_) => ScalarTarget::Rx,
+            Self::TransformRY(_) => ScalarTarget::Ry,
+            Self::TransformRZ(_) => ScalarTarget::Rz,
+            Self::ZOrder(_) => ScalarTarget::ZOrder,
+            Self::Opacity(_) => ScalarTarget::Opacity,
+            Self::TintR(_) => ScalarTarget::TintR,
+            Self::TintG(_) => ScalarTarget::TintG,
+            Self::TintB(_) => ScalarTarget::TintB,
+            Self::ScreenTintR(_) => ScalarTarget::ScreenTintR,
+            Self::ScreenTintG(_) => ScalarTarget::ScreenTintG,
+            Self::ScreenTintB(_) => ScalarTarget::ScreenTintB,
         })
     }
 
     pub fn scalar_cells(&self) -> Option<&[ClmCell<f32>]> {
-        use ClmBindingValues as V;
         match self {
-            V::Deform(_) => None,
-            V::ZOrder(c)
-            | V::TransformTX(c)
-            | V::TransformTY(c)
-            | V::TransformTZ(c)
-            | V::TransformSX(c)
-            | V::TransformSY(c)
-            | V::TransformRX(c)
-            | V::TransformRY(c)
-            | V::TransformRZ(c)
-            | V::Opacity(c)
-            | V::TintR(c)
-            | V::TintG(c)
-            | V::TintB(c)
-            | V::ScreenTintR(c)
-            | V::ScreenTintG(c)
-            | V::ScreenTintB(c) => Some(&c.cells),
+            Self::Deform(_) => None,
+            Self::ZOrder(c)
+            | Self::TransformTX(c)
+            | Self::TransformTY(c)
+            | Self::TransformTZ(c)
+            | Self::TransformSX(c)
+            | Self::TransformSY(c)
+            | Self::TransformRX(c)
+            | Self::TransformRY(c)
+            | Self::TransformRZ(c)
+            | Self::Opacity(c)
+            | Self::TintR(c)
+            | Self::TintG(c)
+            | Self::TintB(c)
+            | Self::ScreenTintR(c)
+            | Self::ScreenTintG(c)
+            | Self::ScreenTintB(c) => Some(&c.cells),
         }
     }
 
     pub fn deform_cells(&self) -> Option<&[ClmCell<Vec<f32>>]> {
         match self {
-            ClmBindingValues::Deform(c) => Some(&c.cells),
+            Self::Deform(c) => Some(&c.cells),
             _ => None,
         }
     }
@@ -477,7 +475,7 @@ impl Model {
         }
         let w = b.key_positions[0].len();
         let h = b.key_positions.get(1).map_or(1, Vec::len);
-        let mut missing: std::collections::HashSet<_> = neutral_cells(zero, w, h).collect();
+        let mut missing: HashSet<_> = neutral_cells(zero, w, h).collect();
         let is_rest = |x: u32, y: u32| {
             zero[0].is_none_or(|i| x as usize == i) && zero[1].is_none_or(|i| y as usize == i)
         };
@@ -772,7 +770,7 @@ impl Model {
         mode: InterpolateMode,
     ) -> Result<(), ModelError> {
         self.edit_binding(key, BindingEdit::Existing, |binding| {
-            binding.interpolate_mode = mode
+            binding.interpolate_mode = mode;
         })
     }
 
@@ -1560,7 +1558,7 @@ mod tests {
             m.bindings().count(),
             m.bindings()
                 .map(|b| b.key().clone())
-                .collect::<std::collections::HashSet<_>>()
+                .collect::<HashSet<_>>()
                 .len(),
             "{what}: two bindings share a key"
         );

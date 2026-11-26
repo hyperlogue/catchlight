@@ -1,8 +1,8 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(clippy::unwrap_used, reason = "a test aborts on a broken fixture")]
 //! What a played clip evaluates, pinned against a committed baseline.
 //!
 //! Regenerate after an intentional behaviour change:
-//!   UPDATE_FRAME_BASELINE=1 cargo test -p catchlight-extension-animations --test evaluated_frame
+//!   `UPDATE_FRAME_BASELINE=1` cargo test -p catchlight-extension-animations --test `evaluated_frame`
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;

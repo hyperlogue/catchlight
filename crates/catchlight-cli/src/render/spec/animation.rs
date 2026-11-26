@@ -112,7 +112,7 @@ impl TryFrom<LaneSchema> for Lane {
         if l.keyframes.windows(2).any(|w| w[0].frame > w[1].frame) {
             return Err("animation lane keyframes must be in frame order");
         }
-        Ok(Lane::new(target, l.interpolation, l.keyframes))
+        Ok(Self::new(target, l.interpolation, l.keyframes))
     }
 }
 impl From<&Lane> for LaneSchema {

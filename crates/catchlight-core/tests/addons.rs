@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(clippy::unwrap_used, reason = "a test aborts on a broken fixture")]
 //! Addons end to end: what `extract` cuts out, `install` puts back, and what a
 //! puppet does when a model gains an addon between two of its ticks.
 
@@ -240,7 +240,7 @@ fn canonical(m: &Model) -> ClmFile {
 fn binding_key(b: &ClmBinding) -> (String, Vec<String>, String) {
     (
         b.node.to_string(),
-        b.params.iter().map(|p| p.to_string()).collect(),
+        b.params.iter().map(ToString::to_string).collect(),
         format!("{:?}", b.values.target()),
     )
 }
@@ -276,8 +276,16 @@ fn extractable(m: &Model) -> Vec<NodeId> {
 
 fn masks_of(n: &ModelNode) -> Vec<&NodeId> {
     match &n.kind {
-        ModelNodeKind::Part(p) => p.masks().iter().map(|m| m.source()).collect(),
-        ModelNodeKind::Composite(c) => c.masks().iter().map(|m| m.source()).collect(),
+        ModelNodeKind::Part(p) => p
+            .masks()
+            .iter()
+            .map(catchlight_core::ModelMask::source)
+            .collect(),
+        ModelNodeKind::Composite(c) => c
+            .masks()
+            .iter()
+            .map(catchlight_core::ModelMask::source)
+            .collect(),
         _ => Vec::new(),
     }
 }
@@ -527,7 +535,7 @@ fn a_file_is_one_shape_or_the_other() {
 #[test]
 fn installing_into_the_wrong_base_names_what_is_missing() {
     let (model, addon, param, _) = puppet_rig();
-    let mut other = model.clone();
+    let mut other = model;
     other.delete_param(&param).unwrap();
     let err = other.install(&addon).unwrap_err();
     assert!(matches!(err, InstallError::Missing { .. }));

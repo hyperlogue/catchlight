@@ -12,7 +12,7 @@ use serde::Serialize;
 
 use crate::{Error, extension, file};
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct StandardControl {
     pub name: &'static str,
     pub one_sided: bool,

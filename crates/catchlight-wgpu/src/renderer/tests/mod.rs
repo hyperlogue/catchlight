@@ -1,5 +1,3 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-
 mod errors;
 mod offscreen_culling;
 mod pipelines;
@@ -134,7 +132,7 @@ fn masking_blend_modes_have_matching_color_and_alpha_factors() {
     }
 }
 
-/// Multiply and ColorDodge use the same factors for color and alpha, or a transparent composite
+/// Multiply and `ColorDodge` use the same factors for color and alpha, or a transparent composite
 /// slot stores opaque black.
 #[test]
 fn gl_blend_func_modes_match_color_and_alpha_factors() {
@@ -212,10 +210,10 @@ fn wgpu_native_modes_use_unit_factors() {
         BlendMode::Lighten,
     ] {
         let state = blend_mode_to_wgpu(mode);
-        assert_eq!(state.color.src_factor, wgpu::BlendFactor::One, "{:?}", mode);
-        assert_eq!(state.color.dst_factor, wgpu::BlendFactor::One, "{:?}", mode);
-        assert_eq!(state.alpha.src_factor, wgpu::BlendFactor::One, "{:?}", mode);
-        assert_eq!(state.alpha.dst_factor, wgpu::BlendFactor::One, "{:?}", mode);
+        assert_eq!(state.color.src_factor, wgpu::BlendFactor::One, "{mode:?}");
+        assert_eq!(state.color.dst_factor, wgpu::BlendFactor::One, "{mode:?}");
+        assert_eq!(state.alpha.src_factor, wgpu::BlendFactor::One, "{mode:?}");
+        assert_eq!(state.alpha.dst_factor, wgpu::BlendFactor::One, "{mode:?}");
     }
 }
 

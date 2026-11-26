@@ -1003,102 +1003,102 @@ impl Command {
     /// The `cmd` tag. Exhaustive so [`COMMAND_KINDS`] stays checkable.
     pub fn tag(&self) -> &'static str {
         match self {
-            Command::EditApply { .. } => "edit_apply",
-            Command::EditValidate { .. } => "edit_validate",
-            Command::BindingCellsGet { .. } => "binding_cells_get",
-            Command::BindingCellsSet { .. } => "binding_cells_set",
-            Command::BindingCellsUnset { .. } => "binding_cells_unset",
-            Command::MeshGet { .. } => "mesh_get",
-            Command::ModelGet { .. } => "model_get",
-            Command::GeometryGet { .. } => "geometry_get",
-            Command::SessionFork { .. } => "session_fork",
-            Command::ModelExport { .. } => "model_export",
-            Command::SessionNew { .. } => "session_create",
-            Command::SessionOpen { .. } => "session_open",
-            Command::SessionList => "session_list",
-            Command::SessionClose { .. } => "session_close",
-            Command::Save { .. } => "session_save",
-            Command::ExportManifest { .. } => "manifest_export",
-            Command::Status { .. } => "session_get",
-            Command::Check { .. } => "model_check",
-            Command::NodeTree { .. } => "node_tree_get",
-            Command::NodeInfo { .. } => "node_get",
-            Command::NodeAdd { .. } => "node_add",
-            Command::NodeSet { .. } => "node_set",
-            Command::NodeReparent { .. } => "node_reparent",
-            Command::NodeReorder { .. } => "node_reorder",
-            Command::NodeDuplicate { .. } => "node_duplicate",
-            Command::RenameId { .. } => "id_rename",
-            Command::MaskAdd { .. } => "mask_add",
-            Command::MaskDelete { .. } => "mask_delete",
-            Command::MotionResponseSet { .. } => "motion_response_set",
-            Command::NodeDelete { .. } => "node_delete",
-            Command::TextureAdd { .. } => "texture_add",
-            Command::TextureList { .. } => "texture_list",
-            Command::ParamAdd { .. } => "param_add",
-            Command::ParamList { .. } => "param_list",
-            Command::ParamSet { .. } => "param_set",
-            Command::ParamDelete { .. } => "param_delete",
-            Command::BindingKeyInsert { .. } => "binding_key_insert",
-            Command::BindingKeyDelete { .. } => "binding_key_delete",
-            Command::BindingKeyMove { .. } => "binding_key_move",
-            Command::BindingAdd { .. } => "binding_add",
-            Command::BindingDelete { .. } => "binding_delete",
-            Command::BindingInterpolate { .. } => "binding_interpolation_set",
-            Command::BindingList { .. } => "binding_list",
-            Command::MeshSet { .. } => "mesh_set",
-            Command::MeshAuto { .. } => "mesh_generate",
-            Command::SlotAdd { .. } => "slot_add",
-            Command::SlotFill { .. } => "slot_fill",
-            Command::SlotClear { .. } => "slot_clear",
-            Command::SlotDelete { .. } => "slot_delete",
-            Command::Slots { .. } => "slot_list",
-            Command::Welds { .. } => "weld_list",
-            Command::WeldSet { .. } => "weld_set",
-            Command::WeldDelete { .. } => "weld_delete",
-            Command::SpineAdd { .. } => "spine_add",
-            Command::SpineSet { .. } => "spine_set",
-            Command::SpineFit { .. } => "spine_fit",
-            Command::Undo { .. } => "edit_undo",
-            Command::Redo { .. } => "edit_redo",
-            Command::EditGoto { .. } => "edit_goto",
-            Command::EditHistoryGet { .. } => "edit_history_get",
-            Command::PresenceSet { .. } => "presence_set",
-            Command::PresenceGet { .. } => "presence_get",
-            Command::Preview { .. } => "preview_render",
-            Command::ImportJson { .. } => "structure_json_import",
-            Command::ExtensionSet { .. } => "extension_set",
-            Command::ExtensionDelete { .. } => "extension_delete",
-            Command::Extensions { .. } => "extension_list",
-            Command::ExtensionGet { .. } => "extension_get",
-            Command::ExtensionWarnings { .. } => "extension_warnings",
-            Command::HumanoidMap { .. } => "humanoid_map",
-            Command::HumanoidUnmap { .. } => "humanoid_unmap",
-            Command::HumanoidGet { .. } => "humanoid_get",
-            Command::ExpressionSet { .. } => "expression_set",
-            Command::ExpressionDelete { .. } => "expression_delete",
-            Command::ExpressionList { .. } => "expression_list",
-            Command::VisemeAddStandard { .. } => "viseme_add_standard",
-            Command::ClipList { .. } => "clip_list",
-            Command::ReviewGet { .. } => "review_get",
-            Command::ReviewThreadAdd { .. } => "review_thread_add",
-            Command::ReviewThreadSet { .. } => "review_thread_set",
-            Command::ReviewThreadDelete { .. } => "review_thread_delete",
-            Command::ReviewCommentAdd { .. } => "review_comment_add",
-            Command::ReviewCommentDelete { .. } => "review_comment_delete",
-            Command::ReviewImageAdd { .. } => "review_image_add",
-            Command::ReviewImageGet { .. } => "review_image_get",
-            Command::ReviewSubmit { .. } => "review_submit",
-            Command::ReviewPoll { .. } => "review_poll",
-            Command::ReviewFetch { .. } => "review_fetch",
-            Command::ReviewAck { .. } => "review_ack",
-            Command::ReviewClaim { .. } => "review_claim",
-            Command::ReviewRelease { .. } => "review_release",
-            Command::VersionSave { .. } => "version_save",
-            Command::VersionList { .. } => "version_list",
-            Command::VersionGet { .. } => "version_get",
-            Command::VersionRestore { .. } => "version_restore",
-            Command::VersionOpen { .. } => "version_open",
+            Self::EditApply { .. } => "edit_apply",
+            Self::EditValidate { .. } => "edit_validate",
+            Self::BindingCellsGet { .. } => "binding_cells_get",
+            Self::BindingCellsSet { .. } => "binding_cells_set",
+            Self::BindingCellsUnset { .. } => "binding_cells_unset",
+            Self::MeshGet { .. } => "mesh_get",
+            Self::ModelGet { .. } => "model_get",
+            Self::GeometryGet { .. } => "geometry_get",
+            Self::SessionFork { .. } => "session_fork",
+            Self::ModelExport { .. } => "model_export",
+            Self::SessionNew { .. } => "session_create",
+            Self::SessionOpen { .. } => "session_open",
+            Self::SessionList => "session_list",
+            Self::SessionClose { .. } => "session_close",
+            Self::Save { .. } => "session_save",
+            Self::ExportManifest { .. } => "manifest_export",
+            Self::Status { .. } => "session_get",
+            Self::Check { .. } => "model_check",
+            Self::NodeTree { .. } => "node_tree_get",
+            Self::NodeInfo { .. } => "node_get",
+            Self::NodeAdd { .. } => "node_add",
+            Self::NodeSet { .. } => "node_set",
+            Self::NodeReparent { .. } => "node_reparent",
+            Self::NodeReorder { .. } => "node_reorder",
+            Self::NodeDuplicate { .. } => "node_duplicate",
+            Self::RenameId { .. } => "id_rename",
+            Self::MaskAdd { .. } => "mask_add",
+            Self::MaskDelete { .. } => "mask_delete",
+            Self::MotionResponseSet { .. } => "motion_response_set",
+            Self::NodeDelete { .. } => "node_delete",
+            Self::TextureAdd { .. } => "texture_add",
+            Self::TextureList { .. } => "texture_list",
+            Self::ParamAdd { .. } => "param_add",
+            Self::ParamList { .. } => "param_list",
+            Self::ParamSet { .. } => "param_set",
+            Self::ParamDelete { .. } => "param_delete",
+            Self::BindingKeyInsert { .. } => "binding_key_insert",
+            Self::BindingKeyDelete { .. } => "binding_key_delete",
+            Self::BindingKeyMove { .. } => "binding_key_move",
+            Self::BindingAdd { .. } => "binding_add",
+            Self::BindingDelete { .. } => "binding_delete",
+            Self::BindingInterpolate { .. } => "binding_interpolation_set",
+            Self::BindingList { .. } => "binding_list",
+            Self::MeshSet { .. } => "mesh_set",
+            Self::MeshAuto { .. } => "mesh_generate",
+            Self::SlotAdd { .. } => "slot_add",
+            Self::SlotFill { .. } => "slot_fill",
+            Self::SlotClear { .. } => "slot_clear",
+            Self::SlotDelete { .. } => "slot_delete",
+            Self::Slots { .. } => "slot_list",
+            Self::Welds { .. } => "weld_list",
+            Self::WeldSet { .. } => "weld_set",
+            Self::WeldDelete { .. } => "weld_delete",
+            Self::SpineAdd { .. } => "spine_add",
+            Self::SpineSet { .. } => "spine_set",
+            Self::SpineFit { .. } => "spine_fit",
+            Self::Undo { .. } => "edit_undo",
+            Self::Redo { .. } => "edit_redo",
+            Self::EditGoto { .. } => "edit_goto",
+            Self::EditHistoryGet { .. } => "edit_history_get",
+            Self::PresenceSet { .. } => "presence_set",
+            Self::PresenceGet { .. } => "presence_get",
+            Self::Preview { .. } => "preview_render",
+            Self::ImportJson { .. } => "structure_json_import",
+            Self::ExtensionSet { .. } => "extension_set",
+            Self::ExtensionDelete { .. } => "extension_delete",
+            Self::Extensions { .. } => "extension_list",
+            Self::ExtensionGet { .. } => "extension_get",
+            Self::ExtensionWarnings { .. } => "extension_warnings",
+            Self::HumanoidMap { .. } => "humanoid_map",
+            Self::HumanoidUnmap { .. } => "humanoid_unmap",
+            Self::HumanoidGet { .. } => "humanoid_get",
+            Self::ExpressionSet { .. } => "expression_set",
+            Self::ExpressionDelete { .. } => "expression_delete",
+            Self::ExpressionList { .. } => "expression_list",
+            Self::VisemeAddStandard { .. } => "viseme_add_standard",
+            Self::ClipList { .. } => "clip_list",
+            Self::ReviewGet { .. } => "review_get",
+            Self::ReviewThreadAdd { .. } => "review_thread_add",
+            Self::ReviewThreadSet { .. } => "review_thread_set",
+            Self::ReviewThreadDelete { .. } => "review_thread_delete",
+            Self::ReviewCommentAdd { .. } => "review_comment_add",
+            Self::ReviewCommentDelete { .. } => "review_comment_delete",
+            Self::ReviewImageAdd { .. } => "review_image_add",
+            Self::ReviewImageGet { .. } => "review_image_get",
+            Self::ReviewSubmit { .. } => "review_submit",
+            Self::ReviewPoll { .. } => "review_poll",
+            Self::ReviewFetch { .. } => "review_fetch",
+            Self::ReviewAck { .. } => "review_ack",
+            Self::ReviewClaim { .. } => "review_claim",
+            Self::ReviewRelease { .. } => "review_release",
+            Self::VersionSave { .. } => "version_save",
+            Self::VersionList { .. } => "version_list",
+            Self::VersionGet { .. } => "version_get",
+            Self::VersionRestore { .. } => "version_restore",
+            Self::VersionOpen { .. } => "version_open",
         }
     }
 
@@ -1111,8 +1111,7 @@ impl Command {
         COMMAND_KINDS
             .iter()
             .find(|(name, _)| *name == tag)
-            .map(|(_, kind)| *kind)
-            .unwrap_or(CommandKind::Edit)
+            .map_or(CommandKind::Edit, |(_, kind)| *kind)
     }
 
     pub fn bytes(&self) -> Option<&'static Bytes> {
@@ -1127,8 +1126,8 @@ impl Command {
     /// for an [`Attachment::Optional`], such as an `extension_set` of JSON.
     pub fn carries_bytes(&self) -> Option<&'static Bytes> {
         let carrying = match self {
-            Command::SessionNew { source, .. } => source.is_some(),
-            Command::ExtensionSet { value, .. } => matches!(
+            Self::SessionNew { source, .. } => source.is_some(),
+            Self::ExtensionSet { value, .. } => matches!(
                 value,
                 ExtensionSet::Bytes | ExtensionSet::Maintained { value: None, .. }
             ),
@@ -1140,100 +1139,100 @@ impl Command {
     /// The session this command addresses; `None` for editor-level commands.
     pub fn session(&self) -> Option<SessionId> {
         match self {
-            Command::SessionNew { .. } | Command::SessionOpen { .. } | Command::SessionList => None,
-            Command::SessionClose { session }
-            | Command::EditApply { session, .. }
-            | Command::EditValidate { session, .. }
-            | Command::BindingCellsGet { session, .. }
-            | Command::BindingCellsSet { session, .. }
-            | Command::BindingCellsUnset { session, .. }
-            | Command::MeshGet { session, .. }
-            | Command::ModelGet { session, .. }
-            | Command::GeometryGet { session, .. }
-            | Command::SessionFork { session, .. }
-            | Command::ModelExport { session, .. }
-            | Command::Save { session, .. }
-            | Command::ExportManifest { session, .. }
-            | Command::Status { session }
-            | Command::Check { session }
-            | Command::NodeTree { session }
-            | Command::NodeInfo { session, .. }
-            | Command::NodeAdd { session, .. }
-            | Command::NodeSet { session, .. }
-            | Command::NodeReparent { session, .. }
-            | Command::NodeReorder { session, .. }
-            | Command::NodeDuplicate { session, .. }
-            | Command::RenameId { session, .. }
-            | Command::MaskAdd { session, .. }
-            | Command::MaskDelete { session, .. }
-            | Command::MotionResponseSet { session, .. }
-            | Command::NodeDelete { session, .. }
-            | Command::TextureAdd { session, .. }
-            | Command::TextureList { session }
-            | Command::ParamAdd { session, .. }
-            | Command::ParamList { session }
-            | Command::ParamSet { session, .. }
-            | Command::ParamDelete { session, .. }
-            | Command::BindingKeyInsert { session, .. }
-            | Command::BindingKeyDelete { session, .. }
-            | Command::BindingKeyMove { session, .. }
-            | Command::BindingAdd { session, .. }
-            | Command::BindingDelete { session, .. }
-            | Command::BindingInterpolate { session, .. }
-            | Command::BindingList { session, .. }
-            | Command::MeshSet { session, .. }
-            | Command::MeshAuto { session, .. }
-            | Command::SlotAdd { session, .. }
-            | Command::SlotFill { session, .. }
-            | Command::SlotClear { session, .. }
-            | Command::SlotDelete { session, .. }
-            | Command::Slots { session, .. }
-            | Command::Welds { session }
-            | Command::WeldSet { session, .. }
-            | Command::WeldDelete { session, .. }
-            | Command::SpineAdd { session, .. }
-            | Command::SpineSet { session, .. }
-            | Command::SpineFit { session, .. }
-            | Command::Undo { session, .. }
-            | Command::Redo { session, .. }
-            | Command::EditGoto { session, .. }
-            | Command::EditHistoryGet { session, .. }
-            | Command::PresenceSet { session, .. }
-            | Command::PresenceGet { session }
-            | Command::Preview { session, .. }
-            | Command::ImportJson { session, .. }
-            | Command::ExtensionSet { session, .. }
-            | Command::ExtensionDelete { session, .. }
-            | Command::Extensions { session }
-            | Command::ExtensionGet { session, .. }
-            | Command::ExtensionWarnings { session }
-            | Command::HumanoidMap { session, .. }
-            | Command::HumanoidUnmap { session, .. }
-            | Command::HumanoidGet { session }
-            | Command::ExpressionSet { session, .. }
-            | Command::ExpressionDelete { session, .. }
-            | Command::ExpressionList { session }
-            | Command::VisemeAddStandard { session, .. }
-            | Command::ClipList { session }
-            | Command::ReviewGet { session }
-            | Command::ReviewThreadAdd { session, .. }
-            | Command::ReviewThreadSet { session, .. }
-            | Command::ReviewThreadDelete { session, .. }
-            | Command::ReviewCommentAdd { session, .. }
-            | Command::ReviewCommentDelete { session, .. }
-            | Command::ReviewImageAdd { session }
-            | Command::ReviewImageGet { session, .. }
-            | Command::ReviewSubmit { session }
-            | Command::ReviewPoll { session, .. }
-            | Command::ReviewFetch { session, .. }
-            | Command::ReviewAck { session, .. }
-            | Command::ReviewClaim { session, .. }
-            | Command::ReviewRelease { session, .. }
-            | Command::VersionSave { session, .. }
-            | Command::VersionList { session }
-            | Command::VersionGet { session, .. }
-            | Command::VersionRestore { session, .. }
-            | Command::VersionOpen { session, .. } => Some(*session),
+            Self::SessionNew { .. } | Self::SessionOpen { .. } | Self::SessionList => None,
+            Self::SessionClose { session }
+            | Self::EditApply { session, .. }
+            | Self::EditValidate { session, .. }
+            | Self::BindingCellsGet { session, .. }
+            | Self::BindingCellsSet { session, .. }
+            | Self::BindingCellsUnset { session, .. }
+            | Self::MeshGet { session, .. }
+            | Self::ModelGet { session, .. }
+            | Self::GeometryGet { session, .. }
+            | Self::SessionFork { session, .. }
+            | Self::ModelExport { session, .. }
+            | Self::Save { session, .. }
+            | Self::ExportManifest { session, .. }
+            | Self::Status { session }
+            | Self::Check { session }
+            | Self::NodeTree { session }
+            | Self::NodeInfo { session, .. }
+            | Self::NodeAdd { session, .. }
+            | Self::NodeSet { session, .. }
+            | Self::NodeReparent { session, .. }
+            | Self::NodeReorder { session, .. }
+            | Self::NodeDuplicate { session, .. }
+            | Self::RenameId { session, .. }
+            | Self::MaskAdd { session, .. }
+            | Self::MaskDelete { session, .. }
+            | Self::MotionResponseSet { session, .. }
+            | Self::NodeDelete { session, .. }
+            | Self::TextureAdd { session, .. }
+            | Self::TextureList { session }
+            | Self::ParamAdd { session, .. }
+            | Self::ParamList { session }
+            | Self::ParamSet { session, .. }
+            | Self::ParamDelete { session, .. }
+            | Self::BindingKeyInsert { session, .. }
+            | Self::BindingKeyDelete { session, .. }
+            | Self::BindingKeyMove { session, .. }
+            | Self::BindingAdd { session, .. }
+            | Self::BindingDelete { session, .. }
+            | Self::BindingInterpolate { session, .. }
+            | Self::BindingList { session, .. }
+            | Self::MeshSet { session, .. }
+            | Self::MeshAuto { session, .. }
+            | Self::SlotAdd { session, .. }
+            | Self::SlotFill { session, .. }
+            | Self::SlotClear { session, .. }
+            | Self::SlotDelete { session, .. }
+            | Self::Slots { session, .. }
+            | Self::Welds { session }
+            | Self::WeldSet { session, .. }
+            | Self::WeldDelete { session, .. }
+            | Self::SpineAdd { session, .. }
+            | Self::SpineSet { session, .. }
+            | Self::SpineFit { session, .. }
+            | Self::Undo { session, .. }
+            | Self::Redo { session, .. }
+            | Self::EditGoto { session, .. }
+            | Self::EditHistoryGet { session, .. }
+            | Self::PresenceSet { session, .. }
+            | Self::PresenceGet { session }
+            | Self::Preview { session, .. }
+            | Self::ImportJson { session, .. }
+            | Self::ExtensionSet { session, .. }
+            | Self::ExtensionDelete { session, .. }
+            | Self::Extensions { session }
+            | Self::ExtensionGet { session, .. }
+            | Self::ExtensionWarnings { session }
+            | Self::HumanoidMap { session, .. }
+            | Self::HumanoidUnmap { session, .. }
+            | Self::HumanoidGet { session }
+            | Self::ExpressionSet { session, .. }
+            | Self::ExpressionDelete { session, .. }
+            | Self::ExpressionList { session }
+            | Self::VisemeAddStandard { session, .. }
+            | Self::ClipList { session }
+            | Self::ReviewGet { session }
+            | Self::ReviewThreadAdd { session, .. }
+            | Self::ReviewThreadSet { session, .. }
+            | Self::ReviewThreadDelete { session, .. }
+            | Self::ReviewCommentAdd { session, .. }
+            | Self::ReviewCommentDelete { session, .. }
+            | Self::ReviewImageAdd { session }
+            | Self::ReviewImageGet { session, .. }
+            | Self::ReviewSubmit { session }
+            | Self::ReviewPoll { session, .. }
+            | Self::ReviewFetch { session, .. }
+            | Self::ReviewAck { session, .. }
+            | Self::ReviewClaim { session, .. }
+            | Self::ReviewRelease { session, .. }
+            | Self::VersionSave { session, .. }
+            | Self::VersionList { session }
+            | Self::VersionGet { session, .. }
+            | Self::VersionRestore { session, .. }
+            | Self::VersionOpen { session, .. } => Some(*session),
         }
     }
 }
@@ -1830,7 +1829,7 @@ pub enum BlendMode {
 }
 
 impl BlendMode {
-    /// Snake_case; the model file spells the same modes in PascalCase.
+    /// `Snake_case`; the model file spells the same modes in `PascalCase`.
     pub fn wire_name(self) -> &'static str {
         match self {
             Self::Normal => "normal",
@@ -2267,7 +2266,7 @@ pub enum ResponseBody {
         mesh: MeshInfo,
     },
     ModelStructure {
-        /// The current core ClmStructure JSON, including authored cells and extension markers.
+        /// The current core `ClmStructure` JSON, including authored cells and extension markers.
         #[cfg_attr(feature = "ts", ts(type = "unknown"))]
         structure: serde_json::Value,
         textures: Vec<ModelTextureHeader>,
@@ -2284,6 +2283,10 @@ pub enum ResponseBody {
     },
     EditResults {
         changed: bool,
+        #[expect(
+            clippy::use_self,
+            reason = "the Python generator reads type names from this source literally"
+        )]
         results: Vec<ResponseBody>,
     },
     BindingCells {
@@ -2505,7 +2508,7 @@ pub struct EditHistoryEntry {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct LimitInfo {
-    /// Stable budget name, such as request_bytes or derived_cell_vertices.
+    /// Stable budget name, such as `request_bytes` or `derived_cell_vertices`.
     pub resource: String,
     /// Maximum permitted count in the resource's units.
     pub limit: u64,
@@ -2756,6 +2759,10 @@ pub enum ExtensionRef {
     /// A part's node, then the slot on it.
     Slot((NodeId, SlotId)),
     /// Never itself `removed`.
+    #[expect(
+        clippy::use_self,
+        reason = "the Python generator reads type names from this source literally"
+    )]
     Removed(Box<ExtensionRef>),
 }
 
@@ -2776,12 +2783,12 @@ impl TryFrom<ExtensionRef> for IdRef {
 
     fn try_from(r: ExtensionRef) -> Result<Self, String> {
         Ok(match r {
-            ExtensionRef::Node(id) => IdRef::Node(id),
-            ExtensionRef::Param(id) => IdRef::Param(id),
-            ExtensionRef::Texture(id) => IdRef::Texture(id),
-            ExtensionRef::Slot((node, slot)) => IdRef::Slot(node, slot),
-            ExtensionRef::Removed(inner) => match IdRef::try_from(*inner)? {
-                IdRef::Removed(_) => {
+            ExtensionRef::Node(id) => Self::Node(id),
+            ExtensionRef::Param(id) => Self::Param(id),
+            ExtensionRef::Texture(id) => Self::Texture(id),
+            ExtensionRef::Slot((node, slot)) => Self::Slot(node, slot),
+            ExtensionRef::Removed(inner) => match Self::try_from(*inner)? {
+                Self::Removed(_) => {
                     return Err("a removed reference cannot itself be removed".into());
                 }
                 live => live.removed(),
@@ -3070,6 +3077,10 @@ pub struct TreeNode {
     pub z_order: f32,
     #[serde(default = "yes")]
     pub enabled: bool,
+    #[expect(
+        clippy::use_self,
+        reason = "the Python generator reads type names from this source literally"
+    )]
     pub children: Vec<TreeNode>,
 }
 
@@ -3141,7 +3152,7 @@ pub struct MeshInfo {
 }
 
 /// One ordered clipping rule, addressed by its position in `NodeInfo::masks`.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct MaskInfo {
     pub source: NodeId,
@@ -3169,8 +3180,7 @@ pub struct PreviewInfo {
 #[cfg(unix)]
 pub fn default_socket_path() -> std::path::PathBuf {
     let base = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
+        .map_or_else(std::env::temp_dir, std::path::PathBuf::from);
     base.join("catchlight-editor").join("server.sock")
 }
 
@@ -3616,7 +3626,7 @@ mod tests {
 
     #[test]
     fn a_binding_target_travels_under_the_models_own_spelling() {
-        let words: Vec<String> = SCALAR_TARGETS.iter().map(|t| t.to_string()).collect();
+        let words: Vec<String> = SCALAR_TARGETS.iter().map(ToString::to_string).collect();
         assert_eq!(
             words,
             [

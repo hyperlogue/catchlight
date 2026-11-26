@@ -101,15 +101,15 @@ pub enum DrawableInfo {
 impl DrawableInfo {
     pub fn z_order(&self) -> f32 {
         match self {
-            DrawableInfo::Part { z_order, .. } => *z_order,
-            DrawableInfo::Composite { z_order, .. } => *z_order,
+            Self::Part { z_order, .. } => *z_order,
+            Self::Composite { z_order, .. } => *z_order,
         }
     }
 
     pub fn blend_mode(&self) -> BlendMode {
         match self {
-            DrawableInfo::Part { blend_mode, .. } => *blend_mode,
-            DrawableInfo::Composite { blend_mode, .. } => *blend_mode,
+            Self::Part { blend_mode, .. } => *blend_mode,
+            Self::Composite { blend_mode, .. } => *blend_mode,
         }
     }
 }

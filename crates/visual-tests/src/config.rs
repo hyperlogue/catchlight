@@ -431,12 +431,14 @@ pub fn build_matrix(model: &ModelSpec) -> Vec<Config> {
             let camera = presets
                 .iter()
                 .find(|(name, _)| *name == c.camera_preset)
-                .map(|(_, cam)| *cam)
-                .unwrap_or(Camera {
-                    x: 0.0,
-                    y: 0.0,
-                    zoom: model.default_zoom,
-                });
+                .map_or(
+                    Camera {
+                        x: 0.0,
+                        y: 0.0,
+                        zoom: model.default_zoom,
+                    },
+                    |(_, cam)| *cam,
+                );
             Config {
                 name: format!("{}__{}__cam_{}", model.stem, c.label, c.camera_preset),
                 model_stem: model.stem.clone(),

@@ -1,5 +1,3 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-
 //! `render` end to end. Needs a GPU (lavapipe in the dev shell) and fails rather
 //! than skips without one, so a missing driver is loud.
 
@@ -38,8 +36,7 @@ fn the_binary_writes_a_png_of_the_requested_size_and_prints_the_render_list() {
     let colours: HashSet<[u8; 4]> = image.pixels().map(|p| p.0).collect();
     assert!(
         colours.len() > 1,
-        "the frame is one flat colour, so nothing was drawn: {:?}",
-        colours
+        "the frame is one flat colour, so nothing was drawn: {colours:?}"
     );
 }
 

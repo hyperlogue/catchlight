@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(clippy::unwrap_used, reason = "a test aborts on a broken fixture")]
 //! Geometry output pages must not hide unbounded whole-model evaluation work.
 
 use catchlight_core::formats::clm::{ClmIndices, ClmMesh};

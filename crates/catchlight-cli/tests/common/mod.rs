@@ -1,7 +1,16 @@
 //! Shared scaffolding. `tests/models/*.clm` are Git LFS objects: tests work on
 //! copies and nothing here may write to them.
 
-#![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    dead_code,
+    reason = "each test binary uses a different subset of these helpers"
+)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "a test aborts on a broken fixture"
+)]
 
 use std::path::{Path, PathBuf};
 

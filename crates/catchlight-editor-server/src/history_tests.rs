@@ -1,7 +1,5 @@
 //! Session publication, branching navigation and lock ordering contracts.
 
-#![allow(clippy::unwrap_used, clippy::panic)]
-
 use std::{
     io,
     sync::{Barrier, mpsc},
@@ -540,9 +538,9 @@ fn navigation_keeps_preview_pose_but_resets_scratch_and_motion_responses() {
             &root,
             ModelNode::new(
                 "Driver",
-                ModelNodeKind::MotionResponse(catchlight_core::MotionResponse {
-                    inputs: vec![catchlight_core::ResponseInput {
-                        source: catchlight_core::ResponseSource::PoseParam {
+                ModelNodeKind::MotionResponse(MotionResponse {
+                    inputs: vec![ResponseInput {
+                        source: ResponseSource::PoseParam {
                             param: param.clone(),
                         },
                         gain: 1.0,

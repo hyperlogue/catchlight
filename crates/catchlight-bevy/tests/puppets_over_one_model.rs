@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(clippy::expect_used, reason = "a test aborts on a broken fixture")]
 
 //! The main-world half of the split: one model asset, many puppets.
 //!
@@ -201,7 +201,7 @@ fn swapping_the_model_rebases_the_puppet_and_keeps_the_pose() {
         .entity_mut(entity)
         .get_mut::<CatchlightPuppet>()
         .unwrap()
-        .set_model(second.clone());
+        .set_model(second);
     app.update();
 
     let after_puppet = puppet(&app, entity);

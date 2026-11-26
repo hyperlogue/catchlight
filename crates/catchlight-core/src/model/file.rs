@@ -432,29 +432,29 @@ impl Model {
         Ok(clm::encode_structure(&doc, &textures)?)
     }
 
-    pub fn from_clm_file(file: &ClmFile) -> Result<Model, ModelError> {
+    pub fn from_clm_file(file: &ClmFile) -> Result<Self, ModelError> {
         Self::from_clm_file_with_budget(file, &mut LoadBudget::default())
     }
 
     pub fn from_clm_file_with_budget(
         file: &ClmFile,
         budget: &mut LoadBudget,
-    ) -> Result<Model, ModelError> {
+    ) -> Result<Self, ModelError> {
         Self::read(file, budget, Shape::Base)
     }
 
-    pub fn from_clm_file_fragment(file: &ClmFile) -> Result<Model, ModelError> {
+    pub fn from_clm_file_fragment(file: &ClmFile) -> Result<Self, ModelError> {
         Self::from_clm_file_fragment_with_budget(file, &mut LoadBudget::default())
     }
 
     pub fn from_clm_file_fragment_with_budget(
         file: &ClmFile,
         budget: &mut LoadBudget,
-    ) -> Result<Model, ModelError> {
+    ) -> Result<Self, ModelError> {
         Self::read(file, budget, Shape::Fragment)
     }
 
-    fn read(file: &ClmFile, budget: &mut LoadBudget, shape: Shape) -> Result<Model, ModelError> {
+    fn read(file: &ClmFile, budget: &mut LoadBudget, shape: Shape) -> Result<Self, ModelError> {
         charge_clm_file(file, budget)?;
         let textures = file.textures.iter().map(|t| {
             let texture = ModelTexture {
@@ -465,17 +465,13 @@ impl Model {
             (t.id.clone(), texture)
         });
         let mut model = Self::assemble(&file.doc, textures, &file.extensions, shape)?;
-        model.unknown_sections = file.unknown_sections.clone();
+        model.unknown_sections.clone_from(&file.unknown_sections);
         Ok(model)
     }
 
     /// Decoding already charged the payloads, so only the texture count and
     /// the structure are charged here; charging again counts every byte twice.
-    fn read_bytes(
-        bytes: &[u8],
-        budget: &mut LoadBudget,
-        shape: Shape,
-    ) -> Result<Model, ModelError> {
+    fn read_bytes(bytes: &[u8], budget: &mut LoadBudget, shape: Shape) -> Result<Self, ModelError> {
         let file = clm::decode_borrowed(bytes, budget)?;
         charge_decoded_clm(&file.doc, file.textures.len(), budget)?;
         let textures = file.textures.into_iter().map(|t| {
@@ -497,7 +493,7 @@ impl Model {
         table: impl ExactSizeIterator<Item = (TexId, ModelTexture)>,
         blobs: &[ClmExtensionBlob],
         shape: Shape,
-    ) -> Result<Model, ModelError> {
+    ) -> Result<Self, ModelError> {
         let mut textures = HashMap::with_capacity(table.len());
         let mut texture_order = Vec::with_capacity(table.len());
         for (id, texture) in table {
@@ -525,7 +521,7 @@ impl Model {
         texture_order: Vec<TexId>,
         extensions: Extensions,
         shape: Shape,
-    ) -> Result<Model, ModelError> {
+    ) -> Result<Self, ModelError> {
         let mut params = HashMap::with_capacity(doc.params.len());
         let mut param_order = Vec::with_capacity(doc.params.len());
         for p in &doc.params {
@@ -625,7 +621,7 @@ impl Model {
                 }
             })?;
             let mut node = ModelNode::new(&cn.name, ModelNodeKind::Group);
-            node.parent = cn.parent.clone();
+            node.parent.clone_from(&cn.parent);
             node.enabled = cn.enabled;
             node.z_order = cn.z_order;
             node.transform = cn.transform;
@@ -811,8 +807,8 @@ impl Model {
             welds.push(read_weld(w, &slots, &nodes, &mut welded, shape)?);
         }
 
-        let model = Model {
-            identity: super::next_identity(),
+        let model = Self {
+            identity: next_identity(),
             generation: 0,
             welds,
             response_index: OnceLock::new(),
@@ -837,25 +833,25 @@ impl Model {
         Ok(model)
     }
 
-    pub fn from_clm_bytes(bytes: &[u8]) -> Result<Model, ModelError> {
+    pub fn from_clm_bytes(bytes: &[u8]) -> Result<Self, ModelError> {
         Self::from_clm_bytes_with_budget(bytes, &mut LoadBudget::default())
     }
 
     pub fn from_clm_bytes_with_budget(
         bytes: &[u8],
         budget: &mut LoadBudget,
-    ) -> Result<Model, ModelError> {
+    ) -> Result<Self, ModelError> {
         Self::read_bytes(bytes, budget, Shape::Base)
     }
 
-    pub fn from_clm_bytes_fragment(bytes: &[u8]) -> Result<Model, ModelError> {
+    pub fn from_clm_bytes_fragment(bytes: &[u8]) -> Result<Self, ModelError> {
         Self::from_clm_bytes_fragment_with_budget(bytes, &mut LoadBudget::default())
     }
 
     pub fn from_clm_bytes_fragment_with_budget(
         bytes: &[u8],
         budget: &mut LoadBudget,
-    ) -> Result<Model, ModelError> {
+    ) -> Result<Self, ModelError> {
         Self::read_bytes(bytes, budget, Shape::Fragment)
     }
 
@@ -940,11 +936,11 @@ impl Model {
 
     /// [`Self::replace_structure`] from a `Model` in memory; payloads are
     /// `Arc`-shared.
-    pub fn replace_from(&mut self, other: &Model) {
+    pub fn replace_from(&mut self, other: &Self) {
         self.become_model(other.clone());
     }
 
-    fn become_model(&mut self, next: Model) {
+    fn become_model(&mut self, next: Self) {
         let identity = self.identity;
         *self = next;
         self.identity = identity;
@@ -983,7 +979,7 @@ fn clm_masks_of(kind: &ClmNodeKind) -> &[ClmMask] {
 }
 
 fn check_mesh(id: &NodeId, mesh: &ClmMesh) -> Result<(), ModelError> {
-    match super::validate_mesh(mesh) {
+    match validate_mesh(mesh) {
         Err(ModelError::MalformedMesh(reason)) => Err(ClmLoadError::MalformedMesh {
             node: id.to_string(),
             reason,
@@ -1366,7 +1362,7 @@ mod tests {
         )
         .unwrap();
 
-        let key = BindingKey::pair(x.clone(), y.clone(), upper.clone(), BindingTarget::Deform);
+        let key = BindingKey::pair(x, y, upper.clone(), BindingTarget::Deform);
         m.add_binding(&key).unwrap();
         m.set_deform_vertices(&key, [1, 1], vec![1.0; 8]).unwrap();
 
@@ -1567,9 +1563,8 @@ mod tests {
         let m = sample();
         let file = m.to_clm_file().unwrap();
 
-        let upper = match &node_named(&file, "Upper").kind {
-            ClmNodeKind::Part(p) => p,
-            _ => panic!("Upper is a part"),
+        let ClmNodeKind::Part(upper) = &node_named(&file, "Upper").kind else {
+            panic!("Upper is a part")
         };
         assert_eq!(
             upper

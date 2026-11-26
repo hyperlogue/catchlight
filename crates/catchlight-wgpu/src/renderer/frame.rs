@@ -286,7 +286,10 @@ impl WgpuRenderer {
     /// Frame-level state belongs to [`Self::record_frame`], so this may run
     /// several times per frame.
     /// `snapshots` is `None` when no dst-in-shader blend will read the target.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a pass takes the encoder, its targets and per-draw state separately"
+    )]
     pub(super) fn record_list(
         &mut self,
         render_list: &crate::collect::RenderList,

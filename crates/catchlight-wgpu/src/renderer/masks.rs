@@ -233,8 +233,7 @@ impl WgpuRenderer {
                     let (opacity, threshold) = self
                         .composite_mask_textures
                         .get(*node_id as usize)
-                        .map(|source| (source.opacity, source.mask_threshold))
-                        .unwrap_or((0.0, 1.0));
+                        .map_or((0.0, 1.0), |source| (source.opacity, source.mask_threshold));
                     self.write_part_uniform(opacity, glam::Vec3::ONE, glam::Vec3::ZERO, threshold)
                 }
             })
@@ -390,8 +389,7 @@ impl WgpuRenderer {
                     let (opacity, threshold) = self
                         .composite_mask_textures
                         .get(*node_id as usize)
-                        .map(|source| (source.opacity, source.mask_threshold))
-                        .unwrap_or((0.0, 1.0));
+                        .map_or((0.0, 1.0), |source| (source.opacity, source.mask_threshold));
                     self.write_part_uniform(opacity, glam::Vec3::ONE, glam::Vec3::ZERO, threshold)
                 }
             })

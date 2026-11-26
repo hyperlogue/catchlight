@@ -54,7 +54,10 @@ impl PreviewRenderer {
 
     /// Cleared to opaque white, so the premultiplied readback needs nothing
     /// undone before encoding.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the inputs are independent, with no type that groups them"
+    )]
     pub(super) fn render_png(
         &mut self,
         session: SessionId,
@@ -81,7 +84,10 @@ impl PreviewRenderer {
     }
 
     /// Tightly-packed RGBA8.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the inputs are independent, with no type that groups them"
+    )]
     fn render_rgba(
         &mut self,
         session: SessionId,

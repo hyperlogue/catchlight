@@ -368,7 +368,7 @@ impl RenderCache {
             renderer.max_texture_dimension(),
             &mut budget,
         )?;
-        for prep in prepped.iter() {
+        for prep in &prepped {
             renderer.validate_texture_upload(&prep.texture)?;
         }
 

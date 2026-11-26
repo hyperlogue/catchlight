@@ -53,20 +53,23 @@ pub(super) enum Endpoint {
     Http { url: String, token: String },
 }
 
-#[cfg_attr(not(unix), allow(dead_code))]
+#[cfg_attr(
+    not(unix),
+    allow(dead_code, reason = "only the unix review listener uses it")
+)]
 impl Endpoint {
     pub fn connect(&self) -> Result<Transport> {
         match self {
-            Endpoint::Socket(path) => connect_socket(path),
-            Endpoint::Http { url, token } => Ok(Transport::Http(Http::new(url, token.clone())?)),
+            Self::Socket(path) => connect_socket(path),
+            Self::Http { url, token } => Ok(Transport::Http(Http::new(url, token.clone())?)),
         }
     }
 
     /// What a person reads: never the token.
     pub fn describe(&self) -> String {
         match self {
-            Endpoint::Socket(path) => path.display().to_string(),
-            Endpoint::Http { url, .. } => url.clone(),
+            Self::Socket(path) => path.display().to_string(),
+            Self::Http { url, .. } => url.clone(),
         }
     }
 }
@@ -214,8 +217,8 @@ impl Transport {
         }
         match self {
             #[cfg(unix)]
-            Transport::Socket(stream) => call_socket(stream, req, siblings),
-            Transport::Http(http) => http.call(req, siblings),
+            Self::Socket(stream) => call_socket(stream, req, siblings),
+            Self::Http(http) => http.call(req, siblings),
         }
     }
 }
@@ -254,9 +257,9 @@ fn call_socket(
         }
         let reply: Reply = serde_json::from_str(buf)?;
         match &reply {
-            Reply::Event(_) => continue,
+            Reply::Event(_) => {}
             Reply::Ok { id, .. } | Reply::Err { id, .. } if *id == want => return Ok(reply),
-            _ => continue,
+            _ => {}
         }
     }
 }

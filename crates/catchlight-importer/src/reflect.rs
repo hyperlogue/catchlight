@@ -132,7 +132,7 @@ pub(crate) fn convert_mesh(
         )));
     }
     let max = m.indices.iter().copied().max().unwrap_or(0);
-    let indices = if max <= u16::MAX as u32 {
+    let indices = if u16::try_from(max).is_ok() {
         ClmIndices::U16(m.indices.iter().map(|&i| i as u16).collect())
     } else {
         ClmIndices::U32(m.indices.clone())
@@ -288,7 +288,10 @@ impl<T: Default + Clone> Default for Dense<T> {
     }
 }
 
-#[allow(clippy::needless_range_loop)]
+#[expect(
+    clippy::needless_range_loop,
+    reason = "the indices walk the mask and the dense grid at once"
+)]
 fn sparsify<T: FillCell + Clone>(
     d: Dense<T>,
     is_set: Option<&[Vec<bool>]>,
@@ -349,7 +352,10 @@ fn close_f32(a: &f32, b: &f32) -> bool {
 
 // &Vec, not &[f32]: this must match the `fn(&T, &T) -> bool` shape sparsify
 // takes with `T = Vec<f32>`.
-#[allow(clippy::ptr_arg)]
+#[expect(
+    clippy::ptr_arg,
+    reason = "it must match the `fn(&T, &T) -> bool` shape `sparsify` takes"
+)]
 fn close_vec(a: &Vec<f32>, b: &Vec<f32>) -> bool {
     let n = a.len().max(b.len());
     (0..n).all(|i| {
@@ -461,8 +467,12 @@ fn matrix_vec2_flat(
             let mut flat = Vec::with_capacity(points.len() * 2);
             for (i, p) in points.iter().enumerate() {
                 let coords = p.as_array();
-                let px = coords.and_then(|a| a.first()).and_then(|n| n.as_f64());
-                let py = coords.and_then(|a| a.get(1)).and_then(|n| n.as_f64());
+                let px = coords
+                    .and_then(|a| a.first())
+                    .and_then(serde_json::Value::as_f64);
+                let py = coords
+                    .and_then(|a| a.get(1))
+                    .and_then(serde_json::Value::as_f64);
                 let (Some(px), Some(py)) = (px, py) else {
                     return Err(malformed(&format!("point {i} is not two numbers")));
                 };

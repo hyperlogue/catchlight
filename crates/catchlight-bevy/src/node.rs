@@ -31,8 +31,7 @@ pub(crate) fn catchlight_2d_pass(
     // Per view, not per window: render-to-texture cameras have their own size.
     let (w, h) = camera
         .physical_target_size
-        .map(|s| (s.x.max(1), s.y.max(1)))
-        .unwrap_or(guard.size);
+        .map_or(guard.size, |s| (s.x.max(1), s.y.max(1)));
     if w == 0 || h == 0 {
         return;
     }

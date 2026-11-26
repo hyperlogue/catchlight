@@ -356,14 +356,11 @@ pub(crate) fn prepare_puppets(
     live_models.clear();
     puppets.retain(|key, puppet| {
         let live = live_scratch.contains(&key.entity) && view_formats.contains(&key.format);
-        match live {
-            true => {
-                live_models.insert(puppet.model);
-            }
-            false => {
-                if let Some(gpu) = gpus.get_mut(&puppet.model) {
-                    gpu.renderer.release_deform_set(puppet.deform_set);
-                }
+        if live {
+            live_models.insert(puppet.model);
+        } else {
+            if let Some(gpu) = gpus.get_mut(&puppet.model) {
+                gpu.renderer.release_deform_set(puppet.deform_set);
             }
         }
         live

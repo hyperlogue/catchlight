@@ -8,7 +8,7 @@
 //! into a build failure rather than a binary that serves nothing.
 
 // A build script reports failure by panicking; there is no other channel.
-#![allow(clippy::panic)]
+#![expect(clippy::panic, reason = "a build script reports failure by panicking")]
 
 use std::path::{Path, PathBuf};
 
@@ -16,9 +16,8 @@ fn main() {
     println!("cargo::rerun-if-env-changed=CATCHLIGHT_EDITOR_UI");
     println!("cargo::rerun-if-env-changed=CATCHLIGHT_EDITOR_REQUIRE_UI");
     let manifest = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap_or_default());
-    let dir = std::env::var_os("CATCHLIGHT_EDITOR_UI")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| manifest.join("ui"));
+    let dir =
+        std::env::var_os("CATCHLIGHT_EDITOR_UI").map_or_else(|| manifest.join("ui"), PathBuf::from);
     // A directory that does not exist reads as changed on every build; watch
     // the crate instead until the page is built into it.
     if dir.exists() {

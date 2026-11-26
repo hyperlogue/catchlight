@@ -1,5 +1,3 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-
 //! A tab that only holds replicas checks the official extensions as the
 //! editor does. Its own process, so nothing else has registered them first.
 

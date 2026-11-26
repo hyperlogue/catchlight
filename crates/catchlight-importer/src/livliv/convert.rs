@@ -202,7 +202,9 @@ impl ValidatedPackage {
                         None => 0.0,
                     }
                 };
-                let masks = if !is_mask {
+                let masks = if is_mask {
+                    Vec::new()
+                } else {
                     layer
                         .clip
                         .as_ref()
@@ -222,8 +224,6 @@ impl ValidatedPackage {
                         .transpose()?
                         .into_iter()
                         .collect()
-                } else {
-                    Vec::new()
                 };
                 let part = ClmPart {
                     mesh: mesh.clone(),
@@ -258,9 +258,9 @@ impl ValidatedPackage {
                         .iter()
                         .map(|&x| {
                             if role.starts_with("lid_") {
-                                (1. - super::runtime::smooth(0.05, 0.35, x as f64)) as f32
+                                (1. - super::runtime::smooth(0.05, 0.35, f64::from(x))) as f32
                             } else {
-                                super::runtime::smooth(0.02, 0.2, x as f64) as f32
+                                super::runtime::smooth(0.02, 0.2, f64::from(x)) as f32
                             }
                         })
                         .collect();

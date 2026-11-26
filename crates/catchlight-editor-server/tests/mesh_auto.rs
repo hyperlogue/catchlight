@@ -1,4 +1,9 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "a test aborts on a broken fixture"
+)]
 
 //! A part can be re-meshed from its own texture, over the wire.
 
@@ -47,7 +52,7 @@ fn blob_png() -> Vec<u8> {
             image.put_pixel(x, y, image::Rgba([255, 128, 64, 255]));
         }
     }
-    let mut bytes = std::io::Cursor::new(Vec::new());
+    let mut bytes = io::Cursor::new(Vec::new());
     image
         .write_to(&mut bytes, image::ImageFormat::Png)
         .expect("the fixture encodes");
@@ -56,7 +61,7 @@ fn blob_png() -> Vec<u8> {
 
 fn empty_png() -> Vec<u8> {
     let image = image::RgbaImage::from_pixel(SIZE, SIZE, image::Rgba([0, 0, 0, 0]));
-    let mut bytes = std::io::Cursor::new(Vec::new());
+    let mut bytes = io::Cursor::new(Vec::new());
     image
         .write_to(&mut bytes, image::ImageFormat::Png)
         .expect("the fixture encodes");

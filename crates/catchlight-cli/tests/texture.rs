@@ -1,4 +1,3 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! `replace-texture` on copies of the committed fixtures. Replacement images
 //! are deliberately undecodable, so any decode on the path would fail.
 

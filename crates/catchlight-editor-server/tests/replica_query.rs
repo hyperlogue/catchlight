@@ -1,4 +1,9 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "a test aborts on a broken fixture"
+)]
 
 //! A replica answers the model-only reads exactly as the editor does.
 
@@ -69,7 +74,7 @@ impl Fixture {
         };
         let group = fixture.node(Command::NodeAdd {
             session,
-            parent: root.clone(),
+            parent: root,
             kind: NodeKindArg::Group,
             name: Some("Torso".into()),
             node: None,
@@ -231,7 +236,7 @@ impl Fixture {
 
     fn model(&self) -> catchlight_core::Model {
         self.editor
-            .with_model(self.session, |m| m.clone())
+            .with_model(self.session, Clone::clone)
             .expect("the session is open")
     }
 
@@ -339,10 +344,7 @@ fn other_commands(session: SessionId, node: NodeId) -> Vec<Command> {
             session,
             presence: Presence::default(),
         },
-        Command::NodeDelete {
-            session,
-            node: node.clone(),
-        },
+        Command::NodeDelete { session, node },
         Command::Undo { session, if_rev: 0 },
         Command::ParamDelete {
             session,
@@ -695,7 +697,7 @@ fn what_a_replica_answers_is_exactly_the_replica_queries_of_the_kinds_table() {
 
     let answered: BTreeSet<&str> = replica_commands(f.session, node.clone())
         .iter()
-        .map(|c| c.tag())
+        .map(Command::tag)
         .collect();
     let table: BTreeSet<&str> = COMMAND_KINDS
         .iter()
@@ -1061,7 +1063,7 @@ fn the_param_list_names_the_response_that_drives_a_param() {
         other => panic!("expected Params, got {other:?}"),
     };
 
-    set_output(Some(sway.clone()));
+    set_output(Some(sway));
     assert_eq!(
         drivers(),
         vec![

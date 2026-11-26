@@ -30,7 +30,7 @@ pub struct GeometryOutput {
 pub struct MeshGeometry {
     /// Authored mesh coordinates, in original vertex order.
     pub rest: Vec<[f32; 2]>,
-    /// rest - origin + combined_deform, in original vertex order.
+    /// rest - origin + `combined_deform`, in original vertex order.
     pub local: Vec<[f32; 2]>,
     /// Evaluated XYZ, including inherited deformation and welds.
     pub world: Vec<[f32; 3]>,
@@ -59,7 +59,7 @@ impl GeometryOutput {
                 world: Vec::new(),
                 origin: mesh.origin().to_array(),
                 local_to_world: mesh.local_to_world().to_cols_array_2d(),
-                uvs: mesh.uvs().iter().map(|v| v.to_array()).collect(),
+                uvs: mesh.uvs().iter().map(glam::Vec2::to_array).collect(),
                 triangles: mesh.triangles().map(|(_, t)| t).collect(),
             };
             if !mesh.local_to_world().is_finite() {
@@ -113,9 +113,9 @@ pub struct ResponseObservation {
     /// Id supplying a Parent input, when the response has one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub followed_parent: Option<String>,
-    #[schemars(with = "std::collections::BTreeMap<String,serde_json::Value>")]
+    #[schemars(with = "BTreeMap<String,serde_json::Value>")]
     pub state: catchlight_core::ResponseTrace,
-    #[schemars(with = "Vec<std::collections::BTreeMap<String,serde_json::Value>>")]
+    #[schemars(with = "Vec<BTreeMap<String,serde_json::Value>>")]
     pub inputs: Vec<catchlight_core::ResponseInputSample>,
 }
 

@@ -157,7 +157,9 @@ impl Responses {
                         angle_deg,
                         reference_length,
                     } => {
-                        let vertex = model.slot(part, slot).and_then(|s| s.vertex());
+                        let vertex = model
+                            .slot(part, slot)
+                            .and_then(super::super::model::Slot::vertex);
                         vertices.push(vertex);
                         if let Some(&part_node) = puppet.node_of_id.get(part) {
                             let point = *point_indices.entry((part, slot)).or_insert_with(|| {
@@ -609,7 +611,6 @@ impl Puppet {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::{ModelNode, ModelParam, Name, ResponseInput};

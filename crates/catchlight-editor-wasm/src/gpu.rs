@@ -36,7 +36,7 @@ impl Gpu {
     /// Request an adapter and device: WebGPU first, then WebGL2 from a second
     /// instance. `canvas` is the first viewport's; WebGL2 needs it because its
     /// adapter is that canvas's context.
-    pub async fn acquire(canvas: web_sys::HtmlCanvasElement) -> Result<Gpu, JsValue> {
+    pub async fn acquire(canvas: web_sys::HtmlCanvasElement) -> Result<Self, JsValue> {
         console_error_panic_hook::set_once();
 
         let webgpu = match Self::request_webgpu().await {
@@ -70,11 +70,11 @@ impl Gpu {
 }
 
 impl Gpu {
-    async fn request_webgpu() -> Result<Gpu, String> {
+    async fn request_webgpu() -> Result<Self, String> {
         let instance = instance_for(wgpu::Backends::BROWSER_WEBGPU);
         let adapter = request_adapter(&instance, None).await?;
         let (device, queue) = request_device(&adapter).await?;
-        Ok(Gpu {
+        Ok(Self {
             instance,
             adapter,
             device,
@@ -85,7 +85,7 @@ impl Gpu {
 
     /// Phase two: WebGL2, whose adapter is `canvas`'s context, so the surface
     /// exists before the adapter and is the only one this device presents to.
-    async fn request_gl(canvas: web_sys::HtmlCanvasElement) -> Result<Gpu, String> {
+    async fn request_gl(canvas: web_sys::HtmlCanvasElement) -> Result<Self, String> {
         let instance = instance_for(wgpu::Backends::GL);
         let surface = canvas_surface(&instance, canvas.clone())?;
         let adapter = request_adapter(&instance, Some(&surface)).await?;
@@ -97,7 +97,7 @@ impl Gpu {
         let surface = configure_surface(&adapter, &device, surface, width, height)
             .map_err(|e| e.to_string())?;
         let stage = GlStage::new(canvas, surface, &device);
-        Ok(Gpu {
+        Ok(Self {
             instance,
             adapter,
             device,

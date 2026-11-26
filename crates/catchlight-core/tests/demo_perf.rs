@@ -1,4 +1,3 @@
-#![allow(clippy::unwrap_used, clippy::expect_used)]
 //! Opt-in frame-budget check for the public demo's actual model.
 //! Run `cargo test -p catchlight-core --release --test demo_perf -- --ignored --nocapture`.
 //! Requires the Lan Git LFS object. Timing is excluded from ordinary CI because

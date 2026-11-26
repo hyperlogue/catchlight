@@ -1,6 +1,10 @@
 //! One synthetic width-binding model shared by runtime and file-transfer tests.
 
-#![allow(dead_code, clippy::unwrap_used)]
+#![allow(
+    dead_code,
+    reason = "each including test binary uses a different subset"
+)]
+#![expect(clippy::unwrap_used, reason = "a test aborts on a broken fixture")]
 
 use catchlight_core::formats::clm::{ClmIndices, ClmMesh};
 use catchlight_core::{

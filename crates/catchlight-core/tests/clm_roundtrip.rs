@@ -1,4 +1,9 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "a test aborts on a broken fixture"
+)]
 //! `.clm` against the models that are actually committed, and against one big
 //! enough that an accidental quadratic or a hash-order leak would show.
 //! `tests/models/*.clm` are Git LFS objects.
@@ -158,7 +163,7 @@ fn five_hundred_node_model() -> Model {
     let mesh = |i: usize| ClmMesh {
         verts: vec![0.0, 0.0, 1.0, 0.0, i as f32, 1.0],
         uvs: vec![0.0, 0.0, 1.0, 0.0, 0.5, 1.0],
-        indices: catchlight_core::formats::clm::ClmIndices::U16(vec![0, 1, 2]),
+        indices: clm::ClmIndices::U16(vec![0, 1, 2]),
         origin: [0.0, 0.0],
     };
 

@@ -1,4 +1,8 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(
+    clippy::expect_used,
+    clippy::panic,
+    reason = "a test aborts on a broken fixture"
+)]
 //! The spine as a node the puppet ticks.
 
 use catchlight_core::formats::clm::{ClmIndices, ClmMesh};

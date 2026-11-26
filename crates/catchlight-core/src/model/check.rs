@@ -189,7 +189,11 @@ fn warn(node: NodeId, message: String) -> CheckWarning {
 }
 
 fn cells_outside(values: &ClmBindingValues, w: u32, h: u32) -> usize {
-    use ClmBindingValues::*;
+    use ClmBindingValues::{
+        Deform, Opacity, ScreenTintB, ScreenTintG, ScreenTintR, TintB, TintG, TintR, TransformRX,
+        TransformRY, TransformRZ, TransformSX, TransformSY, TransformTX, TransformTY, TransformTZ,
+        ZOrder,
+    };
     match values {
         Deform(c) => c.cells.iter().filter(|c| c.x >= w || c.y >= h).count(),
         ZOrder(c) | TransformTX(c) | TransformTY(c) | TransformTZ(c) | TransformSX(c)
@@ -258,10 +262,7 @@ mod tests {
                 &root,
                 ModelNode::new(
                     "hair",
-                    ModelNodeKind::Spine(crate::model::ModelSpine::new(vec![
-                        [0.0, -50.0],
-                        [0.0, -100.0],
-                    ])),
+                    ModelNodeKind::Spine(ModelSpine::new(vec![[0.0, -50.0], [0.0, -100.0]])),
                 ),
                 &mut hex,
             )
@@ -414,7 +415,7 @@ mod tests {
         .unwrap();
         assert!(matches!(
             m.update_node_kind(&part, |kind| {
-                *kind = ModelNodeKind::MeshGroup(ModelMeshGroup::new(quad()))
+                *kind = ModelNodeKind::MeshGroup(ModelMeshGroup::new(quad()));
             }),
             Err(ModelError::KindEdit("a node's kind"))
         ));

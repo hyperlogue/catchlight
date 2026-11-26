@@ -47,7 +47,7 @@ pub enum Error {
     RenderRequest {
         request: String,
         #[source]
-        source: Box<Error>,
+        source: Box<Self>,
     },
     #[error("render budget {budget}: requested {requested}, maximum {limit}; {hint}")]
     RenderLimit {

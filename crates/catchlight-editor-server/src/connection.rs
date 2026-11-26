@@ -55,7 +55,7 @@ fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
+        .unwrap_or_else(|| Path::new("."));
     let mut dir = std::fs::DirBuilder::new();
     dir.recursive(true);
     #[cfg(unix)]

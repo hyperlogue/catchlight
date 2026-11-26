@@ -44,17 +44,17 @@ pub(crate) enum Target {
 impl Target {
     pub fn harness(&self) -> &'static str {
         match self {
-            Target::Claude { .. } => "claude",
-            Target::Codex { .. } => "codex",
-            Target::Antigravity { .. } => "antigravity",
+            Self::Claude { .. } => "claude",
+            Self::Codex { .. } => "codex",
+            Self::Antigravity { .. } => "antigravity",
             #[cfg(feature = "fake-harness")]
-            Target::Fake { .. } => "fake",
+            Self::Fake { .. } => "fake",
         }
     }
 
     pub fn executable(&self) -> Option<&Path> {
         match self {
-            Target::Codex { executable, .. } | Target::Antigravity { executable, .. } => {
+            Self::Codex { executable, .. } | Self::Antigravity { executable, .. } => {
                 executable.as_deref()
             }
             _ => None,
@@ -80,14 +80,14 @@ pub(crate) enum Unsupported {
 impl std::fmt::Display for Unsupported {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            Unsupported::MissingClaudeToken => {
+            Self::MissingClaudeToken => {
                 "Claude Code's messaging token (CLAUDE_CODE_MESSAGING_TOKEN) is unavailable"
             }
-            Unsupported::MissingAntigravityConnection => {
+            Self::MissingAntigravityConnection => {
                 "Antigravity's messaging connection is unavailable; run this from its agent \
                  command environment"
             }
-            Unsupported::NoAdapter => "this harness has no notification adapter",
+            Self::NoAdapter => "this harness has no notification adapter",
         })
     }
 }
@@ -391,7 +391,7 @@ pub(crate) fn deliver(target: &Target, text: &str, cwd: &Path) -> Result<(), Str
             executable,
             home,
         } => {
-            let program = executable.as_deref().unwrap_or(Path::new("codex"));
+            let program = executable.as_deref().unwrap_or_else(|| Path::new("codex"));
             let mut command = Command::new(program);
             // Direct argv, never a shell: the thread id and the text are
             // untrusted strings.
@@ -414,7 +414,7 @@ pub(crate) fn deliver(target: &Target, text: &str, cwd: &Path) -> Result<(), Str
             executable,
             source_metadata,
         } => {
-            let program = executable.as_deref().unwrap_or(Path::new("agy"));
+            let program = executable.as_deref().unwrap_or_else(|| Path::new("agy"));
             let mut command = Command::new(program);
             command
                 .args([

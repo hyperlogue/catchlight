@@ -1,4 +1,8 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "a test aborts on a broken fixture"
+)]
 
 //! An add may name the Id it makes.
 
@@ -92,7 +96,7 @@ fn an_add_creates_under_the_id_it_was_given() {
             2,
             Command::NodeAdd {
                 session,
-                parent: root.clone(),
+                parent: root,
                 kind: NodeKindArg::Part,
                 name: Some("Hair".into()),
                 node: Some(hair.clone()),

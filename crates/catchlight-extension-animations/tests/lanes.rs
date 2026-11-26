@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(clippy::unwrap_used, reason = "a test aborts on a broken fixture")]
 //! Lanes on controls, expressions and visemes: their storage, their check,
 //! and one frame applied in the shared order with the live inputs.
 

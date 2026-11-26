@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(clippy::panic, reason = "a test aborts on a broken fixture")]
 
 //! Regression: posing a param on a session's puppet must move it exactly like
 //! the viewport does (set the value by Id, then tick).

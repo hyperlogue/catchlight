@@ -1,4 +1,3 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! Accounting is additive, read-only, and independent of image decoding.
 
 mod common;

@@ -1,4 +1,3 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! CLI inspection keeps binding-owned axes separate while sampling every knot.
 use catchlight_core::{
     BindingKey, BindingTarget, Model, ModelParam, Name, NodeId, ParamId, ScalarTarget,

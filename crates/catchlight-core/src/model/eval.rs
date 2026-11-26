@@ -334,7 +334,7 @@ pub(super) mod tests {
 
         let at = |v: f32| {
             model
-                .eval_scalar(&key, &[(x.clone(), v)].into_iter().collect())
+                .eval_scalar(&key, &std::iter::once((x.clone(), v)).collect())
                 .unwrap()
         };
         assert!((at(0.0) + 2.0).abs() < 1e-5);
@@ -360,7 +360,7 @@ mod memo_tests {
         model
             .set_deform_vertices(&key, [2, 0], vec![4.0, 0.0, 0.0, 0.0])
             .unwrap();
-        let at = |m: &Model| m.eval_deform(&key, &[(x.clone(), 0.25)].into_iter().collect());
+        let at = |m: &Model| m.eval_deform(&key, &std::iter::once((x.clone(), 0.25)).collect());
 
         let before = at(&model).unwrap();
         assert_eq!(at(&model).unwrap(), before, "a second read is the memo");
@@ -400,7 +400,7 @@ mod memo_tests {
         model
             .set_deform_vertices(&key, [2, 0], vec![4.0, 0.0, 0.0, 0.0])
             .unwrap();
-        let pose: Pose = [(x.clone(), 1.0)].into_iter().collect();
+        let pose: Pose = std::iter::once((x, 1.0)).collect();
         let snapshot = model.clone();
         let before = snapshot.eval_deform(&key, &pose).unwrap();
 

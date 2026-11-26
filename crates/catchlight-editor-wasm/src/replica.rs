@@ -266,9 +266,7 @@ impl ReplicaState {
             Err(e) => Reply::Err {
                 op_index: None,
                 limit: None,
-                id: serde_json::from_str::<RequestId>(request_json)
-                    .map(|r| r.id)
-                    .unwrap_or(0),
+                id: serde_json::from_str::<RequestId>(request_json).map_or(0, |r| r.id),
                 code: ErrorCode::BadRequest,
                 message: e.to_string(),
             },
@@ -406,7 +404,10 @@ impl ReplicaState {
 
     /// Every field is absolute; NaN means "leave what the fold produced", and a
     /// vector field with any NaN component is dropped whole.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a wasm-bindgen export takes each field as its own scalar"
+    )]
     pub fn set_scratch_transform(
         &mut self,
         node: &str,
@@ -641,8 +642,7 @@ impl ReplicaState {
             .node(&id)
             .and_then(|n| n.parent())
             .and_then(|p| self.puppet.node_idx(p))
-            .map(|idx| self.puppet.transforms().get(idx))
-            .unwrap_or(Mat4::IDENTITY);
+            .map_or(Mat4::IDENTITY, |idx| self.puppet.transforms().get(idx));
         let local = parent.inverse().transform_vector3(Vec3::new(dx, dy, 0.0));
         if !local.is_finite() {
             return Some(authored);
@@ -668,10 +668,9 @@ impl ReplicaState {
     /// not integrate the whole gap.
     pub fn frame(&mut self, now_ms: f64) -> bool {
         if self.last_frame_ms != Some(now_ms) {
-            let dt = self
-                .last_frame_ms
-                .map(|last| ((now_ms - last) / 1000.0).clamp(0.0, 0.1) as f32)
-                .unwrap_or(0.0);
+            let dt = self.last_frame_ms.map_or(0.0, |last| {
+                ((now_ms - last) / 1000.0).clamp(0.0, 0.1) as f32
+            });
             self.last_frame_ms = Some(now_ms);
             self.moving = self.tick(dt);
         }
@@ -801,7 +800,10 @@ pub(crate) mod browser {
                 // `Arc` because that is what a renderer shares pipelines
                 // through; on wasm there is one thread and nothing to send,
                 // exactly as in `WgpuRenderer::new`.
-                #[allow(clippy::arc_with_non_send_sync)]
+                #[allow(
+                    clippy::arc_with_non_send_sync,
+                    reason = "fires only on wasm32, where wgpu types are not Send"
+                )]
                 renderer: WgpuRenderer::from_pipelines(
                     gpu.device.clone(),
                     gpu.queue.clone(),
@@ -1058,7 +1060,10 @@ pub(crate) mod browser {
         /// Absolute values, the ones a `node_set` patch will commit. NaN means
         /// "leave what the fold produced" for that field.
         #[wasm_bindgen(js_name = scratchTransform)]
-        #[allow(clippy::too_many_arguments)]
+        #[expect(
+            clippy::too_many_arguments,
+            reason = "a wasm-bindgen export takes each field as its own scalar"
+        )]
         pub fn scratch_transform(
             &self,
             node: &str,
@@ -1224,7 +1229,6 @@ fn wire_u64(value: f64) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
     use crate::CatchlightEditor;
@@ -1265,12 +1269,7 @@ mod tests {
         reply["body"]["texture"].as_str().unwrap().to_string()
     }
 
-    fn with_texture(
-        editor: &CatchlightEditor,
-        id: u64,
-        session: SessionId,
-        node: &str,
-    ) -> serde_json::Value {
+    fn with_texture(editor: &CatchlightEditor, id: u64, session: SessionId, node: &str) -> Value {
         let mut attachments = Attachments::none();
         attachments.insert("texture", one_pixel_png());
         let (reply, _) = editor.dispatch_with(
@@ -1285,7 +1284,7 @@ mod tests {
     fn structure_of(editor: &CatchlightEditor, session: SessionId) -> Vec<u8> {
         editor
             .editor()
-            .with_model(session, |m| m.to_structure_bytes())
+            .with_model(session, Model::to_structure_bytes)
             .unwrap()
             .unwrap()
     }
@@ -1413,7 +1412,7 @@ mod tests {
             .to_string(),
             attachments,
         );
-        let reply: serde_json::Value = serde_json::from_str(&reply).unwrap();
+        let reply: Value = serde_json::from_str(&reply).unwrap();
         assert_eq!(reply["reply"], "ok", "reply was {reply}");
     }
 
@@ -1954,7 +1953,7 @@ mod tests {
         let mut motions = Vec::new();
         let mut previous_ms = 0.0f64;
         for step in 0..30 {
-            let now_ms = step as f64 * 16.0;
+            let now_ms = f64::from(step) * 16.0;
             alone.frame(now_ms);
 
             let first = shared.frame(now_ms);

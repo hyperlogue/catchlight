@@ -1,5 +1,3 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-
 use catchlight_extension_expressions::{
     EMOTIONS, Target, VISEME_CONTROLS, VISEMES, standard_visemes,
 };

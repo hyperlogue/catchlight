@@ -245,7 +245,7 @@ impl Model {
                 id,
                 field,
                 owner: owner.to_string(),
-            })
+            });
         };
 
         for id in self.nodes_in_order() {
@@ -364,7 +364,7 @@ impl Model {
     }
 
     /// On failure this model is untouched; on success the generation is bumped once.
-    pub fn install(&mut self, addon: &Model) -> Result<Installed, InstallError> {
+    pub fn install(&mut self, addon: &Self) -> Result<Installed, InstallError> {
         self.check_install(addon)?;
         let merges = self.plan_extension_merges(addon)?;
         let order = addon.nodes_in_order();
@@ -438,7 +438,7 @@ impl Model {
 
     /// Refuses before anything changes: an unregistered key, data either side
     /// cannot read, or a merge the extension refuses.
-    fn plan_extension_merges(&self, addon: &Model) -> Result<Vec<Merge>, InstallError> {
+    fn plan_extension_merges(&self, addon: &Self) -> Result<Vec<Merge>, InstallError> {
         let mut merges = Vec::new();
         for (key, stored) in &addon.extensions.map {
             let refused = |why: Unread| InstallError::ExtensionUnread {
@@ -484,7 +484,7 @@ impl Model {
         Ok(merges)
     }
 
-    fn check_install(&self, addon: &Model) -> Result<(), InstallError> {
+    fn check_install(&self, addon: &Self) -> Result<(), InstallError> {
         for r in &addon.roots {
             if addon.nodes.get(r).is_some_and(|n| n.parent.is_none()) {
                 return Err(InstallError::NotAnAddon {
@@ -532,7 +532,7 @@ impl Model {
             }
         }
 
-        for req in addon.requirements().iter() {
+        for req in &addon.requirements() {
             let held = match &req.id {
                 Required::Node(id) => self.nodes.contains_key(id),
                 Required::Drawable(id) => self
@@ -620,7 +620,7 @@ impl Model {
     /// A parentless root (or one not here, or nested in another given) is dropped:
     /// it would yield a model neither reader accepts. A texture a part left behind
     /// also draws is copied, not moved.
-    pub fn extract(&self, roots: &[NodeId]) -> Model {
+    pub fn extract(&self, roots: &[NodeId]) -> Self {
         let given: HashSet<&NodeId> = roots
             .iter()
             .filter(|r| self.nodes.get(*r).is_some_and(|n| n.parent.is_some()))
@@ -654,8 +654,8 @@ impl Model {
             .filter_map(|t| self.textures.get(t).map(|v| (t.clone(), v.clone())))
             .collect();
 
-        Model {
-            identity: super::next_identity(),
+        Self {
+            identity: next_identity(),
             generation: 0,
             welds: self
                 .welds
@@ -791,8 +791,8 @@ mod tests {
 
     fn texture(byte: u8) -> ModelTexture {
         ModelTexture {
-            encoding: crate::formats::clm::TextureEncoding::Png,
-            alpha: crate::formats::clm::TextureAlpha::Straight,
+            encoding: TextureEncoding::Png,
+            alpha: TextureAlpha::Straight,
             data: vec![byte; 4].into(),
         }
     }
@@ -1119,7 +1119,7 @@ mod tests {
         assert_eq!(
             composite.install(&addon).unwrap_err().to_string(),
             InstallError::Missing {
-                id: Required::Part(b.body.clone()),
+                id: Required::Part(b.body),
                 field: "weld end",
                 owner: hat.to_string(),
             }
@@ -1186,7 +1186,7 @@ mod tests {
         addon.bindings.clear();
         addon.nodes.get_mut(&hat).unwrap().kind = ModelNodeKind::Group;
 
-        let mut merged = b.m.clone();
+        let mut merged = b.m;
         let err = merged.install(&addon).unwrap_err();
         assert!(
             matches!(&err, InstallError::WeldEndNotAPart { node, kind: "group" }
@@ -1268,14 +1268,14 @@ mod tests {
 
     #[test]
     fn a_texture_id_the_base_already_has_is_refused() {
-        let b = base();
+        let mut b = base();
         let mut addon = hat_addon(&b);
         let hat = named(&addon, "Hat");
         addon
             .add_texture_with_id(b.tex.clone(), &hat, texture(3))
             .unwrap();
         assert_eq!(
-            b.m.clone().install(&addon).unwrap_err().to_string(),
+            b.m.install(&addon).unwrap_err().to_string(),
             InstallError::Collision {
                 kind: "texture",
                 id: b.tex.to_string(),
@@ -1286,7 +1286,7 @@ mod tests {
 
     #[test]
     fn an_addon_never_carries_a_param() {
-        let b = base();
+        let mut b = base();
         let mut addon = hat_addon(&b);
         let mine = ParamId::new("mine").unwrap();
         addon
@@ -1296,7 +1296,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(
-            b.m.clone().install(&addon).unwrap_err().to_string(),
+            b.m.install(&addon).unwrap_err().to_string(),
             InstallError::CarriesParam {
                 param: mine.to_string()
             }
@@ -1306,7 +1306,7 @@ mod tests {
 
     #[test]
     fn an_addon_binds_only_its_own_nodes() {
-        let b = base();
+        let mut b = base();
         let addon = author(&b, |m, hex| {
             let hat = m
                 .add_node(
@@ -1323,13 +1323,13 @@ mod tests {
         let key = BindingKey::new(b.param.clone(), b.body.clone(), BindingTarget::Deform);
         addon.bindings.push(ModelBinding {
             key_positions: vec![vec![0.0, 1.0]],
-            key: key.clone(),
+            key,
             interpolate_mode: InterpolateMode::Linear,
             values: deform_values(),
             dense: OnceLock::new(),
         });
         assert_eq!(
-            b.m.clone().install(&addon).unwrap_err().to_string(),
+            b.m.install(&addon).unwrap_err().to_string(),
             InstallError::BindsOffAddon {
                 node: b.body.to_string(),
                 target: "deform",
@@ -1339,15 +1339,15 @@ mod tests {
     }
 
     fn deform_values() -> ModelBindingValues {
-        ClmBindingValues::Deform(crate::formats::clm::ClmCells { cells: Vec::new() }).into()
+        ClmBindingValues::Deform(clm::ClmCells { cells: Vec::new() }).into()
     }
 
     #[test]
     fn a_complete_model_is_not_an_addon() {
-        let b = base();
+        let mut b = base();
         let other = base();
         assert_eq!(
-            b.m.clone().install(&other.m).unwrap_err().to_string(),
+            b.m.install(&other.m).unwrap_err().to_string(),
             InstallError::NotAnAddon {
                 node: other.m.root().unwrap().to_string(),
             }
@@ -1495,7 +1495,7 @@ mod tests {
             listed(&addon.requirements())
         );
 
-        let (mut direct, mut through_a_file) = (b.m.clone(), b.m.clone());
+        let (mut direct, mut through_a_file) = (b.m.clone(), b.m);
         direct.install(&addon).unwrap();
         through_a_file.install(&reopened).unwrap();
         assert_eq!(
@@ -1619,7 +1619,7 @@ mod tests {
         addon.delete_node(&sway).unwrap();
         assert_eq!(addon.roots(), std::slice::from_ref(&hat));
 
-        let mut m = b.m.clone();
+        let mut m = b.m;
         m.install(&addon).unwrap();
         assert_eq!(m.node(&copy).unwrap().parent(), Some(&hat));
     }

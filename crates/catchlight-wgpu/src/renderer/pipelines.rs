@@ -138,7 +138,7 @@ impl MaskPipelines {
 }
 
 /// Shared across every puppet in one world; built once per (device,
-/// surface_format).
+/// `surface_format`).
 pub struct Pipelines {
     pub surface_format: wgpu::TextureFormat,
     pub(crate) parts: BlendPipelines,
@@ -175,8 +175,7 @@ fn is_gl(device: &wgpu::Device) -> bool {
 
 fn stencil_forced_off() -> bool {
     std::env::var("CATCHLIGHT_DISABLE_STENCIL")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
+        .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
 }
 
 fn sampled_texture_layout(device: &wgpu::Device, label: &str) -> wgpu::BindGroupLayout {
@@ -231,7 +230,7 @@ fn stencil_only(
 
 impl Pipelines {
     /// GL devices (WebGL2 included) get the alpha-discard mask fallback,
-    /// because Chromium's software WebGL2 fails Depth24PlusStencil8;
+    /// because Chromium's software WebGL2 fails `Depth24PlusStencil8`;
     /// `CATCHLIGHT_DISABLE_STENCIL=1` forces it elsewhere.
     pub fn new(device: &wgpu::Device, surface_format: wgpu::TextureFormat) -> Self {
         let has_stencil = !stencil_forced_off() && !is_gl(device);
@@ -273,7 +272,7 @@ impl Pipelines {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: true,
                         min_binding_size: std::num::NonZeroU64::new(
-                            std::mem::size_of::<CameraUniform>() as u64,
+                            size_of::<CameraUniform>() as u64
                         ),
                     },
                     count: None,
@@ -282,8 +281,8 @@ impl Pipelines {
             });
 
         let camera_stride = {
-            let align = device.limits().min_uniform_buffer_offset_alignment as u64;
-            (std::mem::size_of::<CameraUniform>() as u64).div_ceil(align) * align
+            let align = u64::from(device.limits().min_uniform_buffer_offset_alignment);
+            (size_of::<CameraUniform>() as u64).div_ceil(align) * align
         };
 
         let texture_bind_group_layout = sampled_texture_layout(device, "texture_bind_group_layout");
@@ -297,7 +296,7 @@ impl Pipelines {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: true,
                         min_binding_size: std::num::NonZeroU64::new(
-                            std::mem::size_of::<PartUniform>() as u64,
+                            size_of::<PartUniform>() as u64,
                         ),
                     },
                     count: None,
@@ -305,9 +304,9 @@ impl Pipelines {
                 label: Some("part_uniform_bind_group_layout"),
             });
 
-        let alignment = device.limits().min_uniform_buffer_offset_alignment as u64;
+        let alignment = u64::from(device.limits().min_uniform_buffer_offset_alignment);
         let part_uniform_stride = {
-            let raw = std::mem::size_of::<PartUniform>() as u64;
+            let raw = size_of::<PartUniform>() as u64;
             raw.div_ceil(alignment) * alignment
         };
 
@@ -338,7 +337,7 @@ impl Pipelines {
         let parts = BlendPipelines::build(|blend_mode| {
             make_render_pipeline(
                 device,
-                &format!("Render Pipeline {:?}", blend_mode),
+                &format!("Render Pipeline {blend_mode:?}"),
                 &render_pipeline_layout,
                 &shader,
                 "vs_main",
@@ -375,7 +374,7 @@ impl Pipelines {
         let blits = BlendPipelines::build(|blend_mode| {
             make_render_pipeline(
                 device,
-                &format!("Blit Pipeline {:?}", blend_mode),
+                &format!("Blit Pipeline {blend_mode:?}"),
                 &blit_pipeline_layout,
                 &blit_shader,
                 "vs_main",
@@ -426,7 +425,7 @@ impl Pipelines {
         let blit_dst_in_shader_pipelines = ShaderBlend::ALL.map(|blend| {
             make_render_pipeline(
                 device,
-                &format!("Blit (dst-in-shader) Pipeline {:?}", blend),
+                &format!("Blit (dst-in-shader) Pipeline {blend:?}"),
                 &blit_dst_in_shader_layout,
                 &blit_dst_in_shader_module,
                 "vs_main",
@@ -499,7 +498,7 @@ impl Pipelines {
             let masked = BlendPipelines::build(|blend_mode| {
                 make_render_pipeline(
                     device,
-                    &format!("Masked Render Pipeline {:?}", blend_mode),
+                    &format!("Masked Render Pipeline {blend_mode:?}"),
                     &render_pipeline_layout,
                     &shader,
                     "vs_main",
@@ -515,7 +514,7 @@ impl Pipelines {
             let masked_blit = BlendPipelines::build(|blend_mode| {
                 make_render_pipeline(
                     device,
-                    &format!("Masked Blit Pipeline {:?}", blend_mode),
+                    &format!("Masked Blit Pipeline {blend_mode:?}"),
                     &blit_pipeline_layout,
                     &blit_shader,
                     "vs_main",
@@ -637,7 +636,7 @@ impl Pipelines {
             let masked = BlendPipelines::build(|blend_mode| {
                 make_render_pipeline(
                     device,
-                    &format!("Masked (Sampled) Pipeline {:?}", blend_mode),
+                    &format!("Masked (Sampled) Pipeline {blend_mode:?}"),
                     &masked_part_layout,
                     &shader,
                     "vs_main",
@@ -653,7 +652,7 @@ impl Pipelines {
             let masked_blit = BlendPipelines::build(|blend_mode| {
                 make_render_pipeline(
                     device,
-                    &format!("Masked Blit (Sampled) Pipeline {:?}", blend_mode),
+                    &format!("Masked Blit (Sampled) Pipeline {blend_mode:?}"),
                     &masked_blit_layout,
                     &blit_shader,
                     "vs_main",
@@ -830,7 +829,10 @@ impl<'a> Shader<'a> {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each pipeline differs in shader, layout, blend and target state"
+)]
 fn make_render_pipeline(
     device: &wgpu::Device,
     label: &str,

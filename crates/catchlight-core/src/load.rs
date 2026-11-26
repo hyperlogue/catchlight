@@ -12,17 +12,15 @@ pub enum ModelFormat {
 
 impl ModelFormat {
     /// Case-insensitive. `.inx` / `.inp` are imported, not loaded.
-    pub fn from_path(path: &Path) -> Option<ModelFormat> {
+    pub fn from_path(path: &Path) -> Option<Self> {
         match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
-            "clm" => Some(ModelFormat::Clm),
+            "clm" => Some(Self::Clm),
             _ => None,
         }
     }
 
-    pub fn sniff(bytes: &[u8]) -> Option<ModelFormat> {
-        bytes
-            .starts_with(&clm::MAGIC[..])
-            .then_some(ModelFormat::Clm)
+    pub fn sniff(bytes: &[u8]) -> Option<Self> {
+        bytes.starts_with(&clm::MAGIC[..]).then_some(Self::Clm)
     }
 }
 
