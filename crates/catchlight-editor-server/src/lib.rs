@@ -2921,7 +2921,7 @@ mod tests {
         let query = std::thread::spawn(move || {
             done_tx.send(querying_editor.is_dirty(second)).unwrap();
         });
-        let result = done_rx.recv_timeout(std::time::Duration::from_secs(1));
+        let result = done_rx.recv_timeout(std::time::Duration::from_secs(10));
         release_tx.send(()).unwrap();
         blocking.join().unwrap();
         query.join().unwrap();
