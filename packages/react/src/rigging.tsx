@@ -76,15 +76,28 @@ export function MeshPanel({ session, info, onError }: AuthoringPanelProps) {
               </select>
             </Field>
             {mode === "contour" ? (
-              <Field label="Spacing">
-                <NumberField
-                  label="Mesh spacing"
-                  value={spacing}
-                  min={1}
-                  unit="px"
-                  onCommit={setSpacing}
-                />
-              </Field>
+              <>
+                <Field label="Spacing">
+                  <NumberField
+                    label="Mesh spacing"
+                    value={spacing}
+                    min={1}
+                    unit="px"
+                    onCommit={setSpacing}
+                  />
+                </Field>
+                <Field label="Margin">
+                  <NumberField
+                    label="Mesh margin"
+                    value={margin}
+                    min={0}
+                    max={128}
+                    step={1}
+                    unit="px"
+                    onCommit={setMargin}
+                  />
+                </Field>
+              </>
             ) : (
               <Field label="Grid size">
                 <NumberField
@@ -107,15 +120,6 @@ export function MeshPanel({ session, info, onError }: AuthoringPanelProps) {
                 />
               </Field>
             )}
-            <Field label="Margin">
-              <NumberField
-                label="Mesh margin"
-                value={margin}
-                min={0}
-                unit="px"
-                onCommit={setMargin}
-              />
-            </Field>
             <button
               type="button"
               data-catchlight-action=""
@@ -126,7 +130,7 @@ export function MeshPanel({ session, info, onError }: AuthoringPanelProps) {
                   mode:
                     mode === "contour"
                       ? { mode, spacing, margin }
-                      : { mode, cols, rows, margin },
+                      : { mode, cols, rows },
                 })
               }
             >
