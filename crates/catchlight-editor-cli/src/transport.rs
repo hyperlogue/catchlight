@@ -31,8 +31,10 @@ pub(super) struct Target {
 }
 
 pub(super) enum Transport {
+    /// One reader for the connection's life, so bytes read past a reply
+    /// stay buffered for the next call.
     #[cfg(unix)]
-    Socket(UnixStream),
+    Socket(BufReader<UnixStream>),
     Http(Http),
 }
 
@@ -106,7 +108,7 @@ pub(super) fn resolve(target: &Target) -> Result<(Transport, Endpoint)> {
         match UnixStream::connect(&path) {
             Ok(stream) => {
                 let endpoint = Endpoint::Socket(std::path::absolute(&path)?);
-                return Ok((Transport::Socket(stream), endpoint));
+                return Ok((Transport::Socket(BufReader::new(stream)), endpoint));
             }
             Err(err)
                 if matches!(
@@ -144,7 +146,7 @@ fn connect_socket(path: &Path) -> Result<Transport> {
         other => other,
     };
     stream
-        .map(Transport::Socket)
+        .map(|stream| Transport::Socket(BufReader::new(stream)))
         .with_context(|| format!("cannot connect to the editor at {}", path.display()))
 }
 
@@ -203,11 +205,7 @@ fn recorded() -> Option<(PathBuf, Connection)> {
 
 impl Transport {
     pub fn call(&mut self, req: Request, siblings: Map<String, Value>) -> Result<Reply> {
-        let tag = serde_json::to_value(&req.command)?
-            .get("cmd")
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-            .unwrap_or_default();
+        let tag = req.command.tag();
         let carries_payload = COMMAND_BYTES
             .iter()
             .any(|(name, bytes)| *name == tag && bytes.payload);
@@ -223,28 +221,29 @@ impl Transport {
 }
 
 #[cfg(unix)]
-pub(super) fn call_socket(
-    stream: &mut UnixStream,
+fn call_socket(
+    stream: &mut BufReader<UnixStream>,
     req: Request,
     siblings: Map<String, Value>,
 ) -> Result<Reply> {
     let want = req.id;
-    let mut line = match serde_json::to_value(&req)? {
-        Value::Object(mut object) if !siblings.is_empty() => {
-            object.extend(siblings);
-            serde_json::to_string(&object)?
-        }
-        value => serde_json::to_string(&value)?,
+    let mut line = if siblings.is_empty() {
+        serde_json::to_string(&req)?
+    } else {
+        let Value::Object(mut object) = serde_json::to_value(&req)? else {
+            bail!("a request did not serialize as an object");
+        };
+        object.extend(siblings);
+        serde_json::to_string(&object)?
     };
     line.push('\n');
     if line.len() > MAX_COMMAND_BYTES {
         bail!("request exceeds the 1 MiB command limit; split independent edits into explicit batches");
     }
-    stream.write_all(line.as_bytes())?;
-    let mut reader = BufReader::new(stream.try_clone()?);
+    stream.get_mut().write_all(line.as_bytes())?;
     loop {
         let mut buf = String::new();
-        if reader.read_line(&mut buf)? == 0 {
+        if stream.read_line(&mut buf)? == 0 {
             bail!("server closed the connection");
         }
         let buf = buf.trim();
@@ -451,6 +450,42 @@ fn write_payload(out: &Path, bytes: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_reply_read_ahead_answers_the_next_call() {
+        use catchlight_editor_protocol::{Command, ResponseBody, SessionId};
+        let (client, server) = UnixStream::pair().unwrap();
+        let editor = std::thread::spawn(move || {
+            let mut server = BufReader::new(server);
+            let mut line = String::new();
+            server.read_line(&mut line).unwrap();
+            assert!(line.starts_with(r#"{"id":1,"#), "{line}");
+            let reply = |id| {
+                serde_json::to_string(&Reply::Ok {
+                    id,
+                    rev: Some(id),
+                    body: ResponseBody::Empty,
+                })
+                .unwrap()
+            };
+            write!(server.get_mut(), "{}\n{}\n", reply(1), reply(2)).unwrap();
+            line.clear();
+            server.read_line(&mut line).unwrap();
+        });
+        let mut transport = Transport::Socket(BufReader::new(client));
+        for id in [1, 2] {
+            let req = Request {
+                id,
+                command: Command::Status {
+                    session: SessionId(1),
+                },
+            };
+            let reply = transport.call(req, Map::new()).unwrap();
+            assert!(matches!(reply, Reply::Ok { rev: Some(rev), .. } if rev == id));
+        }
+        editor.join().unwrap();
+    }
 
     #[test]
     fn only_loopback_urls_carry_the_token() {

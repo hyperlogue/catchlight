@@ -933,7 +933,7 @@ mod tests {
         ])
         .unwrap();
         let (client, server) = std::os::unix::net::UnixStream::pair().unwrap();
-        let mut client = transport::Transport::Socket(client);
+        let mut client = transport::Transport::Socket(BufReader::new(client));
         let handler = std::thread::spawn(move || {
             let mut reader = BufReader::new(server);
             let mut line = String::new();
