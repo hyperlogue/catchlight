@@ -117,35 +117,34 @@ pub(super) fn bind_unix_listener(path: &Path) -> std::io::Result<UnixListener> {
     UnixListener::bind(path)
 }
 
+/// Held while a server checks for and replaces a stale socket. The file is
+/// never removed: the OS releases the lock when its holder exits, however it
+/// exits, so a killed server cannot block the next one.
 struct SocketStartupLock {
-    path: PathBuf,
+    _file: std::fs::File,
 }
 
 impl SocketStartupLock {
     fn acquire(socket_path: &Path) -> std::io::Result<Self> {
-        let lock_path = socket_path.with_extension("sock.lock");
-        match std::fs::OpenOptions::new()
+        let file = std::fs::OpenOptions::new()
             .write(true)
-            .create_new(true)
+            .create(true)
+            .truncate(false)
             .mode(0o600)
-            .open(&lock_path)
-        {
-            Ok(_) => Ok(Self { path: lock_path }),
-            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::WouldBlock,
-                    format!("another server is starting at {}", socket_path.display()),
-                ))
-            }
-            Err(err) => Err(err),
+            .open(socket_lock_path(socket_path))?;
+        match file.try_lock() {
+            Ok(()) => Ok(Self { _file: file }),
+            Err(std::fs::TryLockError::WouldBlock) => Err(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                format!("another server is starting at {}", socket_path.display()),
+            )),
+            Err(std::fs::TryLockError::Error(err)) => Err(err),
         }
     }
 }
 
-impl Drop for SocketStartupLock {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
-    }
+pub(super) fn socket_lock_path(socket_path: &Path) -> PathBuf {
+    socket_path.with_extension("sock.lock")
 }
 
 pub(super) fn serve_connection(editor: &Editor, stream: UnixStream) {

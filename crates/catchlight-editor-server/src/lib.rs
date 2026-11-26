@@ -1937,7 +1937,7 @@ pub use catchlight_editor_protocol::default_socket_path;
 pub use transport::serve_unix;
 #[cfg(all(unix, test))]
 use transport::{
-    bind_unix_listener, serve_connection, ConnectionLimiter, MAX_REQUEST_BYTES,
+    bind_unix_listener, serve_connection, socket_lock_path, ConnectionLimiter, MAX_REQUEST_BYTES,
     MAX_SOCKET_CONNECTIONS,
 };
 
@@ -2542,6 +2542,25 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn socket_startup_survives_the_lock_of_a_server_that_died() {
+        let path = socket_test_path("lock");
+        let lock = socket_lock_path(&path);
+        std::fs::write(&lock, b"").unwrap();
+
+        let listener = bind_unix_listener(&path).unwrap();
+        drop(listener);
+        std::fs::remove_file(&path).unwrap();
+
+        let held = std::fs::File::open(&lock).unwrap();
+        held.lock().unwrap();
+        let err = bind_unix_listener(&path).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::WouldBlock);
+        drop(held);
+        std::fs::remove_file(lock).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn socket_startup_does_not_replace_a_regular_file() {
         let path = socket_test_path("regular");
         std::fs::write(&path, b"keep").unwrap();
@@ -2550,6 +2569,7 @@ mod tests {
 
         assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
         assert_eq!(std::fs::read(&path).unwrap(), b"keep");
+        std::fs::remove_file(socket_lock_path(&path)).unwrap();
         std::fs::remove_file(path).unwrap();
     }
 
@@ -2564,6 +2584,7 @@ mod tests {
         assert_eq!(err.kind(), std::io::ErrorKind::AddrInUse);
         UnixStream::connect(&path).unwrap();
         drop(listener);
+        std::fs::remove_file(socket_lock_path(&path)).unwrap();
         std::fs::remove_file(path).unwrap();
     }
 
@@ -2578,6 +2599,7 @@ mod tests {
 
         UnixStream::connect(&path).unwrap();
         drop(listener);
+        std::fs::remove_file(socket_lock_path(&path)).unwrap();
         std::fs::remove_file(path).unwrap();
     }
 
