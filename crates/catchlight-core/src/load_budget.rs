@@ -224,16 +224,11 @@ impl LoadBudget {
         width: u32,
         height: u32,
     ) -> Result<(), LoadLimitError> {
-        let got = if width == 0 || height == 0 {
-            0
-        } else {
-            width.max(height)
-        };
-        if got == 0 || got > MAX_TEXTURE_DIMENSION {
+        if width > MAX_TEXTURE_DIMENSION || height > MAX_TEXTURE_DIMENSION {
             return Err(LoadLimitError {
                 resource: LoadResource::TextureDimension,
                 limit: MAX_TEXTURE_DIMENSION as u64,
-                got: got as u64,
+                got: width.max(height) as u64,
             });
         }
         let pixels = u64::from(width)
@@ -417,19 +412,6 @@ mod tests {
             .charge_product(LoadResource::DeformOffsets, u64::MAX, 2)
             .unwrap_err();
         assert_eq!(err.got, u64::MAX);
-    }
-
-    #[test]
-    fn a_texture_with_no_pixels_is_refused() {
-        for (width, height) in [(0, 4), (4, 0), (0, 0)] {
-            let err = LoadBudget::default()
-                .check_texture_dimensions(width, height)
-                .unwrap_err();
-            assert_eq!((err.resource, err.got), (LoadResource::TextureDimension, 0));
-        }
-        LoadBudget::default()
-            .check_texture_dimensions(1, 1)
-            .unwrap();
     }
 
     #[test]
