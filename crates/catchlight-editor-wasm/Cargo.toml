@@ -2,6 +2,7 @@
 name = "catchlight-editor-wasm"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "The browser boundary for the catchlight editor: one wasm-bindgen surface over the editor server"

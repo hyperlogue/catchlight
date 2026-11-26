@@ -2,6 +2,7 @@
 name = "catchlight"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "2.5D character animation through mesh deformation, with optional wgpu and Bevy integration"
