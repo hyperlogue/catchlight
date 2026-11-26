@@ -10,6 +10,7 @@
 //! collected into with *its* puppet's frame.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use bevy::asset::RenderAssetUsages;
 use bevy::camera::RenderTarget;
@@ -23,6 +24,7 @@ use bevy::render::RenderPlugin;
 use bevy::window::{ExitCondition, WindowPlugin};
 use catchlight_bevy::{
     CatchlightCamera, CatchlightModel, CatchlightPlugin, CatchlightPuppet, CatchlightRenderState,
+    CatchlightSettings,
 };
 use catchlight_core::Model;
 use wgpu::{Extent3d, TextureDimension, TextureFormat, TextureUsages};
@@ -179,6 +181,48 @@ fn update_drawing(app: &mut App, target: &Handle<Image>, frames: usize, what: &s
         assert!(drawn > 1000, "{what}: frame {frame} drew {drawn} pixels");
     }
     pixels
+}
+
+static PREPARE_FAILURES: AtomicUsize = AtomicUsize::new(0);
+
+/// Counts the "preparing the render cache failed" errors logged anywhere in
+/// this process. Render systems run on pool threads, so the subscriber has
+/// to be the global one.
+struct PrepareFailureCounter;
+
+impl tracing::Subscriber for PrepareFailureCounter {
+    fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+        *metadata.level() == tracing::Level::ERROR
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn event(&self, event: &tracing::Event<'_>) {
+        struct Message(String);
+        impl tracing::field::Visit for Message {
+            fn record_debug(&mut self, _: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                self.0 += &format!("{value:?}");
+            }
+        }
+        let mut message = Message(String::new());
+        event.record(&mut message);
+        if message.0.contains("preparing the render cache failed") {
+            PREPARE_FAILURES.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
+fn prepare_failures() -> usize {
+    static INSTALL: std::sync::Once = std::sync::Once::new();
+    INSTALL.call_once(|| {
+        tracing::subscriber::set_global_default(PrepareFailureCounter)
+            .expect("no other subscriber in this binary");
+    });
+    PREPARE_FAILURES.load(Ordering::SeqCst)
 }
 
 fn render_entity(app: &App, entity: Entity) -> Entity {
@@ -579,4 +623,59 @@ fn replacing_the_asset_value_re_prepares_the_cache() {
 
     assert!(drawn_pixels(&after) > 1000, "the replacement draws");
     assert_ne!(before, after, "and it is what reaches the target");
+}
+
+#[test]
+fn a_failed_prepare_is_retried_only_once_the_options_change() {
+    let mut app = render_app();
+    let target = offscreen_target(&mut app);
+    app.world_mut().spawn((
+        Camera2d,
+        Camera {
+            clear_color: ClearColorConfig::Custom(Color::NONE),
+            ..default()
+        },
+        RenderTarget::Image(target.clone().into()),
+        CatchlightCamera,
+    ));
+    let over_budget = |halvings| CatchlightSettings {
+        prepare: catchlight_wgpu::PrepareOptions {
+            texture_halvings: halvings,
+            max_decoded_texture_bytes: 1,
+        },
+    };
+    app.insert_resource(over_budget(0));
+    let model = app
+        .world_mut()
+        .resource_mut::<Assets<CatchlightModel>>()
+        .add(CatchlightModel::new(fixture("welded_seam")));
+    app.world_mut().spawn((
+        CatchlightPuppet::new(model),
+        Transform::from_scale(Vec3::splat(0.4)),
+    ));
+
+    let start = prepare_failures();
+    for _ in 0..5 {
+        app.update();
+    }
+    assert_eq!(prepare_failures() - start, 1, "five frames, one attempt");
+
+    app.insert_resource(over_budget(1));
+    for _ in 0..5 {
+        app.update();
+    }
+    assert_eq!(
+        prepare_failures() - start,
+        2,
+        "new options, one more attempt"
+    );
+
+    app.insert_resource(CatchlightSettings::default());
+    for _ in 0..3 {
+        app.update();
+    }
+    assert!(
+        drawn_pixels(&readback(&app, &target)) > 1000,
+        "and within budget it draws"
+    );
 }

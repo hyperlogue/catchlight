@@ -102,6 +102,52 @@ pub(crate) struct ModelKey {
     pub format: wgpu::TextureFormat,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PrepareAttempt {
+    identity: u64,
+    generation: u64,
+    options: PrepareOptions,
+}
+
+/// Failed prepares, so one is retried, and logged, only once the model or
+/// the options change rather than on every frame.
+#[derive(Default)]
+pub(crate) struct PrepareFailures(HashMap<ModelKey, PrepareAttempt>);
+
+impl PrepareFailures {
+    fn attempt(model: &Model, options: PrepareOptions) -> PrepareAttempt {
+        PrepareAttempt {
+            identity: model.identity(),
+            generation: model.generation(),
+            options,
+        }
+    }
+
+    pub(crate) fn failed(&self, key: ModelKey, model: &Model, options: PrepareOptions) -> bool {
+        self.0.get(&key) == Some(&Self::attempt(model, options))
+    }
+
+    pub(crate) fn prepare(
+        &mut self,
+        key: ModelKey,
+        renderer: &mut WgpuRenderer,
+        model: &Model,
+        options: PrepareOptions,
+    ) -> Option<RenderCache> {
+        match RenderCache::prepare(renderer, model, options) {
+            Ok(cache) => {
+                self.0.remove(&key);
+                Some(cache)
+            }
+            Err(error) => {
+                tracing::error!("catchlight: preparing the render cache failed: {error}");
+                self.0.insert(key, Self::attempt(model, options));
+                None
+            }
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct PuppetKey {
     pub entity: Entity,
@@ -164,6 +210,7 @@ pub(crate) struct CatchlightRenderInner {
     pub size: (u32, u32),
     pub(crate) options: PrepareOptions,
     pub(crate) missing_format_warned: bool,
+    pub(crate) failures: PrepareFailures,
     live_scratch: HashSet<Entity>,
     live_models: HashSet<ModelKey>,
 }
@@ -216,23 +263,27 @@ pub(crate) fn prepare_puppets(
                 model: ex.model_id,
                 format: *format,
             };
-            let CatchlightRenderInner { gpus, puppets, .. } = &mut *inner;
+            let CatchlightRenderInner {
+                gpus,
+                puppets,
+                failures,
+                ..
+            } = &mut *inner;
             let model_gpu = match gpus.entry(model_key) {
                 std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
                 std::collections::hash_map::Entry::Vacant(entry) => {
+                    if failures.failed(model_key, &ex.model, options) {
+                        continue;
+                    }
                     let mut renderer = WgpuRenderer::from_pipelines(
                         device.wgpu_device().clone(),
                         (**queue.0).clone(),
                         format_pipelines.clone(),
                     );
-                    let cache = match RenderCache::prepare(&mut renderer, &ex.model, options) {
-                        Ok(cache) => cache,
-                        Err(error) => {
-                            tracing::error!(
-                                "catchlight: preparing the render cache failed: {error}"
-                            );
-                            continue;
-                        }
+                    let Some(cache) =
+                        failures.prepare(model_key, &mut renderer, &ex.model, options)
+                    else {
+                        continue;
                     };
                     let submission = renderer.submission();
                     entry.insert(ModelGpu {
@@ -246,19 +297,21 @@ pub(crate) fn prepare_puppets(
             };
 
             // Lists collected against the old cache name stale slots.
-            if model_gpu.options != options {
-                match RenderCache::prepare(&mut model_gpu.renderer, &model_gpu.model, options) {
-                    Ok(cache) => {
-                        model_gpu.cache = cache;
-                        model_gpu.options = options;
-                        for puppet in puppets.values_mut() {
-                            if puppet.model == model_key {
-                                puppet.collected = false;
-                            }
+            if model_gpu.options != options
+                && !failures.failed(model_key, &model_gpu.model, options)
+            {
+                if let Some(cache) = failures.prepare(
+                    model_key,
+                    &mut model_gpu.renderer,
+                    &model_gpu.model,
+                    options,
+                ) {
+                    model_gpu.cache = cache;
+                    model_gpu.options = options;
+                    for puppet in puppets.values_mut() {
+                        if puppet.model == model_key {
+                            puppet.collected = false;
                         }
-                    }
-                    Err(error) => {
-                        tracing::error!("catchlight: re-preparing with new options: {error}");
                     }
                 }
             }
@@ -300,6 +353,7 @@ pub(crate) fn prepare_puppets(
         puppets,
         live_scratch,
         live_models,
+        failures,
         ..
     } = &mut *inner;
     live_scratch.clear();
@@ -320,6 +374,10 @@ pub(crate) fn prepare_puppets(
         live
     });
     gpus.retain(|key, _| live_models.contains(key));
+    failures.0.retain(|key, _| {
+        view_formats.contains(&key.format)
+            && extracted.iter().any(|(_, ex)| ex.model_id == key.model)
+    });
 
     // Once per frame, not per camera, and after last frame's submit:
     // end_gpu_frame maps the timestamp read buffer.

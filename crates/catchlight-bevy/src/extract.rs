@@ -3,7 +3,6 @@ use std::sync::Arc;
 use bevy::prelude::*;
 use bevy::render::{sync_world::RenderEntity, Extract};
 use catchlight_core::{Model, Puppet};
-use catchlight_wgpu::RenderCache;
 
 use crate::asset::CatchlightModel;
 use crate::components::{CatchlightCamera, CatchlightPuppet};
@@ -125,24 +124,21 @@ fn reprepare_replaced(inner: &mut CatchlightRenderInner, models: &Assets<Catchli
         gpus,
         puppets,
         options,
+        failures,
         ..
     } = inner;
     for (key, gpu) in gpus.iter_mut() {
         let Some(asset) = models.get(key.model) else {
             continue;
         };
-        if gpu.model.identity() == asset.model().identity() {
+        let model = asset.model();
+        if gpu.model.identity() == model.identity() || failures.failed(*key, model, *options) {
             continue;
         }
-        match RenderCache::prepare(&mut gpu.renderer, asset.model(), *options) {
-            Ok(cache) => {
-                gpu.cache = cache;
-                gpu.model = asset.shared().clone();
-                gpu.options = *options;
-            }
-            Err(error) => {
-                tracing::error!("catchlight: preparing the replaced model failed: {error}");
-            }
+        if let Some(cache) = failures.prepare(*key, &mut gpu.renderer, model, *options) {
+            gpu.cache = cache;
+            gpu.model = asset.shared().clone();
+            gpu.options = *options;
         }
         for puppet in puppets.values_mut() {
             if puppet.model == *key {
