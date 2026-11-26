@@ -79,7 +79,7 @@ struct Row {
     moving: bool,
 }
 
-#[derive(Clone, Default)]
+#[derive(Default)]
 pub(super) struct Responses {
     rows: Vec<Row>,
     clock: ResponseClock,
@@ -91,7 +91,26 @@ pub(super) struct Responses {
     geometry_nodes: HashSet<NodeIdx>,
     geometry_welds: Vec<bool>,
     reserved: Vec<bool>,
+    /// A lazy cache, rebuilt from the puppet by the next sample.
     pub(super) sampler: Option<Box<Puppet>>,
+}
+
+impl Clone for Responses {
+    fn clone(&self) -> Self {
+        Self {
+            rows: self.rows.clone(),
+            clock: self.clock,
+            remainder: self.remainder,
+            points: self.points.clone(),
+            positions: self.positions.clone(),
+            point_params: self.point_params.clone(),
+            pose_slots: self.pose_slots.clone(),
+            geometry_nodes: self.geometry_nodes.clone(),
+            geometry_welds: self.geometry_welds.clone(),
+            reserved: self.reserved.clone(),
+            sampler: None,
+        }
+    }
 }
 
 impl Responses {

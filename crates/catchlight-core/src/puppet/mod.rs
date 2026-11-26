@@ -149,6 +149,18 @@ pub struct Puppet {
     located: Vec<Located>,
 }
 
+impl std::fmt::Debug for Puppet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Puppet")
+            .field("model_identity", &self.model_identity)
+            .field("baked_generation", &self.baked_generation)
+            .field("nodes", &self.arena.len())
+            .field("params", &self.params.len())
+            .field("param_generation", &self.param_generation)
+            .finish_non_exhaustive()
+    }
+}
+
 /// A param's range and default as the puppet's bake holds them.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ParamLimits {
