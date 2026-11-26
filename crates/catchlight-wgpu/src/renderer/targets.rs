@@ -334,6 +334,37 @@ pub struct RenderTarget<'a> {
     pub height: u32,
 }
 
+impl RenderTarget<'_> {
+    /// Drops a `texture` the snapshot copy cannot use, warning once, so a
+    /// host's mistake takes the documented fallback instead of failing
+    /// validation mid-frame. The format may differ in sRGB-ness only: a
+    /// surface renders through an sRGB view of its native format.
+    pub(super) fn with_copyable_texture(mut self, format: wgpu::TextureFormat) -> Self {
+        let Some(texture) = self.texture else {
+            return self;
+        };
+        let copyable = texture.usage().contains(wgpu::TextureUsages::COPY_SRC)
+            && texture.format().remove_srgb_suffix() == format.remove_srgb_suffix()
+            && texture.width() == self.width
+            && texture.height() == self.height;
+        if !copyable {
+            static UNUSABLE_WARNED: std::sync::Once = std::sync::Once::new();
+            UNUSABLE_WARNED.call_once(|| {
+                tracing::warn!(
+                    usage = ?texture.usage(),
+                    format = ?texture.format(),
+                    size = ?(texture.width(), texture.height()),
+                    target = ?(format, self.width, self.height),
+                    "the render target's texture lacks COPY_SRC or does not match the \
+                     pipelines' format or the target size; treating it as absent",
+                );
+            });
+            self.texture = None;
+        }
+        self
+    }
+}
+
 /// The viewport-sized scratch one view draws through: its mask target,
 /// composite slots and framebuffer snapshots.
 ///

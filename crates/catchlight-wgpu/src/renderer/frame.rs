@@ -181,6 +181,7 @@ impl WgpuRenderer {
     ) -> RenderStats {
         use crate::collect::DrawableInfo;
 
+        let target = target.with_copyable_texture(self.shared.surface_format);
         let (stencil, composites, snapshots) =
             targets.prepare(&self.shared, &self.device, target.width, target.height);
 

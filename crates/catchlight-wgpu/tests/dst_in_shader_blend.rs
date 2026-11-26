@@ -45,7 +45,21 @@ async fn render_blend(blend: BlendMode, bg_rgba_u8: [u8; 4], src_rgba_u8: [u8; 4
     render_model(make_model(blend, src_rgba_u8), bg_rgba_u8).await
 }
 
+/// What the frame is told about the texture behind its view.
+#[derive(Clone, Copy)]
+enum Snapshot {
+    /// The target itself, so dst-in-shader modes can copy it.
+    Target,
+    None,
+    /// A texture without `COPY_SRC`, which cannot be copied.
+    Uncopyable,
+}
+
 async fn render_model(model: Model, bg_rgba_u8: [u8; 4]) -> Vec<u8> {
+    render_model_with(model, bg_rgba_u8, Snapshot::Target).await
+}
+
+async fn render_model_with(model: Model, bg_rgba_u8: [u8; 4], snapshot: Snapshot) -> Vec<u8> {
     let (device, queue) = common::shared_context();
     let format = wgpu::TextureFormat::Rgba8UnormSrgb;
     let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -63,6 +77,16 @@ async fn render_model(model: Model, bg_rgba_u8: [u8; 4]) -> Vec<u8> {
         view_formats: &[],
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let uncopyable = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("dst-in-shader-test uncopyable"),
+        size: texture.size(),
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
 
     let mut renderer = WgpuRenderer::new(device, queue, format);
     let mut scene = common::Scene::new(&mut renderer, model);
@@ -86,7 +110,11 @@ async fn render_model(model: Model, bg_rgba_u8: [u8; 4]) -> Vec<u8> {
             &[&render_list],
             catchlight_wgpu::RenderTarget {
                 view: &view,
-                texture: Some(&texture),
+                texture: match snapshot {
+                    Snapshot::Target => Some(&texture),
+                    Snapshot::None => None,
+                    Snapshot::Uncopyable => Some(&uncopyable),
+                },
                 width: W,
                 height: H,
             },
@@ -353,5 +381,25 @@ fn overlay_with_normal_fallback_differs_from_overlay_with_snapshot() {
         with_snapshot_center,
         fallback_center,
         max_diff,
+    );
+}
+
+#[test]
+fn an_uncopyable_target_texture_takes_the_normal_fallback() {
+    let bg = [128u8, 128, 128, 255];
+    let src = [204u8, 76, 76, 255];
+    let render = |snapshot| {
+        pollster::block_on(render_model_with(
+            make_model(BlendMode::Overlay, src),
+            bg,
+            snapshot,
+        ))
+    };
+    let uncopyable = render(Snapshot::Uncopyable);
+    assert_eq!(uncopyable, render(Snapshot::None));
+    assert_ne!(
+        uncopyable,
+        render(Snapshot::Target),
+        "the fallback is not the shader blend"
     );
 }
