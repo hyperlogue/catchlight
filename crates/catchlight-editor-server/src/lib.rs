@@ -1894,7 +1894,7 @@ pub use transport::serve_unix;
 #[cfg(all(unix, test))]
 use transport::{
     ConnectionLimiter, MAX_REQUEST_BYTES, MAX_SOCKET_CONNECTIONS, bind_unix_listener,
-    ensure_private_dir, serve_connection, socket_lock_path,
+    ensure_owned_dir, ensure_private_dir, serve_connection, socket_lock_path,
 };
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -2468,13 +2468,16 @@ mod tests {
     #[cfg(unix)]
     static SOCKET_TEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+    /// In a directory of this user's own: the shared temp directory is one
+    /// an explicit socket path is refused in.
     #[cfg(unix)]
     fn socket_test_path(label: &str) -> PathBuf {
         let sequence = SOCKET_TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!(
-            "catchlight-{label}-{}-{sequence}.sock",
-            std::process::id()
-        ))
+        let dir = std::env::temp_dir().join(format!("catchlight-sockets-{}", std::process::id()));
+        std::os::unix::fs::DirBuilderExt::mode(std::fs::DirBuilder::new().recursive(true), 0o700)
+            .create(&dir)
+            .unwrap();
+        dir.join(format!("{label}-{sequence}.sock"))
     }
 
     #[cfg(unix)]
@@ -2522,6 +2525,35 @@ mod tests {
             let err = ensure_private_dir(std::path::Path::new("/")).unwrap_err();
             assert!(err.to_string().contains("another user"), "{err}");
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_named_socket_directory_is_refused_when_others_may_write_to_it_and_kept_as_it_is() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = socket_test_path("named").with_extension("d");
+        std::fs::create_dir(&dir).unwrap();
+        let path = dir.join("server.sock");
+        let mode =
+            |mode| std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(mode)).unwrap();
+        let current = || std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+
+        mode(0o777);
+        let err = bind_unix_listener(&path).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(err.to_string().contains("may write"), "{err}");
+        mode(0o755);
+        drop(bind_unix_listener(&path).unwrap());
+        assert_eq!(
+            current(),
+            0o755,
+            "a directory this user owns is not narrowed"
+        );
+        if rustix::process::getuid().as_raw() != 0 {
+            let err = ensure_owned_dir(std::path::Path::new("/")).unwrap_err();
+            assert!(err.to_string().contains("another user"), "{err}");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[cfg(unix)]

@@ -83,6 +83,8 @@ pub(super) fn bind_unix_listener(path: &Path) -> std::io::Result<UnixListener> {
         // could have made the directory first and swap the socket inside it.
         if path == default_socket_path() {
             ensure_private_dir(parent)?;
+        } else {
+            ensure_owned_dir(parent)?;
         }
     }
 
@@ -125,10 +127,9 @@ pub(super) fn bind_unix_listener(path: &Path) -> std::io::Result<UnixListener> {
     UnixListener::bind(path)
 }
 
-/// Refuses a directory another user owns or may write to. One this user
-/// owns that others may only read is narrowed to `0700`: nobody else can have
-/// put anything in it.
-pub(super) fn ensure_private_dir(dir: &Path) -> std::io::Result<()> {
+/// Refuses a directory another user owns or may write to: they could swap
+/// the socket inside it.
+pub(super) fn ensure_owned_dir(dir: &Path) -> std::io::Result<std::fs::Metadata> {
     let metadata = std::fs::symlink_metadata(dir)?;
     let refuse = |why: &str| {
         Err(std::io::Error::new(
@@ -142,11 +143,16 @@ pub(super) fn ensure_private_dir(dir: &Path) -> std::io::Result<()> {
     if metadata.uid() != rustix::process::getuid().as_raw() {
         return refuse("another user owns it");
     }
-    let mode = metadata.mode();
-    if mode & 0o022 != 0 {
+    if metadata.mode() & 0o022 != 0 {
         return refuse("other users may write to it");
     }
-    if mode & 0o077 != 0 {
+    Ok(metadata)
+}
+
+/// [`ensure_owned_dir`], and narrowed to `0700` when others may read it:
+/// nobody else can have put anything in it.
+pub(super) fn ensure_private_dir(dir: &Path) -> std::io::Result<()> {
+    if ensure_owned_dir(dir)?.mode() & 0o077 != 0 {
         std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
     }
     Ok(())
