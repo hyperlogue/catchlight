@@ -169,6 +169,18 @@ fn drawn_per_half(pixels: &[u8]) -> (usize, usize) {
     (left, right)
 }
 
+/// Runs `frames` updates and requires every one of them to reach the target.
+fn update_drawing(app: &mut App, target: &Handle<Image>, frames: usize, what: &str) -> Vec<u8> {
+    let mut pixels = Vec::new();
+    for frame in 0..frames {
+        app.update();
+        pixels = readback(app, target);
+        let drawn = drawn_pixels(&pixels);
+        assert!(drawn > 1000, "{what}: frame {frame} drew {drawn} pixels");
+    }
+    pixels
+}
+
 fn render_entity(app: &App, entity: Entity) -> Entity {
     app.world()
         .entity(entity)
@@ -426,7 +438,57 @@ fn the_puppet_actually_lands_on_the_camera_target() {
 }
 
 #[test]
-fn swapping_the_model_re_prepares_the_same_cache() {
+fn editing_the_model_draws_every_frame_on_the_same_cache() {
+    let mut app = render_app();
+    let target = offscreen_target(&mut app);
+    app.world_mut().spawn((
+        Camera2d,
+        Camera {
+            clear_color: ClearColorConfig::Custom(Color::NONE),
+            ..default()
+        },
+        RenderTarget::Image(target.clone().into()),
+        CatchlightCamera,
+    ));
+    let handle = app
+        .world_mut()
+        .resource_mut::<Assets<CatchlightModel>>()
+        .add(CatchlightModel::new(fixture("welded_seam")));
+    app.world_mut().spawn((
+        CatchlightPuppet::new(handle.clone()),
+        Transform::from_scale(Vec3::splat(0.4)),
+    ));
+    for _ in 0..4 {
+        app.update();
+    }
+    update_drawing(&mut app, &target, 1, "before the edit");
+
+    for edit in 0..3 {
+        {
+            let mut models = app.world_mut().resource_mut::<Assets<CatchlightModel>>();
+            let mut asset = models.get_mut(&handle).unwrap();
+            let model = asset.model_mut();
+            let param = model.param_ids()[0].clone();
+            model
+                .set_param_name(
+                    &param,
+                    catchlight_core::Name::new(format!("edited {edit}")).unwrap(),
+                )
+                .unwrap();
+        }
+        update_drawing(&mut app, &target, 2, &format!("edit {edit}"));
+    }
+    assert_eq!(
+        app.sub_app(bevy::render::RenderApp)
+            .world()
+            .resource::<CatchlightRenderState>()
+            .resident_caches(),
+        1,
+    );
+}
+
+#[test]
+fn swapping_the_model_replaces_the_cache() {
     let mut app = render_app();
     let target = offscreen_target(&mut app);
     app.world_mut().spawn((
@@ -474,7 +536,7 @@ fn swapping_the_model_re_prepares_the_same_cache() {
             .resource::<CatchlightRenderState>()
             .resident_caches(),
         1,
-        "the swap re-prepares the entity's cache rather than adding one",
+        "the swap releases the old model's cache",
     );
     assert!(drawn_pixels(&after) > 1000, "the new model draws");
     assert_ne!(before, after, "and it is a different model on the target");
@@ -513,10 +575,7 @@ fn replacing_the_asset_value_re_prepares_the_cache() {
         .resource_mut::<Assets<CatchlightModel>>()
         .insert(&handle, CatchlightModel::new(fixture("composite_masks")))
         .expect("replace the model asset");
-    for _ in 0..4 {
-        app.update();
-    }
-    let after = readback(&app, &target);
+    let after = update_drawing(&mut app, &target, 4, "the replacement");
 
     assert!(drawn_pixels(&after) > 1000, "the replacement draws");
     assert_ne!(before, after, "and it is what reaches the target");

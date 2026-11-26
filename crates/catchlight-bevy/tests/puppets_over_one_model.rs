@@ -421,10 +421,9 @@ fn the_asset_server_loads_a_clm_off_disk() {
 #[test]
 fn replacing_the_asset_value_rebakes_the_puppet() {
     // A hot reload, or an `Assets::insert` over a live id: the same handle,
-    // a different model. Nothing about the model says so — every model read
-    // out of a file starts at generation 0, so the generation gate a tick
-    // relies on cannot see the difference — which is why the asset event is
-    // what triggers the rebake.
+    // a different model. Every model read out of a file starts at generation
+    // 0, so the generation gate a tick relies on cannot see the difference;
+    // the model's identity is what triggers the rebake.
     let mut app = headless_app();
     let handle = add_model(&mut app, fixture("welded_seam"));
     let entity = spawn(&mut app, &handle);
@@ -456,4 +455,74 @@ fn replacing_the_asset_value_rebakes_the_puppet() {
         after_nodes,
         "the puppet rebaked against the replacement",
     );
+}
+
+#[test]
+fn editing_the_model_keeps_playback_and_the_pose() {
+    let mut model = fixture("welded_seam");
+    let param = deform_param(&model);
+    *model
+        .extension_or_default::<Animations>()
+        .expect("a fresh extension") = Animations::from_clips([Clip {
+        length: 60,
+        lanes: vec![Lane::new(
+            LaneTarget::Param(param.clone()),
+            InterpolateMode::Linear,
+            vec![
+                Keyframe {
+                    frame: 0,
+                    value: 0.0,
+                },
+                Keyframe {
+                    frame: 60,
+                    value: 1.0,
+                },
+            ],
+        )],
+        ..Clip::new("Pull")
+    }]);
+    let mut app = headless_app();
+    let handle = add_model(&mut app, model);
+    let entity = spawn(&mut app, &handle);
+    app.update();
+    let mut entity_mut = app.world_mut().entity_mut(entity);
+    let mut component = entity_mut.get_mut::<CatchlightPuppet>().unwrap();
+    assert!(component.player_mut().play("Pull"));
+    let (puppet, player) = component.puppet_and_player_mut();
+    player.advance(puppet.unwrap(), 0.5);
+    let before = puppet_value(&app, entity, &param);
+    assert!(before > 0.0, "the clip is under way");
+
+    let generation = {
+        let mut models = app.world_mut().resource_mut::<Assets<CatchlightModel>>();
+        let mut asset = models.get_mut(&handle).unwrap();
+        let model = asset.model_mut();
+        model
+            .set_param_name(&param, catchlight_core::Name::new("edited").unwrap())
+            .expect("rename the param");
+        model.generation()
+    };
+    app.update();
+
+    let component = app
+        .world()
+        .entity(entity)
+        .get::<CatchlightPuppet>()
+        .unwrap();
+    assert_eq!(
+        component.player().playing(),
+        Some("Pull"),
+        "an edit does not restart or stop playback",
+    );
+    assert_eq!(component.puppet().unwrap().baked_generation(), generation);
+    assert!(
+        puppet_value(&app, entity, &param) >= before,
+        "and the clip carries on from where it was",
+    );
+}
+
+fn puppet_value(app: &App, entity: Entity, param: &ParamId) -> f32 {
+    puppet(app, entity)
+        .param_value(param)
+        .expect("the clip drives the param")
 }

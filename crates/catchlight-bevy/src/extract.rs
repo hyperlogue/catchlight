@@ -2,18 +2,18 @@ use std::sync::Arc;
 
 use bevy::prelude::*;
 use bevy::render::{sync_world::RenderEntity, Extract};
-use catchlight_core::Model;
+use catchlight_core::{Model, Puppet};
+use catchlight_wgpu::RenderCache;
 
 use crate::asset::CatchlightModel;
 use crate::components::{CatchlightCamera, CatchlightPuppet};
 use crate::plugin::CatchlightSettings;
-use crate::prepare::{CatchlightRenderInner, CatchlightRenderState, PuppetKey};
+use crate::prepare::{CatchlightRenderInner, CatchlightRenderState, ModelGpu, PuppetKey};
 
 /// Render-world half of a `CatchlightPuppet`, retained across frames.
 #[derive(Component)]
 pub struct ExtractedPuppet {
     pub model: Arc<Model>,
-    /// Informational only: staleness is decided by `model`'s `Arc` identity.
     pub model_id: AssetId<CatchlightModel>,
     /// World-space z; higher renders in front.
     pub z: f32,
@@ -46,6 +46,7 @@ pub(crate) fn extract_puppets(
     let mut inner = state.inner.lock().unwrap();
     inner.options = settings.prepare;
     let formats = inner.formats();
+    reprepare_replaced(&mut inner, &models);
 
     for (puppet_component, transform, visibility, render_entity) in query.iter() {
         let Some(puppet) = puppet_component.puppet() else {
@@ -69,14 +70,19 @@ pub(crate) fn extract_puppets(
                 let Some(model_gpu) = gpus.get_mut(&state.model) else {
                     continue;
                 };
-                // Swapped models; `prepare_puppets` rebinds it this frame.
-                if !Arc::ptr_eq(&model_gpu.model, asset.shared()) {
+                let ModelGpu {
+                    renderer,
+                    cache,
+                    model,
+                    ..
+                } = model_gpu;
+                let Some(model) = refresh_model(model, asset.shared(), puppet) else {
                     state.collected = false;
                     continue;
-                }
-                match model_gpu.cache.refresh_puppet(
-                    &mut model_gpu.renderer,
-                    &model_gpu.model,
+                };
+                match cache.refresh_puppet(
+                    renderer,
+                    model,
                     puppet,
                     state.deform_set,
                     &mut state.render_list,
@@ -110,6 +116,66 @@ pub(crate) fn extract_puppets(
             }
         }
     }
+}
+
+/// Re-prepares, on the same renderer and deform sets, each cache whose asset
+/// now holds a different model, so a hot reload draws in the frame it lands.
+fn reprepare_replaced(inner: &mut CatchlightRenderInner, models: &Assets<CatchlightModel>) {
+    let CatchlightRenderInner {
+        gpus,
+        puppets,
+        options,
+        ..
+    } = inner;
+    for (key, gpu) in gpus.iter_mut() {
+        let Some(asset) = models.get(key.model) else {
+            continue;
+        };
+        if gpu.model.identity() == asset.model().identity() {
+            continue;
+        }
+        match RenderCache::prepare(&mut gpu.renderer, asset.model(), *options) {
+            Ok(cache) => {
+                gpu.cache = cache;
+                gpu.model = asset.shared().clone();
+                gpu.options = *options;
+            }
+            Err(error) => {
+                tracing::error!("catchlight: preparing the replaced model failed: {error}");
+            }
+        }
+        for puppet in puppets.values_mut() {
+            if puppet.model == *key {
+                puppet.collected = false;
+            }
+        }
+    }
+}
+
+/// The model state to refresh `puppet` against, adopting `current` when the
+/// puppet has ticked against it. `None` when the cache must be re-prepared
+/// first (the asset was replaced and preparing it failed) or the puppet
+/// matches neither state.
+fn refresh_model<'a>(
+    cached: &'a mut Arc<Model>,
+    current: &'a Arc<Model>,
+    puppet: &Puppet,
+) -> Option<&'a Model> {
+    let ticked_against = |model: &Model| {
+        puppet.model_identity() == model.identity()
+            && puppet.baked_generation() == model.generation()
+    };
+    if cached.identity() != current.identity() {
+        return None;
+    }
+    if ticked_against(current) {
+        if !Arc::ptr_eq(cached, current) {
+            *cached = current.clone();
+        }
+        return Some(current);
+    }
+    // Edited after this frame's tick: draw the state the puppet saw.
+    ticked_against(cached).then_some(&**cached)
 }
 
 #[derive(Component, Default, Clone, Copy)]

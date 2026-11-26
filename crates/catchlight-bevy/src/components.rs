@@ -88,8 +88,14 @@ impl CatchlightPuppet {
         }
     }
 
-    pub(crate) fn needs_bake(&self, id: AssetId<CatchlightModel>) -> bool {
-        self.puppet.is_none() || self.baked_from != Some(id)
+    /// A replaced asset keeps its id but brings a new model identity; an
+    /// edit keeps both and reaches the puppet through [`Puppet::sync`].
+    pub(crate) fn needs_bake(&self, id: AssetId<CatchlightModel>, model: &Model) -> bool {
+        self.baked_from != Some(id)
+            || self
+                .puppet
+                .as_ref()
+                .is_none_or(|puppet| puppet.model_identity() != model.identity())
     }
 
     pub(crate) fn bake(&mut self, model: &Model, id: AssetId<CatchlightModel>) {

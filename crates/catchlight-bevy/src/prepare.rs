@@ -10,6 +10,7 @@ use catchlight_wgpu::{
     Submission, WgpuRenderer,
 };
 
+use crate::asset::CatchlightModel;
 use crate::extract::{ExtractedCatchlightCamera, ExtractedPuppet};
 
 /// Mutex-guarded because render graph nodes have no mutable resource access.
@@ -93,22 +94,12 @@ pub(crate) struct FormatResources {
     pub targets: HashMap<Entity, FrameTargets>,
 }
 
-/// Keyed by `Arc` pointer identity, not `AssetId`: an id survives a hot
-/// reload that replaces the model. `ModelGpu` holds the `Arc`, so the address
-/// cannot be reused while the entry lives.
+/// Keyed by asset id: an edit keeps the cache and rebuilds it in place. A
+/// replaced value under the same id shows as a new `Model::identity`.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct ModelKey {
-    model: usize,
+    pub model: AssetId<CatchlightModel>,
     pub format: wgpu::TextureFormat,
-}
-
-impl ModelKey {
-    fn new(model: &Arc<Model>, format: wgpu::TextureFormat) -> Self {
-        Self {
-            model: Arc::as_ptr(model) as usize,
-            format,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -125,7 +116,7 @@ pub(crate) struct ModelGpu {
     /// cannot see the frame boundary.
     pub submission: Submission,
     pub cache: RenderCache,
-    /// Keeps the address [`ModelKey`] names alive.
+    /// The model state `cache` was last built or rebuilt from.
     pub model: Arc<Model>,
     pub options: PrepareOptions,
 }
@@ -221,7 +212,10 @@ pub(crate) fn prepare_puppets(
 
     for (entity, ex) in &extracted {
         for (format, format_pipelines) in &pipelines {
-            let model_key = ModelKey::new(&ex.model, *format);
+            let model_key = ModelKey {
+                model: ex.model_id,
+                format: *format,
+            };
             let CatchlightRenderInner { gpus, puppets, .. } = &mut *inner;
             let model_gpu = match gpus.entry(model_key) {
                 std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
