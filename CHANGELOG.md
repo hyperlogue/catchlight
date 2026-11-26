@@ -1,271 +1,77 @@
 # Changelog
 
-## Unreleased
+## [0.3.0] - 2026-11-26
 
-Breaking for Rust callers of `catchlight-core` and `catchlight-wgpu`; the
-next release is 0.3.0.
+This release includes breaking changes for Rust callers of `catchlight-core`
+and `catchlight-wgpu`, as well as `.clm` files that contain animations (see
+Removed below).
 
 ### New
 
-- **Review threads: leave comments for an agent, in the editor.** Comment on
-  a node, param, texture, slot or the whole model (`C` on a selection), collect
-  as many as you like, then **Send to agent**. An agent waiting on
-  `catchlight-editor review watch` receives them, edits the model in the shared
-  session and answers on each thread with `review reply`; the tab shows it
-  listening, working and replying. Threads follow renames, flag a target that
-  was deleted, and remember the pose they were written at. Python sessions get
-  the same calls (`Client.review_*`). A comment can carry images: paste,
-  drop or capture the canvas in the tab and mark it up, `review watch
-  --attachments-dir` hands them to the agent as files, and `review reply
-  --attach` sends one back. Comments count as delivered only once the CLI
-  has saved, printed and acknowledged them, so a failed run loses nothing;
-  several agents can attend one review, each known by its harness session
-  and holding threads with renewable `review claim`s; `--key` makes a
-  repeated `reply` or `open` write once; and `CatchlightEditor`'s `reviewer`
-  prop tells people sharing a review apart. A review is kept with a
-  saved model, never in the `.clm`: `catchlight-editor` keeps it in a per-user
-  data directory (`--keep beside` writes a `<model>.clm.kept/` sidecar
-  instead; `catchlight-editor gc --dry-run` lists what models that no
-  longer exist left behind), and an embedding host chooses its own store
-  with `Editor::with_kept_store`. The in-tab editor keeps none yet. A host
-  says how an agent joins through `CatchlightEditor`'s `agentConnect` prop,
-  so the same editor serves a local process or a hosted one that offers its
-  own agent. `review listen` returns at once and has a per-user background
-  worker announce each Send in the agent's Claude Code, Codex or Antigravity
-  session, so nothing blocks the agent's turn; `review watch` remains the
-  fallback.
-- **Saved versions: go back to an earlier result.** Save the model as a
-  numbered version with an optional label (the selector beside the model
-  tabs, Ctrl/⌘+Alt+S, or `catchlight-editor version save -l <label>`), open
-  any version read-only beside the live model, and restore it as one
-  undoable edit. Versions are kept with the review, deduplicated so shared
-  textures are stored once, and outlive the session; `version export <n>`
-  writes a version's exact bytes. An agent answering a review can point a
-  reply at the version holding its fix (`review reply --save-version
-  <label>` or `--version <n>`), shown as a chip that opens it. Python
-  sessions get `Client.version_*`. `--reviews`/`CATCHLIGHT_REVIEWS` are now
-  `--keep`/`CATCHLIGHT_KEEP` and govern both, `reviews gc` is `gc`, and the
-  per-user directory moved from `catchlight/reviews` to `catchlight/kept`.
-- **A redesigned editor.** One top bar holds the menus, open models, review
-  status and save; the canvas runs edge to edge with its modes and tools
-  floating over it; the tree, params and properties are denser, so more of the
-  model fits on screen. `@catchlight/editor-ui` hosts that restyled tokens
-  should recheck them: several `--cl-*` values changed and `--cl-gutter`,
-  `--cl-control-height`, `--cl-well`, `--cl-agent` and `--cl-ok` are new.
-- **Building a puppet is fast, and the second one is nearly free.** A mesh
-  group finds the triangle under a vertex through bins instead of a per-texel
-  grid, which makes `Puppet::new` about 40 times faster on a 100-part model
-  and drops tens of megabytes per puppet. A model keeps its bake, so further
-  puppets of the same model, and `Puppet::clone`, copy only a frame.
-- **Fewer deform uploads.** Spines, mesh groups and welds no longer mark a
-  deform changed when they rewrite the offsets it already held, so moving one
-  parameter re-uploads the parts it moves rather than nearly all of them.
-- **Sections a build does not recognise survive a save.** Opening a `.clm`
-  written by a newer build and saving it keeps the sections this build cannot
-  read, byte for byte. `formats` documents how the format may change.
-- **Load limits cover the whole file.** A `.clm` structure section is held to
-  `LoadLimits::structure_bytes` (64 MiB) before it is parsed. Spine joints,
-  weld pairs, keyframes and extension values each have a limit, and textures
-  are held to 8192 texels a side and `decoded_texture_bytes` in total before
-  any is decoded
-  (`PrepareOptions::max_decoded_texture_bytes` in `catchlight-wgpu`).
-- **Extensions that keep up with the model.** A `.clm` can carry typed,
-  maintained extension data: a `{version, refs, payload}` envelope whose
-  reference table names nodes, params, textures and slots. The core rewrites
-  that table on every rename and marks what a removal leaves behind, whether
-  or not the build knows the extension, and never reads the payload. A third
-  party implements `Extension` for its own type and gets copy-on-write access
-  through `Model::extension`, `extension_mut` and `extension_or_default`
-  without registering; `catchlight_core::extension::register` adds addon
-  merging and checking, and `Model::extension_warnings` reports stale
-  references and each extension's own findings. Data a build cannot read,
-  written by a newer version or failing to decode, is kept and saved as
-  stored. Addon extensions merge into the base's data and come back out on
-  uninstall. `catchlight-cli extension set --version <n> --refs <json>`
-  writes a vendor's maintained extension with a JSON or byte payload, and
-  warns about a reference the model lacks rather than refusing it.
-- **Controls, Expressions and Animations tabs in the editor's dock.**
-  Controls lists the 35 humanoid controls under Head, Body, Eyes, Brows,
-  Cheeks and Mouth: pick a param to map one, edit its three stops, and
-  try it live with a slider that clears back to no value; a filter shows only
-  the mapped ones. Expressions lists a model's expressions and visemes, each
-  tried at a live weight, added under a standard name or one of your own, and
-  authored as rows of settings on controls or params; **Add standard
-  visemes** asks whether to keep or replace the ones already there and says
-  what it added, replaced and skipped. Animations plays one clip at a time
-  with its playhead, and while one plays the dock header stops it from any
-  tab. Each tab lists its extension's warnings and marks what they concern,
-  asks before keeping a control name outside the standard, and leaves data
-  from a newer build alone. `@catchlight/react` exports the panels and the
-  hooks under them, among them `useHumanoid`, `useExpressions`, `useClips`,
-  `useLiveInputs`, `usePlayingClip` and `usePlayhead`.
-- **Rig controls and expressions in the editor.** The editor takes typed
-  commands for the official extensions, each one undo step that refuses what
-  the file CLI refuses: `humanoid_map`, `humanoid_unmap`, `expression_set`
-  and `expression_delete` for either group, and `viseme_add_standard`. The
-  reads `humanoid_get`, `expression_list` and `extension_warnings` are
-  answered from the model alone, so a tab answers them too; a connected tab
-  now registers the official extensions and checks them as the editor does.
-  `extension_warnings` reports every finding with its key, code and the
-  references it concerns. `catchlight-editor humanoid`, `expression` and
-  `viseme` mirror the file CLI's groups and output, `catchlight-editor
-  extension warnings` prints the findings, and Python sessions get
-  `Client.humanoid_map`, `expression_set`, `extension_warnings` and the rest.
-  Two error codes are new: `nonstandard_control`, answered by resending with
-  `nonstandard`, and `extension_unread`, for official data written by a newer
-  build or failing to decode.
-- **Live inputs and clips in the viewport.** A
-  `Session` poses its tab's puppet with live inputs that are never written
-  to the model or shared through presence: `setControl`,
-  `setExpressionWeight` and `setVisemeWeight` set or, given `undefined`,
-  clear one value, `clearInputs` clears them all and `inputs()` reads them
-  back. `play(clip)`, `stop()` and `playing()` play one of the model's clips
-  and report its name, time and frame; the viewport keeps drawing while it
-  plays. Moving a param's slider drops the live controls mapped onto it,
-  mesh and record modes stop the clip, and `useResetPose` clears the inputs
-  too. The `clip_list` read, answered by a tab as well, lists each clip's
-  timestep, length, lead-in, lead-out and what each lane drives with its
-  keyframe count; `catchlight-editor clip list` prints it and Python
-  sessions get `Client.clips`. `AnimationPlayer` now returns a param a
-  control mapping set to its base once no control sets it, as it already
-  did for param settings, and `replace_clips` takes a model's new clips
-  while the playing one carries on.
-- **Vendor extensions in the editor keep their references.**
-  `extension_set` takes a maintained value: a version, a reference table and
-  a payload, inline JSON or the `value` attachment. `extension_list` and
-  `extension_get` report the reference table itself rather than its length.
-  `catchlight-editor extension list|get|set|delete` mirrors the file CLI's
-  group, with the JSON value as `--value`; Python's `Client.extension_set`
-  and `extension_get` take and return a `Maintained`. The Extensions panel
-  shows a maintained extension's version, references and payload, edits a
-  vendor's payload keeping the rest, and only views an official one.
-- **Humanoid controls.** The official `catchlight.humanoid` extension
-  (`catchlight-extension-humanoid`) defines 35 standard face and body
-  controls and maps each onto one of a model's params by three stops, so one
-  source of tracking can pose any model that maps them. `Humanoid::pose`
-  applies `ControlValues`, and `controls_from_arkit` turns ARKit blend shapes
-  into control values.
-- **Expressions and visemes.** The official `catchlight.expressions`
-  extension (`catchlight-extension-expressions`) names expressions, such as
-  the five standard emotions, and beside them visemes, such as the 21
-  standard mouth shapes of speech, each by values for humanoid controls or
-  the model's own params. The two groups keep separate names and take
-  separate weights, and blend around the control mappings (`blend_controls`,
-  `blend_params`) with visemes over expressions, so speech takes the mouth
-  while a sound plays and the expression returns between sounds.
-  `standard_visemes()` offers default viseme settings.
-- **Rig controls and expressions from the command line.** `catchlight-cli
-  humanoid` lists the standard controls and maps, lists and unmaps a model's
-  controls; `catchlight-cli expression` and `catchlight-cli viseme` each
-  list their standard names, and set, list and remove a model's expressions
-  or visemes, and `viseme add-standard` adds the standard visemes. Output is
-  JSON, a typo in a control name is refused with the nearest standard name,
-  and each edit prints the warnings about its group for the edited model.
-  Texture bytes and other extensions are kept byte for byte. The rules are
-  the extension crates' own: `catchlight_extension_humanoid::authoring` and
-  `catchlight_extension_expressions::authoring` make these edits on a
-  `Model` and refuse what the CLI refuses, and `Model::remove_extension`
-  drops an emptied official extension. `render` and `bounds` take
-  `--control name=value`, `--expression name=weight` and
-  `--viseme name=weight`, and a render spec request takes `controls`,
-  `expressions` and `visemes`.
-- **Animate controls, expressions and visemes.** An animation lane can drive
-  a humanoid control, or the weight of an expression or a viseme, by name,
-  so a clip that blinks, smiles or speaks plays on any model that has them.
-  `AnimationPlayer::advance_with` applies one frame in a fixed order: the
-  host's own control values and weights, with a playing clip's lanes winning
-  for the same name, then expressions and visemes, the control mappings and
-  the clip's param lanes. A weight held below 1 gives the same value every
-  frame, and motion responses do not react to a control lane's jump at a
-  loop wrap. `check` reports a lane on a control the model does not map or on
-  an expression or viseme it lacks. A render spec's clips take the same
-  lanes, so a timed request can ramp controls, expressions and visemes; the
-  CLI applies a request's controls and weights every frame under them, and
-  refuses a lane on a control, expression or viseme the model lacks. Bevy
-  puppets play these lanes through the model's own mappings.
+- **Review threads.** Leave comments on any part of your model in the editor
+  and send them to an AI agent to edit the model live and reply on each
+  thread.
+- **Saved versions.** Save numbered versions of your model, view older ones
+  read-only next to the live model, and restore any of them in a single
+  undoable step.
+- **Redesigned editor.** A single top bar, edge-to-edge canvas, and tighter
+  panels leave much more room for your model on screen.
+- **Humanoid controls.** Map your model's params to 35 standard face and body
+  controls with `catchlight.humanoid` so any tracking source can drive any
+  compatible model.
+- **Expressions and visemes.** Define named expressions and 21 standard
+  visemes using `catchlight.expressions`, where speech automatically layers
+  over your active expression.
+- **Portable animations.** Animation clips can now drive humanoid controls,
+  expressions, and visemes directly, so clips for blinking, smiling, or
+  talking work across any model that supports them.
+- **Controls, Expressions, and Animations tabs.** Map humanoid controls, edit
+  expressions and visemes, and play clips right from the editor dock while
+  seeing changes live in the viewport.
+- **Controls and expressions in the CLI.** Manage humanoid mappings,
+  expressions, and visemes from `catchlight-cli` and `catchlight-editor`, and
+  pose renders directly with `--control`, `--expression`, and `--viseme`.
+- **Reference-aware extensions.** Custom `.clm` extensions can now reference
+  nodes, params, textures, and slots that stay up to date across renames,
+  with no per-extension size limit.
+- **Faster puppet creation.** Creating a puppet is roughly 40x faster on
+  100-part models, and extra puppets of the same model share the bake so they
+  spin up almost instantly.
 
 ### Fixed
 
-- **The CLI names a Git LFS pointer.** A checkout without `git lfs pull`
-  leaves pointer text where a `.clm` should be. `catchlight-cli` now says so
-  and how to fetch it, instead of reporting unexpected magic bytes.
-- **A stepped key shows at its own position.** A `Stepped` binding or
-  animation lane resting exactly on a key showed the previous key's value. It
-  now shows that key's, on both axes. Poses that sit on a stepped key render
-  differently.
-- **Files the runtime could not evaluate are refused.** Reading a `.clm` now
-  rejects two bindings under one key, a node that masks itself, and a
-  non-finite param default, node transform or z-order. Edits refuse the same
-  values, and a mesh refit that returns the wrong number of offsets is
-  refused where it is made.
-- **Addons install and uninstall cleanly.** Installing an addon holds its
-  welds to the rule every other weld meets, and uninstalling removes the
-  installed nodes together with anything added beneath them since.
-  `duplicate_subtree` copies the welds inside the subtree.
-- **A `.clm` loads up to its size limit.** Texture payloads were charged
-  twice, so a file loaded only under about half of `encoded_bytes`.
-- **Saving cannot write a file that will not open.** A section over the
-  reader's size cap is an error at save instead of a truncated length.
-- **A texture at the device's size limit uploads.** A fully opaque texture
-  came back from preparation 32 texels larger each way and was refused.
-- **JSON extensions keep their values.** A NaN or infinity in a JSON
-  extension was read back as `null`; it is now a decode error.
-- **Several views in one submit keep their own draws.** A second view
-  recorded into the same `Submission` overwrote the first view's per-part
-  data, so both views drew the last one's transforms, opacity and tint.
+- **Stepped keys.** Stepped bindings and animation lanes sitting directly on
+  a key now use that key's value instead of falling back to the previous one.
+- **Helpful Git LFS errors.** `catchlight-cli` now spots unfetched Git LFS
+  pointer files and tells you how to pull them instead of failing with a raw
+  magic-bytes error.
+- **Stricter `.clm` validation.** Files with duplicate binding keys,
+  self-masking nodes, or non-finite values are now rejected on load rather
+  than breaking at runtime.
+- **Addon uninstall and subtree duplication.** Uninstalling an addon now
+  cleans up everything added beneath its nodes, and duplicating a subtree
+  brings its welds along with it.
+- **Large `.clm` files.** Models can now load up to their full size limit
+  instead of hitting it halfway, and saving catches oversized sections before
+  writing an unreadable file.
+- **Max-size opaque textures.** Fully opaque textures at your GPU's maximum
+  size now upload cleanly instead of being rejected.
+- **Multi-view submissions.** Drawing multiple views in one submission no
+  longer lets later views overwrite earlier ones' transforms, opacity, and
+  tint.
 
 ### Removed
 
-- **`update_node_kind` edits a kind's own fields only.** Swapping the kind, or
-  changing a mesh, albedo, mask list, slot list or spine through it, returns
-  `ModelError::KindEdit`. Use `set_node_mesh`, `set_part_albedo`, `mask_add`,
-  `slot_delete`, `set_spine_joints` and `set_spine_targets`.
-- **Error enums and `LoadLimits` are `#[non_exhaustive]`.** `ModelError`,
-  `InstallError`, `ClmLoadError`, `ClmError`, `ContainerError`,
-  `TextureError`, `IdError`, `DeformShapeError`, `GeometryError`,
-  `NodeTreeError` and `LoadResource` need a wildcard arm, and `LoadLimits`
-  is built from `LoadLimits::default()`. Several gained variants;
-  `InstallError` wraps `ModelError` and is no longer `Clone` or `PartialEq`.
-- **`prepare_textures` takes a size limit and a budget**, and `container::write`
-  returns a `Result`. `TexturePrepCache`, `PrepareOptions::memoize_textures`
-  and `alpha_bleed_inplace` are gone.
-- **`Puppet::refold_with_node_edits`, `NodeEdits` and
-  `Puppet::contribute_param_value` are gone**, as are `DeformSource::Test`,
-  the unused `DeformShapeError` matrix variants and the
-  `mesh_group_bitmap_cells` load limit.
-- **The crate root lists its exports.** `downsample_box_filter`,
-  `checked_affine_inverse`, `validate_id`, `validate_extension_key` and the
-  `charge_*` functions are reached through their modules
-  (`catchlight_core::components::checked_affine_inverse`).
-- **`Model::extract` of a whole tree returns an empty fragment**, and
-  `catchlight-cli requirements` reports a mask source as kind `drawable`.
-- **`catchlight-wgpu` renders through `RenderTarget` and `FrameTargets`.**
-  `Frame::render` and `WgpuRenderer::render_into` take a `RenderTarget`
-  (view, optional texture, size) and a `FrameTargets` that sizes its own mask
-  and composite targets. `Frame::render` no longer returns a `Result`, and
-  naming the target's texture enables the Overlay, Color Burn and Linear Burn
-  blends. `render_ext`, `StencilTarget`, `CompositePool` and
-  `FramebufferSnapshotPool` are gone.
-- **`catchlight-wgpu` has one error type.** Every entry point returns
-  `RendererError`, which now wraps texture, load-limit, adapter, device and
-  readback failures; `RendererError::TexturePrep` is gone.
-  `RenderContext::with_renderer`, `render` and `render_many` are infallible,
-  and `read_texture_to_rgba` takes its size from the texture.
-- **`catchlight-wgpu` hides its internals.** `RenderList` is read through
-  `root_drawables()`, `composite_children()`, `composites()` and
-  `composite_mask_source()`. `upload_mesh`, `upload_texture`, `Texture`,
-  `MeshBuffer`, `PartUniform`, `generate_mips` and the crate's modules are
-  private; `RenderCache` is the way in, and the crate root lists its exports.
-- **`create_headless_context_ext` is gone.** Nothing called it; build a
-  device with timestamp queries directly to use the GPU profiler.
-- **Animations are an extension.** `catchlight-core` no longer knows
-  animations: clips live in the official `catchlight.animations` extension
-  (`catchlight-extension-animations`) and play through `AnimationPlayer`,
-  which a host advances before each `Puppet::tick` instead of asking the
-  puppet to play. The structure section drops its `animations` field, so a
-  file written before this change loses the clips stored there when it is
-  loaded; re-import or re-author them. `catchlight-cli`, the editor and the
-  importer register and use the extension.
+- **Built-in core animations.** Animations now live in the
+  `catchlight.animations` extension and play through `AnimationPlayer`, so
+  older `.clm` files will drop their stored clips on load and need to be
+  re-imported or re-authored.
+- **`catchlight-core` API changes.** Error enums and `LoadLimits` are now
+  `#[non_exhaustive]`, `update_node_kind` only edits fields on the node's
+  current kind, and several unused functions and types have been removed.
+- **`catchlight-wgpu` API changes.** Rendering now goes through
+  `RenderTarget` and `FrameTargets`, all entry points return `RendererError`,
+  and internal GPU types are now private behind `RenderCache`.
 
 ## [0.2.2] - 2026-11-22
 
@@ -317,4 +123,5 @@ next release is 0.3.0.
   (e.g., `import { CatchlightEditor } from "@catchlight/editor-ui"` and
   `@catchlight/editor-ui/theme.css`).
 
+[0.3.0]: https://github.com/hyperlogue/catchlight/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/hyperlogue/catchlight/releases/tag/v0.2.2
