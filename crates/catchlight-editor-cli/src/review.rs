@@ -453,20 +453,27 @@ fn message(given: &Option<String>, attach: &[PathBuf]) -> Result<String> {
     }
 }
 
-/// Runs the commands that need no editor; `None` for the others.
-#[cfg_attr(
-    not(unix),
-    allow(
-        unused_variables,
-        reason = "only the unix review listener reads every argument"
-    )
-)]
-pub(super) fn run_local(cli: &Cli, args: &ReviewArgs) -> Result<Option<i32>> {
+pub(super) fn route(args: &ReviewArgs) -> Route<'_> {
     match &args.action {
+        ReviewCmd::List {
+            all,
+            attachments_dir,
+        } => remote(args, move |review, _| {
+            let command = Command::ReviewGet {
+                session: review.session,
+            };
+            review.answer(command, *all, attachments_dir.as_deref())
+        }),
+        ReviewCmd::Watch {
+            timeout,
+            attachments_dir,
+        } => remote(args, move |review, _| {
+            review.watch(*timeout, attachments_dir)
+        }),
         #[cfg(unix)]
-        ReviewCmd::Worker { action } => listen::worker_command(action, cli.json).map(Some),
+        ReviewCmd::Listen => remote(args, subscribe),
         #[cfg(unix)]
-        ReviewCmd::Unlisten => {
+        ReviewCmd::Unlisten => Route::local(move |cli| {
             let editor = match (&cli.socket, &cli.server) {
                 (Some(socket), _) => {
                     Some(transport::Endpoint::Socket(std::path::absolute(socket)?))
@@ -478,17 +485,150 @@ pub(super) fn run_local(cli: &Cli, args: &ReviewArgs) -> Result<Option<i32>> {
                 (None, None) => None,
             };
             let who = identity(args.name.as_deref(), &|name| std::env::var(name).ok());
-            listen::unlisten(editor.as_ref(), resolve_session(cli)?, &who, cli.json).map(Some)
+            listen::unlisten(editor.as_ref(), resolve_session(cli)?, &who, cli.json)
+        }),
+        #[cfg(unix)]
+        ReviewCmd::Worker { action } => {
+            Route::local(move |cli| listen::worker_command(action, cli.json))
         }
         #[cfg(not(unix))]
-        ReviewCmd::Listen | ReviewCmd::Unlisten | ReviewCmd::Worker { .. } => {
+        ReviewCmd::Listen | ReviewCmd::Unlisten | ReviewCmd::Worker { .. } => Route::local(|_| {
             eprintln!(
                 "`review listen` is not supported on this platform; run `review watch` in the \
                  background instead"
             );
-            Ok(Some(UNSUPPORTED))
-        }
-        _ => Ok(None),
+            Ok(UNSUPPORTED)
+        }),
+        ReviewCmd::Fetch { attachments_dir } => remote(args, move |review, _| {
+            let delivered = deliver(
+                review.cli,
+                &mut review.client,
+                review.session,
+                &review.who,
+                attachments_dir,
+                true,
+            )?;
+            Ok(delivered.unwrap_or(0))
+        }),
+        ReviewCmd::Reply {
+            thread,
+            message: text,
+            attach,
+            human,
+            key,
+            version,
+        } => remote(args, move |review, _| {
+            let body = message(text, attach)?;
+            let author = author(&review.who, *human);
+            let version = match version.resolve(
+                &mut review.client,
+                review.session,
+                &author,
+                key.key.as_deref(),
+            )? {
+                Ok(version) => version,
+                Err(refused) => return Ok(finish(review.cli, &refused, true, None)),
+            };
+            let images = match review.client.upload(review.session, attach)? {
+                Ok(images) => images,
+                Err(refused) => return Ok(finish(review.cli, &refused, true, None)),
+            };
+            let command = Command::ReviewCommentAdd {
+                session: review.session,
+                thread: ThreadId(*thread),
+                author,
+                body,
+                images,
+                key: key.key.clone(),
+                version,
+            };
+            review.answer(command, true, None)
+        }),
+        ReviewCmd::Open {
+            target,
+            message: text,
+            attach,
+            human,
+            key,
+            version,
+        } => remote(args, move |review, _| {
+            let target = target.target()?;
+            let body = message(text, attach)?;
+            let author = author(&review.who, *human);
+            let version = match version.resolve(
+                &mut review.client,
+                review.session,
+                &author,
+                key.key.as_deref(),
+            )? {
+                Ok(version) => version,
+                Err(refused) => return Ok(finish(review.cli, &refused, true, None)),
+            };
+            let images = match review.client.upload(review.session, attach)? {
+                Ok(images) => images,
+                Err(refused) => return Ok(finish(review.cli, &refused, true, None)),
+            };
+            let command = Command::ReviewThreadAdd {
+                session: review.session,
+                target,
+                author,
+                body,
+                pose: Vec::new(),
+                images,
+                key: key.key.clone(),
+                version,
+            };
+            review.answer(command, true, None)
+        }),
+        ReviewCmd::Claim { threads: ids } => remote(args, move |review, _| {
+            let command = Command::ReviewClaim {
+                session: review.session,
+                agent: review.who.clone(),
+                threads: threads(ids),
+            };
+            review.answer(command, true, None)
+        }),
+        ReviewCmd::Release { threads: ids } => remote(args, move |review, _| {
+            let reply = review.client.send(Command::ReviewRelease {
+                session: review.session,
+                agent: review.who.clone(),
+                threads: threads(ids),
+            })?;
+            if matches!(reply, Reply::Ok { .. }) && !review.cli.json {
+                println!("released thread {}", listed(&threads(ids)));
+                return Ok(0);
+            }
+            Ok(finish(review.cli, &reply, true, None))
+        }),
+        ReviewCmd::Send => remote(args, |review, _| {
+            let command = Command::ReviewSubmit {
+                session: review.session,
+            };
+            review.answer(command, true, None)
+        }),
+        ReviewCmd::Resolve { thread } => remote(args, move |review, _| {
+            let command = Command::ReviewThreadSet {
+                session: review.session,
+                thread: ThreadId(*thread),
+                status: ThreadStatus::Resolved,
+            };
+            review.answer(command, true, None)
+        }),
+        ReviewCmd::Reopen { thread } => remote(args, move |review, _| {
+            let command = Command::ReviewThreadSet {
+                session: review.session,
+                thread: ThreadId(*thread),
+                status: ThreadStatus::Open,
+            };
+            review.answer(command, true, None)
+        }),
+        ReviewCmd::Delete { thread } => remote(args, move |review, _| {
+            let command = Command::ReviewThreadDelete {
+                session: review.session,
+                thread: ThreadId(*thread),
+            };
+            review.answer(command, true, None)
+        }),
     }
 }
 
@@ -505,211 +645,106 @@ pub(super) fn refused(reply: &Reply) -> i32 {
     1
 }
 
-/// How this command reached the editor, for `listen`.
-#[cfg_attr(
-    not(unix),
-    allow(dead_code, reason = "only the unix review listener uses it")
-)]
-pub(super) struct Reached<'a> {
-    pub program: &'a str,
-    pub endpoint: &'a transport::Endpoint,
+/// A review command that reaches the editor: the session it targets and the
+/// agent it acts as.
+struct Reviewer<'a> {
+    cli: &'a Cli,
+    session: SessionId,
+    who: ReviewIdentity,
+    client: Client<'a>,
 }
 
-/// The process exit code.
-#[cfg_attr(
-    not(unix),
-    allow(
-        unused_variables,
-        reason = "only the unix review listener reads every argument"
-    )
-)]
-pub(super) fn run(
-    cli: &Cli,
-    args: &ReviewArgs,
-    stream: &mut transport::Transport,
-    reached: &Reached,
-) -> Result<i32> {
-    let session = resolve_session(cli)?;
-    let who = identity(args.name.as_deref(), &|name| std::env::var(name).ok());
-    let mut client = Client { stream, next_id: 1 };
-    let mut all = true;
-    let mut save_to = None;
-    let command = match &args.action {
-        ReviewCmd::List {
-            all: resolved,
-            attachments_dir,
-        } => {
-            all = *resolved;
-            save_to = attachments_dir.as_deref();
-            Command::ReviewGet { session }
-        }
-        ReviewCmd::Watch {
-            timeout,
-            attachments_dir,
-        } => {
-            let deadline = timeout.map(|s| Instant::now() + Duration::from_secs(s));
-            loop {
-                let reply = client.send(Command::ReviewPoll {
-                    session,
-                    agent: who.clone(),
-                })?;
-                match reply {
-                    Reply::Ok {
-                        body: ResponseBody::ReviewPending { pending, .. },
-                        ..
-                    } => {
-                        // Another agent may take what was waiting between
-                        // the poll and the fetch; then keep waiting.
-                        if pending > 0
-                            && let Some(code) =
-                                deliver(cli, &mut client, session, &who, attachments_dir, false)?
-                        {
-                            return Ok(code);
-                        }
-                    }
-                    other => return Ok(finish(cli, &other, all, None)),
-                }
-                if deadline.is_some_and(|at| Instant::now() >= at) {
-                    eprintln!(
-                        "no comments were sent before the timeout; run `review watch` again to keep waiting"
-                    );
-                    return Ok(TIMED_OUT);
-                }
-                std::thread::sleep(POLL_INTERVAL);
-            }
-        }
-        #[cfg(unix)]
-        ReviewCmd::Listen => {
-            let mut reach = Vec::new();
-            if let Some(socket) = &cli.socket {
-                reach.push("--socket".into());
-                reach.push(std::path::absolute(socket)?.to_string_lossy().into_owned());
-            } else if let Some(server) = &cli.server {
-                reach.push("--server".into());
-                reach.push(server.clone());
-            }
-            let how = listen::Listening {
-                program: reached.program,
-                reach,
-                endpoint: reached.endpoint,
-                session,
-                who: &who,
-                json: cli.json,
-            };
-            return listen::listen(&how, client.stream);
-        }
-        #[cfg(unix)]
-        ReviewCmd::Unlisten | ReviewCmd::Worker { .. } => unreachable!("run_local answers these"),
-        #[cfg(not(unix))]
-        ReviewCmd::Listen | ReviewCmd::Unlisten | ReviewCmd::Worker { .. } => {
-            unreachable!("run_local answers these")
-        }
-        ReviewCmd::Fetch { attachments_dir } => {
-            return Ok(
-                deliver(cli, &mut client, session, &who, attachments_dir, true)?.unwrap_or(0),
-            );
-        }
-        ReviewCmd::Reply {
-            thread,
-            message: text,
-            attach,
-            human,
-            key,
-            version,
-        } => {
-            let body = message(text, attach)?;
-            let author = author(&who, *human);
-            let version =
-                match version.resolve(&mut client, session, &author, key.key.as_deref())? {
-                    Ok(version) => version,
-                    Err(refused) => return Ok(finish(cli, &refused, all, None)),
-                };
-            let images = match client.upload(session, attach)? {
-                Ok(images) => images,
-                Err(refused) => return Ok(finish(cli, &refused, all, None)),
-            };
-            Command::ReviewCommentAdd {
-                session,
-                thread: ThreadId(*thread),
-                author,
-                body,
-                images,
-                key: key.key.clone(),
-                version,
-            }
-        }
-        ReviewCmd::Open {
-            target,
-            message: text,
-            attach,
-            human,
-            key,
-            version,
-        } => {
-            let target = target.target()?;
-            let body = message(text, attach)?;
-            let author = author(&who, *human);
-            let version =
-                match version.resolve(&mut client, session, &author, key.key.as_deref())? {
-                    Ok(version) => version,
-                    Err(refused) => return Ok(finish(cli, &refused, all, None)),
-                };
-            let images = match client.upload(session, attach)? {
-                Ok(images) => images,
-                Err(refused) => return Ok(finish(cli, &refused, all, None)),
-            };
-            Command::ReviewThreadAdd {
-                session,
-                target,
-                author,
-                body,
-                pose: Vec::new(),
-                images,
-                key: key.key.clone(),
-                version,
-            }
-        }
-        ReviewCmd::Claim { threads: ids } => Command::ReviewClaim {
+/// Reaches the editor as the agent `args` names; `run` returns the exit code.
+fn remote<'a>(
+    args: &'a ReviewArgs,
+    run: impl FnOnce(&mut Reviewer<'_>, &Reached<'_>) -> Result<i32> + 'a,
+) -> Route<'a> {
+    Route::typed(move |cli, stream, reached| {
+        let session = resolve_session(cli)?;
+        let who = identity(args.name.as_deref(), &|name| std::env::var(name).ok());
+        let mut review = Reviewer {
+            cli,
             session,
-            agent: who.clone(),
-            threads: threads(ids),
-        },
-        ReviewCmd::Release { threads: ids } => {
-            let reply = client.send(Command::ReviewRelease {
-                session,
-                agent: who.clone(),
-                threads: threads(ids),
+            who,
+            client: Client { stream, next_id: 1 },
+        };
+        run(&mut review, reached)
+    })
+}
+
+impl Reviewer<'_> {
+    /// Sends `command`, saves the images of the threads it shows under
+    /// `save_to` and prints the reply; the exit code.
+    fn answer(&mut self, command: Command, all: bool, save_to: Option<&Path>) -> Result<i32> {
+        let reply = self.client.send(command)?;
+        let saved = match (save_to, &reply) {
+            (Some(dir), Reply::Ok { body, .. }) => {
+                Some(self.client.download(self.session, dir, &shown(body, all))?)
+            }
+            _ => None,
+        };
+        Ok(finish(self.cli, &reply, all, saved.as_ref()))
+    }
+
+    fn watch(&mut self, timeout: Option<u64>, attachments_dir: &Option<PathBuf>) -> Result<i32> {
+        let deadline = timeout.map(|s| Instant::now() + Duration::from_secs(s));
+        loop {
+            let reply = self.client.send(Command::ReviewPoll {
+                session: self.session,
+                agent: self.who.clone(),
             })?;
-            if matches!(reply, Reply::Ok { .. }) && !cli.json {
-                println!("released thread {}", listed(&threads(ids)));
-                return Ok(0);
+            match reply {
+                Reply::Ok {
+                    body: ResponseBody::ReviewPending { pending, .. },
+                    ..
+                } => {
+                    // Another agent may take what was waiting between
+                    // the poll and the fetch; then keep waiting.
+                    if pending > 0
+                        && let Some(code) = deliver(
+                            self.cli,
+                            &mut self.client,
+                            self.session,
+                            &self.who,
+                            attachments_dir,
+                            false,
+                        )?
+                    {
+                        return Ok(code);
+                    }
+                }
+                other => return Ok(finish(self.cli, &other, true, None)),
             }
-            return Ok(finish(cli, &reply, all, None));
+            if deadline.is_some_and(|at| Instant::now() >= at) {
+                eprintln!(
+                    "no comments were sent before the timeout; run `review watch` again to keep waiting"
+                );
+                return Ok(TIMED_OUT);
+            }
+            std::thread::sleep(POLL_INTERVAL);
         }
-        ReviewCmd::Send => Command::ReviewSubmit { session },
-        ReviewCmd::Resolve { thread } => Command::ReviewThreadSet {
-            session,
-            thread: ThreadId(*thread),
-            status: ThreadStatus::Resolved,
-        },
-        ReviewCmd::Reopen { thread } => Command::ReviewThreadSet {
-            session,
-            thread: ThreadId(*thread),
-            status: ThreadStatus::Open,
-        },
-        ReviewCmd::Delete { thread } => Command::ReviewThreadDelete {
-            session,
-            thread: ThreadId(*thread),
-        },
+    }
+}
+
+#[cfg(unix)]
+fn subscribe(review: &mut Reviewer<'_>, reached: &Reached<'_>) -> Result<i32> {
+    let mut reach = Vec::new();
+    if let Some(socket) = &review.cli.socket {
+        reach.push("--socket".into());
+        reach.push(std::path::absolute(socket)?.to_string_lossy().into_owned());
+    } else if let Some(server) = &review.cli.server {
+        reach.push("--server".into());
+        reach.push(server.clone());
+    }
+    let how = listen::Listening {
+        program: reached.program,
+        reach,
+        endpoint: reached.endpoint,
+        session: review.session,
+        who: &review.who,
+        json: review.cli.json,
     };
-    let reply = client.send(command)?;
-    let saved = match (save_to, &reply) {
-        (Some(dir), Reply::Ok { body, .. }) => {
-            Some(client.download(session, dir, &shown(body, all))?)
-        }
-        _ => None,
-    };
-    Ok(finish(cli, &reply, all, saved.as_ref()))
+    listen::listen(&how, review.client.stream)
 }
 
 /// Fetches, saves every image, prints and flushes, and only then
@@ -1004,6 +1039,8 @@ fn describe_thread(out: &mut String, thread: &ReviewThread, fetched: bool, saved
 
 #[cfg(test)]
 mod tests {
+    use clap::Parser;
+
     use super::*;
 
     const HUMAN: ReviewAuthor = ReviewAuthor::Human {
