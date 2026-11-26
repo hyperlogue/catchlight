@@ -18,8 +18,9 @@ pub mod texture;
 pub(crate) mod weld;
 
 pub use components::{
-    BlendMode, CompositeData, DecodedTexture, Mask, MaskMode, Mesh, MeshGroupData, MeshIndices,
-    Node, NodeIdx, NodeKind, PartData, TextureIdx, Transform,
+    BlendMode, CompositeData, DecodedTexture, Mask, MaskMode, Mesh, MeshGroupData,
+    MeshIndexOutOfRange, MeshIndices, MeshIndicesIter, Node, NodeIdx, NodeKind, PartData,
+    TextureIdx, Transform,
 };
 pub use deform::{DeformShapeError, DeformSource, DeformStack};
 pub use id::{

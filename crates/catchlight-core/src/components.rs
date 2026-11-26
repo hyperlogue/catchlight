@@ -321,10 +321,10 @@ impl MeshIndices {
         self.len() == 0
     }
 
-    pub fn iter_u32(&self) -> Box<dyn Iterator<Item = u32> + '_> {
+    pub fn iter_u32(&self) -> MeshIndicesIter<'_> {
         match self {
-            MeshIndices::U16(v) => Box::new(v.iter().map(|&i| i as u32)),
-            MeshIndices::U32(v) => Box::new(v.iter().copied()),
+            MeshIndices::U16(v) => MeshIndicesIter::U16(v.iter()),
+            MeshIndices::U32(v) => MeshIndicesIter::U32(v.iter()),
         }
     }
 
@@ -342,16 +342,58 @@ impl MeshIndices {
         }
     }
 
-    pub fn from_usize_iter(iter: impl IntoIterator<Item = usize>) -> Self {
-        let v: Vec<usize> = iter.into_iter().collect();
-        let max = v.iter().copied().max().unwrap_or(0);
-        if max <= u16::MAX as usize {
-            MeshIndices::U16(v.into_iter().map(|i| i as u16).collect())
-        } else {
-            MeshIndices::U32(v.into_iter().map(|i| i as u32).collect())
+    /// `U16` unless an index needs more.
+    pub fn from_usize_iter(
+        iter: impl IntoIterator<Item = usize>,
+    ) -> Result<Self, MeshIndexOutOfRange> {
+        let iter = iter.into_iter();
+        let mut out = MeshIndices::U16(Vec::with_capacity(iter.size_hint().0));
+        for index in iter {
+            if let MeshIndices::U16(v) = &mut out {
+                if let Ok(index) = u16::try_from(index) {
+                    v.push(index);
+                    continue;
+                }
+                out = MeshIndices::U32(v.iter().map(|&i| u32::from(i)).collect());
+            }
+            if let MeshIndices::U32(v) = &mut out {
+                v.push(u32::try_from(index).map_err(|_| MeshIndexOutOfRange(index))?);
+            }
+        }
+        Ok(out)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("mesh index {0} does not fit in 32 bits")]
+pub struct MeshIndexOutOfRange(pub usize);
+
+/// [`MeshIndices::iter_u32`].
+#[derive(Debug, Clone)]
+pub enum MeshIndicesIter<'a> {
+    U16(std::slice::Iter<'a, u16>),
+    U32(std::slice::Iter<'a, u32>),
+}
+
+impl Iterator for MeshIndicesIter<'_> {
+    type Item = u32;
+
+    fn next(&mut self) -> Option<u32> {
+        match self {
+            Self::U16(it) => it.next().map(|&i| u32::from(i)),
+            Self::U32(it) => it.next().copied(),
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        match self {
+            Self::U16(it) => it.size_hint(),
+            Self::U32(it) => it.size_hint(),
         }
     }
 }
+
+impl ExactSizeIterator for MeshIndicesIter<'_> {}
 
 impl Default for MeshIndices {
     fn default() -> Self {
@@ -624,7 +666,7 @@ mod tests {
 
     #[test]
     fn mesh_indices_picks_u16_when_max_fits() {
-        let indices = MeshIndices::from_usize_iter([0, 1, 2, u16::MAX as usize]);
+        let indices = MeshIndices::from_usize_iter([0, 1, 2, u16::MAX as usize]).unwrap();
         assert!(matches!(indices, MeshIndices::U16(_)));
         assert_eq!(indices.len(), 4);
         assert_eq!(indices.as_bytes().len(), 4 * 2);
@@ -633,7 +675,7 @@ mod tests {
     #[test]
     fn mesh_indices_upgrades_to_u32_above_u16_max() {
         let over = u16::MAX as usize + 1;
-        let indices = MeshIndices::from_usize_iter([0, 1, over]);
+        let indices = MeshIndices::from_usize_iter([0, 1, over]).unwrap();
         let MeshIndices::U32(_) = &indices else {
             panic!("expected U32 variant, got {:?}", indices);
         };
@@ -647,7 +689,7 @@ mod tests {
     #[test]
     fn mesh_indices_u32_roundtrips_70k_vertex_mesh() {
         let vertex_count = 70_000usize;
-        let indices = MeshIndices::from_usize_iter(0..vertex_count);
+        let indices = MeshIndices::from_usize_iter(0..vertex_count).unwrap();
         assert!(matches!(indices, MeshIndices::U32(_)));
         assert_eq!(indices.len(), vertex_count);
         assert_eq!(
@@ -655,5 +697,15 @@ mod tests {
             Some((vertex_count - 1) as u32)
         );
         assert_eq!(indices.get(vertex_count), None);
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn mesh_indices_refuse_an_index_past_u32() {
+        let over = u32::MAX as usize + 1;
+        assert_eq!(
+            MeshIndices::from_usize_iter([0, over]).unwrap_err(),
+            MeshIndexOutOfRange(over)
+        );
     }
 }
