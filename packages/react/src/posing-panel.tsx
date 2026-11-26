@@ -82,15 +82,12 @@ export function ParamsPanel({
       {!!driven.length && (
         <section data-catchlight-driven-params="" aria-labelledby={drivenHeading}>
           <div data-catchlight-driven-params-head="">
-            <div>
-              <h3 id={drivenHeading}>Driven by motion</h3>
-              <p data-catchlight-hint="">
-                {running
-                  ? "Motion responses move these. Pause motion to pose them by hand."
-                  : "Motion is paused, so these pose like any param."}
-              </p>
-            </div>
-            <MotionToggle session={session} />
+            <h3 id={drivenHeading}>Driven by motion</h3>
+            <p data-catchlight-hint="">
+              {running
+                ? "Motion responses move these. Pause motion to pose them by hand."
+                : "Motion is paused, so these pose like any param."}
+            </p>
           </div>
           <div data-catchlight-param-cards="">{driven.map(card)}</div>
         </section>
@@ -146,7 +143,7 @@ export function MotionToggle({
       type="button"
       data-catchlight-motion-toggle=""
       aria-label={label}
-      aria-pressed={paused || held}
+      data-active={paused || held ? "" : undefined}
       disabled={held}
       title={
         held
@@ -206,6 +203,7 @@ function ParamCard({
           <button
             type="button"
             title={`Select the motion response “${driver}”`}
+            onPointerDown={(event) => event.stopPropagation()}
             onClick={onSelectDriver}
           >
             <Icon name="response" width="12" height="12" />
@@ -213,7 +211,6 @@ function ParamCard({
               Driven by <strong>{driver}</strong>
             </span>
           </button>
-          {!held && <small>Motion paused</small>}
         </div>
       )}
       <div data-catchlight-param-value-row="">

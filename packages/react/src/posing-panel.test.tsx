@@ -5,7 +5,7 @@ import type { NodeId, ParamId, Session } from "@catchlight/core";
 import type { FakeDoc } from "@catchlight/core/fakes";
 import { useEffect } from "react";
 
-import { EditorProvider, ParamsPanel, usePoseSweep } from "./index.js";
+import { EditorProvider, MotionToggle, ParamsPanel, usePoseSweep } from "./index.js";
 import { enter, fakeReplica, fire, harness, mount, run } from "./test/harness.js";
 
 /** Frames run only when a test steps them. */
@@ -50,6 +50,7 @@ async function seeded(driven = true) {
   const selectedNodes: NodeId[] = [];
   const view = await mount(
     <EditorProvider editor={editor}>
+      <MotionToggle session={session} />
       <ParamsPanel
         session={session}
         selected={undefined}
@@ -120,12 +121,14 @@ describe("a param a motion response drives", () => {
     expect(button.textContent).toBe("Pause motion");
     await fire(button, new MouseEvent("click", { bubbles: true }));
     expect(session.motionPaused()).toBe(true);
-    expect(button.getAttribute("aria-pressed")).toBe("true");
+    expect(button.hasAttribute("data-active")).toBe(true);
     expect(button.textContent).toBe("Resume motion");
 
     const sway = card(view.container, "Sway");
     expect(sway.hasAttribute("data-held")).toBe(false);
-    expect(sway.querySelector("[data-catchlight-param-driver]")?.textContent).toContain("Motion paused");
+    expect(view.container.querySelector("[data-catchlight-driven-params]")?.textContent).toContain(
+      "Motion is paused",
+    );
     expect(slider(sway).disabled).toBe(false);
     slider(sway).value = "-0.5";
     await fire(slider(sway), new Event("input", { bubbles: true }));
@@ -149,7 +152,6 @@ describe("a param a motion response drives", () => {
   test("the heading shows only when the model has driven params, and search filters both groups", async () => {
     const plain = await seeded(false);
     expect(plain.view.container.querySelector("[data-catchlight-driven-params]") === null).toBe(true);
-    expect(plain.view.container.querySelector("[data-catchlight-motion-toggle]") === null).toBe(true);
     expect(frames.size).toBe(0);
     await plain.view.unmount();
 

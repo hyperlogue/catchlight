@@ -1197,14 +1197,7 @@
     padding: 0 4px;
   }
   .catchlight [data-catchlight-driven-params-head] {
-    display: flex;
-    align-items: center;
-    gap: 8px 12px;
     padding: 4px 10px 2px;
-  }
-  .catchlight [data-catchlight-driven-params-head] > div {
-    flex: 1;
-    min-width: 0;
   }
   .catchlight [data-catchlight-driven-params-head] h3 {
     margin: 0;
@@ -1228,7 +1221,7 @@
     background: transparent;
     color: var(--cl-text-secondary);
   }
-  .catchlight [data-catchlight-dock-actions] > [data-catchlight-motion-toggle][aria-pressed="true"] {
+  .catchlight [data-catchlight-dock-actions] > [data-catchlight-motion-toggle][data-active] {
     background: var(--cl-accent-soft);
     color: var(--cl-accent);
   }
@@ -1269,16 +1262,6 @@
   }
   .catchlight [data-catchlight-param-driver] svg {
     flex: none;
-  }
-  .catchlight [data-catchlight-param-driver] > small {
-    flex: none;
-    font-size: 10.5px;
-    color: var(--cl-warn);
-  }
-  .catchlight [data-catchlight-param-driver] > small::before {
-    content: "·";
-    margin-right: 6px;
-    color: var(--cl-text-dim);
   }
   .catchlight [data-catchlight-param-card][data-held] input[type="range"]:disabled {
     cursor: default;
@@ -4284,9 +4267,6 @@
       grid-column: 1;
       grid-row: auto;
       margin-top: 0;
-    }
-    .catchlight [data-catchlight-driven-params-head] {
-      flex-wrap: wrap;
     }
     .catchlight [data-catchlight-canvas-actions] > [data-catchlight-panel-toggle] {
       flex: 1;
