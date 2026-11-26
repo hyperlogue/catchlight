@@ -6,10 +6,17 @@ use catchlight_core::formats::clm::{ClmIndices, ClmMesh};
 use spade::{ConstrainedDelaunayTriangulation, Point2, Triangulation as _};
 
 use catchlight_core::id::{NodeId, SlotId};
-use catchlight_core::{Model, ModelError};
+use catchlight_core::{LoadLimitError, Model, ModelError};
 
 /// Coincident points would merge in the triangulation and corrupt indexing.
 const MIN_VERTEX_DISTANCE: f32 = 1e-3;
+
+/// Most cells a generated grid may have along one axis. Named axis lines are
+/// bounded by the lines this many cells need.
+pub const MAX_GRID_DIVISIONS: u32 = 128;
+
+/// Largest contour dilation, in texels.
+pub const MAX_CONTOUR_MARGIN: u32 = 128;
 
 /// Not a [`ModelError`]: a working mesh is not in a model yet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -29,6 +36,8 @@ pub enum MeshError {
     CustomTextureMapping,
     #[error("triangulation failed")]
     Triangulation,
+    #[error(transparent)]
+    Limit(#[from] LoadLimitError),
 }
 
 #[derive(Debug, Clone, Default)]
@@ -543,6 +552,7 @@ pub fn contour_automesh(
     uv_map: &UvMap,
     origin: [f32; 2],
 ) -> Result<WorkingMesh, MeshError> {
+    within("contour margin", MAX_CONTOUR_MARGIN, knobs.margin as usize)?;
     let (w, h) = (alpha.width as i64, alpha.height as i64);
     let mut solid = vec![false; (w * h) as usize];
     for y in 0..h {
@@ -686,6 +696,13 @@ pub fn grid_automesh(
     uv_map: &UvMap,
     origin: [f32; 2],
 ) -> Result<WorkingMesh, MeshError> {
+    for (axis, cells) in [(&knobs.axes_x, knobs.cols), (&knobs.axes_y, knobs.rows)] {
+        if axis.is_empty() {
+            within("grid divisions", MAX_GRID_DIVISIONS, cells as usize)?;
+        } else {
+            within("grid lines", MAX_GRID_DIVISIONS + 1, axis.len())?;
+        }
+    }
     let (w, h) = (alpha.width as i64, alpha.height as i64);
     let mut min = [i64::MAX, i64::MAX];
     let mut max = [i64::MIN, i64::MIN];
@@ -754,6 +771,19 @@ pub fn grid_automesh(
         }
     }
     Ok(mesh)
+}
+
+fn within(resource: &'static str, limit: u32, requested: usize) -> Result<(), MeshError> {
+    let requested = requested as u64;
+    if requested > u64::from(limit) {
+        return Err(LoadLimitError {
+            resource,
+            limit: limit.into(),
+            got: requested,
+        }
+        .into());
+    }
+    Ok(())
 }
 
 /// Separable box dilation, O(w·h) regardless of radius.
@@ -1457,6 +1487,68 @@ mod tests {
         let wide = one_cell(Some(0.5));
         assert!((wide.pos(0)[0] + 32.0).abs() < 0.01, "{:?}", wide.pos(0));
         assert!((wide.pos(0)[1] - 32.0).abs() < 0.01, "{:?}", wide.pos(0));
+    }
+
+    #[test]
+    fn automesh_knobs_past_their_bounds_are_refused() {
+        let alpha = square_mask();
+        let uv_map = UvMap::from_texture_size(64.0, 64.0);
+        let grid = |knobs: GridKnobs| grid_automesh(&alpha, &knobs, &uv_map, [0.0, 0.0]);
+        let limit = |resource, limit: u32, got: u64| {
+            Err(MeshError::Limit(LoadLimitError {
+                resource,
+                limit: limit.into(),
+                got,
+            }))
+        };
+
+        assert!(grid(GridKnobs {
+            cols: MAX_GRID_DIVISIONS,
+            rows: 2,
+            ..GridKnobs::default()
+        })
+        .is_ok());
+        assert_eq!(
+            grid(GridKnobs {
+                cols: u32::MAX,
+                ..GridKnobs::default()
+            })
+            .map(drop),
+            limit("grid divisions", MAX_GRID_DIVISIONS, u32::MAX.into())
+        );
+        assert_eq!(
+            grid(GridKnobs {
+                axes_y: vec![0.5; MAX_GRID_DIVISIONS as usize + 2],
+                ..GridKnobs::default()
+            })
+            .map(drop),
+            limit(
+                "grid lines",
+                MAX_GRID_DIVISIONS + 1,
+                u64::from(MAX_GRID_DIVISIONS) + 2
+            )
+        );
+        // Named lines replace `rows`, so an unused count is not checked.
+        assert!(grid(GridKnobs {
+            rows: u32::MAX,
+            axes_y: vec![0.0, 1.0],
+            ..GridKnobs::default()
+        })
+        .is_ok());
+
+        assert_eq!(
+            contour_automesh(
+                &alpha,
+                &ContourKnobs {
+                    margin: u32::MAX,
+                    ..ContourKnobs::default()
+                },
+                &uv_map,
+                [0.0, 0.0],
+            )
+            .map(drop),
+            limit("contour margin", MAX_CONTOUR_MARGIN, u32::MAX.into())
+        );
     }
 
     #[test]

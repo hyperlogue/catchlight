@@ -469,6 +469,45 @@ fn every_refusal_has_its_own_code() {
     }
 
     assert!(f.mesh(&part).verts.is_empty());
+
+    for (mode, resource) in [
+        (
+            AutoMesh::Contour {
+                threshold: None,
+                simplify: None,
+                margin: Some(u32::MAX),
+                spacing: None,
+                rings: None,
+                min_distance: None,
+                mirror_x: None,
+            },
+            "contour margin",
+        ),
+        (
+            AutoMesh::Grid {
+                threshold: None,
+                cols: Some(u32::MAX),
+                rows: None,
+                axes_x: None,
+                axes_y: None,
+                margin: None,
+            },
+            "grid divisions",
+        ),
+    ] {
+        let got = f.auto(&part, mode);
+        assert!(
+            matches!(
+                &got,
+                Reply::Err {
+                    code: ErrorCode::LimitExceeded,
+                    limit: Some(limit),
+                    ..
+                } if limit.resource == resource
+            ),
+            "{got:?}",
+        );
+    }
 }
 
 #[test]

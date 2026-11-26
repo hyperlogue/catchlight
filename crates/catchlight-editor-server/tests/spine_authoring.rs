@@ -589,3 +589,34 @@ fn a_refit_reuses_the_spine_and_its_params() {
         );
     }
 }
+
+#[test]
+fn a_fit_past_the_spine_joint_limit_is_a_limit_error() {
+    let ed = Editor::new();
+    let session = session(&ed);
+    let part = node("root/hair");
+    strip_part(&ed, session, &part, [0.0; 3], 0.0, [1.0, 1.0]);
+    let got = reply(
+        &ed,
+        30,
+        Command::SpineFit {
+            session,
+            part,
+            links: u32::MAX,
+            axis: None,
+            node: None,
+            name: None,
+        },
+    );
+    assert!(
+        matches!(
+            &got,
+            Reply::Err {
+                code: ErrorCode::LimitExceeded,
+                limit: Some(limit),
+                ..
+            } if limit.resource == "spine joints" && limit.requested == u64::from(u32::MAX)
+        ),
+        "{got:?}"
+    );
+}

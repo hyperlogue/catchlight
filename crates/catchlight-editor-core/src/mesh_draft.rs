@@ -159,7 +159,7 @@ impl MeshDraft {
             &self.alpha,
             &ContourKnobs {
                 spacing: spacing.clamp(1, 4096),
-                margin: margin.min(128),
+                margin: margin.min(crate::MAX_CONTOUR_MARGIN),
                 ..Default::default()
             },
             &self.uv,
@@ -175,8 +175,8 @@ impl MeshDraft {
         let next = crate::grid_automesh(
             &self.alpha,
             &GridKnobs {
-                cols: cols.clamp(2, 128),
-                rows: rows.clamp(2, 128),
+                cols: cols.clamp(2, crate::MAX_GRID_DIVISIONS),
+                rows: rows.clamp(2, crate::MAX_GRID_DIVISIONS),
                 ..Default::default()
             },
             &self.uv,

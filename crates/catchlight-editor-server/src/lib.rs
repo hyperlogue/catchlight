@@ -54,7 +54,7 @@ use catchlight_core::{
 use catchlight_editor_core::{
     contour_automesh, fit_strand, grid_automesh, AlphaMask, ContourKnobs, GridKnobs, HistoryError,
     HistoryLimits, HistoryNavigation, Manifest, ManifestError, MeshError, ModelHistory,
-    ModelManifestExt as _, ModelMeshExt as _, TextureData, UvMap,
+    ModelManifestExt as _, ModelMeshExt as _, StrandError, TextureData, UvMap,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use catchlight_wgpu::Framing;
@@ -172,6 +172,7 @@ impl EditorError {
             }),
             Self::Edit(ModelError::LoadLimit(limit))
             | Self::Edit(ModelError::Clm(clm::ClmError::LoadLimit(limit)))
+            | Self::Mesh(MeshError::Limit(limit))
             | Self::Manifest(ManifestError::LoadLimit(limit))
             | Self::Manifest(ManifestError::Model(ModelError::LoadLimit(limit)))
             | Self::Manifest(ManifestError::Model(ModelError::Clm(clm::ClmError::LoadLimit(
@@ -2004,8 +2005,14 @@ fn spine_fit(
     let mesh = node
         .mesh()
         .ok_or_else(|| EditorError::BadTarget(format!("node {part} holds no mesh to fit")))?;
-    let fit = fit_strand(mesh, links, axis)
-        .map_err(|e| EditorError::BadTarget(format!("cannot fit a spine to {part}: {e}")))?;
+    let fit = fit_strand(mesh, links, axis).map_err(|e| match e {
+        StrandError::Limit(limit) => EditorError::Limit {
+            resource: limit.resource,
+            limit: limit.limit,
+            requested: limit.got,
+        },
+        e => EditorError::BadTarget(format!("cannot fit a spine to {part}: {e}")),
+    })?;
     let parent = node.parent().cloned().ok_or_else(|| {
         EditorError::BadTarget(format!(
             "node {part} is the model's root, so a spine has nowhere to go above it"

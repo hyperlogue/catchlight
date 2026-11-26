@@ -5,6 +5,7 @@
 //! must be revisited before the inputs widen.
 
 use catchlight_core::formats::clm::ClmMesh;
+use catchlight_core::{LoadBudget, LoadLimitError, LoadResource};
 
 pub const DEFAULT_AXIS: [f32; 2] = [0.0, -1.0];
 
@@ -35,6 +36,8 @@ pub enum StrandError {
     DegenerateAxis,
     #[error("the mesh has no extent along the hang axis")]
     DegenerateExtent,
+    #[error(transparent)]
+    Limit(#[from] LoadLimitError),
 }
 
 /// Fit `links` equal links to a part's rest mesh, measured in a box oriented
@@ -48,6 +51,8 @@ pub fn fit_strand(
     if links == 0 {
         return Err(StrandError::ZeroLinks);
     }
+    // Each link becomes a spine joint, so a fit answers to the load limit.
+    LoadBudget::default().charge(LoadResource::SpineJoints, u64::from(links))?;
     let count = mesh.vertex_count();
     if count == 0 {
         return Err(StrandError::NoVertices);
@@ -187,6 +192,21 @@ mod tests {
         assert_eq!(
             fit_strand(&mesh_of(&[]), 0, None),
             Err(StrandError::ZeroLinks)
+        );
+    }
+
+    #[test]
+    fn more_links_than_spine_joints_load_are_refused() {
+        let mesh = mesh_of(&[[-1.0, 5.0], [1.0, -5.0]]);
+        let limit = catchlight_core::LoadLimits::default().spine_joints;
+        assert!(fit_strand(&mesh, limit as u32, None).is_ok());
+        assert_eq!(
+            fit_strand(&mesh, u32::MAX, None),
+            Err(StrandError::Limit(LoadLimitError {
+                resource: "spine joints",
+                limit,
+                got: u64::from(u32::MAX),
+            }))
         );
     }
 
