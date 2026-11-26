@@ -3,7 +3,8 @@
 //! With `Some(clear_color)`, `render_list` clears even when nothing draws.
 
 use catchlight_wgpu::{
-    create_headless_context, FrameTargets, RenderList, RenderTarget, WgpuRenderer,
+    create_headless_context, FrameTargets, RenderContext, RenderList, RenderTarget, RendererError,
+    WgpuRenderer,
 };
 
 const W: u32 = 4;
@@ -81,4 +82,44 @@ fn empty_render_list_still_clears_the_target() {
     for px in pixels.as_chunks::<4>().0 {
         assert_eq!(px, &[255, 0, 0, 255], "expected red clear, got {px:?}");
     }
+}
+
+fn cleared_context(format: wgpu::TextureFormat) -> RenderContext {
+    let (device, queue) = pollster::block_on(create_headless_context()).expect(NO_ADAPTER);
+    let mut ctx = RenderContext::with_renderer(WgpuRenderer::new(device, queue, format), W, H);
+    ctx.render(
+        &RenderList::default(),
+        Some(wgpu::Color {
+            r: 1.0,
+            g: 0.0,
+            b: 0.0,
+            a: 1.0,
+        }),
+    );
+    ctx
+}
+
+#[test]
+fn a_bgra_target_reads_back_as_rgba() {
+    let pixels = cleared_context(wgpu::TextureFormat::Bgra8UnormSrgb)
+        .read_rgba()
+        .expect("readback");
+    assert_eq!(pixels.len(), (W * H * 4) as usize);
+    for px in pixels.as_chunks::<4>().0 {
+        assert_eq!(px, &[255, 0, 0, 255], "expected red clear, got {px:?}");
+    }
+}
+
+#[test]
+fn a_float_target_is_refused_by_readback() {
+    let refused = cleared_context(wgpu::TextureFormat::Rgba16Float).read_rgba();
+    assert!(
+        matches!(
+            refused,
+            Err(RendererError::ReadbackFormat(
+                wgpu::TextureFormat::Rgba16Float
+            ))
+        ),
+        "{refused:?}",
+    );
 }

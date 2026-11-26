@@ -106,6 +106,9 @@ pub enum RendererError {
     #[error("a {width}x{height} texture cannot be read back")]
     ReadbackSize { width: u32, height: u32 },
 
+    #[error("a {0:?} texture cannot be read back as RGBA8")]
+    ReadbackFormat(wgpu::TextureFormat),
+
     #[error("mapping the readback buffer: {0}")]
     ReadbackMap(wgpu::BufferAsyncError),
 

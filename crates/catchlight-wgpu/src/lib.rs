@@ -244,22 +244,70 @@ fn readback_layout(width: u32, height: u32) -> Option<ReadbackLayout> {
     })
 }
 
-/// Mip 0 of an RGBA8 `texture` carrying `COPY_SRC`, tightly packed.
+/// How a texture's rows read back as RGBA8.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Readback {
+    layout: ReadbackLayout,
+    swap_red_blue: bool,
+}
+
+impl Readback {
+    pub(crate) fn of(texture: &wgpu::Texture) -> RendererResult<Self> {
+        use wgpu::TextureFormat as F;
+        let swap_red_blue = match texture.format() {
+            F::Rgba8Unorm | F::Rgba8UnormSrgb => false,
+            F::Bgra8Unorm | F::Bgra8UnormSrgb => true,
+            other => return Err(RendererError::ReadbackFormat(other)),
+        };
+        let (width, height) = (texture.width(), texture.height());
+        let layout =
+            readback_layout(width, height).ok_or(RendererError::ReadbackSize { width, height })?;
+        Ok(Self {
+            layout,
+            swap_red_blue,
+        })
+    }
+
+    pub(crate) fn buffer_size(&self) -> u64 {
+        self.layout.buffer_size
+    }
+}
+
+pub(crate) fn create_readback_buffer(device: &wgpu::Device, size: u64) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("Readback Buffer"),
+        size,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    })
+}
+
+/// Mip 0 of an RGBA8 or BGRA8 `texture` carrying `COPY_SRC`, as tightly
+/// packed RGBA8.
 pub async fn read_texture_to_rgba(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     texture: &wgpu::Texture,
 ) -> RendererResult<Vec<u8>> {
-    let (width, height) = (texture.width(), texture.height());
-    let layout =
-        readback_layout(width, height).ok_or(RendererError::ReadbackSize { width, height })?;
-    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("Readback Buffer"),
-        size: layout.buffer_size,
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
+    let readback = Readback::of(texture)?;
+    let buffer = create_readback_buffer(device, readback.buffer_size());
+    let mut pixels = Vec::new();
+    read_texture_into(device, queue, texture, readback, &buffer, &mut pixels).await?;
+    Ok(pixels)
+}
 
+/// Replaces `out` with the pixels; `buffer` holds at least
+/// `readback.buffer_size()` bytes and is unmapped.
+pub(crate) async fn read_texture_into(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    readback: Readback,
+    buffer: &wgpu::Buffer,
+    out: &mut Vec<u8>,
+) -> RendererResult<()> {
+    let layout = readback.layout;
+    let (width, height) = (texture.width(), texture.height());
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: Some("Readback Encoder"),
     });
@@ -271,7 +319,7 @@ pub async fn read_texture_to_rgba(
             aspect: wgpu::TextureAspect::All,
         },
         wgpu::TexelCopyBufferInfo {
-            buffer: &buffer,
+            buffer,
             layout: wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(layout.padded_bytes_per_row),
@@ -286,7 +334,7 @@ pub async fn read_texture_to_rgba(
     );
     let submission = queue.submit(std::iter::once(encoder.finish()));
 
-    let buffer_slice = buffer.slice(..);
+    let buffer_slice = buffer.slice(..layout.buffer_size);
     let (sender, receiver) = futures_channel::oneshot::channel();
     buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
         let _ = sender.send(result);
@@ -303,14 +351,21 @@ pub async fn read_texture_to_rgba(
         .map_err(|_| RendererError::ReadbackAbandoned)??;
 
     let data = buffer_slice.get_mapped_range();
-    let pixels = data
-        .chunks(layout.padded_bytes_per_row as usize)
-        .flat_map(|row| &row[..layout.unpadded_bytes_per_row])
-        .copied()
-        .collect();
+    out.clear();
+    out.reserve(layout.unpadded_bytes_per_row * height as usize);
+    for row in data.chunks(layout.padded_bytes_per_row as usize) {
+        let row = &row[..layout.unpadded_bytes_per_row];
+        if readback.swap_red_blue {
+            for [b, g, r, a] in row.as_chunks::<4>().0 {
+                out.extend_from_slice(&[*r, *g, *b, *a]);
+            }
+        } else {
+            out.extend_from_slice(row);
+        }
+    }
     drop(data);
     buffer.unmap();
-    Ok(pixels)
+    Ok(())
 }
 
 #[cfg(test)]
