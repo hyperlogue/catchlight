@@ -1,5 +1,5 @@
 //! Bounded package IO. Nothing is extracted, executed or fetched from a URL.
-//! Directory imports reject symlinks, including intermediate components.
+//! Directory imports reject symlinks at and below the package directory.
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Cursor, Read};
 use std::path::Path;
@@ -69,18 +69,16 @@ impl Package {
     }
 
     /// Read an unpacked package. The directory must directly contain model.json.
-    /// Symlinks and special files are refused, even when they point inside it.
+    /// The directory itself and everything below it must not be a symlink or
+    /// special file, even one pointing inside it. Directories above it are the
+    /// caller's to choose, so a symlinked home or temp directory is accepted.
     pub fn from_directory(root: &Path) -> Result<Self> {
-        for ancestor in root.ancestors().filter(|p| !p.as_os_str().is_empty()) {
-            if std::fs::symlink_metadata(ancestor)
-                .map_err(io_at(ancestor))?
-                .file_type()
-                .is_symlink()
-            {
-                return Err(Error::Invalid(
-                    "package directory traverses a symlink".into(),
-                ));
-            }
+        if std::fs::symlink_metadata(root)
+            .map_err(io_at(root))?
+            .file_type()
+            .is_symlink()
+        {
+            return Err(Error::Invalid("package directory is a symlink".into()));
         }
         let mut pending = vec![(root.to_path_buf(), String::new())];
         let mut files = BTreeMap::new();

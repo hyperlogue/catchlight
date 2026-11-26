@@ -309,6 +309,28 @@ fn directory_resource_symlinks_are_rejected() {
     assert!(error.to_string().contains("symlink"));
 }
 
+#[cfg(unix)]
+#[test]
+fn a_package_below_a_symlinked_directory_reads_but_a_symlinked_package_does_not() {
+    let dir = std::env::temp_dir().join(format!(
+        "catchlight-livliv-test-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(dir.join("real/pkg")).unwrap();
+    std::fs::write(dir.join("real/pkg/model.json"), "{}").unwrap();
+    std::os::unix::fs::symlink(dir.join("real"), dir.join("link")).unwrap();
+    std::os::unix::fs::symlink(dir.join("real/pkg"), dir.join("pkg-link")).unwrap();
+    let below = Package::from_directory(&dir.join("link/pkg"));
+    let at = Package::from_directory(&dir.join("pkg-link"));
+    std::fs::remove_dir_all(&dir).unwrap();
+    below.unwrap();
+    assert!(at.unwrap_err().to_string().contains("symlink"));
+}
+
 #[test]
 #[ignore = "requires pinned official w01 sample; set LIVLIV_SAMPLE_DIR"]
 fn official_sample_validates_without_losing_watermark_requirement() {
