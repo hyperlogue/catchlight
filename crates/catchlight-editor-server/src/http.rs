@@ -20,6 +20,7 @@
 use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
+use std::ops::Range;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
@@ -359,7 +360,7 @@ fn serve_connection(state: &ServerState, stream: TcpStream) {
         }
     };
 
-    let response = route(state, &request, allowed.as_deref());
+    let response = route(state, &mut request, allowed.as_deref());
     let _ = write_response(&mut writer, &response);
 }
 
@@ -382,7 +383,7 @@ fn token_response(token: &str) -> Response {
         .body(format!("{{\"token\":\"{token}\"}}").into_bytes())
 }
 
-fn route(state: &ServerState, request: &HttpRequest, allowed: Option<&str>) -> Response {
+fn route(state: &ServerState, request: &mut HttpRequest, allowed: Option<&str>) -> Response {
     if opens_without_a_token(state, request) {
         return cors(token_response(&state.token), allowed);
     }
@@ -482,18 +483,19 @@ fn redeem(state: &ServerState, request: &HttpRequest) -> Response {
 
 /// Only a body that is not a [`Request`] at all is a 400: there is no `id` to
 /// answer against. Editor refusals are a 200 carrying `Reply::Err`.
-fn command(state: &ServerState, request: &HttpRequest) -> Response {
+fn command(state: &ServerState, request: &mut HttpRequest) -> Response {
+    let body = std::mem::take(&mut request.body);
     let (parsed, attachments) = match multipart_boundary(request) {
         None => (
-            serde_json::from_slice::<Request>(&request.body),
+            serde_json::from_slice::<Request>(&body),
             Attachments::none(),
         ),
-        Some(boundary) => match parse_multipart(&request.body, &boundary) {
+        Some(boundary) => match parse_multipart(&body, &boundary) {
             Err(why) => return Response::text(400, "Bad Request", why),
             Ok(parts) => {
                 let mut attachments = Attachments::none();
                 let mut command = None;
-                for (name, bytes) in parts {
+                for (name, bytes) in carve(body, parts) {
                     if name == "request" {
                         command = Some(bytes);
                     } else {
@@ -576,17 +578,22 @@ fn multipart_boundary(request: &HttpRequest) -> Option<String> {
     None
 }
 
+/// Each part's name and where its bytes lie in `body`.
+///
 /// Strict on purpose (CRLF everywhere, a name on every part, a closing
 /// boundary): anything else is a 400 rather than a guess. `filename` is
 /// ignored; the part's name is the attachment's name.
-fn parse_multipart(body: &[u8], boundary: &str) -> Result<Vec<(String, Vec<u8>)>, &'static str> {
+fn parse_multipart(
+    body: &[u8],
+    boundary: &str,
+) -> Result<Vec<(String, Range<usize>)>, &'static str> {
     let opening = format!("--{boundary}");
     let delimiter = format!("\r\n--{boundary}");
     if !body.starts_with(opening.as_bytes()) {
         return Err("the body does not open with its boundary");
     }
     let mut at = opening.len();
-    let mut parts: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut parts: Vec<(String, Range<usize>)> = Vec::new();
     loop {
         let rest = &body[at..];
         if rest.starts_with(b"--") {
@@ -607,9 +614,26 @@ fn parse_multipart(body: &[u8], boundary: &str) -> Result<Vec<(String, Vec<u8>)>
         if parts.iter().any(|(known, _)| *known == name) {
             return Err("two parts share one name");
         }
-        parts.push((name, body[data_at..data_at + data_len].to_vec()));
+        parts.push((name, data_at..data_at + data_len));
         at = data_at + data_len + delimiter.len();
     }
+}
+
+/// The largest part keeps the body's own allocation, so the upload that is
+/// most of a body is never held twice.
+fn carve(mut body: Vec<u8>, mut parts: Vec<(String, Range<usize>)>) -> Vec<(String, Vec<u8>)> {
+    let largest = (0..parts.len()).max_by_key(|&at| parts[at].1.len());
+    let kept = largest.map(|at| parts.swap_remove(at));
+    let mut carved: Vec<(String, Vec<u8>)> = parts
+        .into_iter()
+        .map(|(name, range)| (name, body[range].to_vec()))
+        .collect();
+    if let Some((name, range)) = kept {
+        body.truncate(range.end);
+        body.drain(..range.start);
+        carved.push((name, body));
+    }
+    carved
 }
 
 fn part_name(headers: &[u8]) -> Result<String, &'static str> {
@@ -1099,8 +1123,15 @@ fn read_body(
         drain_body(reader, length);
         return Err(BadRequest::BodyTooLarge);
     }
-    let mut body = vec![0u8; length];
-    reader.read_exact(&mut body).map_err(|_| BadRequest::Io)?;
+    // Grown as bytes arrive: a declared length costs nothing until it is sent.
+    let mut body = Vec::new();
+    reader
+        .take(length as u64)
+        .read_to_end(&mut body)
+        .map_err(|_| BadRequest::Io)?;
+    if body.len() != length {
+        return Err(BadRequest::Io);
+    }
     Ok(body)
 }
 
@@ -1395,10 +1426,19 @@ mod tests {
                      Content-Type: image/png\r\n\r\n\x00\x01\r\n--b--\r\n";
         let parts = parse_multipart(body, "b").expect("a well-formed body");
         assert_eq!(parts[0].0, "request");
-        assert_eq!(parts[0].1, b"{}");
+        assert_eq!(&body[parts[0].1.clone()], b"{}");
         // The filename is ignored; the part's name is the attachment's.
         assert_eq!(parts[1].0, "texture");
-        assert_eq!(parts[1].1, b"\x00\x01");
+        assert_eq!(&body[parts[1].1.clone()], b"\x00\x01");
+        let mut carved = carve(body.to_vec(), parts);
+        carved.sort();
+        assert_eq!(
+            carved,
+            [
+                ("request".to_string(), b"{}".to_vec()),
+                ("texture".to_string(), b"\x00\x01".to_vec()),
+            ]
+        );
 
         for bad in [
             // No closing boundary.
