@@ -139,7 +139,9 @@ struct Serde {
     default: Option<Option<String>>,
 }
 
-fn serde_attrs(attrs: &[Attribute]) -> Result<Serde> {
+/// `item` names what carries `attrs`, for the error on a key this generator
+/// does not translate.
+fn serde_attrs(attrs: &[Attribute], item: &dyn std::fmt::Display) -> Result<Serde> {
     let mut found = Serde::default();
     for attr in attrs {
         if !attr.path().is_ident("serde") {
@@ -164,8 +166,23 @@ fn serde_attrs(attrs: &[Attribute]) -> Result<Serde> {
                 } else {
                     None
                 });
-            } else if meta.input.peek(syn::Token![=]) {
-                let _: Expr = meta.value()?.parse()?;
+            } else if meta.path.is_ident("deny_unknown_fields") {
+            } else if meta.path.is_ident("skip_serializing_if")
+                || meta.path.is_ident("deserialize_with")
+            {
+                let _: syn::LitStr = meta.value()?.parse()?;
+            } else {
+                let key = meta
+                    .path
+                    .segments
+                    .iter()
+                    .map(|s| s.ident.to_string())
+                    .collect::<Vec<_>>()
+                    .join("::");
+                return Err(meta.error(format!(
+                    "{item} uses #[serde({key})], which {OUT} does not translate; teach \
+                     serde_attrs in crates/xtask/src/generate/python.rs what it means"
+                )));
             }
             Ok(())
         })
@@ -315,7 +332,7 @@ fn build(decls: &[Decl], source: &Source) -> Result<Vec<Wire>> {
         };
         let shape = match item {
             Item::Struct(s) => {
-                let attrs = serde_attrs(&s.attrs)?;
+                let attrs = serde_attrs(&s.attrs, &format_args!("`{}`", s.ident))?;
                 match &s.fields {
                     Fields::Unnamed(unnamed) if attrs.transparent => {
                         let [only] = unnamed.unnamed.iter().collect::<Vec<_>>()[..] else {
@@ -332,7 +349,7 @@ fn build(decls: &[Decl], source: &Source) -> Result<Vec<Wire>> {
                 }
             }
             Item::Enum(e) => {
-                let attrs = serde_attrs(&e.attrs)?;
+                let attrs = serde_attrs(&e.attrs, &format_args!("`{}`", e.ident))?;
                 let rename_all = attrs.rename_all.as_deref();
                 if e.variants.iter().all(|v| matches!(v.fields, Fields::Unit)) {
                     let mut choices = Vec::new();
@@ -467,7 +484,7 @@ fn ts_docs(decl: &Decl) -> Vec<String> {
 }
 
 fn variant_wire(variant: &syn::Variant, rename_all: Option<&str>) -> Result<String> {
-    let attrs = serde_attrs(&variant.attrs)?;
+    let attrs = serde_attrs(&variant.attrs, &format_args!("variant `{}`", variant.ident))?;
     Ok(match (attrs.rename, rename_all) {
         (Some(name), _) => name,
         (None, Some("snake_case")) => snake_case(&variant.ident.to_string()),
@@ -541,12 +558,12 @@ fn push_field(
     source: &Source,
     known: &BTreeSet<String>,
 ) -> Result<()> {
-    let attrs = serde_attrs(&field.attrs)?;
     let ident = field
         .ident
         .as_ref()
         .context("a named field with no name")?
         .to_string();
+    let attrs = serde_attrs(&field.attrs, &format_args!("field `{ident}`"))?;
 
     if attrs.flatten {
         // `#[serde(flatten)]` splices fields so `to_wire()` stays one level deep.
@@ -1233,6 +1250,35 @@ mod tests {
         assert_eq!(snake_case("Io"), "io");
         assert_eq!(snake_case("ResponseBody"), "response_body");
         assert_eq!(snake_case("UnfilledSlots"), "unfilled_slots");
+    }
+
+    #[test]
+    fn a_serde_key_the_generator_does_not_translate_is_refused() {
+        for (attr, key) in [
+            ("#[serde(skip)]", "skip"),
+            ("#[serde(alias = \"b\")]", "alias"),
+            ("#[serde(with = \"m\")]", "with"),
+        ] {
+            let item: syn::ItemStruct =
+                syn::parse_str(&format!("struct S {{ {attr} a: u32 }}")).unwrap();
+            let field = item.fields.iter().next().unwrap();
+            let Err(error) = serde_attrs(&field.attrs, &"field `a`") else {
+                panic!("{attr} is refused");
+            };
+            let error = error.to_string();
+            assert!(
+                error.contains("field `a`") && error.contains(&format!("#[serde({key})]")),
+                "{error}"
+            );
+        }
+        let item: syn::ItemStruct = syn::parse_str(
+            "#[serde(tag = \"t\", rename_all = \"snake_case\", deny_unknown_fields)] struct S { \
+             #[serde(default, deserialize_with = \"f\", skip_serializing_if = \"g\")] a: u32 }",
+        )
+        .unwrap();
+        assert!(serde_attrs(&item.attrs, &"`S`").is_ok());
+        let field = item.fields.iter().next().unwrap();
+        assert!(serde_attrs(&field.attrs, &"field `a`").is_ok());
     }
 
     #[test]
