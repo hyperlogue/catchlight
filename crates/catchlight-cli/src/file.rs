@@ -5,6 +5,7 @@ use std::path::Path;
 
 use catchlight_core::formats::clm::{self, ClmError, ClmFile, ClmStructure};
 use catchlight_core::formats::container::ContainerError;
+use catchlight_core::model::Shape;
 use catchlight_core::{LoadError, Model, ModelError, ModelFormat, ReadOptions};
 
 use crate::Error;
@@ -52,12 +53,6 @@ pub(crate) fn not_a_clm(path: &Path, bytes: &[u8], source: ClmError) -> Error {
         path: path.to_path_buf(),
         source,
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Shape {
-    Complete,
-    Fragment,
 }
 
 /// `None` for a structure with no nodes, which no reader accepts.
