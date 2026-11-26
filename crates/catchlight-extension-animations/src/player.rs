@@ -333,27 +333,39 @@ impl AnimationPlayer {
             cut = named;
         }
         state.time += dt;
-        // The lead-in plays once; a loop snaps back to the loop region's start.
+        let mut frame = 0.0;
         if clip.length > 0 && clip.timestep > 0.0 {
+            // The lead-in plays once; the loop region then repeats. Every
+            // frame lasts one timestep, the region's last one included, so
+            // the wrap is decided on the clock, not on a rounded frame: a
+            // step shorter than half a timestep must still get past it.
             let (loop_begin, loop_end) = clip.loop_region();
-            let frame = (state.time / clip.timestep).round() as i64;
-            if state.looping && frame >= i64::from(loop_end) {
-                for param in &self.wrap_cuts {
-                    puppet.mark_jump(param);
+            let last = if state.looping {
+                let begin = loop_begin as f32 * clip.timestep;
+                let end = loop_end as f32 * clip.timestep;
+                // Steps that sum to the end land a rounding error to either
+                // side of it; those wrap onto the first frame exactly.
+                let slack = clip.timestep * 1e-3;
+                let over = state.time - end;
+                if over >= -slack {
+                    for param in &self.wrap_cuts {
+                        puppet.mark_jump(param);
+                    }
+                    cut |= self.wrap_cuts_named;
+                    state.time = begin
+                        + if over > slack {
+                            over % (end - begin)
+                        } else {
+                            0.0
+                        };
                 }
-                cut |= self.wrap_cuts_named;
-                state.time = loop_begin as f32 * clip.timestep;
-            }
-            let frame = (state.time / clip.timestep).round() as i64;
-            if frame + 1 >= i64::from(clip.length) {
-                state.time = (clip.length - 1) as f32 * clip.timestep;
-            }
+                loop_end - 1
+            } else {
+                state.time = state.time.min((clip.length - 1) as f32 * clip.timestep);
+                clip.length - 1
+            };
+            frame = (state.time / clip.timestep).min(last as f32);
         }
-        let frame = if clip.timestep > 0.0 {
-            state.time / clip.timestep
-        } else {
-            0.0
-        };
         self.sampled = Some((state, frame));
         self.state = Some(state);
         (Some((clip, frame)), cut)

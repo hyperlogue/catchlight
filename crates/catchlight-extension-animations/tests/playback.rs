@@ -106,6 +106,39 @@ fn sample_matches_fractional_and_looped_values_without_advancing_playback() {
 }
 
 #[test]
+fn a_loop_wraps_at_any_frame_rate_and_keeps_its_period() {
+    let (model, id) = with_param(0.0, 10.0);
+    let ramp = clip("Ramp", 1.0 / 30.0, 4, &id, &[(0, 0.0), (3, 3.0)]);
+    for hz in [24.0_f32, 30.0, 60.0, 144.0, 1000.0] {
+        let mut puppet = Puppet::new(&model);
+        let mut player = AnimationPlayer::new(vec![ramp.clone()]);
+        assert!(player.play("Ramp"));
+        player.advance(&mut puppet, 0.0);
+        // Three periods: the clip is four frames of a thirtieth of a second.
+        let steps = (3.0 * 4.0 / 30.0 * hz).round() as usize;
+        let mut wraps = 0;
+        let mut before = 0.0;
+        for _ in 0..steps {
+            player.advance(&mut puppet, 1.0 / hz);
+            let sample = player.sample().unwrap();
+            assert!(
+                (0.0..=3.0).contains(&sample.frame),
+                "{hz} Hz: frame {}",
+                sample.frame
+            );
+            if sample.time < before {
+                wraps += 1;
+            }
+            before = sample.time;
+        }
+        assert!(
+            (2..=3).contains(&wraps),
+            "{hz} Hz wrapped {wraps} times in three periods"
+        );
+    }
+}
+
+#[test]
 fn replaced_clips_keep_the_playing_clip_by_name_from_where_it_was() {
     let (model, id) = with_param(0.0, 10.0);
     let ramp = |name: &str| clip(name, 0.125, 8, &id, &[(0, 0.0), (7, 7.0)]);
