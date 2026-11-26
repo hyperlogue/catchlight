@@ -69,6 +69,11 @@ use preview::PreviewRenderer;
 #[cfg(not(target_arch = "wasm32"))]
 const DEFAULT_CAMERA_HEIGHT: f32 = 2000.0;
 
+/// The most pixels one [`Command::Preview`] renders: its RGBA readback and
+/// PNG encode are held in memory whole.
+#[cfg(not(target_arch = "wasm32"))]
+const MAX_PREVIEW_PIXELS: u64 = 8192 * 8192;
+
 #[derive(Debug, thiserror::Error)]
 pub enum EditorError {
     #[error("operation {index}: {source}")]
@@ -1853,6 +1858,14 @@ impl Editor {
         payload: &mut Option<Payload>,
     ) -> Result<Captured<ResponseBody>, EditorError> {
         let [width, height] = size.unwrap_or([512, 512]);
+        let pixels = u64::from(width) * u64::from(height);
+        if pixels > MAX_PREVIEW_PIXELS {
+            return Err(EditorError::Limit {
+                resource: "preview_pixels",
+                limit: MAX_PREVIEW_PIXELS,
+                requested: pixels,
+            });
+        }
         // Explicit or the default, never the presence: a script's output must
         // not depend on what some tab last looked at.
         let framing = camera.map_or(Framing::centered(DEFAULT_CAMERA_HEIGHT), |c| Framing {
@@ -1879,6 +1892,14 @@ impl Editor {
             let pr = prev
                 .as_mut()
                 .ok_or_else(|| EditorError::Preview("renderer unavailable".into()))?;
+            let max_side = pr.max_texture_dimension();
+            if width.max(height) > max_side {
+                return Err(EditorError::Limit {
+                    resource: "preview_dimension",
+                    limit: max_side.into(),
+                    requested: width.max(height).into(),
+                });
+            }
             pr.render_png(session, &model, &mut puppet, &pose, width, height, framing)
                 .map_err(|e| EditorError::Preview(e.to_string()))
         })();
@@ -3294,6 +3315,65 @@ mod tests {
             }
             other => panic!("preview failed: {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_preview_larger_than_the_renderer_allows_is_a_limit_error() {
+        let bytes = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/models/welded_seam.clm"
+        ))
+        .unwrap();
+        let ed = Editor::new();
+        let mut attachments = Attachments::none();
+        attachments.insert("model", bytes);
+        let s = session_of(body(
+            ed.handle_with(
+                req(
+                    1,
+                    Command::SessionNew {
+                        name: None,
+                        source: Some(SessionSource::Clm {}),
+                    },
+                ),
+                attachments,
+            )
+            .0,
+        ));
+        let preview = |id: u64, size: [u32; 2]| {
+            ed.handle_with(
+                req(
+                    id,
+                    Command::Preview {
+                        session: s,
+                        pose: vec![],
+                        size: Some(size),
+                        camera: None,
+                    },
+                ),
+                Attachments::none(),
+            )
+        };
+
+        for (id, size, resource) in [
+            (2, [9000, 9000], "preview_pixels"),
+            (3, [65535, 1], "preview_dimension"),
+        ] {
+            match preview(id, size).0 {
+                Reply::Err {
+                    code: ErrorCode::LimitExceeded,
+                    limit: Some(limit),
+                    ..
+                } => assert_eq!(limit.resource, resource),
+                other => panic!("{size:?} should exceed {resource}: {other:?}"),
+            }
+        }
+        let (reply, payload) = preview(4, [64, 64]);
+        assert!(matches!(reply, Reply::Ok { .. }), "{reply:?}");
+        assert!(
+            payload.is_some(),
+            "a refused preview leaves the session previewable"
+        );
     }
 
     /// Pixels prove the pose landed: a preview rendered at rest would still

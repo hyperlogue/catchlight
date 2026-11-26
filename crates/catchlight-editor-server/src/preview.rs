@@ -27,6 +27,10 @@ impl PreviewRenderer {
         Ok(Self { ctx, cache: None })
     }
 
+    pub(super) fn max_texture_dimension(&self) -> u32 {
+        self.ctx.renderer.max_texture_dimension()
+    }
+
     /// Cleared to opaque white, so the premultiplied readback needs nothing
     /// undone before encoding.
     #[allow(clippy::too_many_arguments)]
