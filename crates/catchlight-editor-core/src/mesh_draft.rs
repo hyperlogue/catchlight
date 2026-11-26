@@ -57,18 +57,23 @@ impl MeshDraft {
         })
     }
 
+    #[must_use]
     pub fn working(&self) -> &WorkingMesh {
         &self.mesh
     }
+    #[must_use]
     pub fn uv_map(&self) -> UvMap {
         self.uv
     }
+    #[must_use]
     pub fn dirty(&self) -> bool {
         self.mesh != self.original
     }
+    #[must_use]
     pub fn can_undo(&self) -> bool {
         !self.undo.is_empty()
     }
+    #[must_use]
     pub fn can_redo(&self) -> bool {
         !self.redo.is_empty()
     }

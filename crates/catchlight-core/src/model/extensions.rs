@@ -23,6 +23,7 @@ pub enum ExtensionValue {
 impl ExtensionValue {
     /// The bytes this value keeps in the `Extensions` section, a maintained
     /// extension's byte payload among them.
+    #[must_use]
     pub fn bytes(&self) -> Option<&Arc<[u8]>> {
         match self {
             Self::Bytes(data) => Some(data),
@@ -33,6 +34,7 @@ impl ExtensionValue {
 
     /// The JSON this value carries inline, a maintained extension's JSON
     /// payload among them.
+    #[must_use]
     pub fn json(&self) -> Option<&serde_json::Value> {
         match self {
             Self::Json(value) => Some(value),

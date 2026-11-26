@@ -28,6 +28,7 @@ pub enum NodeKind {
 }
 
 impl NodeKind {
+    #[must_use]
     pub fn wire_name(self) -> &'static str {
         match self {
             Self::Group => "group",
@@ -39,6 +40,7 @@ impl NodeKind {
         }
     }
 
+    #[must_use]
     pub fn of(kind: &catchlight_core::ModelNodeKind) -> Self {
         use catchlight_core::ModelNodeKind as K;
         match kind {
@@ -61,6 +63,7 @@ pub enum MaskMode {
 }
 
 impl MaskMode {
+    #[must_use]
     pub fn wire_name(self) -> &'static str {
         match self {
             Self::Mask => "mask",
@@ -98,6 +101,7 @@ pub enum Interpolate {
 }
 
 impl Interpolate {
+    #[must_use]
     pub fn wire_name(self) -> &'static str {
         match self {
             Self::Nearest => "nearest",
@@ -214,6 +218,7 @@ pub enum BlendMode {
 
 impl BlendMode {
     /// `Snake_case`; the model file spells the same modes in `PascalCase`.
+    #[must_use]
     pub fn wire_name(self) -> &'static str {
         match self {
             Self::Normal => "normal",
@@ -359,12 +364,14 @@ pub enum BindingTarget {
 }
 
 impl ScalarTarget {
+    #[must_use]
     pub fn wire_name(self) -> &'static str {
         catchlight_core::ScalarTarget::from(self).name()
     }
 }
 
 impl BindingTarget {
+    #[must_use]
     pub fn wire_name(self) -> &'static str {
         catchlight_core::BindingTarget::from(self).name()
     }

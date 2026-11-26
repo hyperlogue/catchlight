@@ -44,12 +44,14 @@ pub use renderer::{
     WgpuRenderer,
 };
 
+#[must_use]
 pub fn create_orthographic_camera(camera_height: f32, aspect: f32) -> glam::Mat4 {
     create_orthographic_camera_at(camera_height, aspect, glam::Vec2::ZERO)
 }
 
 /// `camera_height` is in world units. World space is Y-up and the camera
 /// holds no axis flip.
+#[must_use]
 pub fn create_orthographic_camera_at(
     camera_height: f32,
     aspect: f32,

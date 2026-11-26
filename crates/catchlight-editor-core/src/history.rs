@@ -190,10 +190,12 @@ impl ModelHistory {
     }
 
     /// Distinct from the current entry identity.
+    #[must_use]
     pub fn live_revision(&self) -> u64 {
         self.live_revision
     }
 
+    #[must_use]
     pub fn bytes(&self) -> usize {
         self.payloads
             .values()
@@ -270,6 +272,7 @@ impl ModelHistory {
     }
 
     /// (undo depth, redo depth along the preferred redo path).
+    #[must_use]
     pub fn depths(&self) -> (usize, usize) {
         let mut undo = 0;
         let mut at = self.current;
@@ -286,6 +289,7 @@ impl ModelHistory {
         (undo, redo)
     }
 
+    #[must_use]
     pub fn metadata(&self) -> HistoryMetadata {
         HistoryMetadata {
             root: self.root,

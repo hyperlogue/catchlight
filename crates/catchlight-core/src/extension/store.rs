@@ -157,10 +157,12 @@ pub struct Extensions {
 }
 
 impl Extensions {
+    #[must_use]
     pub fn len(&self) -> usize {
         self.map.len()
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
     }
@@ -178,6 +180,7 @@ impl Extensions {
         self.map.get(key.as_ref()).map(Stored::as_value)
     }
 
+    #[must_use]
     pub fn iter(&self) -> Iter<'_> {
         Iter(self.map.iter())
     }

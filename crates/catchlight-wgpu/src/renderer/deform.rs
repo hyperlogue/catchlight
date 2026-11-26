@@ -11,6 +11,7 @@ pub struct DeformSet {
 
 impl DeformSet {
     #[doc(hidden)]
+    #[must_use]
     pub fn index(self) -> u32 {
         self.index
     }

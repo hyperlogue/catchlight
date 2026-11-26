@@ -18,6 +18,7 @@ pub enum DenseGrid {
     Deform(Vec<Vec<f32>>),
 }
 
+#[must_use]
 pub fn param_range_is_valid(min: f32, max: f32) -> bool {
     min.is_finite() && max.is_finite() && min < max
 }
@@ -62,12 +63,14 @@ pub enum BindingParams {
 }
 
 impl BindingParams {
+    #[must_use]
     pub fn x(&self) -> &ParamId {
         match self {
             Self::One(p) | Self::Two(p, _) => p,
         }
     }
 
+    #[must_use]
     pub fn y(&self) -> Option<&ParamId> {
         match self {
             Self::One(_) => None,
@@ -79,6 +82,7 @@ impl BindingParams {
         std::iter::once(self.x()).chain(self.y())
     }
 
+    #[must_use]
     pub fn axis_of(&self, param: &ParamId) -> Option<u8> {
         if self.x() == param {
             Some(0)
@@ -89,6 +93,7 @@ impl BindingParams {
         }
     }
 
+    #[must_use]
     pub fn contains(&self, param: &ParamId) -> bool {
         self.axis_of(param).is_some()
     }
@@ -102,6 +107,7 @@ pub struct BindingKey {
 }
 
 impl BindingKey {
+    #[must_use]
     pub fn new(param: ParamId, node: NodeId, target: BindingTarget) -> Self {
         Self {
             params: BindingParams::One(param),
@@ -110,6 +116,7 @@ impl BindingKey {
         }
     }
 
+    #[must_use]
     pub fn pair(x: ParamId, y: ParamId, node: NodeId, target: BindingTarget) -> Self {
         Self {
             params: BindingParams::Two(x, y),
@@ -134,6 +141,7 @@ impl BindingTarget {
         ScalarTarget::parse(s).map(Self::Scalar)
     }
 
+    #[must_use]
     pub fn name(self) -> &'static str {
         match self {
             Self::Deform => "deform",
@@ -171,6 +179,7 @@ impl ScalarTarget {
         }
     }
 
+    #[must_use]
     pub fn parse(s: &str) -> Option<Self> {
         Some(match s.to_ascii_lowercase().as_str() {
             "tx" | "translatex" => Self::Tx,
@@ -193,6 +202,7 @@ impl ScalarTarget {
         })
     }
 
+    #[must_use]
     pub fn name(self) -> &'static str {
         match self {
             Self::Tx => "tx",
@@ -215,6 +225,7 @@ impl ScalarTarget {
     }
 
     /// A mesh group is never drawn, so a colour target cannot aim at one.
+    #[must_use]
     pub fn is_color(self) -> bool {
         matches!(
             self,
@@ -229,6 +240,7 @@ impl ScalarTarget {
     }
 
     /// Multiplicative targets (scale, opacity, tint) rest at 1; additive at 0.
+    #[must_use]
     pub fn identity(self) -> f32 {
         match self {
             Self::Sx | Self::Sy | Self::Opacity | Self::TintR | Self::TintG | Self::TintB => 1.0,
@@ -260,6 +272,7 @@ impl ScalarTarget {
 }
 
 impl ClmBindingValues {
+    #[must_use]
     pub fn target(&self) -> BindingTarget {
         BindingTarget::Scalar(match self {
             Self::Deform(_) => return BindingTarget::Deform,
@@ -282,6 +295,7 @@ impl ClmBindingValues {
         })
     }
 
+    #[must_use]
     pub fn scalar_cells(&self) -> Option<&[ClmCell<f32>]> {
         match self {
             Self::Deform(_) => None,
@@ -304,6 +318,7 @@ impl ClmBindingValues {
         }
     }
 
+    #[must_use]
     pub fn deform_cells(&self) -> Option<&[ClmCell<Vec<f32>>]> {
         match self {
             Self::Deform(c) => Some(&c.cells),
@@ -1257,6 +1272,7 @@ impl ModelBinding {
 pub struct ModelBindingValues(pub(super) Arc<ClmBindingValues>);
 
 impl ModelBindingValues {
+    #[must_use]
     pub fn to_clm(&self) -> ClmBindingValues {
         (*self.0).clone()
     }

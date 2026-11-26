@@ -14,12 +14,14 @@ pub struct GlobalTransforms {
 }
 
 impl GlobalTransforms {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             transforms: Vec::new(),
         }
     }
 
+    #[must_use]
     pub fn get(&self, id: NodeIdx) -> Mat4 {
         self.transforms
             .get(id.0 as usize)
@@ -27,6 +29,7 @@ impl GlobalTransforms {
             .unwrap_or(Mat4::IDENTITY)
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.transforms.is_empty()
     }

@@ -375,6 +375,7 @@ pub enum OutputKind {
     Video,
 }
 impl RunManifest {
+    #[must_use]
     pub fn new(plan: ResolvedSpec, input: InputIdentity) -> Self {
         let requests = plan
             .requests

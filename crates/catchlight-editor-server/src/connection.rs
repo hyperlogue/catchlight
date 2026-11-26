@@ -36,6 +36,7 @@ impl ConnectionFile {
         })
     }
 
+    #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -49,6 +50,7 @@ impl Drop for ConnectionFile {
     }
 }
 
+#[must_use]
 pub fn read_connection(path: &Path) -> Option<Connection> {
     serde_json::from_slice(&std::fs::read(path).ok()?).ok()
 }

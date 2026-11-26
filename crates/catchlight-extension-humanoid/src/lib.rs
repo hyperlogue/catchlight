@@ -48,6 +48,7 @@ pub struct ControlMapping {
 
 impl ControlMapping {
     /// The param value for a control value, clamped to -1..1 first.
+    #[must_use]
     pub fn value_at(&self, control: f32) -> f32 {
         value_at(self.stops, control)
     }
@@ -99,15 +100,18 @@ mod stored {
 }
 
 impl Humanoid {
+    #[must_use]
     pub fn len(&self) -> usize {
         self.controls.len()
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.controls.is_empty()
     }
 
     /// `None` also while the mapped param is removed and not yet reconciled.
+    #[must_use]
     pub fn mapping(&self, control: &str) -> Option<ControlMapping> {
         self.resolve(self.controls.get(control)?)
     }

@@ -70,6 +70,7 @@ const VISEME_VALUES: [[f32; 7]; 21] = [
 /// The standard visemes as control settings, for a tool to offer as the
 /// viseme group's defaults; never written into a model on its own. Zeros are
 /// settings too, so a viseme fully replaces the tracked mouth.
+#[must_use]
 pub fn standard_visemes() -> Vec<Expression> {
     VISEMES
         .iter()

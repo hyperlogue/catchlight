@@ -23,6 +23,7 @@ pub struct CatchlightPuppet {
 }
 
 impl CatchlightPuppet {
+    #[must_use]
     pub fn new(model: Handle<CatchlightModel>) -> Self {
         Self {
             model,
@@ -39,6 +40,7 @@ impl CatchlightPuppet {
         self
     }
 
+    #[must_use]
     pub fn model(&self) -> &Handle<CatchlightModel> {
         &self.model
     }
@@ -55,6 +57,7 @@ impl CatchlightPuppet {
         self.model = model;
     }
 
+    #[must_use]
     pub fn puppet(&self) -> Option<&Puppet> {
         self.puppet.as_ref()
     }
@@ -63,6 +66,7 @@ impl CatchlightPuppet {
         self.puppet.as_mut()
     }
 
+    #[must_use]
     pub fn player(&self) -> &AnimationPlayer {
         &self.player
     }
@@ -76,10 +80,12 @@ impl CatchlightPuppet {
         (self.puppet.as_mut(), &mut self.player)
     }
 
+    #[must_use]
     pub fn is_baked(&self) -> bool {
         self.puppet.is_some()
     }
 
+    #[must_use]
     pub fn pose(&self) -> Pose {
         match (&self.puppet, &self.pending_pose) {
             (Some(puppet), _) => puppet.pose(),

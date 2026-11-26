@@ -21,6 +21,7 @@ impl CatchlightModel {
         }
     }
 
+    #[must_use]
     pub fn model(&self) -> &Model {
         &self.model
     }
@@ -30,6 +31,7 @@ impl CatchlightModel {
         Arc::make_mut(&mut self.model)
     }
 
+    #[must_use]
     pub fn shared(&self) -> &Arc<Model> {
         &self.model
     }

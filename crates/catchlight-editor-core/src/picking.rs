@@ -53,6 +53,7 @@ fn opacity_culled(opacity: f32, blend: BlendMode) -> bool {
 }
 
 /// Matches the GPU: `v - origin + deform`, then the node matrix.
+#[must_use]
 pub fn part_world_vertex(p: &PartData, m: &catchlight_core::Mat4, i: usize) -> Vec2 {
     let v = p.mesh.vertices[i] - p.mesh.origin
         + p.deform_stack
@@ -110,6 +111,7 @@ fn cross(a: Vec2, b: Vec2) -> f32 {
     a.x * b.y - a.y * b.x
 }
 
+#[must_use]
 pub fn world_bounds(puppet: &Puppet, roots: &[u32]) -> Option<(Vec2, Vec2)> {
     let transforms = puppet.transforms();
     let mut min = Vec2::splat(f32::INFINITY);

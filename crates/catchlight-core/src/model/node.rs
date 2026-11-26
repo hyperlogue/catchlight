@@ -31,6 +31,7 @@ pub enum ModelNodeKind {
 }
 
 impl ModelNodeKind {
+    #[must_use]
     pub fn name(&self) -> &'static str {
         match self {
             Self::Group => "group",
@@ -58,6 +59,7 @@ impl ModelNodeKind {
 pub struct ModelMesh(pub(super) Arc<ClmMesh>);
 
 impl ModelMesh {
+    #[must_use]
     pub fn to_clm(&self) -> ClmMesh {
         (*self.0).clone()
     }
@@ -92,6 +94,7 @@ impl ModelMeshGroup {
         }
     }
 
+    #[must_use]
     pub fn mesh(&self) -> &ClmMesh {
         &self.mesh
     }
@@ -127,23 +130,28 @@ impl ModelPart {
         }
     }
 
+    #[must_use]
     pub fn mesh(&self) -> &ClmMesh {
         &self.mesh
     }
 
     /// A cheap immutable snapshot, sharing storage until the mesh is replaced.
+    #[must_use]
     pub fn shared_mesh(&self) -> ModelMesh {
         self.mesh.clone()
     }
 
+    #[must_use]
     pub fn albedo(&self) -> Option<&TexId> {
         self.albedo.as_ref()
     }
 
+    #[must_use]
     pub fn masks(&self) -> &[ModelMask] {
         &self.masks
     }
 
+    #[must_use]
     pub fn slots(&self) -> &[Slot] {
         &self.slots
     }
@@ -161,6 +169,7 @@ pub struct ModelComposite {
 }
 
 impl ModelComposite {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             opacity: 1.0,
@@ -173,6 +182,7 @@ impl ModelComposite {
         }
     }
 
+    #[must_use]
     pub fn masks(&self) -> &[ModelMask] {
         &self.masks
     }
@@ -193,10 +203,12 @@ pub struct ModelMask {
 }
 
 impl ModelMask {
+    #[must_use]
     pub fn source(&self) -> &NodeId {
         &self.source
     }
 
+    #[must_use]
     pub fn mode(&self) -> MaskMode {
         self.mode
     }
@@ -213,6 +225,7 @@ pub struct ModelSpine {
 
 impl ModelSpine {
     /// Unchecked until it joins a model; see [`Self::check_joints`].
+    #[must_use]
     pub fn new(joints: Vec<[f32; 2]>) -> Self {
         let targets = vec![None; joints.len()];
         Self {
@@ -228,14 +241,17 @@ impl ModelSpine {
     }
 
     /// In the node's own space.
+    #[must_use]
     pub fn joints(&self) -> &[[f32; 2]] {
         &self.joints
     }
 
+    #[must_use]
     pub fn targets(&self) -> &[Option<ParamId>] {
         &self.targets
     }
 
+    #[must_use]
     pub fn reads(&self, param: &ParamId) -> bool {
         self.targets.iter().flatten().any(|p| p == param)
     }
@@ -267,14 +283,17 @@ impl ModelNode {
         }
     }
 
+    #[must_use]
     pub fn parent(&self) -> Option<&NodeId> {
         self.parent.as_ref()
     }
 
+    #[must_use]
     pub fn children(&self) -> &[NodeId] {
         &self.children
     }
 
+    #[must_use]
     pub fn mesh(&self) -> Option<&ClmMesh> {
         match &self.kind {
             ModelNodeKind::Part(p) => Some(p.mesh()),

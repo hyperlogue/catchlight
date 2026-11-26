@@ -88,6 +88,7 @@ pub enum Payload {
 }
 
 impl Payload {
+    #[must_use]
     pub fn json(&self) -> Option<&serde_json::Value> {
         match self {
             Self::Json(value) => Some(value),
@@ -104,6 +105,7 @@ impl Payload {
         }
     }
 
+    #[must_use]
     pub fn bytes(&self) -> Option<&Arc<[u8]>> {
         match self {
             Self::Bytes(data) => Some(data),
@@ -136,6 +138,7 @@ pub enum RemovedRef {
 
 impl IdRef {
     /// What this entry becomes once its Id is removed.
+    #[must_use]
     pub fn removed(&self) -> Self {
         Self::Removed(match self {
             Self::Node(id) => RemovedRef::Node(id.clone()),
@@ -146,6 +149,7 @@ impl IdRef {
         })
     }
 
+    #[must_use]
     pub fn is_removed(&self) -> bool {
         matches!(self, Self::Removed(_))
     }
@@ -211,11 +215,13 @@ impl fmt::Display for IdRef {
 pub struct RefTable(Vec<IdRef>);
 
 impl RefTable {
+    #[must_use]
     pub fn get(&self, index: u32) -> Option<&IdRef> {
         self.0.get(index as usize)
     }
 
     /// The param `index` names, or `None` once that param is removed.
+    #[must_use]
     pub fn param(&self, index: u32) -> Option<&ParamId> {
         match self.get(index)? {
             IdRef::Param(param) => Some(param),
@@ -225,6 +231,7 @@ impl RefTable {
 
     /// Whether `index` names a param, live or removed: what a decoder holds a
     /// param index to.
+    #[must_use]
     pub fn names_param(&self, index: u32) -> bool {
         matches!(
             self.get(index),
@@ -297,6 +304,7 @@ impl Warning {
         }
     }
 
+    #[must_use]
     pub fn with_subjects(mut self, subjects: Vec<IdRef>) -> Self {
         self.subjects = subjects;
         self
@@ -377,6 +385,7 @@ impl Receipt {
         Self(Arc::new(record))
     }
 
+    #[must_use]
     pub fn get<R: Any>(&self) -> Option<&R> {
         self.0.downcast_ref()
     }

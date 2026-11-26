@@ -80,6 +80,7 @@ pub struct ReadOptions<'a> {
 }
 
 impl<'a> ReadOptions<'a> {
+    #[must_use]
     pub fn fragment() -> Self {
         Self {
             shape: Shape::Fragment,

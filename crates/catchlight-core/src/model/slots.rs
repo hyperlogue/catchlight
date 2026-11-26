@@ -13,10 +13,12 @@ pub struct Slot {
 }
 
 impl Slot {
+    #[must_use]
     pub fn id(&self) -> &SlotId {
         &self.id
     }
 
+    #[must_use]
     pub fn vertex(&self) -> Option<u32> {
         self.vertex
     }
@@ -39,6 +41,7 @@ pub struct ModelWeld {
 }
 
 impl ModelWeld {
+    #[must_use]
     pub fn new(a: NodeId, b: NodeId, pairs: Vec<SlotPair>) -> Self {
         Self {
             a,
@@ -47,14 +50,17 @@ impl ModelWeld {
         }
     }
 
+    #[must_use]
     pub fn a(&self) -> &NodeId {
         &self.a
     }
 
+    #[must_use]
     pub fn b(&self) -> &NodeId {
         &self.b
     }
 
+    #[must_use]
     pub fn pairs(&self) -> &[SlotPair] {
         &self.pairs
     }

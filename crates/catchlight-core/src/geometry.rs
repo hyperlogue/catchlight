@@ -92,43 +92,53 @@ pub struct EvaluatedVertex {
 }
 
 impl<'a> EvaluatedMesh<'a> {
+    #[must_use]
     pub fn node(&self) -> &'a NodeId {
         self.node
     }
 
+    #[must_use]
     pub fn is_part(&self) -> bool {
         self.is_part
     }
 
     /// Before subtracting the origin.
+    #[must_use]
     pub fn rest(&self) -> &'a [Vec2] {
         &self.mesh.vertices
     }
 
+    #[must_use]
     pub fn uvs(&self) -> &'a [Vec2] {
         &self.mesh.uvs
     }
 
+    #[must_use]
     pub fn origin(&self) -> Vec2 {
         self.mesh.origin
     }
 
+    #[must_use]
     pub fn local_to_world(&self) -> Mat4 {
         self.local_to_world
     }
 
+    #[must_use]
     pub fn vertex_count(&self) -> usize {
         self.mesh.vertices.len()
     }
 
+    #[must_use]
     pub fn triangle_count(&self) -> usize {
         self.mesh.indices.len() / 3
     }
 
+    #[must_use]
     pub fn vertex(&self, index: usize) -> Option<EvaluatedVertex> {
         (index < self.vertex_count()).then(|| self.vertex_at(index))
     }
 
+    #[must_use]
     pub fn vertices(
         &self,
     ) -> impl DoubleEndedIterator<Item = EvaluatedVertex> + ExactSizeIterator + '_ {
@@ -148,6 +158,7 @@ impl<'a> EvaluatedMesh<'a> {
         }
     }
 
+    #[must_use]
     pub fn triangle(&self, index: usize) -> Option<[u32; 3]> {
         if index >= self.triangle_count() {
             return None;
@@ -161,6 +172,7 @@ impl<'a> EvaluatedMesh<'a> {
     }
 
     /// A trailing partial triangle contributes nothing, as in the renderer.
+    #[must_use]
     pub fn triangles(
         &self,
     ) -> impl DoubleEndedIterator<Item = (usize, [u32; 3])> + ExactSizeIterator + '_ {
@@ -218,6 +230,7 @@ impl Bounds2 {
         self.max = self.max.max(point);
     }
 
+    #[must_use]
     pub fn union(self, other: Self) -> Self {
         Self {
             min: self.min.min(other.min),

@@ -552,6 +552,7 @@ impl Puppet {
         }
     }
 
+    #[must_use]
     pub fn response_inputs(&self, id: &NodeId) -> Option<Vec<ResponseInputSample>> {
         let bank = &self.responses;
         let row = bank.rows.iter().find(|row| &row.id == id)?;
@@ -583,6 +584,7 @@ impl Puppet {
         )
     }
 
+    #[must_use]
     pub fn response_trace(&self, id: &NodeId) -> Option<ResponseTrace> {
         self.responses
             .rows

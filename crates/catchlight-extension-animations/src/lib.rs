@@ -97,6 +97,7 @@ pub struct Lane {
 impl Lane {
     /// Sorts `keyframes` into frame order, keeping the given order of
     /// keyframes on the same frame.
+    #[must_use]
     pub fn new(
         target: LaneTarget,
         interpolation: InterpolateMode,
@@ -111,11 +112,13 @@ impl Lane {
     }
 
     /// In frame order.
+    #[must_use]
     pub fn keyframes(&self) -> &[Keyframe] {
         &self.keyframes
     }
 
     /// The param a param lane drives.
+    #[must_use]
     pub fn param(&self) -> Option<&ParamId> {
         match &self.target {
             LaneTarget::Param(param) => Some(param),
@@ -288,10 +291,12 @@ impl Animations {
         out
     }
 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.clips.len()
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.clips.is_empty()
     }
@@ -300,11 +305,13 @@ impl Animations {
         self.clips.iter().map(|c| c.name.as_str())
     }
 
+    #[must_use]
     pub fn contains(&self, name: &str) -> bool {
         self.position(name).is_some()
     }
 
     /// A lane whose param was removed is left out until reconcile drops it.
+    #[must_use]
     pub fn clip(&self, name: &str) -> Option<Clip> {
         self.position(name).map(|i| self.resolve(&self.clips[i]))
     }

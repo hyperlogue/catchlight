@@ -68,6 +68,7 @@ impl Group {
     pub const ALL: [Self; 2] = [Self::Expression, Self::Viseme];
 
     /// What one member is called: `expression` or `viseme`.
+    #[must_use]
     pub fn noun(self) -> &'static str {
         match self {
             Self::Expression => "expression",
@@ -102,6 +103,7 @@ impl Setting {
         }
     }
 
+    #[must_use]
     pub fn param(param: ParamId, value: f32) -> Self {
         Self {
             target: Target::Param(param),
@@ -158,6 +160,7 @@ impl Clone for Weights {
 }
 
 impl Weights {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -176,6 +179,7 @@ impl Weights {
         }
     }
 
+    #[must_use]
     pub fn get(&self, name: &str) -> Option<f32> {
         self.weights.get(name).copied()
     }
@@ -188,10 +192,12 @@ impl Weights {
         self.weights.clear();
     }
 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.weights.len()
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.weights.is_empty()
     }
@@ -365,6 +371,7 @@ impl Expressions {
     }
 
     /// How many members `group` has.
+    #[must_use]
     pub fn count(&self, group: Group) -> usize {
         self.group(group).len()
     }
@@ -378,12 +385,14 @@ impl Expressions {
         self.group(group).iter().map(|e| e.name.as_str())
     }
 
+    #[must_use]
     pub fn contains(&self, group: Group, name: &str) -> bool {
         self.position(group, name).is_some()
     }
 
     /// A param setting whose param was removed is left out until reconcile
     /// drops it.
+    #[must_use]
     pub fn get(&self, group: Group, name: &str) -> Option<Expression> {
         self.position(group, name)
             .map(|i| self.resolve(&self.group(group)[i]))
@@ -744,6 +753,7 @@ impl Expressions {
     }
 
     /// Whether a setting in `group` names `r`, removed or not.
+    #[must_use]
     pub fn uses(&self, group: Group, r: &IdRef) -> bool {
         self.group(group)
             .iter()

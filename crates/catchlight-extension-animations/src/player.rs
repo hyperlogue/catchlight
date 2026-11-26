@@ -131,10 +131,12 @@ impl AnimationPlayer {
     }
 
     /// The clips `animations` holds; nothing plays.
+    #[must_use]
     pub fn from_animations(animations: &Animations) -> Self {
         Self::new(animations.clips().collect::<Arc<[Clip]>>())
     }
 
+    #[must_use]
     pub fn clips(&self) -> &[Clip] {
         &self.clips
     }
@@ -215,6 +217,7 @@ impl AnimationPlayer {
 
     /// The sample the most recent advance used, after wrapping and clamping.
     /// `None` after play, stop or new clips until the next advance.
+    #[must_use]
     pub fn sample(&self) -> Option<AnimationSample<'_>> {
         let (state, frame) = self.sampled?;
         let clip = self.clips.get(state.index)?;
@@ -228,10 +231,12 @@ impl AnimationPlayer {
         })
     }
 
+    #[must_use]
     pub fn is_playing(&self) -> bool {
         self.state.is_some()
     }
 
+    #[must_use]
     pub fn playing(&self) -> Option<&str> {
         let state = self.state?;
         Some(self.clips.get(state.index)?.name.as_str())

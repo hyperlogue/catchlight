@@ -67,6 +67,7 @@ pub fn run(
 }
 
 /// Signature first, extension second: TGA 1.0 has no magic, only its extension.
+#[must_use]
 pub fn encoding_of(path: &Path, bytes: &[u8]) -> Option<TextureEncoding> {
     if bytes.starts_with(PNG_MAGIC) {
         return Some(TextureEncoding::Png);

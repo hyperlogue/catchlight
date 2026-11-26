@@ -164,6 +164,7 @@ impl CatchlightEditor {
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
 impl CatchlightEditor {
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen(constructor))]
+    #[must_use]
     pub fn new() -> Self {
         #[cfg(target_arch = "wasm32")]
         console_error_panic_hook::set_once();

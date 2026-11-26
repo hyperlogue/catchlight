@@ -11,14 +11,17 @@ pub struct Control {
 }
 
 impl Control {
+    #[must_use]
     pub fn min(&self) -> f32 {
         if self.one_sided { 0.0 } else { -1.0 }
     }
 
+    #[must_use]
     pub fn max(&self) -> f32 {
         1.0
     }
 
+    #[must_use]
     pub fn clamp(&self, value: f32) -> f32 {
         value.clamp(self.min(), self.max())
     }
@@ -78,12 +81,14 @@ pub const CONTROLS: [Control; 35] = [
 ];
 
 /// The standard control named `name`; `None` for any other name.
+#[must_use]
 pub fn control(name: &str) -> Option<&'static Control> {
     CONTROLS.iter().find(|c| c.name == name)
 }
 
 /// The range a value for `name` is clamped to: the standard control's, or
 /// -1..1 for a name outside the standard list.
+#[must_use]
 pub fn clamp_control(name: &str, value: f32) -> f32 {
     match control(name) {
         Some(c) => c.clamp(value),
@@ -122,6 +127,7 @@ impl Clone for ControlValues {
 }
 
 impl ControlValues {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -144,6 +150,7 @@ impl ControlValues {
         }
     }
 
+    #[must_use]
     pub fn get(&self, name: &str) -> Option<f32> {
         self.values.get(name).copied()
     }
@@ -156,10 +163,12 @@ impl ControlValues {
         self.values.clear();
     }
 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.values.len()
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.values.is_empty()
     }

@@ -5,6 +5,7 @@ use std::sync::Arc;
 pub struct NodeIdx(pub u32);
 
 impl NodeIdx {
+    #[must_use]
     pub fn new(id: u32) -> Self {
         Self(id)
     }
@@ -15,6 +16,7 @@ impl NodeIdx {
 pub struct TextureIdx(pub u32);
 
 impl TextureIdx {
+    #[must_use]
     pub fn new(id: u32) -> Self {
         Self(id)
     }
@@ -33,6 +35,7 @@ pub struct DecodedTexture {
 impl DecodedTexture {
     /// Half-resolution copy via the same linear-space box filter renderers use
     /// for mip generation, so it is texel-identical to mip 1.
+    #[must_use]
     pub fn halved(&self) -> Self {
         let (width, height, rgba) = downsample_box_filter(&self.rgba, self.width, self.height);
         Self {
@@ -44,6 +47,7 @@ impl DecodedTexture {
 }
 
 /// An empty image comes back unchanged.
+#[must_use]
 pub fn downsample_box_filter(src: &[u8], w: u32, h: u32) -> (u32, u32, Vec<u8>) {
     if w == 0 || h == 0 {
         return (w, h, src.to_vec());
@@ -274,6 +278,7 @@ impl From<&crate::formats::clm::ClmTransform> for Transform {
 }
 
 impl Transform {
+    #[must_use]
     pub fn to_matrix(&self) -> Mat4 {
         Mat4::from_scale_rotation_translation(
             self.scale.extend(1.0),
@@ -288,6 +293,7 @@ impl Transform {
     }
 }
 
+#[must_use]
 pub fn checked_affine_inverse(matrix: Mat4) -> Option<Mat4> {
     // Smaller determinants amplify coordinates into unstable values even when
     // glam produces a finite inverse.
@@ -310,6 +316,7 @@ pub enum MeshIndices {
 }
 
 impl MeshIndices {
+    #[must_use]
     pub fn len(&self) -> usize {
         match self {
             Self::U16(v) => v.len(),
@@ -317,10 +324,12 @@ impl MeshIndices {
         }
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
+    #[must_use]
     pub fn iter_u32(&self) -> MeshIndicesIter<'_> {
         match self {
             Self::U16(v) => MeshIndicesIter::U16(v.iter()),
@@ -328,6 +337,7 @@ impl MeshIndices {
         }
     }
 
+    #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
         match self {
             Self::U16(v) => bytemuck::cast_slice(v),
@@ -335,6 +345,7 @@ impl MeshIndices {
         }
     }
 
+    #[must_use]
     pub fn get(&self, i: usize) -> Option<u32> {
         match self {
             Self::U16(v) => v.get(i).map(|&n| u32::from(n)),
@@ -421,6 +432,7 @@ impl Default for Mesh {
 }
 
 impl Mesh {
+    #[must_use]
     pub fn new(vertices: Vec<Vec2>, uvs: Vec<Vec2>, indices: MeshIndices, origin: Vec2) -> Self {
         Self {
             vertices,
@@ -430,6 +442,7 @@ impl Mesh {
         }
     }
 
+    #[must_use]
     pub fn quad(width: f32, height: f32) -> Self {
         let hw = width / 2.0;
         let hh = height / 2.0;
@@ -496,6 +509,7 @@ impl BlendMode {
         Self::Subtract,
     ];
 
+    #[must_use]
     pub fn from_name(s: &str) -> Option<Self> {
         Some(match s {
             "Normal" => Self::Normal,
@@ -519,6 +533,7 @@ impl BlendMode {
 }
 
 impl BlendMode {
+    #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Normal => "Normal",
@@ -558,6 +573,7 @@ pub enum MaskMode {
 }
 
 impl MaskMode {
+    #[must_use]
     pub fn name(self) -> &'static str {
         match self {
             Self::Mask => "mask",

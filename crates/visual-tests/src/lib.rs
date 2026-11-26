@@ -24,6 +24,7 @@ pub use render::{RenderContext, render_one_to_rgba};
 
 use std::path::{Path, PathBuf};
 
+#[must_use]
 pub fn baseline_path(baselines_root: &Path, model_stem: &str, config_name: &str) -> PathBuf {
     baselines_root
         .join(model_stem)
@@ -32,14 +33,17 @@ pub fn baseline_path(baselines_root: &Path, model_stem: &str, config_name: &str)
 
 /// Fixed at build time, so the binary finds the checkout from any working
 /// directory; the crate is never published.
+#[must_use]
 pub fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
+#[must_use]
 pub fn baselines_root(repo_root: &Path) -> PathBuf {
     repo_root.join("tests").join("baselines")
 }
 
+#[must_use]
 pub fn failures_root(repo_root: &Path) -> PathBuf {
     repo_root.join("tmp").join("visual-test-failures")
 }

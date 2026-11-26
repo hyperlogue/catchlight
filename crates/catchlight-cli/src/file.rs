@@ -56,6 +56,7 @@ pub(crate) fn not_a_clm(path: &Path, bytes: &[u8], source: ClmError) -> Error {
 }
 
 /// `None` for a structure with no nodes, which no reader accepts.
+#[must_use]
 pub fn shape_of(doc: &ClmStructure) -> Option<Shape> {
     if doc.nodes.is_empty() {
         return None;

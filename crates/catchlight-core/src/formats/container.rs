@@ -65,6 +65,7 @@ pub struct Container<'a> {
 
 impl<'a> Container<'a> {
     /// Duplicate kinds resolve to the first.
+    #[must_use]
     pub fn section(&self, kind: u32) -> Option<&'a [u8]> {
         self.sections
             .iter()
@@ -159,6 +160,7 @@ impl Writer {
     /// # Panics
     ///
     /// If fewer sections were written than declared.
+    #[must_use]
     pub fn finish(self) -> Vec<u8> {
         assert_eq!(
             self.written, self.declared,

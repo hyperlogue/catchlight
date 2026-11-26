@@ -46,12 +46,14 @@ pub enum MaskSourceData {
 }
 
 impl MaskSourceData {
+    #[must_use]
     pub fn mode(&self) -> MaskMode {
         match self {
             Self::Part { mode, .. } | Self::Composite { mode, .. } => *mode,
         }
     }
 
+    #[must_use]
     pub fn is_part(&self) -> bool {
         matches!(self, Self::Part { .. })
     }
@@ -99,6 +101,7 @@ pub enum DrawableInfo {
 }
 
 impl DrawableInfo {
+    #[must_use]
     pub fn z_order(&self) -> f32 {
         match self {
             Self::Part { z_order, .. } => *z_order,
@@ -106,6 +109,7 @@ impl DrawableInfo {
         }
     }
 
+    #[must_use]
     pub fn blend_mode(&self) -> BlendMode {
         match self {
             Self::Part { blend_mode, .. } => *blend_mode,
@@ -127,6 +131,7 @@ pub struct RenderList {
 
 impl RenderList {
     /// Back to front.
+    #[must_use]
     pub fn root_drawables(&self) -> &[DrawableInfo] {
         &self.root_drawables
     }
@@ -155,12 +160,14 @@ impl RenderList {
             .filter_map(|(slot, source)| Some((slot as u32, source.as_ref()?)))
     }
 
+    #[must_use]
     pub fn composite_mask_source(&self, node_id: u32) -> Option<&CompositeMaskSourceData> {
         self.composite_mask_sources.get(node_id as usize)?.as_ref()
     }
 
     /// The set [`crate::RenderCache::refresh_puppet`] collected this list
     /// for; `None` for the renderer's first set.
+    #[must_use]
     pub fn deform_set(&self) -> Option<DeformSet> {
         self.deform_set
     }
@@ -181,6 +188,7 @@ impl RenderList {
 
     /// Sized once at frame start; growing mid-frame would strand already
     /// recorded passes on the old buffer.
+    #[must_use]
     pub fn total_instance_count(&self) -> usize {
         let mask_parts = |sources: &MaskSources| sources.iter().filter(|m| m.is_part()).count();
         self.drawables()

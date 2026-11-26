@@ -464,6 +464,7 @@ pub struct BindingParams {
 }
 
 impl BindingParams {
+    #[must_use]
     pub fn one(param: ParamId) -> Self {
         Self {
             param,
@@ -471,6 +472,7 @@ impl BindingParams {
         }
     }
 
+    #[must_use]
     pub fn two(x: ParamId, y: ParamId) -> Self {
         Self {
             param: x,

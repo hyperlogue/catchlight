@@ -36,6 +36,7 @@ pub struct Change {
 }
 
 impl Change {
+    #[must_use]
     pub fn changed(&self) -> bool {
         self.before != self.after
     }
@@ -238,6 +239,7 @@ const COMPOSITE_FIELDS: &[&str] = &[
 const MESH_GROUP_FIELDS: &[&str] = &["translate_children"];
 pub const PARAM_FIELDS: &[&str] = &["default", "max", "min", "name"];
 
+#[must_use]
 pub fn node_fields(kind: &ClmNodeKind) -> Vec<&'static str> {
     let mut all: Vec<&'static str> = COMMON_FIELDS.to_vec();
     all.extend_from_slice(kind_fields(kind));

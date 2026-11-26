@@ -122,6 +122,7 @@ impl EditorError {
         }
     }
 
+    #[must_use]
     pub fn code(&self) -> ErrorCode {
         if self.limit_info().is_some() {
             return ErrorCode::LimitExceeded;

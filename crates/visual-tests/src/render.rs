@@ -129,6 +129,7 @@ pub fn prepare_puppet(
     Ok(collect(cache, &cached.puppet))
 }
 
+#[must_use]
 pub fn camera_matrix(width: u32, height: u32, camera: &Camera) -> glam::Mat4 {
     let aspect = width as f32 / height as f32;
     let camera_height = height as f32 / camera.zoom.max(1e-3);

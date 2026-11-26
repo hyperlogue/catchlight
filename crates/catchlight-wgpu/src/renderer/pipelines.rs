@@ -249,6 +249,7 @@ impl Pipelines {
         &self.blit_dst_in_shader_pipelines[blend as usize]
     }
 
+    #[must_use]
     pub fn new(
         device: &wgpu::Device,
         surface_format: wgpu::TextureFormat,

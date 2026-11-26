@@ -12,6 +12,7 @@ use super::{BindingKey, BindingTarget, DenseGrid, Model, ModelError};
 pub struct Pose(HashMap<ParamId, f32>);
 
 impl Pose {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -24,6 +25,7 @@ impl Pose {
         self.0.insert(param, value);
     }
 
+    #[must_use]
     pub fn get(&self, param: &ParamId) -> Option<f32> {
         self.0.get(param).copied()
     }
@@ -36,10 +38,12 @@ impl Pose {
         self.0.clear();
     }
 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.0.len()
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }

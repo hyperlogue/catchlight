@@ -1002,6 +1002,7 @@ pub enum Attachment {
 }
 
 impl Attachment {
+    #[must_use]
     pub fn admits(&self, name: &str) -> bool {
         match self {
             Self::Fixed(fixed) | Self::Optional(fixed) => name == *fixed,
@@ -1022,6 +1023,7 @@ pub struct CommandBytes {
 impl Command {
     /// What bytes *this* command carries. Differs from [`Command::bytes`] only
     /// for an [`Attachment::Optional`], such as an `extension_set` of JSON.
+    #[must_use]
     pub fn carries_bytes(&self) -> Option<&'static CommandBytes> {
         let carrying = match self {
             Self::SessionNew { source, .. } => source.is_some(),
@@ -1035,6 +1037,7 @@ impl Command {
     }
 
     /// The session this command addresses; `None` for editor-level commands.
+    #[must_use]
     pub fn session(&self) -> Option<SessionId> {
         match self {
             Self::SessionNew { .. } | Self::SessionOpen { .. } | Self::SessionList => None,

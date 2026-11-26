@@ -189,6 +189,7 @@ pub enum AnyId {
 }
 
 impl AnyId {
+    #[must_use]
     pub const fn kind(&self) -> &'static str {
         match self {
             Self::Node(_) => "node",
@@ -238,6 +239,7 @@ pub enum NodeIdKind {
 }
 
 impl NodeIdKind {
+    #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Group => "group",
@@ -272,6 +274,7 @@ impl<F: FnMut() -> u32> HexSource for F {
 pub struct SeededHex(u32);
 
 impl SeededHex {
+    #[must_use]
     pub const fn new(seed: u32) -> Self {
         Self(seed)
     }
@@ -336,10 +339,12 @@ impl ExtensionKey {
         Ok(Self(Arc::from(s)))
     }
 
+    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
 
+    #[must_use]
     pub fn is_reserved(&self) -> bool {
         self.0.starts_with(EXTENSION_RESERVED_PREFIX)
     }
@@ -414,10 +419,12 @@ impl Name {
         Self(Arc::from(&s[..end]))
     }
 
+    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }

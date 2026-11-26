@@ -70,6 +70,7 @@ pub struct Edited<T> {
     pub warnings: Vec<WarningLine>,
 }
 
+#[must_use]
 pub fn controls() -> Vec<StandardControl> {
     CONTROLS
         .iter()

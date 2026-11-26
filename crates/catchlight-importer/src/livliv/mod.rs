@@ -257,13 +257,16 @@ impl Package {
 
 impl ValidatedPackage {
     /// Original manifest, including author, license, watermark and extensions.
+    #[must_use]
     pub fn manifest(&self) -> &Value {
         &self.manifest
     }
+    #[must_use]
     pub fn name(&self) -> &str {
         &self.model.name
     }
     /// Before any part splitting.
+    #[must_use]
     pub fn layer_count(&self) -> usize {
         self.model.layers.len()
     }

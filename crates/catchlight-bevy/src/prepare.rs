@@ -47,6 +47,7 @@ impl CatchlightRenderState {
     }
 
     /// Keyed by the paired `RenderEntity`, not the main-world entity.
+    #[must_use]
     pub fn collected_drawables(&self, render_entity: Entity) -> Option<RenderList> {
         self.puppets
             .iter()
@@ -56,19 +57,23 @@ impl CatchlightRenderState {
 
     /// The whole model's tally, since a renderer is shared by every puppet of
     /// one model. Keyed by the paired `RenderEntity`.
+    #[must_use]
     pub fn frame_stats(&self, render_entity: Entity) -> Option<FrameStats> {
         Some(self.gpu_of(render_entity)?.renderer.frame_stats())
     }
 
     #[doc(hidden)]
+    #[must_use]
     pub fn camera_views_issued(&self, render_entity: Entity) -> Option<u32> {
         Some(self.gpu_of(render_entity)?.submission.views_issued())
     }
 
+    #[must_use]
     pub fn resident_caches(&self) -> usize {
         self.gpus.len()
     }
 
+    #[must_use]
     pub fn resident_puppets(&self) -> usize {
         self.puppets.len()
     }

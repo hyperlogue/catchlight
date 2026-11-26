@@ -203,10 +203,12 @@ impl Puppet {
         puppet
     }
 
+    #[must_use]
     pub fn baked_generation(&self) -> u64 {
         self.baked_generation
     }
 
+    #[must_use]
     pub fn model_identity(&self) -> u64 {
         self.model_identity
     }
@@ -290,24 +292,29 @@ impl Puppet {
         self.last_tick_folded_param_generation = None;
     }
 
+    #[must_use]
     pub fn root(&self) -> NodeIdx {
         self.arena.root()
     }
 
+    #[must_use]
     pub fn tree(&self) -> &NodeTree {
         &self.arena.tree
     }
 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.arena.len()
     }
 
     /// Whether the puppet holds nothing but its root slot, which every
     /// puppet has.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() <= 1
     }
 
+    #[must_use]
     pub fn get(&self, id: NodeIdx) -> Option<&Node> {
         self.arena.get(id)
     }
@@ -320,20 +327,24 @@ impl Puppet {
         self.arena.iter_deform_nodes()
     }
 
+    #[must_use]
     pub fn node_idx(&self, id: &NodeId) -> Option<NodeIdx> {
         self.node_of_id.get(id).copied()
     }
 
+    #[must_use]
     pub fn node_id(&self, idx: NodeIdx) -> Option<&NodeId> {
         self.id_of_node.get(idx.0 as usize)
     }
 
+    #[must_use]
     pub fn transforms(&self) -> &GlobalTransforms {
         &self.transforms
     }
 
     /// The node's `z_order` plus every ancestor's, including disabled or
     /// transparent ones. Higher draws in front.
+    #[must_use]
     pub fn accumulated_z(&self, idx: NodeIdx) -> f32 {
         let mut z = 0.0;
         let mut at = Some(idx);
@@ -347,6 +358,7 @@ impl Puppet {
 
     /// Not inherited: a non-opaque composite applies its opacity once, at the
     /// blit of its own target.
+    #[must_use]
     pub fn opacity(&self, idx: NodeIdx) -> Option<f32> {
         match &self.get(idx)?.kind {
             NodeKind::Part(part) => Some(part.opacity),
@@ -367,6 +379,7 @@ impl Puppet {
         self.arena.combine_deforms();
     }
 
+    #[must_use]
     pub fn combined_deform(&self, id: NodeIdx) -> Option<&[Vec2]> {
         match &self.arena.get(id)?.kind {
             NodeKind::Part(p) => Some(p.deform_stack.combined()),
@@ -449,6 +462,7 @@ impl Puppet {
         self.invalidate_fold();
     }
 
+    #[must_use]
     pub fn scratch_transform(&self, id: NodeIdx) -> Option<&ScratchTransform> {
         self.scratch_transforms.get(&id)
     }
@@ -505,6 +519,7 @@ impl Puppet {
 
     /// Posed value with driver claims folded in; `None` when nothing posed or
     /// claims it.
+    #[must_use]
     pub fn param_value(&self, param: &ParamId) -> Option<f32> {
         let slot = self.slot_of_param.get(param).copied();
         let base = match slot {
@@ -585,6 +600,7 @@ impl Puppet {
         }
     }
 
+    #[must_use]
     pub fn pose(&self) -> Pose {
         self.params
             .iter()
@@ -750,10 +766,12 @@ impl Puppet {
 
     /// Whether a motion response owns `param`, so a pose written to it would
     /// be overridden.
+    #[must_use]
     pub fn is_driven(&self, param: &ParamId) -> bool {
         self.motion_responses_enabled && self.reserved_output(param)
     }
 
+    #[must_use]
     pub fn param_limits(&self, param: &ParamId) -> Option<ParamLimits> {
         let p = self.params.get(*self.slot_of_param.get(param)? as usize)?;
         Some(ParamLimits {
@@ -776,6 +794,7 @@ impl Puppet {
     }
 
     /// The posed value, ignoring driver claims. `None` means the model default.
+    #[must_use]
     pub fn param_value_posed(&self, param: &ParamId) -> Option<f32> {
         match self.slot_of_param.get(param) {
             Some(&slot) => self.param_values.get(slot as usize).copied().flatten(),
@@ -792,6 +811,7 @@ impl Puppet {
         }
     }
 
+    #[must_use]
     pub fn motion_responses_enabled(&self) -> bool {
         self.motion_responses_enabled
     }

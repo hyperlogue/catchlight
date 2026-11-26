@@ -110,6 +110,7 @@ pub enum SettingArg {
 }
 
 /// The group's standard names: the emotions, or the visemes.
+#[must_use]
 pub fn names(group: Group) -> &'static [&'static str] {
     match group {
         Group::Expression => &EMOTIONS,

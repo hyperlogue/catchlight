@@ -27,6 +27,7 @@ pub struct Submission {
 
 impl Submission {
     #[doc(hidden)]
+    #[must_use]
     pub fn views_issued(&self) -> u32 {
         self.views
     }
@@ -83,6 +84,7 @@ impl Recorded<'_> {
         })
     }
 
+    #[must_use]
     pub fn stats(&self) -> RenderStats {
         self.stats
     }

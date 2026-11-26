@@ -357,6 +357,7 @@ pub struct RenderTarget<'a> {
 impl<'a> RenderTarget<'a> {
     /// `Overlay`, `ColorBurn` and `LinearBurn` draw as Normal-OVER: nothing
     /// reads the destination back.
+    #[must_use]
     pub fn new(view: &'a wgpu::TextureView) -> Self {
         let texture = view.texture();
         Self {
@@ -373,6 +374,7 @@ impl<'a> RenderTarget<'a> {
 
     /// `Overlay`, `ColorBurn` and `LinearBurn` read the destination through a
     /// copy of the view's texture, which must carry `COPY_SRC`.
+    #[must_use]
     pub fn copyable(view: &'a wgpu::TextureView) -> Self {
         Self {
             copyable: true,
@@ -460,6 +462,7 @@ pub struct FrameTargets {
 }
 
 impl FrameTargets {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -498,6 +501,7 @@ impl FrameTargets {
 
     /// Composite slots allocated so far; they are reused across frames.
     #[doc(hidden)]
+    #[must_use]
     pub fn composite_slots(&self) -> usize {
         self.composites.stats().1
     }

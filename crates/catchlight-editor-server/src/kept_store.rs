@@ -303,6 +303,7 @@ impl KeptStore for UserKeptStore {
 /// `<base>/catchlight` for everything the editor keeps per user. `None` when
 /// the environment names none of them.
 #[cfg(not(target_arch = "wasm32"))]
+#[must_use]
 pub fn user_kept_dir() -> Option<PathBuf> {
     user_kept_dir_from(|name| std::env::var_os(name))
 }

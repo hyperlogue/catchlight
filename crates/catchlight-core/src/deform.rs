@@ -58,6 +58,7 @@ pub struct DeformStack {
 }
 
 impl DeformStack {
+    #[must_use]
     pub fn new(vert_count: usize) -> Self {
         Self {
             vert_count,
@@ -69,6 +70,7 @@ impl DeformStack {
         }
     }
 
+    #[must_use]
     pub fn vert_count(&self) -> usize {
         self.vert_count
     }
@@ -300,16 +302,19 @@ impl DeformStack {
         }
     }
 
+    #[must_use]
     pub fn combined(&self) -> &[Vec2] {
         &self.combined
     }
 
+    #[must_use]
     pub fn generation(&self) -> u64 {
         self.generation
     }
 
     /// What [`Self::sum_active_into`] writes at `index`, without summing the
     /// other vertices; `None` past the stack's vertices.
+    #[must_use]
     pub fn active_offset(&self, index: usize) -> Option<Vec2> {
         (index < self.vert_count).then(|| {
             self.sources
@@ -320,6 +325,7 @@ impl DeformStack {
         })
     }
 
+    #[must_use]
     pub fn active_offset_except(&self, except: DeformSource, index: usize) -> Vec2 {
         self.sources
             .iter()
@@ -328,6 +334,7 @@ impl DeformStack {
             .fold(Vec2::ZERO, |sum, d| sum + *d)
     }
 
+    #[must_use]
     pub fn is_active(&self) -> bool {
         self.sources.iter().any(|s| s.active)
     }

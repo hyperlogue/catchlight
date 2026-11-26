@@ -121,6 +121,7 @@ pub fn requirements(path: &Path) -> Result<Vec<Requirement>, Error> {
 
 /// Reads the wire directly so it works on files no reader accepts. Textures
 /// are never requirements: an addon carries the textures its own parts draw.
+#[must_use]
 pub fn scan(clm: &ClmFile) -> Vec<Requirement> {
     let doc = &clm.doc;
     let mut out: Vec<Requirement> = Vec::new();
@@ -277,6 +278,7 @@ fn columns(id: &Required) -> (&'static str, String, Option<String>) {
 }
 
 /// `slot` is empty for every kind but `slot`, so the column count never varies.
+#[must_use]
 pub fn render_line(requirement: &Requirement) -> String {
     let (kind, id, slot) = columns(&requirement.id);
     format!(
@@ -287,6 +289,7 @@ pub fn render_line(requirement: &Requirement) -> String {
     )
 }
 
+#[must_use]
 pub fn render_json(requirements: &[Requirement]) -> String {
     let entries: Vec<serde_json::Value> = requirements
         .iter()

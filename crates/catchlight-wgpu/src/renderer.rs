@@ -319,6 +319,7 @@ impl WgpuRenderer {
     /// Builds default-option pipelines. Prefer `from_pipelines` to share
     /// pipelines across renderers; each `Pipelines::new` compiles every
     /// pipeline again.
+    #[must_use]
     pub fn new(
         device: wgpu::Device,
         queue: wgpu::Queue,

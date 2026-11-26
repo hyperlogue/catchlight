@@ -152,6 +152,7 @@ pub mod browser {
 
     #[wasm_bindgen]
     impl MeshEditDraft {
+        #[must_use]
         pub fn vertices(&self) -> Vec<f32> {
             self.state.draft.working().verts().to_vec()
         }
@@ -166,14 +167,17 @@ pub mod browser {
         pub fn view(&self) -> Result<String, JsValue> {
             serde_json::to_string(&self.state.view().map_err(js)?).map_err(js)
         }
+        #[must_use]
         pub fn dirty(&self) -> bool {
             self.state.draft.dirty()
         }
         #[wasm_bindgen(js_name = canUndo)]
+        #[must_use]
         pub fn can_undo(&self) -> bool {
             self.state.draft.can_undo()
         }
         #[wasm_bindgen(js_name = canRedo)]
+        #[must_use]
         pub fn can_redo(&self) -> bool {
             self.state.draft.can_redo()
         }

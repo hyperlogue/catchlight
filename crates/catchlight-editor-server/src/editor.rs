@@ -85,6 +85,7 @@ impl Drop for Subscription {
 pub struct Attachments(pub(crate) std::collections::BTreeMap<String, Vec<u8>>);
 
 impl Attachments {
+    #[must_use]
     pub fn none() -> Self {
         Self::default()
     }
@@ -97,6 +98,7 @@ impl Attachments {
         self.0.keys().map(String::as_str).collect()
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
@@ -194,6 +196,7 @@ impl Editor {
     /// Filesystem rooted at the cwd natively, with reviews and versions in
     /// sidecars there; [`NoStorage`](crate::NoStorage) on wasm, where the
     /// host must use [`Editor::with_storage`].
+    #[must_use]
     pub fn new() -> Self {
         #[cfg(not(target_arch = "wasm32"))]
         let editor = Self::with_storage(Arc::new(FileStorage::default()))

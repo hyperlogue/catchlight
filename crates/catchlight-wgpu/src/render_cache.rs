@@ -147,27 +147,33 @@ impl RenderCache {
         Ok(cache)
     }
 
+    #[must_use]
     pub fn generation(&self) -> u64 {
         self.generation
     }
 
+    #[must_use]
     pub fn model_identity(&self) -> u64 {
         self.identity
     }
 
+    #[must_use]
     pub fn texture_count(&self) -> usize {
         self.texture_count as usize
     }
 
+    #[must_use]
     pub fn stats(&self) -> CacheStats {
         self.stats
     }
 
+    #[must_use]
     pub fn mesh_count(&self) -> usize {
         self.mesh_of_node.iter().flatten().count()
     }
 
     /// The mesh slot a [`RenderList`]'s `mesh_id` carries for `node`'s part.
+    #[must_use]
     pub fn mesh_slot_of_node(&self, node: u32) -> Option<u32> {
         self.mesh_of_node
             .get(node as usize)
@@ -484,6 +490,7 @@ impl RenderCache {
 }
 
 /// Allocates; a caller drawing every frame wants [`RenderCache::collect_into`].
+#[must_use]
 pub fn collect(cache: &RenderCache, puppet: &Puppet) -> RenderList {
     let mut render_list = RenderList::default();
     Collector::default().collect_into(&CacheSource { cache, puppet }, &mut render_list);

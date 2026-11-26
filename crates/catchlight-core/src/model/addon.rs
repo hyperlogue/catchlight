@@ -81,10 +81,12 @@ pub struct Requirements {
 }
 
 impl Requirements {
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.entries.len()
     }
@@ -231,22 +233,27 @@ struct Merge {
 
 impl Installed {
     /// In tree order.
+    #[must_use]
     pub fn nodes(&self) -> &[NodeId] {
         &self.nodes
     }
 
+    #[must_use]
     pub fn roots(&self) -> &[NodeId] {
         &self.roots
     }
 
+    #[must_use]
     pub fn textures(&self) -> &[TexId] {
         &self.textures
     }
 
+    #[must_use]
     pub fn bindings(&self) -> &[BindingKey] {
         &self.bindings
     }
 
+    #[must_use]
     pub fn welds(&self) -> &[ModelWeld] {
         &self.welds
     }

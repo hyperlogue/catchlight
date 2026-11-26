@@ -97,6 +97,7 @@ impl Default for ReplicaState {
 }
 
 impl ReplicaState {
+    #[must_use]
     pub fn new() -> Self {
         // A connected tab builds only replicas, and must check the official
         // extensions as the editor does. Registering the same types again is
@@ -943,6 +944,7 @@ pub(crate) mod browser {
     #[wasm_bindgen]
     impl Replica {
         #[wasm_bindgen(constructor)]
+        #[must_use]
         pub fn new() -> Self {
             Self {
                 inner: Rc::new(RefCell::new(ReplicaInner {
@@ -952,6 +954,7 @@ pub(crate) mod browser {
             }
         }
 
+        #[must_use]
         pub fn rev(&self) -> f64 {
             self.inner.borrow().state.rev() as f64
         }
@@ -1003,16 +1006,19 @@ pub(crate) mod browser {
                 .sync_from_editor(editor.editor(), session) as f64)
         }
 
+        #[must_use]
         pub fn query(&self, request_json: &str) -> String {
             self.inner.borrow().state.query(request_json)
         }
 
         #[wasm_bindgen(js_name = setParam)]
+        #[must_use]
         pub fn set_param(&self, id: &str, value: f32) -> bool {
             self.inner.borrow_mut().state.set_param(id, value)
         }
 
         #[wasm_bindgen(js_name = paramValue)]
+        #[must_use]
         pub fn param_value(&self, id: &str) -> Option<f32> {
             self.inner.borrow().state.param_value(id)
         }
@@ -1046,11 +1052,13 @@ pub(crate) mod browser {
 
         /// As JSON `{ controls, expressions, visemes }`, each a map of name to
         /// value.
+        #[must_use]
         pub fn inputs(&self) -> String {
             serde_json::to_string(&self.inner.borrow().state.inputs())
                 .unwrap_or_else(|_| "{}".to_string())
         }
 
+        #[must_use]
         pub fn play(&self, name: &str) -> bool {
             self.inner.borrow_mut().state.play(name)
         }
@@ -1060,6 +1068,7 @@ pub(crate) mod browser {
         }
 
         /// As JSON `{ name, time, frame }`; `undefined` when nothing plays.
+        #[must_use]
         pub fn playing(&self) -> Option<String> {
             let playing = self.inner.borrow().state.playing()?;
             serde_json::to_string(&playing).ok()
@@ -1067,6 +1076,7 @@ pub(crate) mod browser {
 
         /// Per-vertex offsets as pairs `[dx0, dy0, dx1, dy1, ...]`.
         #[wasm_bindgen(js_name = scratchDeform)]
+        #[must_use]
         pub fn scratch_deform(&self, node: &str, offsets: &[f32]) -> bool {
             self.inner
                 .borrow_mut()
@@ -1075,6 +1085,7 @@ pub(crate) mod browser {
         }
 
         #[wasm_bindgen(js_name = clearScratchDeform)]
+        #[must_use]
         pub fn clear_scratch_deform(&self, node: &str) -> bool {
             self.inner.borrow_mut().state.clear_scratch_deform(node)
         }
@@ -1108,6 +1119,7 @@ pub(crate) mod browser {
         }
 
         #[wasm_bindgen(js_name = clearScratchTransform)]
+        #[must_use]
         pub fn clear_scratch_transform(&self, node: &str) -> bool {
             self.inner.borrow_mut().state.clear_scratch_transform(node)
         }
@@ -1118,11 +1130,13 @@ pub(crate) mod browser {
         }
 
         #[wasm_bindgen(js_name = pickNode)]
+        #[must_use]
         pub fn pick_node(&self, x: f32, y: f32) -> Option<String> {
             self.inner.borrow().state.pick_node(x, y)
         }
 
         #[wasm_bindgen(js_name = nodeVertices)]
+        #[must_use]
         pub fn node_vertices(&self, node: &str) -> Option<Vec<f32>> {
             self.inner.borrow().state.node_vertices(node)
         }
@@ -1141,6 +1155,7 @@ pub(crate) mod browser {
         }
 
         #[wasm_bindgen(js_name = recordingPairs)]
+        #[must_use]
         pub fn recording_pairs(&self, node: &str, param: &str) -> String {
             serde_json::to_string(&self.inner.borrow().state.recording_pairs(node, param))
                 .unwrap_or_default()
@@ -1173,28 +1188,33 @@ pub(crate) mod browser {
         }
 
         #[wasm_bindgen(js_name = motionPaused)]
+        #[must_use]
         pub fn motion_paused(&self) -> bool {
             self.inner.borrow().state.motion_paused()
         }
 
         #[wasm_bindgen(js_name = motionRunning)]
+        #[must_use]
         pub fn motion_running(&self) -> bool {
             self.inner.borrow().state.motion_running()
         }
 
         #[wasm_bindgen(js_name = textureImage)]
+        #[must_use]
         pub fn texture_image(&self, texture: &str) -> Option<TextureThumbnail> {
             let image = self.inner.borrow().state.texture_image(texture, 0)?;
             Some(image.into())
         }
 
         #[wasm_bindgen(js_name = textureThumbnail)]
+        #[must_use]
         pub fn texture_thumbnail(&self, texture: &str) -> Option<TextureThumbnail> {
             let image = self.inner.borrow().state.texture_thumbnail(texture)?;
             Some(image.into())
         }
 
         #[wasm_bindgen(js_name = nodeWorldTransform)]
+        #[must_use]
         pub fn node_world_transform(&self, node: &str) -> Option<Vec<f32>> {
             self.inner
                 .borrow()
@@ -1204,11 +1224,13 @@ pub(crate) mod browser {
         }
 
         #[wasm_bindgen(js_name = nodeLocalTransform)]
+        #[must_use]
         pub fn node_local_transform(&self, node: &str) -> Option<Vec<f32>> {
             self.inner.borrow().state.node_local_transform(node)
         }
 
         #[wasm_bindgen(js_name = nodeDeltaFromWorld)]
+        #[must_use]
         pub fn node_delta_from_world(&self, node: &str, dx: f32, dy: f32) -> Option<Vec<f32>> {
             self.inner
                 .borrow()
@@ -1218,11 +1240,13 @@ pub(crate) mod browser {
 
         /// `[min_x, min_y, max_x, max_y]` in world units, Y-up; `undefined` when
         /// nothing is drawn.
+        #[must_use]
         pub fn bounds(&self) -> Option<Vec<f32>> {
             self.inner.borrow().state.bounds().map(|b| b.to_vec())
         }
 
         #[wasm_bindgen(js_name = translationAfterWorldDelta)]
+        #[must_use]
         pub fn translation_after_world_delta(
             &self,
             node: &str,

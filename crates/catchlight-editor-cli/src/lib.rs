@@ -33,6 +33,7 @@ use commands::{
 use print::{code_name, print_body, print_reply};
 use route::{Reached, Route};
 
+#[must_use]
 pub fn command_names() -> Vec<String> {
     use clap::CommandFactory;
     Cli::command()

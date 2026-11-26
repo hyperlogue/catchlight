@@ -63,6 +63,7 @@ impl SpineData {
         self.pins.guide.as_ref().map(|guide| guide.part)
     }
 
+    #[must_use]
     pub fn new(joints: Vec<Vec2>) -> Self {
         let bends = vec![0.0; joints.len()];
         Self {
@@ -74,6 +75,7 @@ impl SpineData {
     }
 
     /// Root first, in the node's own space; empty while it is the drawing.
+    #[must_use]
     pub fn posed_guide(&self) -> &[Vec2] {
         &self.posed_guide
     }

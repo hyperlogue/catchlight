@@ -71,6 +71,7 @@ impl Default for Thresholds {
 impl Thresholds {
     /// Baselines are rendered on lavapipe. A hardware rasterizer differs from
     /// it only in pixels along part edges, which the defaults do not allow.
+    #[must_use]
     pub fn hardware() -> Self {
         Self {
             mean: 0.75,
@@ -81,6 +82,7 @@ impl Thresholds {
     }
 }
 
+#[must_use]
 pub fn default_models(repo_root: &Path) -> Vec<ModelSpec> {
     let repro = repo_root.join("tests").join("models");
     vec![
@@ -423,6 +425,7 @@ fn curated_configs(stem: &str) -> Vec<Curated> {
     }
 }
 
+#[must_use]
 pub fn build_matrix(model: &ModelSpec) -> Vec<Config> {
     let presets = camera_presets(model.default_zoom);
     curated_configs(&model.stem)

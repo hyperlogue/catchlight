@@ -89,11 +89,13 @@ impl FrameRuntime {
         self.puppet.tick(model, self.timestep);
         self.index += 1;
     }
+    #[must_use]
     pub fn timestep(&self) -> f32 {
         self.timestep
     }
 }
 
+#[must_use]
 pub fn color_retained(request: &ResolvedRequest, id: &NodeId) -> bool {
     request
         .only_parts

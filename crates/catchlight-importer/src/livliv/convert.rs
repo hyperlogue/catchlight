@@ -42,6 +42,7 @@ pub struct Conversion {
 impl ValidatedPackage {
     /// Inspect conversion feasibility without producing a model. Watermarks
     /// need output-space rendering; metadata alone cannot preserve them.
+    #[must_use]
     pub fn report(&self) -> Report {
         let mut report = Report {
             upstream_revision: UPSTREAM_REVISION,

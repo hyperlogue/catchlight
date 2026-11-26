@@ -18,6 +18,7 @@ pub struct Framing {
 }
 
 impl Framing {
+    #[must_use]
     pub fn centered(height: f32) -> Self {
         Self {
             center: glam::Vec2::ZERO,

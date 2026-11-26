@@ -18,6 +18,7 @@ impl Default for NodeTree {
 
 impl NodeTree {
     /// A tree holding only the root.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             parent: vec![None],
@@ -25,6 +26,7 @@ impl NodeTree {
         }
     }
 
+    #[must_use]
     pub fn root(&self) -> NodeIdx {
         NodeIdx(0)
     }
@@ -80,10 +82,12 @@ impl NodeTree {
         })
     }
 
+    #[must_use]
     pub fn get_children(&self, node: NodeIdx) -> Vec<NodeIdx> {
         self.children(node).collect()
     }
 
+    #[must_use]
     pub fn get_parent(&self, node: NodeIdx) -> Option<NodeIdx> {
         self.parent.get(node.0 as usize).copied().flatten()
     }

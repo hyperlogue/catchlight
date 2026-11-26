@@ -61,10 +61,12 @@ pub struct ClmMesh {
 }
 
 impl ClmMesh {
+    #[must_use]
     pub fn vertex_count(&self) -> usize {
         self.verts.len() / 2
     }
 
+    #[must_use]
     pub fn triangle_count(&self) -> usize {
         match &self.indices {
             ClmIndices::U16(v) => v.len() / 3,
@@ -279,6 +281,7 @@ pub enum ClmPayload {
 
 impl ClmExtension {
     /// The marker of the bytes this value keeps in the `Extensions` section.
+    #[must_use]
     pub fn marker(&self) -> Option<&ClmExtensionMarker> {
         match self {
             Self::Bytes(marker)
@@ -295,6 +298,7 @@ impl ClmExtension {
     }
 
     /// The inline JSON this value carries in the structure.
+    #[must_use]
     pub fn inline_json(&self) -> Option<&serde_json::Value> {
         match self {
             Self::Json(json)
@@ -424,6 +428,7 @@ pub struct ClmExtensionBlob {
 }
 
 /// Length as compact JSON text, which any authoring tool can compute.
+#[must_use]
 pub fn extension_json_len(value: &serde_json::Value) -> usize {
     struct Count(usize);
     impl std::io::Write for Count {
@@ -444,6 +449,7 @@ pub fn extension_json_len(value: &serde_json::Value) -> usize {
     }
 }
 
+#[must_use]
 pub fn extension_hash(bytes: &[u8]) -> String {
     blake3::hash(bytes).to_hex().to_string()
 }

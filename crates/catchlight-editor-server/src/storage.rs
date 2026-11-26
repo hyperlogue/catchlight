@@ -16,6 +16,7 @@ pub trait Storage: Send + Sync + std::fmt::Debug {
     fn write(&self, key: &str, bytes: &[u8]) -> io::Result<()>;
 }
 
+#[must_use]
 pub fn parent_key(key: &str) -> &str {
     match key.rsplit_once('/') {
         Some((parent, _)) => parent,
@@ -24,6 +25,7 @@ pub fn parent_key(key: &str) -> &str {
 }
 
 /// An empty base yields `name` unchanged, so a flat store stays flat.
+#[must_use]
 pub fn join_key(base: &str, name: &str) -> String {
     if base.is_empty() {
         name.to_string()
@@ -33,6 +35,7 @@ pub fn join_key(base: &str, name: &str) -> String {
 }
 
 /// For a session title only; nothing addresses anything by it.
+#[must_use]
 pub fn key_stem(key: &str) -> String {
     let last = key.rsplit('/').next().unwrap_or(key);
     let stem = last.rsplit_once('.').map_or(last, |(stem, _)| stem);
@@ -86,6 +89,7 @@ impl FileStorage {
         Ok(Self { root: resolved })
     }
 
+    #[must_use]
     pub fn root(&self) -> &Path {
         &self.root
     }

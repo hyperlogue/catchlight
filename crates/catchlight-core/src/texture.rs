@@ -24,6 +24,7 @@ pub enum TextureFormat {
 }
 
 impl TextureFormat {
+    #[must_use]
     pub fn to_image_format(self) -> image::ImageFormat {
         match self {
             Self::Png => image::ImageFormat::Png,
@@ -218,6 +219,7 @@ pub struct UvCrop {
 
 impl UvCrop {
     /// In f64: f32 loses a texel of precision at the far edge of a 4k texture.
+    #[must_use]
     pub fn map(&self, uv: crate::Vec2) -> crate::Vec2 {
         let (tw, th) = (f64::from(self.src_w), f64::from(self.src_h));
         crate::Vec2::new(

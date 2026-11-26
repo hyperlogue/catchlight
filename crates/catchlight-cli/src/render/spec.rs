@@ -422,6 +422,7 @@ pub enum VideoFormat {
     Gif,
 }
 impl VideoFormat {
+    #[must_use]
     pub fn extension(self) -> &'static str {
         match self {
             Self::Mp4 => "mp4",
@@ -430,6 +431,7 @@ impl VideoFormat {
             Self::Gif => "gif",
         }
     }
+    #[must_use]
     pub fn from_extension(path: &Path) -> Option<Self> {
         let ext = path.extension()?.to_str()?.to_ascii_lowercase();
         [Self::Mp4, Self::Webm, Self::Mkv, Self::Gif]
@@ -623,9 +625,11 @@ impl ResolvedFrames {
     pub fn captured_indices(&self) -> impl Iterator<Item = u32> {
         (self.start..self.count).step_by(self.every as usize)
     }
+    #[must_use]
     pub fn captures(&self) -> u64 {
         u64::from((self.count - 1 - self.start) / self.every + 1)
     }
+    #[must_use]
     pub fn is_captured(&self, index: u32) -> bool {
         index >= self.start && (index - self.start).is_multiple_of(self.every)
     }
@@ -661,6 +665,7 @@ impl ResolvedRequest {
             f64::from(self.framing.scale) * zoom,
         )
     }
+    #[must_use]
     pub fn frame_interval(&self) -> Option<f64> {
         self.animation
             .as_ref()
@@ -708,6 +713,7 @@ impl Document {
     pub fn read(path: &Path) -> Result<Self, Error> {
         Self::parse(&read_json(path)?)
     }
+    #[must_use]
     pub fn single(request: Request) -> Self {
         Self {
             schema: 1,

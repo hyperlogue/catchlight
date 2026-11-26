@@ -102,6 +102,7 @@ fn next_identity() -> u64 {
 static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 impl Model {
+    #[must_use]
     pub fn new() -> Self {
         let root = NodeId::from_generated(DEFAULT_ROOT_ID.to_string());
         let mut nodes = HashMap::new();

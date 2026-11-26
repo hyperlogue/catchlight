@@ -46,6 +46,7 @@ impl LoadResource {
     const COUNT: usize = Self::VertexCoordinates as usize + 1;
 
     /// The name editor clients receive in a limit error.
+    #[must_use]
     pub fn name(self) -> &'static str {
         match self {
             Self::EncodedBytes => "encoded bytes",
@@ -185,6 +186,7 @@ impl Default for LoadBudget {
 }
 
 impl LoadBudget {
+    #[must_use]
     pub fn new(limits: LoadLimits) -> Self {
         Self {
             limits,

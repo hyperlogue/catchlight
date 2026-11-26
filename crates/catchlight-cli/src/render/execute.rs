@@ -32,6 +32,7 @@ impl Cancellation {
     pub fn cancel(&self) {
         self.0.store(true, Ordering::Relaxed);
     }
+    #[must_use]
     pub fn is_cancelled(&self) -> bool {
         self.0.load(Ordering::Relaxed)
     }
@@ -86,6 +87,7 @@ pub fn load(path: &Path, hash_input: bool) -> Result<LoadedModel, Error> {
         hash: hash_input.then(|| hash(&bytes)),
     })
 }
+#[must_use]
 pub fn hash(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
     let mut out = String::with_capacity(64);

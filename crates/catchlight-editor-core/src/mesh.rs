@@ -62,17 +62,20 @@ pub struct WorkingMesh {
 
 impl WorkingMesh {
     /// Flat `[x, y, …]` rest positions in node-local space.
+    #[must_use]
     pub fn verts(&self) -> &[f32] {
         &self.verts
     }
 
     /// Vertex index pairs, unordered; no two cross.
+    #[must_use]
     pub fn constraints(&self) -> &[(u32, u32)] {
         &self.constraints
     }
 
     /// Every current triangle edge is seeded as a constraint, so the CDT
     /// preserves the topology until the user unpins.
+    #[must_use]
     pub fn from_mesh(mesh: &ClmMesh) -> Self {
         let vcount = (mesh.verts.len() / 2) as u32;
         let mut constraints: Vec<(u32, u32)> = Vec::new();
@@ -103,10 +106,12 @@ impl WorkingMesh {
         }
     }
 
+    #[must_use]
     pub fn vertex_count(&self) -> usize {
         self.verts.len() / 2
     }
 
+    #[must_use]
     pub fn pos(&self, i: u32) -> [f32; 2] {
         [self.verts[i as usize * 2], self.verts[i as usize * 2 + 1]]
     }
@@ -293,6 +298,7 @@ impl WorkingMesh {
         self.constraints.retain(|&c| c != key);
     }
 
+    #[must_use]
     pub fn has_constraint(&self, a: u32, b: u32) -> bool {
         let key = (a.min(b), a.max(b));
         self.constraints.contains(&key)
@@ -384,6 +390,7 @@ pub struct UvMap {
 
 impl UvMap {
     /// Texture centered on the local origin, `v` increasing downward.
+    #[must_use]
     pub fn from_texture_size(w: f32, h: f32) -> Self {
         Self {
             sx: 1.0 / w.max(1.0),
@@ -393,6 +400,7 @@ impl UvMap {
         }
     }
 
+    #[must_use]
     pub fn fit(verts: &[f32], uvs: &[f32]) -> Option<Self> {
         let n = (verts.len() / 2).min(uvs.len() / 2);
         if n < 2 {
@@ -427,10 +435,12 @@ impl UvMap {
         Some(Self { sx, ox, sy, oy })
     }
 
+    #[must_use]
     pub fn uv(&self, pos: [f32; 2]) -> [f32; 2] {
         [self.sx * pos[0] + self.ox, self.sy * pos[1] + self.oy]
     }
 
+    #[must_use]
     pub fn local(&self, uv: [f32; 2]) -> [f32; 2] {
         [(uv[0] - self.ox) / self.sx, (uv[1] - self.oy) / self.sy]
     }
@@ -446,6 +456,7 @@ pub struct AlphaMask {
 
 impl AlphaMask {
     /// `None` unless `alpha` holds exactly `width * height` bytes.
+    #[must_use]
     pub fn new(width: u32, height: u32, alpha: Vec<u8>) -> Option<Self> {
         let texels = u64::from(width) * u64::from(height);
         (alpha.len() as u64 == texels).then_some(Self {
@@ -455,20 +466,24 @@ impl AlphaMask {
         })
     }
 
+    #[must_use]
     pub fn width(&self) -> u32 {
         self.width
     }
 
+    #[must_use]
     pub fn height(&self) -> u32 {
         self.height
     }
 
+    #[must_use]
     pub fn decode(bytes: &[u8]) -> Option<Self> {
         let img = image::load_from_memory(bytes).ok()?.to_rgba8();
         Some(Self::from_rgba(&img))
     }
 
     /// TGA has no reliable magic signature, so the declared encoding is used.
+    #[must_use]
     pub fn decode_as(
         bytes: &[u8],
         encoding: catchlight_core::formats::clm::TextureEncoding,
@@ -1225,6 +1240,7 @@ enum RefitSource {
 }
 
 impl RefitPlan {
+    #[must_use]
     pub fn new(old: &ClmMesh, new_verts: &[f32]) -> Self {
         let old_tris: Vec<[u32; 3]> = match &old.indices {
             ClmIndices::U16(v) => v
@@ -1289,6 +1305,7 @@ impl RefitPlan {
     }
 
     /// The new mesh's offsets, flat like `old_offsets`.
+    #[must_use]
     pub fn apply(&self, old_offsets: &[f32]) -> Vec<f32> {
         let old_off = |i: u32| -> [f32; 2] {
             [

@@ -297,6 +297,7 @@ pub fn delete(path: &Path, key: &str) -> Result<Changed, Error> {
     })
 }
 
+#[must_use]
 pub fn render(value: &ClmExtension) -> String {
     match value {
         ClmExtension::Json(json) => render_json(json),
@@ -380,6 +381,7 @@ pub fn store<T: Extension>(file: &mut ClmFile, model: &Model) -> Result<(), Erro
 }
 
 /// Why the data under `T::KEY` cannot be edited, as this program says it.
+#[must_use]
 pub fn unreadable<T: Extension>(error: ExtensionError, path: &Path) -> Error {
     match error {
         ExtensionError::Unread(why) => Error::Unread {

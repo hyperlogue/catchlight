@@ -16,6 +16,7 @@ pub(crate) fn same_sample(a: f32, b: f32, scale: f32) -> bool {
 
 impl Lane {
     /// `t` is a fractional frame, clamped at both ends.
+    #[must_use]
     pub fn value_at(&self, t: f32) -> f32 {
         value_at(&self.keyframes, self.interpolation, t)
     }
@@ -79,6 +80,7 @@ impl Lane {
 
 impl Clip {
     /// The frames `[begin, end)` the clip repeats after its lead-in.
+    #[must_use]
     pub fn loop_region(&self) -> (u32, u32) {
         let inside = |frame: Option<u32>| {
             frame.filter(|&f| f > 0 && u64::from(f) + 1 < u64::from(self.length))

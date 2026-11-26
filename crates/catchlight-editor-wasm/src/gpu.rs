@@ -51,6 +51,7 @@ impl Gpu {
 
     /// `"webgpu"` or `"webgl2"`, for status lines and bug reports; nothing above
     /// this crate may branch on it.
+    #[must_use]
     pub fn tier(&self) -> String {
         match self.gl {
             Some(_) => "webgl2".to_string(),
@@ -61,6 +62,7 @@ impl Gpu {
     /// The largest surface this device will configure, in device pixels per
     /// axis. A canvas above it goes black with no other symptom.
     #[wasm_bindgen(js_name = maxSize)]
+    #[must_use]
     pub fn max_size(&self) -> u32 {
         self.context.device.limits().max_texture_dimension_2d
     }
