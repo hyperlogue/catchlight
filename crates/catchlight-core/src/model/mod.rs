@@ -949,6 +949,7 @@ impl Model {
         if self.nodes.contains_key(&id) {
             return Err(ModelError::DuplicateId(id.to_string()));
         }
+        crate::load_budget::tree_depth(self.depth_of(parent) + 1)?;
         validate::node_placement(node.z_order, &node.transform)?;
         validate::appearance(&node.kind)?;
         if let Some(mesh) = node.mesh() {
@@ -1028,6 +1029,7 @@ impl Model {
         if self.is_self_or_descendant(new_parent, id) {
             return Err(ModelError::Cycle);
         }
+        crate::load_budget::tree_depth(self.depth_of(new_parent) + self.height_of(id))?;
         if matches!(&self.nodes[id].kind, ModelNodeKind::MotionResponse(r) if r.inputs.iter().any(|t| matches!(t.source,crate::ResponseSource::Parent)))
             && !matches!(
                 self.nodes[new_parent].kind,
@@ -2235,6 +2237,31 @@ impl Model {
             out.push(id);
         }
         out
+    }
+
+    /// Levels from the top down to `id`, both counted; a fragment's top is
+    /// its own roots.
+    pub(super) fn depth_of(&self, id: &NodeId) -> usize {
+        let mut levels = 0;
+        let mut cur = self.nodes.get(id);
+        while let Some(node) = cur {
+            levels += 1;
+            cur = node.parent.as_ref().and_then(|p| self.nodes.get(p));
+        }
+        levels
+    }
+
+    /// Levels in the subtree under `id`, `id` counted.
+    pub(super) fn height_of(&self, id: &NodeId) -> usize {
+        let mut height = 0;
+        let mut stack = vec![(id, 1)];
+        while let Some((id, level)) = stack.pop() {
+            height = height.max(level);
+            if let Some(n) = self.nodes.get(id) {
+                stack.extend(n.children.iter().map(|c| (c, level + 1)));
+            }
+        }
+        height
     }
 
     fn is_self_or_descendant(&self, candidate: &NodeId, ancestor: &NodeId) -> bool {
@@ -3572,6 +3599,73 @@ mod tests {
             "deleting a node takes the welds that named it, the way it takes \
              the masks that named it",
         );
+    }
+
+    fn too_deep(error: &ModelError) -> bool {
+        matches!(
+            error,
+            ModelError::LoadLimit(crate::LoadLimitError {
+                resource: crate::LoadResource::TreeDepth,
+                limit: 256,
+                got: 257,
+            })
+        )
+    }
+
+    /// The root and a chain `n2`..=`n{levels}` under it.
+    fn chain(levels: usize) -> Model {
+        let mut model = Model::new();
+        let mut parent = model.root().unwrap().clone();
+        for level in 2..=levels {
+            let id = NodeId::new(format!("n{level}")).unwrap();
+            let node = ModelNode::new("link", ModelNodeKind::Group);
+            model.add_node_with_id(id.clone(), &parent, node).unwrap();
+            parent = id;
+        }
+        model
+    }
+
+    #[test]
+    fn a_tree_is_at_most_256_levels_deep() {
+        let id = |s: &str| NodeId::new(s).unwrap();
+        let group = || ModelNode::new("g", ModelNodeKind::Group);
+        let mut model = chain(256);
+        let root = model.root().unwrap().clone();
+        let before = model.generation();
+        let got = model.add_node_with_id(id("over"), &id("n256"), group());
+        assert!(got.as_ref().is_err_and(too_deep), "{got:?}");
+        assert_eq!(model.generation(), before);
+
+        model.add_node_with_id(id("side"), &root, group()).unwrap();
+        model
+            .add_node_with_id(id("below"), &id("side"), group())
+            .unwrap();
+        let got = model.reparent(&id("side"), &id("n255"));
+        assert!(got.as_ref().is_err_and(too_deep), "{got:?}");
+        model.reparent(&id("side"), &id("n254")).unwrap();
+        model.reparent(&id("side"), &root).unwrap();
+        // A copy sits beside its original, so it is never deeper.
+        model
+            .duplicate_subtree(&id("n256"), &mut SeededHex::new(1))
+            .unwrap();
+
+        let mut file = model.to_clm_file().unwrap();
+        let mut over = file.doc.nodes.last().unwrap().clone();
+        over.id = id("over");
+        over.parent = Some(id("n256"));
+        file.doc.nodes.push(over);
+        let got = Model::from_clm_file(&file);
+        assert!(got.as_ref().is_err_and(too_deep), "{:?}", got.err());
+
+        let mut addon = model.extract(&[id("side")]).to_clm_file().unwrap();
+        addon.doc.nodes[0].parent = Some(id("n255"));
+        let addon = Model::from_clm_file_fragment(&addon).unwrap();
+        let before = model.generation();
+        match model.install(&addon) {
+            Err(InstallError::Model(error)) => assert!(too_deep(&error), "{error}"),
+            other => panic!("installed too deep: {other:?}"),
+        }
+        assert_eq!(model.generation(), before);
     }
 
     #[test]

@@ -566,7 +566,16 @@ impl Model {
         let mut nodes: HashMap<NodeId, ModelNode> = HashMap::with_capacity(doc.nodes.len());
         let mut slots: HashMap<&NodeId, SlotTable> = HashMap::new();
         let mut roots: Vec<NodeId> = Vec::new();
+        // A fragment counts from its own roots; `Model::install` counts the rest.
+        let mut depths: HashMap<&NodeId, usize> = HashMap::with_capacity(doc.nodes.len());
         for cn in &doc.nodes {
+            let depth = cn
+                .parent
+                .as_ref()
+                .and_then(|parent| depths.get(parent))
+                .map_or(1, |above| above + 1);
+            crate::load_budget::tree_depth(depth)?;
+            depths.insert(&cn.id, depth);
             match &cn.parent {
                 Some(parent) if declared.contains(parent) => {
                     if !nodes.contains_key(parent) {

@@ -31,7 +31,7 @@ pub use interpolate::InterpolateMode;
 pub use load::{ModelFormat, load_model};
 pub use load_budget::{
     LoadBudget, LoadLimitError, LoadLimits, LoadResource, MAX_BINDING_GRID_CELLS,
-    MAX_TEXTURE_DIMENSION,
+    MAX_TEXTURE_DIMENSION, MAX_TREE_DEPTH,
 };
 pub use model::{
     BindingKey, BindingParams, BindingTarget, CheckWarning, DEFAULT_SLOT_WEIGHT, ExtensionValue,

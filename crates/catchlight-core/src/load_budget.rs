@@ -29,6 +29,8 @@ pub enum LoadResource {
     TextureDimension,
     /// [`MAX_BINDING_GRID_CELLS`].
     BindingGrid,
+    /// [`MAX_TREE_DEPTH`].
+    TreeDepth,
     ManifestGridColumns,
     ManifestGridRows,
     GridDivisions,
@@ -64,6 +66,7 @@ impl LoadResource {
             Self::ExtensionBytes => "extension bytes",
             Self::TextureDimension => "texture dimension",
             Self::BindingGrid => "binding grid",
+            Self::TreeDepth => "tree depth",
             Self::ManifestGridColumns => "manifest grid columns",
             Self::ManifestGridRows => "manifest grid rows",
             Self::GridDivisions => "grid divisions",
@@ -149,6 +152,7 @@ impl LoadLimits {
             LoadResource::ExtensionBytes => self.extension_bytes,
             LoadResource::TextureDimension
             | LoadResource::BindingGrid
+            | LoadResource::TreeDepth
             | LoadResource::ManifestGridColumns
             | LoadResource::ManifestGridRows
             | LoadResource::GridDivisions
@@ -260,6 +264,22 @@ pub(crate) fn binding_grid_cells(
             got: got.unwrap_or(u64::MAX),
         }),
     }
+}
+
+/// Levels on the longest root-to-leaf path, both ends counted: a lone root
+/// is one level deep.
+pub const MAX_TREE_DEPTH: u64 = 256;
+
+pub(crate) fn tree_depth(levels: usize) -> Result<(), LoadLimitError> {
+    let got = levels as u64;
+    if got > MAX_TREE_DEPTH {
+        return Err(LoadLimitError {
+            resource: LoadResource::TreeDepth,
+            limit: MAX_TREE_DEPTH,
+            got,
+        });
+    }
+    Ok(())
 }
 
 /// Charges payload bytes too, for a `ClmFile` built in memory; a file read

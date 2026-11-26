@@ -486,11 +486,16 @@ impl Model {
 
     fn check_install(&self, addon: &Self) -> Result<(), InstallError> {
         for r in &addon.roots {
-            if addon.nodes.get(r).is_some_and(|n| n.parent.is_none()) {
+            let Some(node) = addon.nodes.get(r) else {
+                continue;
+            };
+            let Some(parent) = &node.parent else {
                 return Err(InstallError::NotAnAddon {
                     node: r.to_string(),
                 });
-            }
+            };
+            crate::load_budget::tree_depth(self.depth_of(parent) + addon.height_of(r))
+                .map_err(|e| InstallError::Model(Box::new(e.into())))?;
         }
         if let Some(param) = addon.param_order.first() {
             return Err(InstallError::CarriesParam {

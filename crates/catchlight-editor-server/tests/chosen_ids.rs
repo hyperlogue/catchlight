@@ -247,3 +247,40 @@ fn an_add_with_no_id_still_draws_one() {
     ));
     assert!(node.as_str().starts_with("root/part-"), "{node}");
 }
+
+#[test]
+fn an_add_past_the_deepest_level_is_a_limit() {
+    let (ed, session) = editor();
+    let add = |id: u64, parent: &NodeId, node: &NodeId| {
+        reply(
+            &ed,
+            id,
+            Command::NodeAdd {
+                session,
+                parent: parent.clone(),
+                kind: NodeKindArg::Group,
+                name: None,
+                node: Some(node.clone()),
+            },
+        )
+    };
+    // The root is the first of 256 levels.
+    let mut parent = NodeId::new("root").unwrap();
+    for level in 2..=256 {
+        let node = NodeId::new(format!("n{level}")).unwrap();
+        let got = add(level, &parent, &node);
+        assert!(matches!(got, Reply::Ok { .. }), "{got:?}");
+        parent = node;
+    }
+    match add(257, &parent, &NodeId::new("over").unwrap()) {
+        Reply::Err {
+            code: ErrorCode::LimitExceeded,
+            limit: Some(limit),
+            ..
+        } => assert_eq!(
+            (limit.resource.as_str(), limit.limit, limit.requested),
+            ("tree depth", 256, 257)
+        ),
+        other => panic!("added past the deepest level: {other:?}"),
+    }
+}
