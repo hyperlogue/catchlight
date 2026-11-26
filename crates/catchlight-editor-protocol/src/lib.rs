@@ -39,7 +39,7 @@ pub struct RequestId {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(tag = "cmd", rename_all = "snake_case")]
+#[serde(tag = "cmd", rename_all = "snake_case", deny_unknown_fields)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub enum Command {
     #[serde(rename = "session_create")]
@@ -1238,7 +1238,7 @@ impl Command {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub enum Rename {
     Node {
@@ -1351,7 +1351,7 @@ pub struct VertexWeight {
 
 /// Model edits accepted by an atomic batch. Created IDs are always explicit.
 #[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(tag = "op", rename_all = "snake_case")]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub enum EditOp {
     NodeAdd {
@@ -1537,7 +1537,7 @@ impl BindingParams {
 /// How [`Command::MeshAuto`] derives a mesh from a part's alpha. Absent knobs
 /// take `catchlight-editor-core`'s defaults.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
-#[serde(tag = "mode", rename_all = "snake_case")]
+#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub enum AutoMesh {
     Contour {
@@ -1612,6 +1612,7 @@ pub struct SlotAddr {
 
 /// `weight` is `a`'s share (`0..=1`) of the point both vertices are pulled to.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct SlotPair {
     pub a: SlotId,
@@ -2092,6 +2093,7 @@ where
 /// Fields to change on a node; absent = unchanged. Colour fields reach parts
 /// and composites only.
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
+#[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct NodePatch {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2135,6 +2137,7 @@ pub struct NodePatch {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ParamPose {
     pub param: ParamId,
@@ -2144,6 +2147,7 @@ pub struct ParamPose {
 /// One texture an [`Command::ImportJson`] structure names, arriving as
 /// attachment `texture:<texture>`.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ImportTexture {
     pub texture: TexId,
@@ -2519,6 +2523,7 @@ pub struct LimitInfo {
 /// Ephemeral shared view state, kept off the model path: never an edit, never
 /// saved.
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Presence {
     #[serde(default)]
@@ -2532,7 +2537,7 @@ pub struct Presence {
 /// What a review thread is about. Anything with an Id can be one; `model` is
 /// a remark on the whole character.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub enum ReviewTarget {
     Model,
@@ -2564,6 +2569,7 @@ pub enum ReviewAuthor {
 /// An agent: `id` is stable for as long as it works (one harness session),
 /// and is what claims, presence and retry keys go by; `name` is only shown.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ReviewIdentity {
     pub id: String,
@@ -2725,7 +2731,7 @@ pub struct VersionViewing {
 /// What [`Command::ExtensionSet`] sets: inline JSON, or bytes attached as
 /// `value`. Tagged by `kind` because a byte marker is itself a JSON object.
 #[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub enum ExtensionSet {
     Json {
@@ -2841,6 +2847,7 @@ pub enum ExpressionGroup {
 /// in the control's range, or a raw value for one of the model's own params.
 /// Exactly one of `control` and `param`.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ExpressionSetting {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2934,6 +2941,7 @@ pub struct ExtensionInfo {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy)]
+#[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Camera {
     pub center: [f32; 2],
@@ -3495,7 +3503,8 @@ mod tests {
         );
     }
 
-    /// [`NodeInfo`] must parse as a [`NodePatch`] for the inspector round trip.
+    /// [`NodeInfo`]'s settable fields must parse as a [`NodePatch`] for the
+    /// inspector round trip.
     #[test]
     fn a_node_info_reply_parses_as_the_patch_that_would_restore_it() {
         let info = NodeInfo {
@@ -3525,7 +3534,19 @@ mod tests {
             masks: Vec::new(),
         };
         let line = serde_json::to_string(&info).unwrap();
-        let patch: NodePatch = serde_json::from_str(&line).unwrap();
+        let mut settable: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str(&line).unwrap();
+        for read_only in [
+            "id",
+            "kind",
+            "parent",
+            "vertex_count",
+            "triangle_count",
+            "masks",
+        ] {
+            settable.remove(read_only);
+        }
+        let patch: NodePatch = serde_json::from_value(settable.into()).unwrap();
 
         assert_eq!(patch.name.as_deref(), Some("Body"));
         assert_eq!(patch.translate, Some([1.0, 2.0, 3.0]));
@@ -3699,6 +3720,34 @@ mod tests {
         assert!(err.to_string().contains("unknown variant"), "{err}");
         let RequestId { id } = serde_json::from_str(line).unwrap();
         assert_eq!(id, 4);
+    }
+
+    #[test]
+    fn a_misspelt_request_field_is_refused() {
+        let line = r#"{"id":4,"cmd":"mesh_set","session":1,"node":"a","verts":[],"uvs":[],"indices":[],"origin":[0,0],"ifrev":5}"#;
+        let err = serde_json::from_str::<Request>(line).unwrap_err();
+        assert!(err.to_string().contains("unknown field `ifrev`"), "{err}");
+        let RequestId { id } = serde_json::from_str(line).unwrap();
+        assert_eq!(id, 4);
+    }
+
+    #[test]
+    fn a_misspelt_field_is_refused_inside_a_flattened_or_nested_payload() {
+        for line in [
+            r#"{"id":1,"cmd":"node_set","session":1,"node":"a","nmae":"b"}"#,
+            r#"{"id":1,"cmd":"binding_add","session":1,"node":"a","target":"opacity","param":"p","paramy":"q"}"#,
+            r#"{"id":1,"cmd":"edit_apply","session":1,"if_rev":1,"edits":[{"op":"node_set","node":"a","nmae":"b"}]}"#,
+            r#"{"id":1,"cmd":"mesh_generate","session":1,"node":"a","mode":{"mode":"grid","colls":4}}"#,
+        ] {
+            let err = serde_json::from_str::<Request>(line).unwrap_err();
+            assert!(err.to_string().contains("unknown field"), "{line}: {err}");
+        }
+    }
+
+    #[test]
+    fn a_reply_tolerates_a_field_it_does_not_know() {
+        let line = r#"{"reply":"event","event":"sessions_changed","later":true}"#;
+        serde_json::from_str::<Reply>(line).unwrap();
     }
 
     #[test]
