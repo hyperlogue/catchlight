@@ -18,6 +18,8 @@ pub enum MeshError {
     NoSuchVertex,
     #[error("a vertex cannot land on another vertex")]
     Coincident,
+    #[error("a vertex position must be a finite number")]
+    NotFinite,
     /// Touching at a shared endpoint is fine.
     #[error("constraint edges may not cross")]
     ConstraintCross,
@@ -81,7 +83,7 @@ impl WorkingMesh {
 
     pub fn add_vertex(&mut self, pos: [f32; 2]) -> Result<u32, MeshError> {
         if !pos[0].is_finite() || !pos[1].is_finite() {
-            return Err(MeshError::Coincident);
+            return Err(MeshError::NotFinite);
         }
         for i in 0..self.vertex_count() {
             let p = self.pos(i as u32);
@@ -98,7 +100,7 @@ impl WorkingMesh {
             return Err(MeshError::NoSuchVertex);
         }
         if !pos[0].is_finite() || !pos[1].is_finite() {
-            return Err(MeshError::Coincident);
+            return Err(MeshError::NotFinite);
         }
         for j in 0..self.vertex_count() as u32 {
             if j != i && dist2(self.pos(j), pos) < MIN_VERTEX_DISTANCE * MIN_VERTEX_DISTANCE {
@@ -1448,6 +1450,16 @@ mod tests {
         let wide = one_cell(Some(0.5));
         assert!((wide.pos(0)[0] + 32.0).abs() < 0.01, "{:?}", wide.pos(0));
         assert!((wide.pos(0)[1] - 32.0).abs() < 0.01, "{:?}", wide.pos(0));
+    }
+
+    #[test]
+    fn non_finite_positions_are_not_called_coincident() {
+        let mut wm = WorkingMesh::from_mesh(&quad());
+        assert_eq!(wm.add_vertex([f32::NAN, 0.0]), Err(MeshError::NotFinite));
+        assert_eq!(
+            wm.move_vertex(0, [0.0, f32::INFINITY]),
+            Err(MeshError::NotFinite)
+        );
     }
 
     #[test]
