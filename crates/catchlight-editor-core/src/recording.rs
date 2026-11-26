@@ -292,21 +292,35 @@ impl Recording {
         patch: &RecordProperties,
         authored_basis: bool,
     ) -> Result<Vec<RecordingWrite>, RecordingError> {
-        self.patch(patch, authored_basis)?
-            .into_iter()
-            .map(|(target, value)| {
-                self.write(BindingTarget::Scalar(target), RecordingValue::Scalar(value))
-            })
-            .collect()
+        let entries = self.patch(patch, authored_basis)?;
+        // Each target writes only its own binding, so one scratch copy serves
+        // them all.
+        let mut scratch = self.model.clone();
+        let mut writes = Vec::with_capacity(entries.len());
+        for (target, value) in entries {
+            writes.push(self.write(
+                &mut scratch,
+                BindingTarget::Scalar(target),
+                RecordingValue::Scalar(value),
+            )?);
+        }
+        Ok(writes)
     }
 
     pub fn deform_write(&self, deltas: &[f32]) -> Result<RecordingWrite, RecordingError> {
         let offsets = self.deform(deltas)?.as_chunks::<2>().0.to_vec();
-        self.write(BindingTarget::Deform, RecordingValue::Offsets(offsets))
+        self.write(
+            &mut self.model.clone(),
+            BindingTarget::Deform,
+            RecordingValue::Offsets(offsets),
+        )
     }
 
+    /// `model` is a scratch copy of the captured model, on which this
+    /// target's binding is added and keyed.
     fn write(
         &self,
+        model: &mut Model,
         target: BindingTarget,
         value: RecordingValue,
     ) -> Result<RecordingWrite, RecordingError> {
@@ -315,7 +329,7 @@ impl Recording {
             node: self.node.clone(),
             target,
         };
-        let unauthored = self.model.binding(&key).is_none_or(|b| {
+        let unauthored = model.binding(&key).is_none_or(|b| {
             b.values().scalar_cells().map_or_else(
                 || {
                     b.values()
@@ -325,7 +339,6 @@ impl Recording {
                 <[catchlight_core::formats::clm::ClmCell<f32>]>::is_empty,
             )
         });
-        let mut model = self.model.clone();
         model.add_binding(&key)?;
         let key_positions = model
             .binding(&key)
