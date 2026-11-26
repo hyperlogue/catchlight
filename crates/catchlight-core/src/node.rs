@@ -1,67 +1,83 @@
-use indextree::{Arena, NodeEdge, NodeId as TreeNodeId};
-use std::collections::HashMap;
-use std::sync::OnceLock;
-
 use crate::components::NodeIdx;
 
+/// A puppet's node tree, numbered in pre-order from the root at 0: the
+/// subtree under a node is the index range from it to its subtree end, so
+/// walking a subtree is a loop over indices.
 #[derive(Debug, Clone)]
 pub struct NodeTree {
-    pub root: NodeIdx,
-    arena: Arena<NodeIdx>,
-    node_to_tree: HashMap<NodeIdx, TreeNodeId>,
-    // Dense parent lookup indexed by NodeIdx slot, maintained by add_child.
-    // Avoids a hash probe on the per-node transform walk.
     parent: Vec<Option<NodeIdx>>,
-    // Pre-order DFS cache, invalidated by add_child.
-    dfs_cache: OnceLock<Box<[NodeIdx]>>,
+    /// Exclusive; indexed like `parent`.
+    subtree_end: Vec<u32>,
+}
+
+impl Default for NodeTree {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl NodeTree {
-    pub fn new(root: NodeIdx) -> Self {
-        let mut arena = Arena::new();
-        let root_tree = arena.new_node(root);
-
-        let mut node_to_tree = HashMap::new();
-        node_to_tree.insert(root, root_tree);
-
+    /// A tree holding only the root.
+    pub fn new() -> Self {
         Self {
-            root,
-            arena,
-            node_to_tree,
-            parent: Vec::new(),
-            dfs_cache: OnceLock::new(),
+            parent: vec![None],
+            subtree_end: vec![1],
         }
     }
 
-    fn set_parent_slot(&mut self, child: NodeIdx, parent: NodeIdx) {
-        let slot = child.0 as usize;
-        if self.parent.len() <= slot {
-            self.parent.resize(slot + 1, None);
-        }
-        self.parent[slot] = Some(parent);
+    pub fn root(&self) -> NodeIdx {
+        NodeIdx(0)
     }
 
-    pub fn add_child(&mut self, parent: NodeIdx, child: NodeIdx) -> Result<(), NodeTreeError> {
-        let parent_tree = self
-            .node_to_tree
-            .get(&parent)
-            .ok_or(NodeTreeError::NodeNotFound(parent))?;
+    pub(crate) fn len(&self) -> usize {
+        self.parent.len()
+    }
 
-        let child_tree = self.arena.new_node(child);
-        parent_tree.append(child_tree, &mut self.arena);
-        self.node_to_tree.insert(child, child_tree);
-        self.set_parent_slot(child, parent);
-        self.dfs_cache = OnceLock::new();
+    /// Appends a node under `parent` and returns its index. To keep the
+    /// numbering pre-order, `parent` must be the last node or one of its
+    /// ancestors.
+    pub(crate) fn push_child(&mut self, parent: NodeIdx) -> Result<NodeIdx, NodeTreeError> {
+        let next = self.parent.len() as u32;
+        match self.subtree_end.get(parent.0 as usize) {
+            None => Err(NodeTreeError::NodeNotFound(parent)),
+            Some(&end) if end != next => Err(NodeTreeError::OutOfOrder(parent)),
+            Some(_) => Ok(self.append(parent)),
+        }
+    }
 
-        Ok(())
+    /// Appends a node under the root, which is always an ancestor of the last.
+    pub(crate) fn push_root_child(&mut self) -> NodeIdx {
+        self.append(self.root())
+    }
+
+    fn append(&mut self, parent: NodeIdx) -> NodeIdx {
+        let child = self.parent.len() as u32;
+        self.parent.push(Some(parent));
+        self.subtree_end.push(child + 1);
+        let mut above = Some(parent);
+        while let Some(node) = above {
+            self.subtree_end[node.0 as usize] = child + 1;
+            above = self.parent[node.0 as usize];
+        }
+        NodeIdx(child)
+    }
+
+    /// The index after the last node under `node`; 0 for a missing node.
+    pub(crate) fn subtree_end(&self, node: NodeIdx) -> NodeIdx {
+        NodeIdx(self.subtree_end.get(node.0 as usize).copied().unwrap_or(0))
     }
 
     pub fn children(&self, node: NodeIdx) -> impl Iterator<Item = NodeIdx> + '_ {
-        self.node_to_tree
-            .get(&node)
-            .into_iter()
-            .flat_map(|&tree_node| tree_node.children(&self.arena))
-            .map(|id| *self.arena[id].get())
+        let end = self.subtree_end(node).0;
+        let mut next = node.0.saturating_add(1);
+        std::iter::from_fn(move || {
+            let child = next;
+            if child >= end {
+                return None;
+            }
+            next = self.subtree_end[child as usize];
+            Some(NodeIdx(child))
+        })
     }
 
     pub fn get_children(&self, node: NodeIdx) -> Vec<NodeIdx> {
@@ -72,71 +88,17 @@ impl NodeTree {
         self.parent.get(node.0 as usize).copied().flatten()
     }
 
-    pub fn get_all_descendants(&self, node: NodeIdx) -> Vec<NodeIdx> {
-        let Some(&tree_node) = self.node_to_tree.get(&node) else {
-            return Vec::new();
-        };
-        // descendants() includes the root itself.
-        tree_node
-            .descendants(&self.arena)
-            .skip(1)
-            .map(|id| *self.arena[id].get())
-            .collect()
+    /// Every node under `node`, in pre-order, `node` excluded.
+    pub fn descendants(&self, node: NodeIdx) -> impl Iterator<Item = NodeIdx> + use<> {
+        (node.0.saturating_add(1)..self.subtree_end(node).0).map(NodeIdx)
     }
 
-    pub fn get_descendants_until<F>(&self, node: NodeIdx, stop_condition: F) -> Vec<NodeIdx>
-    where
-        F: Fn(NodeIdx) -> bool,
-    {
-        let Some(&tree_node) = self.node_to_tree.get(&node) else {
-            return Vec::new();
-        };
-
-        let mut descendants = Vec::new();
-        let mut iter = tree_node.traverse(&self.arena);
-        iter.next();
-
-        let mut skipping_under: Option<TreeNodeId> = None;
-        for edge in iter {
-            match edge {
-                NodeEdge::Start(tid) => {
-                    if skipping_under.is_some() {
-                        continue;
-                    }
-                    let child = *self.arena[tid].get();
-                    descendants.push(child);
-                    if stop_condition(child) {
-                        skipping_under = Some(tid);
-                    }
-                }
-                NodeEdge::End(tid) => {
-                    if skipping_under == Some(tid) {
-                        skipping_under = None;
-                    }
-                }
-            }
-        }
-        descendants
-    }
-
-    pub fn traverse_depth_first<F>(&self, mut visitor: F)
+    /// Pre-order, so a parent is visited before its children.
+    pub fn traverse_depth_first<F>(&self, visitor: F)
     where
         F: FnMut(NodeIdx),
     {
-        let Some(&root_tree) = self.node_to_tree.get(&self.root) else {
-            return;
-        };
-        for id in root_tree.descendants(&self.arena) {
-            visitor(*self.arena[id].get());
-        }
-    }
-
-    pub fn dfs_order(&self) -> &[NodeIdx] {
-        self.dfs_cache.get_or_init(|| {
-            let mut order = Vec::new();
-            self.traverse_depth_first(|id| order.push(id));
-            order.into()
-        })
+        (0..self.len() as u32).map(NodeIdx).for_each(visitor);
     }
 }
 
@@ -145,86 +107,83 @@ impl NodeTree {
 pub enum NodeTreeError {
     #[error("Node {0:?} not found in tree")]
     NodeNotFound(NodeIdx),
+    #[error("node {0:?} is neither the last node nor one of its ancestors")]
+    OutOfOrder(NodeIdx),
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn create_node_tree() {
-        let root = NodeIdx::new(0);
-        let tree = NodeTree::new(root);
-        assert_eq!(tree.root, root);
+    /// root(0) -> a(1) -> a1(2), a2(3); root -> b(4) -> b1(5)
+    fn sample() -> NodeTree {
+        let mut tree = NodeTree::new();
+        let root = tree.root();
+        let a = tree.push_child(root).unwrap();
+        tree.push_child(a).unwrap();
+        tree.push_child(a).unwrap();
+        let b = tree.push_child(root).unwrap();
+        tree.push_child(b).unwrap();
+        tree
+    }
+
+    fn idx(ids: &[u32]) -> Vec<NodeIdx> {
+        ids.iter().copied().map(NodeIdx).collect()
     }
 
     #[test]
-    fn add_child_to_tree() {
-        let root = NodeIdx::new(0);
-        let mut tree = NodeTree::new(root);
-
-        let child = NodeIdx::new(1);
-        let result = tree.add_child(root, child);
-
-        assert!(result.is_ok());
-
-        let children = tree.get_children(root);
-        assert_eq!(children.len(), 1);
-        assert_eq!(children[0], child);
+    fn a_new_tree_is_its_root() {
+        let tree = NodeTree::new();
+        assert_eq!(tree.root(), NodeIdx(0));
+        assert_eq!(tree.get_parent(tree.root()), None);
+        assert_eq!(tree.children(tree.root()).count(), 0);
+        assert_eq!(tree.descendants(tree.root()).count(), 0);
     }
 
     #[test]
-    fn get_parent_from_tree() {
-        let root = NodeIdx::new(0);
-        let mut tree = NodeTree::new(root);
-
-        let child = NodeIdx::new(1);
-        tree.add_child(root, child).unwrap();
-
-        let parent = tree.get_parent(child);
-        assert_eq!(parent, Some(root));
-    }
-
-    #[test]
-    fn traverse_tree_depth_first() {
-        let root = NodeIdx::new(0);
-        let mut tree = NodeTree::new(root);
-
-        let child1 = NodeIdx::new(1);
-        let child2 = NodeIdx::new(2);
-        let grandchild = NodeIdx::new(3);
-
-        tree.add_child(root, child1).unwrap();
-        tree.add_child(root, child2).unwrap();
-        tree.add_child(child1, grandchild).unwrap();
-
+    fn nodes_are_numbered_in_pre_order() {
+        let tree = sample();
+        assert_eq!(tree.get_children(NodeIdx(0)), idx(&[1, 4]));
+        assert_eq!(tree.get_children(NodeIdx(1)), idx(&[2, 3]));
+        assert_eq!(tree.get_children(NodeIdx(3)), idx(&[]));
+        assert_eq!(tree.get_parent(NodeIdx(3)), Some(NodeIdx(1)));
+        assert_eq!(tree.get_parent(NodeIdx(5)), Some(NodeIdx(4)));
+        assert_eq!(
+            tree.descendants(NodeIdx(0)).collect::<Vec<_>>(),
+            idx(&[1, 2, 3, 4, 5])
+        );
+        assert_eq!(
+            tree.descendants(NodeIdx(1)).collect::<Vec<_>>(),
+            idx(&[2, 3])
+        );
         let mut visited = Vec::new();
-        tree.traverse_depth_first(|node| {
-            visited.push(node);
-        });
-
-        assert_eq!(visited.len(), 4);
-        assert_eq!(visited[0], root);
-        assert!(visited.contains(&child1));
-        assert!(visited.contains(&child2));
-        assert!(visited.contains(&grandchild));
+        tree.traverse_depth_first(|node| visited.push(node));
+        assert_eq!(visited, idx(&[0, 1, 2, 3, 4, 5]));
     }
 
     #[test]
-    fn dfs_order_invalidates_on_add_child() {
-        let root = NodeIdx::new(0);
-        let mut tree = NodeTree::new(root);
-        tree.add_child(root, NodeIdx::new(1)).unwrap();
-
-        assert_eq!(tree.dfs_order().len(), 2);
-
-        tree.add_child(root, NodeIdx::new(2)).unwrap();
-        assert_eq!(tree.dfs_order().len(), 3);
+    fn a_child_follows_the_last_node_or_one_of_its_ancestors() {
+        let mut tree = sample();
+        assert!(matches!(
+            tree.push_child(NodeIdx(1)),
+            Err(NodeTreeError::OutOfOrder(NodeIdx(1)))
+        ));
+        assert!(matches!(
+            tree.push_child(NodeIdx(9)),
+            Err(NodeTreeError::NodeNotFound(NodeIdx(9)))
+        ));
+        assert_eq!(tree.push_child(NodeIdx(5)).unwrap(), NodeIdx(6));
+        assert_eq!(tree.push_root_child(), NodeIdx(7));
+        assert_eq!(tree.subtree_end(NodeIdx(4)), NodeIdx(7));
+        assert_eq!(tree.subtree_end(NodeIdx(0)), NodeIdx(8));
     }
 
     #[test]
-    fn children_of_a_missing_node_are_empty() {
-        let tree = NodeTree::new(NodeIdx::new(0));
-        assert_eq!(tree.children(NodeIdx::new(7)).count(), 0);
+    fn a_missing_node_has_no_children_or_descendants() {
+        let tree = NodeTree::new();
+        assert_eq!(tree.children(NodeIdx(7)).count(), 0);
+        assert_eq!(tree.descendants(NodeIdx(7)).count(), 0);
+        assert_eq!(tree.descendants(NodeIdx(u32::MAX)).count(), 0);
+        assert_eq!(tree.get_parent(NodeIdx(7)), None);
     }
 }

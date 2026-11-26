@@ -245,16 +245,14 @@ fn composite_passthrough_static<S: DrawSource + ?Sized>(
     if composite.blend_mode != BlendMode::Normal || !composite.masks.is_empty() {
         return false;
     }
-    let mut stack: Vec<NodeIdx> = source.tree().children(node_id).collect();
-    while let Some(id) = stack.pop() {
-        match source.node(id).map(|n| &n.kind) {
-            Some(NodeKind::Composite(_)) => return false,
-            Some(NodeKind::Part(part)) if part.blend_mode != BlendMode::Normal => return false,
-            _ => {}
-        }
-        stack.extend(source.tree().children(id));
-    }
-    true
+    source
+        .tree()
+        .descendants(node_id)
+        .all(|id| match source.node(id).map(|n| &n.kind) {
+            Some(NodeKind::Composite(_)) => false,
+            Some(NodeKind::Part(part)) => part.blend_mode == BlendMode::Normal,
+            _ => true,
+        })
 }
 
 fn composite_passthrough_dynamic(composite: &CompositeData) -> bool {

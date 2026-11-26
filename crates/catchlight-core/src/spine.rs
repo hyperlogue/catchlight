@@ -241,19 +241,19 @@ fn assign(joints: &[Vec2], spans: &[(f32, f32)], p: Vec2) -> VertexBend {
 /// Mesh groups and nested spines handle their own children.
 fn descendant_turned_nodes(tree: &NodeTree, spine_id: NodeIdx, arena: &Arena) -> Vec<NodeIdx> {
     let mut out = Vec::new();
-    let mut stack: Vec<NodeIdx> = tree.get_children(spine_id);
+    let mut stack: Vec<NodeIdx> = tree.children(spine_id).collect();
     while let Some(id) = stack.pop() {
         match arena.get(id).map(|n| &n.kind) {
             Some(NodeKind::Part(_)) => {
                 out.push(id);
-                stack.extend(tree.get_children(id));
+                stack.extend(tree.children(id));
             }
             Some(NodeKind::Composite(c)) => {
                 if c.propagate_mesh_group {
-                    stack.extend(tree.get_children(id));
+                    stack.extend(tree.children(id));
                 }
             }
-            Some(NodeKind::MotionResponse) => stack.extend(tree.get_children(id)),
+            Some(NodeKind::MotionResponse) => stack.extend(tree.children(id)),
             Some(NodeKind::MeshGroup(_)) => out.push(id),
             _ => {}
         }

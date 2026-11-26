@@ -60,7 +60,6 @@ pub(crate) struct Arena {
     // doubles as the slot index.
     pub(crate) nodes: Vec<Node>,
     pub(crate) tree: Arc<NodeTree>,
-    next_id: u32,
     // Frame-persistent scratch, sized by the largest child vert_count seen.
     pub(crate) mg_propagate_scratch: Vec<Vec2>,
     pub(crate) mg_cur_deform_scratch: Vec<Vec2>,
@@ -89,15 +88,13 @@ pub(crate) struct Arena {
 
 impl Arena {
     pub(crate) fn new() -> Self {
-        let root_id = NodeIdx::new(0);
-        let tree = Arc::new(NodeTree::new(root_id));
+        let tree = Arc::new(NodeTree::new());
 
         let nodes = vec![Node::default()];
 
         Self {
             nodes,
             tree,
-            next_id: 1,
             mg_propagate_scratch: Vec::new(),
             mg_cur_deform_scratch: Vec::new(),
             mg_deformed_vertices_scratch: Vec::new(),
@@ -119,7 +116,7 @@ impl Arena {
     }
 
     pub(crate) fn root(&self) -> NodeIdx {
-        self.tree.root
+        self.tree.root()
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -306,17 +303,12 @@ impl Arena {
     /// The only supported way to grow the arena, so the dense stores and the
     /// tree stay in sync.
     pub(crate) fn insert_child(&mut self, parent: NodeIdx, node: Node) -> NodeIdx {
-        let id = self.allocate_id();
         // Only a bake grows the arena, and it holds the only reference.
         let tree = Arc::make_mut(&mut self.tree);
-        if let Err(err) = tree.add_child(parent, id) {
-            tracing::warn!(
-                "insert_child: {err:?}; node {} attached to the root instead",
-                id.0
-            );
-            let root = tree.root;
-            let _ = tree.add_child(root, id);
-        }
+        let id = tree.push_child(parent).unwrap_or_else(|err| {
+            tracing::warn!("insert_child: {err}; attached to the root instead");
+            tree.push_root_child()
+        });
         debug_assert_eq!(
             id.0 as usize,
             self.nodes.len(),
@@ -343,12 +335,6 @@ impl Arena {
         id
     }
 
-    fn allocate_id(&mut self) -> NodeIdx {
-        let id = NodeIdx::new(self.next_id);
-        self.next_id += 1;
-        id
-    }
-
     pub(crate) fn compute_transforms(&self, out: &mut GlobalTransforms) {
         let _span = tracing::trace_span!("compute_transforms").entered();
         self.compute_transforms_with_root(out, Mat4::IDENTITY);
@@ -359,10 +345,10 @@ impl Arena {
     /// see the last value.
     pub(crate) fn compute_transforms_with_root(&self, out: &mut GlobalTransforms, root: Mat4) {
         let _span = tracing::trace_span!("compute_transforms_with_root").entered();
-        // DFS covers every reachable node, so no post-walk clear is needed.
+        // The walk covers every node, so no post-walk clear is needed.
         out.ensure_size(self.nodes.len());
 
-        for &id in self.tree.dfs_order() {
+        self.tree.traverse_depth_first(|id| {
             let slot = id.0 as usize;
             let node = self.nodes.get(slot);
             let local_matrix = self.local_matrix(slot, node);
@@ -378,7 +364,7 @@ impl Arena {
 
             let global_matrix = parent_matrix * local_matrix;
             out.insert(id, global_matrix);
-        }
+        });
     }
 
     /// Skips `Transform::to_matrix()` when the fold didn't write this frame and
@@ -407,7 +393,7 @@ impl Arena {
         subtree_root: NodeIdx,
         root: Mat4,
     ) {
-        let below = self.tree.get_all_descendants(subtree_root);
+        let below = self.tree.descendants(subtree_root);
         for id in std::iter::once(subtree_root).chain(below) {
             let slot = id.0 as usize;
             let node = self.nodes.get(slot);

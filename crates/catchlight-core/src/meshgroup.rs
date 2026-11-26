@@ -237,24 +237,24 @@ fn find_triangle_strict_hint(
 
 fn descendant_meshed_nodes(tree: &NodeTree, root: NodeIdx, arena: &Arena) -> Vec<NodeIdx> {
     let mut out = Vec::new();
-    let mut stack: Vec<NodeIdx> = tree.get_children(root);
+    let mut stack: Vec<NodeIdx> = tree.children(root).collect();
     while let Some(id) = stack.pop() {
         match arena.get(id).map(|n| &n.kind) {
             Some(NodeKind::Part(_)) => {
                 out.push(id);
-                stack.extend(tree.get_children(id));
+                stack.extend(tree.children(id));
             }
             // A Composite propagates only when `propagate_mesh_group` is set.
             Some(NodeKind::Composite(c)) => {
                 if c.propagate_mesh_group {
-                    stack.extend(tree.get_children(id));
+                    stack.extend(tree.children(id));
                 }
             }
             Some(NodeKind::MeshGroup(_)) => {
                 out.push(id);
             }
             Some(NodeKind::Spine(_) | NodeKind::MotionResponse) => {
-                stack.extend(tree.get_children(id));
+                stack.extend(tree.children(id));
             }
             _ => {}
         }
@@ -359,29 +359,34 @@ pub(crate) fn bake_mesh_group_pins(
     out
 }
 
-/// Mesh-less descendants of a `translateChildren` MG. Nested MGs are excluded:
-/// they already receive vertex deformation, and a shift would double it.
-fn translate_children_targets(tree: &NodeTree, mg_id: NodeIdx, arena: &Arena) -> Vec<NodeIdx> {
-    let descends = |id: NodeIdx| match arena.get(id).map(|n| &n.kind) {
-        Some(NodeKind::Part(_)) => true,
-        Some(NodeKind::Composite(c)) => c.propagate_mesh_group,
-        Some(NodeKind::Spine(_) | NodeKind::MotionResponse) => true,
-        _ => false,
-    };
-    let mut targets = tree.get_descendants_until(mg_id, |id| !descends(id));
-    targets.retain(|&id| {
-        !matches!(
-            arena.get(id).map(|n| &n.kind),
-            Some(
-                NodeKind::Part(_)
-                    | NodeKind::Composite(_)
-                    | NodeKind::MeshGroup(_)
-                    | NodeKind::Spine(_)
-                    | NodeKind::MotionResponse
-            )
-        )
-    });
-    targets
+/// The first of a `translateChildren` MG's targets at or after `at` and before
+/// `end`, the MG's subtree end, with the index its walk resumes from. Targets
+/// are the mesh-less descendants reached through parts, spines, responses and
+/// propagating composites. Nested MGs are excluded: they already receive
+/// vertex deformation, and a shift would double it.
+fn next_translate_target(
+    arena: &Arena,
+    mut at: NodeIdx,
+    end: NodeIdx,
+) -> Option<(NodeIdx, NodeIdx)> {
+    while at.0 < end.0 {
+        let kind = arena.get(at).map(|n| &n.kind);
+        let descends = match kind {
+            Some(NodeKind::Part(_) | NodeKind::Spine(_) | NodeKind::MotionResponse) => true,
+            Some(NodeKind::Composite(c)) => c.propagate_mesh_group,
+            _ => false,
+        };
+        if descends {
+            at = NodeIdx(at.0 + 1);
+            continue;
+        }
+        let past = arena.tree.subtree_end(at);
+        if !matches!(kind, Some(NodeKind::Composite(_) | NodeKind::MeshGroup(_))) {
+            return Some((at, past));
+        }
+        at = past;
+    }
+    None
 }
 
 impl Arena {
@@ -589,8 +594,9 @@ fn shift_translate_children(
 ) {
     let _span = tracing::trace_span!("shift_translate_children").entered();
 
-    let targets = translate_children_targets(&arena.tree, mg_id, arena);
-    if targets.is_empty() {
+    let end = arena.tree.subtree_end(mg_id);
+    let mut at = NodeIdx(mg_id.0 + 1);
+    if next_translate_target(arena, at, end).is_none() {
         return;
     }
 
@@ -599,7 +605,8 @@ fn shift_translate_children(
         return;
     };
 
-    for target_id in targets {
+    while let Some((target_id, resume)) = next_translate_target(arena, at, end) {
+        at = resume;
         let delta_parent = translate_children_delta(
             arena,
             mg_id,
@@ -877,7 +884,57 @@ mod tests {
             },
         );
         assert_eq!(descendant_meshed_nodes(&arena.tree, group, &arena), [art]);
-        assert!(translate_children_targets(&arena.tree, group, &arena).is_empty());
+        assert!(translate_targets(&arena, group).is_empty());
+    }
+
+    fn translate_targets(arena: &Arena, mg_id: NodeIdx) -> Vec<NodeIdx> {
+        let end = arena.tree.subtree_end(mg_id);
+        let mut at = NodeIdx(mg_id.0 + 1);
+        let mut out = Vec::new();
+        while let Some((target, resume)) = next_translate_target(arena, at, end) {
+            out.push(target);
+            at = resume;
+        }
+        out
+    }
+
+    #[test]
+    fn translate_targets_are_the_first_mesh_less_nodes_down_each_branch() {
+        use crate::components::{CompositeData, Node};
+        let node = |kind| Node {
+            kind,
+            ..Node::default()
+        };
+        let mut arena = Arena::new();
+        let mg = arena.insert_child(arena.root(), node(NodeKind::MeshGroup(Box::default())));
+        let part = arena.insert_child(mg, node(NodeKind::Part(Box::default())));
+        let under_part = arena.insert_child(part, node(NodeKind::Group));
+        arena.insert_child(under_part, node(NodeKind::Group));
+        let closed = arena.insert_child(
+            mg,
+            node(NodeKind::Composite(Box::new(CompositeData {
+                propagate_mesh_group: false,
+                ..Default::default()
+            }))),
+        );
+        arena.insert_child(closed, node(NodeKind::Group));
+        let nested = arena.insert_child(mg, node(NodeKind::MeshGroup(Box::default())));
+        arena.insert_child(nested, node(NodeKind::Group));
+        let open = arena.insert_child(
+            mg,
+            node(NodeKind::Composite(Box::new(CompositeData {
+                propagate_mesh_group: true,
+                ..Default::default()
+            }))),
+        );
+        let under_open = arena.insert_child(open, node(NodeKind::Group));
+        let direct = arena.insert_child(mg, node(NodeKind::Group));
+        arena.insert_child(arena.root(), node(NodeKind::Group));
+
+        assert_eq!(
+            translate_targets(&arena, mg),
+            [under_part, under_open, direct]
+        );
     }
 
     #[test]

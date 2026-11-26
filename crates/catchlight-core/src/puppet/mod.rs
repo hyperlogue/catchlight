@@ -719,7 +719,7 @@ impl Puppet {
             let mut related =
                 self.geometry_ancestors(self.arena.mesh_group_node_ids.iter().copied());
             for &group in &self.arena.mesh_group_node_ids {
-                related.extend(self.tree().get_all_descendants(group));
+                related.extend(self.tree().descendants(group));
             }
             for (node, slot) in self.geometry_inputs() {
                 if related.contains(&node) {

@@ -9,7 +9,6 @@ categories.workspace = true
 description = "Core library for catchlight 2.5D character animation"
 
 [dependencies]
-indextree.workspace = true
 glam.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

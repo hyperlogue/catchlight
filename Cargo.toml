@@ -45,7 +45,6 @@ catchlight-wgpu = { path = "crates/catchlight-wgpu", version = "0.4.0" }
 catchlight-bevy = { path = "crates/catchlight-bevy", version = "0.4.0" }
 
 # Data structures
-indextree = "4.7"
 smallvec = { version = "1.15", features = ["union"] }
 bytemuck = "1.25.2"
 
