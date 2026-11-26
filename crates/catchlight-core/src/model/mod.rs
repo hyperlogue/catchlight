@@ -286,13 +286,17 @@ impl ModelWeld {
         let (Some(a), Some(b)) = (model.slots(&self.a), model.slots(&self.b)) else {
             return Vec::new();
         };
-        let find = |slots: &[Slot], id: &SlotId| slots.iter().find(|s| &s.id == id)?.vertex;
+        fn table(slots: &[Slot]) -> HashMap<&SlotId, Option<u32>> {
+            slots.iter().map(|s| (&s.id, s.vertex)).collect()
+        }
+        let (a, b) = (table(a), table(b));
+        let find = |slots: &HashMap<&SlotId, Option<u32>>, id: &SlotId| *slots.get(id)?;
         self.pairs
             .iter()
             .filter_map(|pair| {
                 Some(ModelWeldPair {
-                    a_vert: find(a, &pair.a)?,
-                    b_vert: find(b, &pair.b)?,
+                    a_vert: find(&a, &pair.a)?,
+                    b_vert: find(&b, &pair.b)?,
                     weight: pair.weight,
                 })
             })
