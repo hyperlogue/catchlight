@@ -138,6 +138,55 @@ fn a_loop_wraps_at_any_frame_rate_and_keeps_its_period() {
 }
 
 #[test]
+fn a_released_clip_plays_its_lead_out_once_and_holds_its_last_frame() {
+    let (model, id) = with_param(0.0, 10.0);
+    let mut ramp = clip("Ramp", 1.0 / 30.0, 8, &id, &[(0, 0.0), (7, 7.0)]);
+    ramp.lead_out = Some(6);
+    let mut endless = ramp.clone();
+    endless.name = "Endless".into();
+    endless.lead_out = None;
+    // Both end on frame 7: the lead-out's last frame, and the last frame of
+    // the loop that spans the whole clip.
+    let last = 7.0;
+    for name in ["Ramp", "Endless"] {
+        for hz in [24.0_f32, 30.0, 60.0, 144.0, 1000.0] {
+            let mut puppet = Puppet::new(&model);
+            let mut player = AnimationPlayer::new(vec![ramp.clone(), endless.clone()]);
+            assert!(player.play(name));
+            player.advance(&mut puppet, 0.0);
+            // A period and a half: the loop region is six frames of a
+            // thirtieth of a second, and the clip has wrapped once.
+            for _ in 0..(0.3 * hz).round() as usize {
+                player.advance(&mut puppet, 1.0 / hz);
+            }
+            assert!(player.sample().unwrap().looping);
+            player.release();
+            let mut before = player.sample().unwrap().time;
+            let mut lead_out = false;
+            for _ in 0..hz as usize {
+                player.advance(&mut puppet, 1.0 / hz);
+                let sample = player.sample().unwrap();
+                assert!(!sample.looping, "{name} at {hz} Hz");
+                assert!(
+                    sample.time >= before,
+                    "{name} at {hz} Hz wrapped after release"
+                );
+                before = sample.time;
+                lead_out |= sample.frame > 5.0 && sample.frame < last;
+            }
+            assert!(
+                lead_out || name == "Endless",
+                "{name} at {hz} Hz skipped its lead-out"
+            );
+            let held = player.sample().unwrap();
+            assert_eq!(held.frame, last, "{name} at {hz} Hz");
+            assert_eq!(puppet.param_value_posed(&id), Some(last));
+            assert_eq!(player.playing(), Some(name), "a held clip still plays");
+        }
+    }
+}
+
+#[test]
 fn replaced_clips_keep_the_playing_clip_by_name_from_where_it_was() {
     let (model, id) = with_param(0.0, 10.0);
     let ramp = |name: &str| clip(name, 0.125, 8, &id, &[(0, 0.0), (7, 7.0)]);

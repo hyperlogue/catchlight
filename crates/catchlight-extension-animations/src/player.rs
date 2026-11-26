@@ -28,6 +28,7 @@ pub struct AnimationSample<'a> {
     pub timestep: f32,
     pub time: f32,
     pub frame: f32,
+    /// `false` once [`AnimationPlayer::release`] let the clip run out.
     pub looping: bool,
 }
 
@@ -171,6 +172,15 @@ impl AnimationPlayer {
             looping: true,
         });
         true
+    }
+
+    /// Lets the playing clip run out: at the loop's end playback goes on into
+    /// the lead-out, plays it once and holds the clip's last frame. A clip
+    /// without a lead-out holds the loop's last frame.
+    pub fn release(&mut self) {
+        if let Some(state) = &mut self.state {
+            state.looping = false;
+        }
     }
 
     pub fn stop(&mut self) {

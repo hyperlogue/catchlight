@@ -50,7 +50,8 @@ pub mod codes {
 }
 
 /// A named, timed sequence of values: an optional lead-in played once, then
-/// the loop region between it and an optional lead-out, repeated.
+/// the loop region between it and an optional lead-out, repeated until
+/// [`AnimationPlayer::release`] lets the lead-out play.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Clip {
