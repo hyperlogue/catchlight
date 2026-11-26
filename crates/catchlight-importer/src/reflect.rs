@@ -2,6 +2,7 @@
 //! lower `zsort` in front; catchlight is Y-up with higher `z_order` in front,
 //! and this module is the only place that conversion happens.
 
+use serde::Deserialize;
 use std::collections::HashMap;
 
 use catchlight_core::components::{BlendMode, MaskMode};
@@ -48,18 +49,13 @@ pub(crate) fn flatten(
 }
 
 /// Every field but the positional arrays reads leniently, so an object fails
-/// only on a malformed positional array.
+/// only on a malformed positional array. `children` is not a field, and
+/// deserializing from a borrowed value skips it without descending into it.
 fn parse_node_shallow(value: &serde_json::Value) -> Result<SchemaNode, ImportError> {
     let serde_json::Value::Object(map) = value else {
         return Ok(SchemaNode::default());
     };
-    let mut sanitized = serde_json::Map::with_capacity(map.len());
-    for (k, v) in map {
-        if k != "children" {
-            sanitized.insert(k.clone(), v.clone());
-        }
-    }
-    serde_json::from_value(serde_json::Value::Object(sanitized)).map_err(|e| {
+    SchemaNode::deserialize(value).map_err(|e| {
         ImportError::MalformedPayload(format!(
             "node {:?} (uuid {}): {e}",
             map.get("name").and_then(|n| n.as_str()).unwrap_or_default(),

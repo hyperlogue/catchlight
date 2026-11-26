@@ -5,6 +5,7 @@
 //! `param-<i>` or `param-<i>.x`/`.y`, `tex-<i>`), so two imports of one `.inx`
 //! agree byte for byte.
 
+use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 
 use catchlight_core::extension::{Extension, Payload};
@@ -64,10 +65,10 @@ pub fn from_inx_model(model: &InxModel) -> Result<ClmFile, ImportError> {
         // Every field but the positional arrays reads leniently, so an object
         // fails only on a malformed positional array.
         if !p.is_object() {
-            schema_params.extend(serde_json::from_value(p.clone()).ok());
+            schema_params.extend(SchemaParam::deserialize(p).ok());
             continue;
         }
-        schema_params.push(serde_json::from_value(p.clone()).map_err(|e| {
+        schema_params.push(SchemaParam::deserialize(p).map_err(|e| {
             ImportError::MalformedPayload(format!(
                 "param {:?} (uuid {}): {e}",
                 p.get("name").and_then(|n| n.as_str()).unwrap_or_default(),
@@ -579,7 +580,7 @@ fn convert_animations(json: Option<&serde_json::Value>, refs: &Refs<'_>) -> Vec<
     entries
         .into_iter()
         .filter_map(|(name, v)| {
-            let anim: SchemaAnimation = serde_json::from_value(v.clone()).ok()?;
+            let anim = SchemaAnimation::deserialize(v).ok()?;
             Some(convert_animation(name, &anim, refs))
         })
         .collect()
