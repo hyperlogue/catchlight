@@ -41,6 +41,8 @@ jobs:
         run: |
           nix develop -c cargo test -p catchlight --doc
           nix develop -c cargo check -p catchlight --all-features
+      - name: rustdoc
+        run: RUSTDOCFLAGS="-D warnings" nix develop -c cargo doc --workspace --no-deps --document-private-items --features catchlight-importer/cli
       - name: rustfmt
         run: nix develop -c cargo fmt --all --check
 

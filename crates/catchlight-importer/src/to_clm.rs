@@ -1,5 +1,5 @@
 //! Assembles reflected `.inx` values into the `.clm` a
-//! [`Model`](catchlight_core::Model) is read from.
+//! [`Model`] is read from.
 //!
 //! Ids are minted only here, from flattening position (`root`, `node-<i>`,
 //! `param-<i>` or `param-<i>.x`/`.y`, `tex-<i>`), so two imports of one `.inx`

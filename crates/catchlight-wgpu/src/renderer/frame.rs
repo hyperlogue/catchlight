@@ -36,8 +36,7 @@ impl Submission {
 /// make the submit.
 ///
 /// Recording is the one thing a `Frame` does, and it does it once:
-/// [`Self::render`] / [`Self::render_ext`] take `self` by value and hand back
-/// a [`Recorded`]. A frame that errs is consumed with nothing submitted.
+/// [`Self::render`] takes `self` by value and hands back a [`Recorded`]. A frame that errs is consumed with nothing submitted.
 #[must_use = "a frame draws nothing until render() records it"]
 pub struct Frame<'r> {
     pub(super) renderer: &'r mut WgpuRenderer,

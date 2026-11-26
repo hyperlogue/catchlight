@@ -275,7 +275,7 @@ fn read_darwin(pid: u32) -> Read {
     }))
 }
 
-/// argv[0]: `comm` can name the original executable when argv[0] selects
+/// `argv[0]`: `comm` can name the original executable when `argv[0]` selects
 /// another role. Only ever read for discovery, never stored.
 fn command_name(platform: Option<&str>, pid: u32) -> Option<String> {
     let argv0 = match platform? {

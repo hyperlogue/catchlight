@@ -31,7 +31,7 @@ pub const VISEMES: [&str; 21] = [
 ];
 
 /// The controls every standard viseme sets, in the order of
-/// [`VISEME_VALUES`]' columns.
+/// `VISEME_VALUES`' columns.
 pub const VISEME_CONTROLS: [&str; 7] = [
     "mouth_open",
     "mouth_smile",
