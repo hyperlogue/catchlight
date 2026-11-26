@@ -16,7 +16,7 @@ use catchlight_core::LoadLimits;
 use catchlight_editor_protocol::{default_socket_path, ErrorCode, Reply, Request, RequestId};
 use serde_json::Value;
 
-use super::{carries_bytes, Attachments, Editor, Payload};
+use super::{Attachments, Editor, Payload};
 use crate::http::accepted;
 
 pub(super) const MAX_SOCKET_CONNECTIONS: usize = 64;
@@ -252,7 +252,7 @@ fn answer_line(editor: &Editor, line: &[u8]) -> Reply {
         Some(Value::String(path)) => Some(PathBuf::from(path)),
         Some(_) => return bad("`out` is a path".into()),
     };
-    let wants = carries_bytes(&request.command);
+    let wants = request.command.carries_bytes();
     if wants.is_some_and(|b| b.payload) && out.is_none() {
         return bad(format!(
             "{} answers with bytes and needs an `out` path to write them to",

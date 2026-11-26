@@ -24,6 +24,26 @@ fn send(editor: &Editor, command: Command) -> Reply {
     editor.handle(request(command))
 }
 
+fn status(editor: &Editor, session: SessionId) -> StatusInfo {
+    match send(editor, Command::Status { session }) {
+        Reply::Ok {
+            body: ResponseBody::Status { status },
+            ..
+        } => status,
+        other => panic!("unexpected reply: {other:?}"),
+    }
+}
+
+/// Undo and redo depths.
+fn history(editor: &Editor, session: SessionId) -> (u32, u32) {
+    let status = status(editor, session);
+    (status.undo_steps, status.redo_steps)
+}
+
+fn dirty(editor: &Editor, session: SessionId) -> bool {
+    status(editor, session).dirty
+}
+
 fn ok(reply: Reply) -> (u64, ResponseBody) {
     match reply {
         Reply::Ok {
@@ -165,7 +185,7 @@ fn empty_and_clm_creation_publish_finished_clean_roots_once() {
         received.lock().unwrap().push(event.clone())
     }));
     let empty = create(&editor, None, None, Attachments::none());
-    assert_eq!(editor.history(empty).unwrap(), (0, 0));
+    assert_eq!(history(&editor, empty), (0, 0));
     let model = authored_model();
     let loaded = create(
         &editor,
@@ -176,8 +196,8 @@ fn empty_and_clm_creation_publish_finished_clean_roots_once() {
     assert!(editor
         .with_model(loaded, |loaded| loaded.authored_eq(&model).unwrap())
         .unwrap());
-    assert_eq!(editor.history(loaded).unwrap(), (0, 0));
-    assert!(!editor.is_dirty(loaded).unwrap());
+    assert_eq!(history(&editor, loaded), (0, 0));
+    assert!(!dirty(&editor, loaded));
     assert!(matches!(
         send(
             &editor,
@@ -425,8 +445,8 @@ fn forks_are_independent_models_with_clean_history_and_source_metadata() {
     assert!(editor
         .with_model(fork, |fork| fork.authored_eq(&model).unwrap())
         .unwrap());
-    assert_eq!(editor.history(fork).unwrap(), (0, 0));
-    assert!(!editor.is_dirty(fork).unwrap());
+    assert_eq!(history(&editor, fork), (0, 0));
+    assert!(!dirty(&editor, fork));
     let key = ExtensionKey::new("test.binary").unwrap();
     let mut bytes = Attachments::none();
     bytes.insert("value", vec![9, 8, 7]);
@@ -516,7 +536,7 @@ fn export_returns_the_complete_guarded_model_without_save_side_effects() {
             },
         },
     ));
-    let history = editor.history(session).unwrap();
+    let depths = history(&editor, session);
     let (body, payload) = exported(&editor, session, 1);
     match body {
         ResponseBody::ModelExport {
@@ -541,9 +561,9 @@ fn export_returns_the_complete_guarded_model_without_save_side_effects() {
     assert!(editor
         .with_model(session, |model| model.authored_eq(&exported).unwrap())
         .unwrap());
-    assert_eq!(editor.history(session).unwrap(), history);
+    assert_eq!(history(&editor, session), depths);
     assert_eq!(editor.revision(session), Some(1));
-    assert!(editor.is_dirty(session).unwrap());
+    assert!(dirty(&editor, session));
     let (reply, payload) = editor.handle_with(
         request(Command::ModelExport { session, if_rev: 0 }),
         Attachments::none(),
@@ -596,8 +616,8 @@ fn store_open_and_fork_share_initialization_but_only_open_keeps_a_save_path() {
         ResponseBody::Session { session } => session,
         other => panic!("unexpected open: {other:?}"),
     };
-    assert!(!editor.is_dirty(session).unwrap());
-    assert_eq!(editor.history(session).unwrap(), (0, 0));
+    assert!(!dirty(&editor, session));
+    assert_eq!(history(&editor, session), (0, 0));
     assert!(matches!(
         send(
             &editor,
@@ -671,7 +691,7 @@ fn guarded_structure_installation_is_atomic_undoable_and_preserves_destination()
             .unwrap(),
         2
     );
-    assert_eq!(editor.history(session).unwrap(), (1, 0));
+    assert_eq!(history(&editor, session), (1, 0));
     assert!(matches!(
         install(0),
         Reply::Err {
@@ -687,7 +707,7 @@ fn guarded_structure_installation_is_atomic_undoable_and_preserves_destination()
         }
     ));
     assert_eq!(editor.revision(session), Some(1));
-    assert_eq!(editor.history(session).unwrap(), (1, 0));
+    assert_eq!(history(&editor, session), (1, 0));
     assert_eq!(ok(send(&editor, Command::Undo { session, if_rev: 1 })).0, 2);
     assert_eq!(
         editor

@@ -35,8 +35,6 @@ pub use storage::FileStorage;
 pub use storage::{join_key, key_stem, parent_key, NoStorage, Storage};
 
 use std::collections::HashMap;
-#[cfg(not(target_arch = "wasm32"))]
-use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -316,7 +314,6 @@ struct Session {
     /// Carries the preview pose across navigation, and while a renderer owns
     /// the Puppet outside the session lock.
     pending_preview_pose: Option<Pose>,
-    snapshot: Option<Arc<DocSnapshot>>,
     presence: Option<Presence>,
     review: review::ReviewState,
     review_keeping: review::ReviewKeeping,
@@ -339,7 +336,6 @@ impl Session {
             closed: false,
             puppet: None,
             pending_preview_pose: None,
-            snapshot: None,
             presence: None,
             review: review::ReviewState::default(),
             review_keeping: review::ReviewKeeping::default(),
@@ -693,13 +689,8 @@ impl Editor {
     }
 
     /// `None` if the session is not open.
-    fn rev(&self, id: SessionId) -> Option<u64> {
-        self.with_session(id, |s| Ok(s.rev)).ok()
-    }
-
-    /// To stamp model data coherently, use [`Self::with_model_revision`].
     pub fn revision(&self, id: SessionId) -> Option<u64> {
-        self.rev(id)
+        self.with_session(id, |s| Ok(s.rev)).ok()
     }
 
     /// The callback runs on the command's thread with no editor lock held.
@@ -761,26 +752,13 @@ impl Editor {
             .ok_or(EditorError::NoSession(id))
     }
 
-    /// The caller confirms with [`Self::mark_saved`] once the bytes actually
-    /// land; a failed download must not clear the dirty flag.
+    /// Leaves the dirty flag alone: the bytes have landed nowhere yet.
     pub fn save_bytes(&self, id: SessionId) -> Result<Vec<u8>, EditorError> {
         self.with_session(id, |s| Ok(s.model.to_clm_bytes()?))
     }
 
-    pub fn mark_saved(&self, id: SessionId) -> Result<(), EditorError> {
-        let rev = self.with_session(id, |s| {
-            s.saved_rev = s.rev;
-            Ok(s.rev)
-        })?;
-        self.notify_model_changed(id, rev);
-        Ok(())
-    }
-
-    pub fn history(&self, id: SessionId) -> Result<(usize, usize), EditorError> {
-        self.with_session(id, |s| Ok(s.history.depths()))
-    }
-
-    pub fn is_dirty(&self, id: SessionId) -> Result<bool, EditorError> {
+    #[cfg(test)]
+    fn is_dirty(&self, id: SessionId) -> Result<bool, EditorError> {
         self.with_session(id, |s| Ok(s.dirty()))
     }
 
@@ -792,15 +770,8 @@ impl Editor {
         self.with_session(id, |s| Ok(f(&s.model)))
     }
 
-    pub fn with_model_revision<R>(
-        &self,
-        id: SessionId,
-        f: impl FnOnce(&Model, u64) -> R,
-    ) -> Result<R, EditorError> {
-        self.with_session(id, |s| Ok(f(&s.model, s.rev)))
-    }
-
-    pub fn add_texture_bytes(
+    #[cfg(test)]
+    fn add_texture_bytes(
         &self,
         id: SessionId,
         part: &NodeId,
@@ -820,6 +791,15 @@ impl Editor {
             )?;
             Ok(added)
         })
+    }
+
+    #[cfg(test)]
+    fn with_model_revision<R>(
+        &self,
+        id: SessionId,
+        f: impl FnOnce(&Model, u64) -> R,
+    ) -> Result<R, EditorError> {
+        self.with_session(id, |s| Ok(f(&s.model, s.rev)))
     }
 
     fn with_session<R>(
@@ -845,6 +825,7 @@ impl Editor {
         result.map(|value| Captured::at(value, rev))
     }
 
+    #[cfg(test)]
     fn edit_session<R>(
         &self,
         id: SessionId,
@@ -883,7 +864,6 @@ impl Editor {
             let result = match published {
                 Ok((value, Some(next))) => {
                     session.rev = next;
-                    session.snapshot = None;
                     Ok(Captured::at(value, next))
                 }
                 Ok((value, None)) => {
@@ -934,7 +914,6 @@ impl Editor {
                 if let Some(puppet) = session.puppet.take() {
                     session.pending_preview_pose = Some(puppet.pose());
                 }
-                session.snapshot = None;
             }
             let Session { review, model, .. } = &mut *session;
             let reviewed = review.follow_model(model) || missing != review.missing(model);
@@ -952,43 +931,6 @@ impl Editor {
             self.notify(Event::ReviewChanged { session: id });
         }
         Ok(captured)
-    }
-
-    pub fn doc_snapshot(&self, id: SessionId) -> Option<Arc<DocSnapshot>> {
-        let session = self.session(id).ok()?;
-        let mut session = lock(&session);
-        session.ensure_open(id).ok()?;
-        if let Some(cached) = &session.snapshot {
-            if cached.rev == session.rev {
-                return Some(cached.clone());
-            }
-        }
-        let rev = session.rev;
-        let model = &session.model;
-        // A session always holds a complete model: the editor's load path
-        // reads one, and `Model::new` makes one.
-        let root = model.root()?;
-        let snap = Arc::new(DocSnapshot {
-            rev,
-            root: query::build_tree(model, root),
-            params: query::param_infos(model),
-        });
-        session.snapshot = Some(snap.clone());
-        Some(snap)
-    }
-
-    pub fn set_presence(&self, id: SessionId, presence: Presence) -> bool {
-        self.with_session(id, |s| {
-            s.presence = Some(presence);
-            Ok(())
-        })
-        .is_ok()
-    }
-
-    pub fn presence(&self, id: SessionId) -> Option<Presence> {
-        self.with_session(id, |s| Ok(s.presence.clone()))
-            .ok()
-            .flatten()
     }
 
     pub fn with_puppet<R>(
@@ -2283,14 +2225,6 @@ fn joins(weld: &ModelWeld, a: &NodeId, b: &NodeId) -> bool {
     (weld.a() == a && weld.b() == b) || (weld.a() == b && weld.b() == a)
 }
 
-/// Refs are stable for the session's lifetime.
-#[derive(Debug, Clone)]
-pub struct DocSnapshot {
-    pub rev: u64,
-    pub root: TreeNode,
-    pub params: Vec<ParamInfo>,
-}
-
 fn default_name(kind: NodeKindArg) -> String {
     match kind {
         NodeKindArg::MotionResponse => "MotionResponse",
@@ -2505,10 +2439,6 @@ fn check_attachment_budget(attachments: &Attachments) -> Result<(), EditorError>
     Ok(())
 }
 
-pub fn carries_bytes(cmd: &Command) -> Option<&'static Bytes> {
-    cmd.carries_bytes()
-}
-
 fn encoding_from_path(path: &str) -> CoreTextureEncoding {
     if path.to_ascii_lowercase().ends_with(".tga") {
         CoreTextureEncoding::Tga
@@ -2519,14 +2449,6 @@ fn encoding_from_path(path: &str) -> CoreTextureEncoding {
 
 fn image_dims(bytes: &[u8], encoding: CoreTextureEncoding) -> Result<(u32, u32), EditorError> {
     catchlight_editor_core::image_dims_as(bytes, encoding).map_err(EditorError::Image)
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub fn file_stem(path: &Path) -> String {
-    path.file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("untitled")
-        .to_string()
 }
 
 #[cfg(test)]
@@ -2594,7 +2516,7 @@ mod tests {
 
         // Root owns `/`; no test runs as root.
         if rustix::process::getuid().as_raw() != 0 {
-            let err = ensure_private_dir(Path::new("/")).unwrap_err();
+            let err = ensure_private_dir(std::path::Path::new("/")).unwrap_err();
             assert!(err.to_string().contains("another user"), "{err}");
         }
     }
@@ -3129,7 +3051,7 @@ mod tests {
             },
         ))));
         let part = new_part(&ed, s, 2);
-        let rev = ed.doc_snapshot(s).expect("a snapshot").rev;
+        let rev = ed.revision(s).expect("an open session");
 
         let (tex, dropped) = ed
             .add_texture_bytes(s, &part, CoreTextureEncoding::Png, one_pixel_png([9; 4]))
@@ -3146,7 +3068,7 @@ mod tests {
             Some(tex),
         );
         assert_eq!(
-            ed.doc_snapshot(s).expect("a snapshot").rev,
+            ed.revision(s).expect("an open session"),
             rev + 1,
             "one edit, one revision"
         );
@@ -3338,37 +3260,6 @@ mod tests {
     }
 
     #[test]
-    fn doc_snapshot_is_rev_gated() {
-        let ed = Editor::new();
-        let s = session_of(body(ed.handle(req(
-            1,
-            Command::SessionNew {
-                name: None,
-                source: None,
-            },
-        ))));
-        let a = ed.doc_snapshot(s).unwrap();
-        let b = ed.doc_snapshot(s).unwrap();
-        assert!(
-            Arc::ptr_eq(&a, &b),
-            "unchanged session returns the cached snapshot"
-        );
-        ed.handle(req(
-            2,
-            Command::NodeAdd {
-                session: s,
-                parent: a.root.id.clone(),
-                kind: NodeKindArg::Group,
-                name: None,
-                node: None,
-            },
-        ));
-        let c = ed.doc_snapshot(s).unwrap();
-        assert!(c.rev > a.rev);
-        assert_eq!(c.root.children.len(), 1);
-    }
-
-    #[test]
     fn presence_is_off_the_model_path() {
         let ed = Editor::new();
         let s = session_of(body(ed.handle(req(
@@ -3378,7 +3269,6 @@ mod tests {
                 source: None,
             },
         ))));
-        let snap0 = ed.doc_snapshot(s).unwrap();
         let presence = Presence {
             pose: vec![ParamPose {
                 param: ParamId::new("x").unwrap(),
@@ -3397,9 +3287,6 @@ mod tests {
             )),
             Reply::Ok { .. }
         ));
-        // presence must not change the model: same cached snapshot Arc.
-        let snap1 = ed.doc_snapshot(s).unwrap();
-        assert!(Arc::ptr_eq(&snap0, &snap1));
         match body(ed.handle(req(3, Command::PresenceGet { session: s }))) {
             ResponseBody::Presence { presence: Some(p) } => {
                 assert_eq!(p.pose[0].param.as_str(), "x")

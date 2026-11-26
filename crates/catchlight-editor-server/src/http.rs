@@ -28,7 +28,7 @@ use percent_encoding::percent_decode_str;
 use tungstenite::handshake::derive_accept_key;
 use tungstenite::protocol::{Message, Role, WebSocket, WebSocketConfig};
 
-use crate::{carries_bytes, Attachments, Editor, EditorError, Payload};
+use crate::{Attachments, Editor, EditorError, Payload};
 
 /// Same cap as one Unix-socket line.
 const MAX_REQUEST_BYTES: usize = 1024 * 1024;
@@ -859,7 +859,7 @@ fn timed_out(err: &io::Error) -> bool {
 /// everything queued behind it on this channel.
 fn answer(editor: &Editor, frame: &str) -> String {
     let reply = match serde_json::from_str::<Request>(frame) {
-        Ok(request) if carries_bytes(&request.command).is_some() => Reply::Err {
+        Ok(request) if request.command.carries_bytes().is_some() => Reply::Err {
             op_index: None,
             limit: None,
             id: request.id,

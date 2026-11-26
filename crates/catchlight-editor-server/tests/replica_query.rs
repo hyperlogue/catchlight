@@ -5,13 +5,13 @@
 use std::collections::BTreeSet;
 use std::io::Cursor;
 
-use catchlight_core::formats::clm::TextureEncoding;
 use catchlight_editor_protocol::{
     BindingCellValue, BindingCellWrite, BindingInfo, BindingTarget, BlendMode, Command,
     CommandKind, ErrorCode, GeometryField, Interpolate, NodeId, NodeKind, NodeKindArg, NodePatch,
-    ParamId, Presence, Reply, Request, ResponseBody, SessionId, SlotId, SlotPair, COMMAND_KINDS,
+    ParamId, Presence, Reply, Request, ResponseBody, SessionId, SlotId, SlotPair, TextureEncoding,
+    COMMAND_KINDS,
 };
-use catchlight_editor_server::{replica_query, replica_reply, Editor};
+use catchlight_editor_server::{replica_query, replica_reply, Attachments, Editor};
 
 fn ok(reply: Reply) -> ResponseBody {
     match reply {
@@ -106,10 +106,21 @@ impl Fixture {
             ],
         });
 
-        fixture
-            .editor
-            .add_texture_bytes(session, &body_part, TextureEncoding::Png, png())
-            .expect("the part takes a texture");
+        let mut texture = Attachments::none();
+        texture.insert("texture", png());
+        let (reply, _) = fixture.editor.handle_with(
+            Request {
+                id: fixture.id(),
+                command: Command::TextureAdd {
+                    session,
+                    node: body_part.clone(),
+                    encoding: TextureEncoding::Png,
+                    texture: None,
+                },
+            },
+            texture,
+        );
+        ok(reply);
 
         // Two parts, welded. `left` is filled on both ends; `right` is left
         // empty on the skirt, so slot inspection has an authored hole.

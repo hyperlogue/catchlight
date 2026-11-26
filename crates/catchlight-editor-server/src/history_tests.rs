@@ -100,7 +100,12 @@ fn history_wire_navigation_preserves_branches_and_uses_fresh_guards() {
     );
     assert_eq!(before.entries[1].revisions, [1, 3]);
     assert_eq!(before.entries[2].revisions, [2, 5]);
-    assert_eq!(editor.history(session).unwrap(), (2, 0));
+    assert_eq!(
+        editor
+            .with_session(session, |s| Ok(s.history.depths()))
+            .unwrap(),
+        (2, 0)
+    );
     assert!(matches!(
         command(
             &editor,

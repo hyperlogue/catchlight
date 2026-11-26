@@ -14,6 +14,20 @@ use std::sync::{
     Arc,
 };
 
+/// Undo and redo depths, as the session reports them.
+fn history(editor: &Editor, session: SessionId) -> (u32, u32) {
+    match editor.handle(Request {
+        id: 0,
+        command: Command::Status { session },
+    }) {
+        Reply::Ok {
+            body: ResponseBody::Status { status },
+            ..
+        } => (status.undo_steps, status.redo_steps),
+        other => panic!("unexpected reply: {other:?}"),
+    }
+}
+
 fn node(s: &str) -> NodeId {
     NodeId::new(s).unwrap()
 }
@@ -160,7 +174,7 @@ fn validation_is_inert_and_changed_batch_publishes_once() {
     ));
     assert_eq!(rev, 1);
     assert!(matches!(body,ResponseBody::EditResults {changed:true,results} if results.len()==2));
-    assert_eq!(editor.history(session).unwrap(), (1, 0));
+    assert_eq!(history(&editor, session), (1, 0));
     assert_eq!(events.load(Ordering::SeqCst), 1);
     ok(send(&editor, Command::Undo { session, if_rev: 1 }));
     assert!(snapshot(&editor, session).authored_eq(&before).unwrap());
@@ -214,7 +228,7 @@ fn final_content_noop_and_failed_later_operation_publish_nothing() {
         }
     ));
     assert!(snapshot(&editor, session).authored_eq(&before).unwrap());
-    assert_eq!(editor.history(session).unwrap(), (0, 0));
+    assert_eq!(history(&editor, session), (0, 0));
     assert!(matches!(
         send(
             &editor,
@@ -554,8 +568,8 @@ fn exact_writes_have_the_same_authored_result_standalone_and_batched() {
     assert!(snapshot(&editor, one)
         .authored_eq(&snapshot(&editor, batch))
         .unwrap());
-    assert_eq!(editor.history(one).unwrap(), (2, 0));
-    assert_eq!(editor.history(batch).unwrap(), (1, 0));
+    assert_eq!(history(&editor, one), (2, 0));
+    assert_eq!(history(&editor, batch), (1, 0));
 }
 
 #[test]
@@ -620,7 +634,7 @@ fn geometry_pages_are_isolated_from_preview_and_reads_enforce_their_revision() {
         serde_json::from_value(structure).unwrap();
     assert_eq!(loaded.bindings[0].key_positions, vec![vec![0., 0.5, 1.]]);
     assert!(snapshot(&editor, session).authored_eq(&before).unwrap());
-    assert_eq!(editor.history(session).unwrap(), (0, 0));
+    assert_eq!(history(&editor, session), (0, 0));
     ok(send(
         &editor,
         Command::EditApply {
@@ -657,7 +671,7 @@ fn direct_callers_share_request_and_operation_limits_without_publishing() {
         matches!(send(&editor, Command::EditApply { session, if_rev: 0, edits: vec![scalar(2.0); 1025] }), Reply::Err { code: ErrorCode::LimitExceeded, limit: Some(LimitInfo { resource, limit: 1024, requested: 1025 }), .. } if resource == "edit_ops")
     );
     assert_eq!(editor.revision(session), Some(0));
-    assert_eq!(editor.history(session).unwrap(), (0, 0));
+    assert_eq!(history(&editor, session), (0, 0));
 }
 
 #[test]

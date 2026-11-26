@@ -8,6 +8,20 @@ use catchlight_editor_protocol::{
 };
 use catchlight_editor_server::{Attachments, Editor};
 
+/// Undo and redo depths, as the session reports them.
+fn history(editor: &Editor, session: SessionId) -> (u32, u32) {
+    match editor.handle(Request {
+        id: 0,
+        command: Command::Status { session },
+    }) {
+        Reply::Ok {
+            body: ResponseBody::Status { status },
+            ..
+        } => (status.undo_steps, status.redo_steps),
+        other => panic!("unexpected reply: {other:?}"),
+    }
+}
+
 fn body(ed: &Editor, id: u64, command: Command) -> ResponseBody {
     match ed.handle(Request { id, command }) {
         Reply::Ok { body, .. } => body,
@@ -48,7 +62,7 @@ fn a_hundred_drag_events_and_one_commit_leave_one_undo_entry() {
         other => panic!("{other:?}"),
     };
     let rev_before = status(1).rev;
-    assert_eq!(ed.history(session).unwrap(), (0, 0));
+    assert_eq!(history(&ed, session), (0, 0));
 
     for i in 0..100u32 {
         let nudge = i as f32 * 0.01;
@@ -70,7 +84,7 @@ fn a_hundred_drag_events_and_one_commit_leave_one_undo_entry() {
     }
 
     assert_eq!(
-        ed.history(session).unwrap(),
+        history(&ed, session),
         (0, 0),
         "a drag must not snapshot the model"
     );
@@ -104,7 +118,7 @@ fn a_hundred_drag_events_and_one_commit_leave_one_undo_entry() {
     ));
 
     assert_eq!(
-        ed.history(session).unwrap(),
+        history(&ed, session),
         (1, 0),
         "the commit is exactly one undo entry"
     );
@@ -121,7 +135,7 @@ fn a_hundred_drag_events_and_one_commit_leave_one_undo_entry() {
         }),
         Reply::Ok { .. }
     ));
-    assert_eq!(ed.history(session).unwrap(), (0, 1));
+    assert_eq!(history(&ed, session), (0, 1));
     assert!(matches!(
         ed.handle(Request {
             id: 8,
