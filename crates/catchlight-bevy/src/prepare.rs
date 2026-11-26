@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::Arc;
 
 use bevy::prelude::*;
 use bevy::render::renderer::{RenderDevice, RenderQueue};
@@ -13,26 +13,27 @@ use catchlight_wgpu::{
 use crate::asset::CatchlightModel;
 use crate::extract::{ExtractedCatchlightCamera, ExtractedPuppet};
 
-/// Mutex-guarded because render graph nodes have no mutable resource access.
+/// The render world's caches, renderers and per-puppet state.
 #[derive(Resource, Default)]
 pub struct CatchlightRenderState {
-    pub(crate) inner: Mutex<CatchlightRenderInner>,
+    pub(crate) gpus: HashMap<ModelKey, ModelGpu>,
+    pub(crate) puppets: HashMap<PuppetKey, PuppetGpu>,
+    pub(crate) formats: HashMap<wgpu::TextureFormat, FormatResources>,
+    pub(crate) size: (u32, u32),
+    pub(crate) options: PrepareOptions,
+    pub(crate) missing_format_warned: bool,
+    pub(crate) failures: PrepareFailures,
+    live_scratch: HashSet<Entity>,
+    live_models: HashSet<ModelKey>,
 }
 
 impl CatchlightRenderState {
-    /// A panic mid-frame poisons the lock; the next frame takes the state as
-    /// it stands rather than panicking every frame after.
-    pub(crate) fn lock(&self) -> MutexGuard<'_, CatchlightRenderInner> {
-        self.inner.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
     /// Summed top-level GPU pass time in nanoseconds, lagging 2-3 frames.
     /// Call from a render-world system in `Cleanup`, after the graph submits.
-    pub fn drain_gpu_frame_ns(&self) -> Option<u64> {
-        let mut inner = self.lock();
+    pub fn drain_gpu_frame_ns(&mut self) -> Option<u64> {
         let mut total_ns: u64 = 0;
         let mut got_any = false;
-        for gpu in inner.gpus.values_mut() {
+        for gpu in self.gpus.values_mut() {
             if let Some(frame) = gpu.renderer.process_gpu_frame() {
                 got_any = true;
                 let frame_ns: u64 = frame
@@ -48,9 +49,7 @@ impl CatchlightRenderState {
 
     /// Keyed by the paired `RenderEntity`, not the main-world entity.
     pub fn collected_drawables(&self, render_entity: Entity) -> Option<RenderList> {
-        let inner = self.lock();
-        inner
-            .puppets
+        self.puppets
             .iter()
             .find(|(key, puppet)| key.entity == render_entity && puppet.collected)
             .map(|(_, puppet)| puppet.render_list.clone())
@@ -59,32 +58,33 @@ impl CatchlightRenderState {
     /// The whole model's tally, since a renderer is shared by every puppet of
     /// one model. Keyed by the paired `RenderEntity`.
     pub fn frame_stats(&self, render_entity: Entity) -> Option<FrameStats> {
-        let inner = self.lock();
-        let puppet = inner
-            .puppets
-            .iter()
-            .find(|(key, _)| key.entity == render_entity)
-            .map(|(_, puppet)| puppet)?;
-        Some(inner.gpus.get(&puppet.model)?.renderer.frame_stats())
+        Some(self.gpu_of(render_entity)?.renderer.frame_stats())
     }
 
     #[doc(hidden)]
     pub fn camera_views_issued(&self, render_entity: Entity) -> Option<u32> {
-        let inner = self.lock();
-        let puppet = inner
+        Some(self.gpu_of(render_entity)?.submission.views_issued())
+    }
+
+    pub fn resident_caches(&self) -> usize {
+        self.gpus.len()
+    }
+
+    pub fn resident_puppets(&self) -> usize {
+        self.puppets.len()
+    }
+
+    fn gpu_of(&self, render_entity: Entity) -> Option<&ModelGpu> {
+        let puppet = self
             .puppets
             .iter()
             .find(|(key, _)| key.entity == render_entity)
             .map(|(_, puppet)| puppet)?;
-        Some(inner.gpus.get(&puppet.model)?.submission.views_issued())
+        self.gpus.get(&puppet.model)
     }
 
-    pub fn resident_caches(&self) -> usize {
-        self.lock().gpus.len()
-    }
-
-    pub fn resident_puppets(&self) -> usize {
-        self.lock().puppets.len()
+    pub(crate) fn formats(&self) -> Vec<wgpu::TextureFormat> {
+        self.formats.keys().copied().collect()
     }
 }
 
@@ -202,25 +202,6 @@ fn unique_formats(
     unique
 }
 
-#[derive(Default)]
-pub(crate) struct CatchlightRenderInner {
-    pub gpus: HashMap<ModelKey, ModelGpu>,
-    pub puppets: HashMap<PuppetKey, PuppetGpu>,
-    pub(crate) formats: HashMap<wgpu::TextureFormat, FormatResources>,
-    pub size: (u32, u32),
-    pub(crate) options: PrepareOptions,
-    pub(crate) missing_format_warned: bool,
-    pub(crate) failures: PrepareFailures,
-    live_scratch: HashSet<Entity>,
-    live_models: HashSet<ModelKey>,
-}
-
-impl CatchlightRenderInner {
-    pub(crate) fn formats(&self) -> Vec<wgpu::TextureFormat> {
-        self.formats.keys().copied().collect()
-    }
-}
-
 fn release(renderer: &mut WgpuRenderer, set: DeformSet) {
     if let Err(error) = renderer.release_deform_set(set) {
         tracing::error!("catchlight: releasing a deform set failed: {error}");
@@ -232,14 +213,14 @@ fn release(renderer: &mut WgpuRenderer, set: DeformSet) {
 pub(crate) fn prepare_puppets(
     device: Res<RenderDevice>,
     queue: Res<RenderQueue>,
-    state: Res<CatchlightRenderState>,
+    mut state: ResMut<CatchlightRenderState>,
     extracted: Query<(Entity, &ExtractedPuppet)>,
     views: Query<&ViewTarget, With<ExtractedCatchlightCamera>>,
 ) {
-    let mut inner = state.lock();
-    let options = inner.options;
+    let state = &mut *state;
+    let options = state.options;
 
-    for resources in inner.formats.values_mut() {
+    for resources in state.formats.values_mut() {
         let format = resources.pipelines.surface_format;
         resources.targets.retain(|entity, _| {
             views
@@ -252,7 +233,7 @@ pub(crate) fn prepare_puppets(
     let pipelines: Vec<_> = view_formats
         .iter()
         .map(|&format| {
-            let pipelines = format_resources(&mut inner.formats, format, device.wgpu_device())
+            let pipelines = format_resources(&mut state.formats, format, device.wgpu_device())
                 .pipelines
                 .clone();
             (format, pipelines)
@@ -265,12 +246,12 @@ pub(crate) fn prepare_puppets(
                 model: ex.model_id,
                 format: *format,
             };
-            let CatchlightRenderInner {
+            let CatchlightRenderState {
                 gpus,
                 puppets,
                 failures,
                 ..
-            } = &mut *inner;
+            } = &mut *state;
             let model_gpu = match gpus.entry(model_key) {
                 std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
                 std::collections::hash_map::Entry::Vacant(entry) => {
@@ -349,14 +330,14 @@ pub(crate) fn prepare_puppets(
         }
     }
 
-    let CatchlightRenderInner {
+    let CatchlightRenderState {
         gpus,
         puppets,
         live_scratch,
         live_models,
         failures,
         ..
-    } = &mut *inner;
+    } = &mut *state;
     live_scratch.clear();
     live_scratch.extend(extracted.iter().map(|(e, _)| e));
     live_models.clear();

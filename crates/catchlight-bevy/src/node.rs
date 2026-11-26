@@ -6,10 +6,11 @@ use bevy::render::{
 };
 
 use crate::extract::{ExtractedCatchlightCamera, ExtractedPuppet};
-use crate::prepare::{CatchlightRenderInner, CatchlightRenderState, ModelGpu, ModelKey};
+use crate::prepare::{CatchlightRenderState, ModelGpu, ModelKey};
 
 pub(crate) fn catchlight_2d_pass(
-    world: &World,
+    mut state: ResMut<CatchlightRenderState>,
+    extracted: Query<&ExtractedPuppet>,
     view: ViewQuery<(
         Entity,
         &'static ExtractedCamera,
@@ -20,8 +21,6 @@ pub(crate) fn catchlight_2d_pass(
     mut render_context: RenderContext,
 ) {
     let (view_entity, camera, view, target, _marked) = view.into_inner();
-    let state_res = world.resource::<CatchlightRenderState>();
-    let mut guard = state_res.lock();
 
     // 2D cameras leave clip_from_world None; bevy derives it the same way.
     let view_proj = view
@@ -31,21 +30,21 @@ pub(crate) fn catchlight_2d_pass(
     // Per view, not per window: render-to-texture cameras have their own size.
     let (w, h) = camera
         .physical_target_size
-        .map_or(guard.size, |s| (s.x.max(1), s.y.max(1)));
+        .map_or(state.size, |s| (s.x.max(1), s.y.max(1)));
     if w == 0 || h == 0 {
         return;
     }
 
     let view_format = target.main_texture_format();
 
-    let CatchlightRenderInner {
+    let CatchlightRenderState {
         gpus,
         puppets,
         formats,
         size,
         missing_format_warned,
         ..
-    } = &mut *guard;
+    } = &mut *state;
 
     let Some(res) = formats.get_mut(&view_format) else {
         if !*missing_format_warned {
@@ -72,7 +71,7 @@ pub(crate) fn catchlight_2d_pass(
             if key.format != view_format || !puppet.collected {
                 return None;
             }
-            let ex = world.get::<ExtractedPuppet>(key.entity)?;
+            let ex = extracted.get(key.entity).ok()?;
             ex.visible.then_some((puppet.model, ex.z, key.entity))
         })
         .collect();

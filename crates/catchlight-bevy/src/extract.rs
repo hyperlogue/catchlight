@@ -7,7 +7,7 @@ use catchlight_core::{Model, Puppet};
 use crate::asset::CatchlightModel;
 use crate::components::{CatchlightCamera, CatchlightPuppet};
 use crate::plugin::CatchlightSettings;
-use crate::prepare::{CatchlightRenderInner, CatchlightRenderState, ModelGpu, PuppetKey};
+use crate::prepare::{CatchlightRenderState, ModelGpu, PuppetKey};
 
 /// Render-world half of a `CatchlightPuppet`, retained across frames. `pub`
 /// only because `SyncComponent::Target` names it; the module is private.
@@ -29,7 +29,7 @@ impl bevy::render::sync_component::SyncComponent for CatchlightPuppet {
 pub(crate) fn extract_puppets(
     mut commands: Commands,
     mut existing: Query<&mut ExtractedPuppet>,
-    state: Res<CatchlightRenderState>,
+    mut state: ResMut<CatchlightRenderState>,
     settings: Extract<Res<CatchlightSettings>>,
     models: Extract<Res<Assets<CatchlightModel>>>,
     query: Extract<
@@ -41,10 +41,10 @@ pub(crate) fn extract_puppets(
         )>,
     >,
 ) {
-    let mut inner = state.lock();
-    inner.options = settings.prepare;
-    let formats = inner.formats();
-    reprepare_replaced(&mut inner, &models);
+    let state = &mut *state;
+    state.options = settings.prepare;
+    let formats = state.formats();
+    reprepare_replaced(state, &models);
 
     for (puppet_component, transform, visibility, render_entity) in query.iter() {
         let Some(puppet) = puppet_component.puppet() else {
@@ -61,7 +61,7 @@ pub(crate) fn extract_puppets(
                     entity: render_entity.id(),
                     format: *format,
                 };
-                let CatchlightRenderInner { gpus, puppets, .. } = &mut *inner;
+                let CatchlightRenderState { gpus, puppets, .. } = &mut *state;
                 let Some(state) = puppets.get_mut(&key) else {
                     continue;
                 };
@@ -118,14 +118,14 @@ pub(crate) fn extract_puppets(
 
 /// Re-prepares, on the same renderer and deform sets, each cache whose asset
 /// now holds a different model, so a hot reload draws in the frame it lands.
-fn reprepare_replaced(inner: &mut CatchlightRenderInner, models: &Assets<CatchlightModel>) {
-    let CatchlightRenderInner {
+fn reprepare_replaced(state: &mut CatchlightRenderState, models: &Assets<CatchlightModel>) {
+    let CatchlightRenderState {
         gpus,
         puppets,
         options,
         failures,
         ..
-    } = inner;
+    } = state;
     for (key, gpu) in gpus.iter_mut() {
         let Some(asset) = models.get(key.model) else {
             continue;
