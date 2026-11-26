@@ -213,12 +213,6 @@ pub enum Error {
         name: String,
         nearest: Option<&'static str>,
     },
-    #[error("extension {key:?} would carry {size} bytes, over the {max}-byte cap")]
-    ExtensionTooLarge {
-        key: String,
-        size: usize,
-        max: usize,
-    },
     /// Every in-memory edit names an already-checked node, so this is a bug.
     #[error("editing the model in memory failed: {0}")]
     Model(#[from] ModelError),

@@ -8,7 +8,6 @@ use std::sync::Arc;
 
 use catchlight_core::formats::clm::{
     self as clm, ClmExtension, ClmExtensionBlob, ClmExtensionMarker, ClmFile, ClmStructure,
-    MAX_EXTENSION_BYTES, MAX_EXTENSION_JSON_BYTES,
 };
 use catchlight_core::id::ExtensionKey;
 use catchlight_core::{ExtensionValue, InstallError, Model, ModelError};
@@ -72,6 +71,22 @@ fn every_fixture_carries_both_kinds_through_a_save() {
         let second = read.to_clm_bytes().unwrap();
         assert_eq!(first, second, "{name}: save->save is not a no-op");
     }
+}
+
+#[test]
+fn values_of_several_megabytes_survive_a_save() {
+    let mut model = Model::new();
+    let data: Vec<u8> = (0..4 * 1024 * 1024).map(|i| i as u8).collect();
+    model
+        .set_extension(key("acme.atlas"), ExtensionValue::Bytes(Arc::from(data)))
+        .unwrap();
+    let text = serde_json::Value::String("a".repeat(4 * 1024 * 1024));
+    model
+        .set_extension(key("acme.notes"), ExtensionValue::Json(text))
+        .unwrap();
+
+    let read = Model::from_clm_bytes(&model.to_clm_bytes().unwrap()).unwrap();
+    assert_eq!(read.extensions(), model.extensions());
 }
 
 #[test]
@@ -140,56 +155,6 @@ fn a_reserved_key_is_refused_to_an_author_and_accepted_from_a_file() {
     })
     .expect("a reserved key loads");
     assert!(read.extensions().contains_key(&reserved));
-}
-
-#[test]
-fn a_byte_value_over_the_cap_is_refused() {
-    let mut model = Model::new();
-    let too_big = vec![0u8; MAX_EXTENSION_BYTES + 1];
-    let err = model
-        .set_extension(key("acme.huge"), ExtensionValue::Bytes(Arc::from(too_big)))
-        .unwrap_err();
-    assert!(
-        matches!(&err, ModelError::ExtensionTooLarge { key, .. } if key == "acme.huge"),
-        "{err}"
-    );
-}
-
-/// Compact JSON text exactly `len` bytes long, quotes included.
-fn json_of_len(len: usize) -> serde_json::Value {
-    serde_json::Value::String("a".repeat(len - 2))
-}
-
-#[test]
-fn a_json_value_over_the_cap_is_refused() {
-    let mut model = Model::new();
-    model
-        .set_extension(
-            key("acme.note"),
-            ExtensionValue::Json(json_of_len(MAX_EXTENSION_JSON_BYTES)),
-        )
-        .expect("a value exactly at the cap");
-
-    let err = model
-        .set_extension(
-            key("acme.huge"),
-            ExtensionValue::Json(json_of_len(MAX_EXTENSION_JSON_BYTES + 1)),
-        )
-        .unwrap_err();
-    assert!(
-        matches!(
-            &err,
-            ModelError::ExtensionTooLarge { key, size, max }
-                if key == "acme.huge"
-                    && *size == MAX_EXTENSION_JSON_BYTES + 1
-                    && *max == MAX_EXTENSION_JSON_BYTES
-        ),
-        "{err}"
-    );
-    assert!(
-        model.extensions().get(&key("acme.huge")).is_none(),
-        "a refused value is not set"
-    );
 }
 
 fn root_structure() -> ClmStructure {
@@ -273,64 +238,6 @@ fn a_size_or_a_hash_that_disagrees_with_the_marker_is_refused() {
     assert!(matches!(
         refusal(&doc, &[blob("acme.thumb", b"abd")]),
         clm::ClmError::ExtensionHashMismatch { key } if key == "acme.thumb"
-    ));
-}
-
-#[test]
-fn a_byte_value_over_the_cap_is_refused_on_the_way_in() {
-    let big = vec![7u8; MAX_EXTENSION_BYTES + 1];
-    let doc = with_extensions(vec![(key("acme.huge"), marker(&big))]);
-    assert!(matches!(
-        refusal(&doc, &[blob("acme.huge", &big)]),
-        clm::ClmError::ExtensionTooLarge { key, .. } if key == "acme.huge"
-    ));
-}
-
-#[test]
-fn a_json_value_over_the_cap_is_refused_on_the_way_in_and_out() {
-    let at_cap = with_extensions(vec![(
-        key("acme.note"),
-        ClmExtension::Json(json_of_len(MAX_EXTENSION_JSON_BYTES)),
-    )]);
-    clm::check_extensions(&at_cap, &[]).expect("a value exactly at the cap");
-
-    let over = with_extensions(vec![(
-        key("acme.huge"),
-        ClmExtension::Json(json_of_len(MAX_EXTENSION_JSON_BYTES + 1)),
-    )]);
-    assert!(matches!(
-        refusal(&over, &[]),
-        clm::ClmError::ExtensionTooLarge { key, size, max }
-            if key == "acme.huge"
-                && size == MAX_EXTENSION_JSON_BYTES + 1
-                && max == MAX_EXTENSION_JSON_BYTES
-    ));
-    assert!(matches!(
-        clm::encode(&over, &[], &[]).unwrap_err(),
-        clm::ClmError::ExtensionTooLarge { .. }
-    ));
-
-    // Written straight to CBOR, past `encode`'s own check.
-    let mut structure = Vec::new();
-    ciborium::into_writer(&over, &mut structure).unwrap();
-    let bytes = catchlight_core::formats::container::write(
-        &clm::MAGIC,
-        clm::FORMAT_VERSION,
-        &[
-            catchlight_core::formats::container::Section {
-                kind: 0,
-                data: &structure,
-            },
-            catchlight_core::formats::container::Section {
-                kind: 1,
-                data: &[0x80],
-            },
-        ],
-    )
-    .unwrap();
-    assert!(matches!(
-        clm::decode(&bytes).unwrap_err(),
-        clm::ClmError::ExtensionTooLarge { key, .. } if key == "acme.huge"
     ));
 }
 

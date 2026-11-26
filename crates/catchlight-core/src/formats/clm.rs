@@ -153,12 +153,6 @@ pub enum ClmError {
     },
     #[error("extension {key:?}'s bytes do not hash to what its marker says")]
     ExtensionHashMismatch { key: String },
-    #[error("extension {key:?} carries {size} bytes, over the {max}-byte cap")]
-    ExtensionTooLarge {
-        key: String,
-        size: usize,
-        max: usize,
-    },
     #[error("CBOR decode: {0}")]
     Decode(String),
     #[error("missing {0} section")]
@@ -255,13 +249,6 @@ pub struct ClmStructure {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub extensions: BTreeMap<ExtensionKey, ClmExtension>,
 }
-
-/// Keeps a structure feed small enough to push after every edit.
-pub const MAX_EXTENSION_BYTES: usize = 1024 * 1024;
-
-/// Measured by [`extension_json_len`]; a JSON value rides in every structure
-/// feed.
-pub const MAX_EXTENSION_JSON_BYTES: usize = 1024 * 1024;
 
 /// Externally tagged: a marker is itself a JSON object, so an untagged value
 /// would be ambiguous.
@@ -662,29 +649,11 @@ pub fn check_extensions(doc: &ClmStructure, blobs: &[ClmExtensionBlob]) -> Resul
                 key: blob.key.to_string(),
             });
         }
-        if blob.data.len() > MAX_EXTENSION_BYTES {
-            return Err(ClmError::ExtensionTooLarge {
-                key: blob.key.to_string(),
-                size: blob.data.len(),
-                max: MAX_EXTENSION_BYTES,
-            });
-        }
     }
 
     for (key, value) in &doc.extensions {
-        let marker = match value.marker() {
-            Some(marker) => marker,
-            None => {
-                let size = value.inline_json().map_or(0, extension_json_len);
-                if size > MAX_EXTENSION_JSON_BYTES {
-                    return Err(ClmError::ExtensionTooLarge {
-                        key: key.to_string(),
-                        size,
-                        max: MAX_EXTENSION_JSON_BYTES,
-                    });
-                }
-                continue;
-            }
+        let Some(marker) = value.marker() else {
+            continue;
         };
         let blob = carried
             .remove(key)

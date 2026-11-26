@@ -133,12 +133,6 @@ pub enum ModelError {
         "extension key {0:?} is catchlight's own to define; a vendor key names its vendor first"
     )]
     ReservedExtension(String),
-    #[error("extension {key:?} carries {size} bytes, over the {max}-byte cap")]
-    ExtensionTooLarge {
-        key: String,
-        size: usize,
-        max: usize,
-    },
     #[error("mesh is malformed: {0}")]
     MalformedMesh(&'static str),
     #[error(".clm codec: {0}")]
@@ -177,7 +171,7 @@ impl From<&ModelTexture> for crate::texture::EncodedTexture {
 pub enum ExtensionValue {
     /// A plain annotation: carried, never maintained.
     Json(serde_json::Value),
-    /// A plain annotation of at most [`clm::MAX_EXTENSION_BYTES`].
+    /// A plain annotation: carried, never maintained.
     Bytes(Arc<[u8]>),
     Maintained(RawExtension),
 }
@@ -201,23 +195,6 @@ impl ExtensionValue {
             Self::Maintained(raw) => raw.payload.json(),
             Self::Bytes(_) => None,
         }
-    }
-
-    /// Checked by the writer too, so any value a model takes can be saved.
-    fn check_size(&self, key: &ExtensionKey) -> Result<(), ModelError> {
-        let (size, max) = match (self.bytes(), self.json()) {
-            (Some(data), _) => (data.len(), clm::MAX_EXTENSION_BYTES),
-            (None, Some(json)) => (clm::extension_json_len(json), clm::MAX_EXTENSION_JSON_BYTES),
-            (None, None) => return Ok(()),
-        };
-        if size > max {
-            return Err(ModelError::ExtensionTooLarge {
-                key: key.to_string(),
-                size,
-                max,
-            });
-        }
-        Ok(())
     }
 }
 
@@ -2013,7 +1990,6 @@ impl Model {
         if key.is_reserved() {
             return Err(ModelError::ReservedExtension(key.to_string()));
         }
-        value.check_size(&key)?;
         self.extensions
             .map
             .insert(key, crate::extension::Stored::value(value));

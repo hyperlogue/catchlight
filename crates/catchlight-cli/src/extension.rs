@@ -10,7 +10,6 @@ use catchlight_core::extension::{
 };
 use catchlight_core::formats::clm::{
     extension_hash, ClmExtension, ClmExtensionBlob, ClmExtensionMarker, ClmFile, ClmPayload,
-    MAX_EXTENSION_BYTES,
 };
 use catchlight_core::id::{ExtensionKey, EXTENSION_RESERVED_PREFIX};
 use catchlight_core::{ExtensionValue, Model};
@@ -182,7 +181,7 @@ pub fn set_json(path: &Path, key: &str, text: &str) -> Result<Changed, Error> {
 
 pub fn set_bytes(path: &Path, key: &str, source: &Path) -> Result<Changed, Error> {
     let key = parse_key(key)?;
-    let data = read_bytes(&key, source)?;
+    let data = read_bytes(source)?;
     let mut file = file::read(path)?;
     let what = replaced(&file, &key);
     file.doc.extensions.insert(
@@ -206,16 +205,8 @@ fn parse_json(key: &ExtensionKey, text: &str) -> Result<serde_json::Value, Error
     })
 }
 
-fn read_bytes(key: &ExtensionKey, source: &Path) -> Result<Vec<u8>, Error> {
-    let data = std::fs::read(source).map_err(|e| Error::io(source, e))?;
-    if data.len() > MAX_EXTENSION_BYTES {
-        return Err(Error::ExtensionTooLarge {
-            key: key.to_string(),
-            size: data.len(),
-            max: MAX_EXTENSION_BYTES,
-        });
-    }
-    Ok(data)
+fn read_bytes(source: &Path) -> Result<Vec<u8>, Error> {
+    std::fs::read(source).map_err(|e| Error::io(source, e))
 }
 
 fn push_blob(file: &mut ClmFile, key: &ExtensionKey, data: Vec<u8>) {
@@ -259,7 +250,7 @@ pub fn set_maintained(
     let payload = match payload {
         Source::Json(text) => ClmPayload::Json(parse_json(&key, text)?),
         Source::Bytes(source) => {
-            let data = read_bytes(&key, source)?;
+            let data = read_bytes(source)?;
             let marker = ClmExtensionMarker {
                 size: data.len() as u64,
                 hash: extension_hash(&data),

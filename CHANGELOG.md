@@ -65,9 +65,9 @@ next release is 0.3.0.
   read, byte for byte. `formats` documents how the format may change.
 - **Load limits cover the whole file.** A `.clm` structure section is held to
   `LoadLimits::structure_bytes` (64 MiB) before it is parsed. Spine joints,
-  weld pairs, keyframes and extension values each have a limit, a JSON
-  extension is capped at 1 MiB, and textures are held to 8192 texels a side
-  and `decoded_texture_bytes` in total before any is decoded
+  weld pairs, keyframes and extension values each have a limit, and textures
+  are held to 8192 texels a side and `decoded_texture_bytes` in total before
+  any is decoded
   (`PrepareOptions::max_decoded_texture_bytes` in `catchlight-wgpu`).
 - **Extensions that keep up with the model.** A `.clm` can carry typed,
   maintained extension data: a `{version, refs, payload}` envelope whose

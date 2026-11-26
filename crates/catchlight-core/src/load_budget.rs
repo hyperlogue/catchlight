@@ -92,7 +92,7 @@ impl Default for LoadLimits {
             structure_bytes: 64 * 1024 * 1024,
             spine_joints: 1_000_000,
             weld_pairs: 4_000_000,
-            extension_bytes: 64 * 1024 * 1024,
+            extension_bytes: 512 * 1024 * 1024,
         }
     }
 }
