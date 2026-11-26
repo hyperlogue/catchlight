@@ -46,7 +46,7 @@ type Sources = SmallVec<[SourceSlot; 2]>;
 
 #[derive(Debug, Clone, Default)]
 pub struct DeformStack {
-    pub vert_count: usize,
+    vert_count: usize,
     sources: Sources,
     combined: Vec<Vec2>,
     dirty: bool,
@@ -67,6 +67,10 @@ impl DeformStack {
             last_combined_mask: Some(0),
             generation: 0,
         }
+    }
+
+    pub fn vert_count(&self) -> usize {
+        self.vert_count
     }
 
     /// Deactivate every source a fold produces. [`DeformSource::Scratch`]

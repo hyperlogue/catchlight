@@ -194,7 +194,7 @@ impl Puppet {
             NodeKind::MeshGroup(mg) => &mut mg.deform_stack,
             _ => return,
         };
-        let vert_len = stack.vert_count;
+        let vert_len = stack.vert_count();
         if dense.iter().map(Vec::len).max().unwrap_or(0) < vert_len * 2 {
             return;
         }
