@@ -1,50 +1,21 @@
 use super::*;
 
-/// The labels one target's passes carry in a GPU capture.
-pub(super) struct PassLabels {
-    pub(super) draw: &'static str,
-    pub(super) mask_write: &'static str,
-    pub(super) masked_draw: &'static str,
-    pub(super) fallback_clear: &'static str,
-}
-
-pub(super) const ROOT_PASSES: PassLabels = PassLabels {
-    draw: "Render Pass",
-    mask_write: "Mask Write Pass",
-    masked_draw: "Masked Part Render Pass",
-    fallback_clear: "render_list fallback clear",
-};
-
-pub(super) const COMPOSITE_PASSES: PassLabels = PassLabels {
-    draw: "Composite Children Pass",
-    mask_write: "Composite Mask Write Pass",
-    masked_draw: "Composite Masked Part Render Pass",
-    fallback_clear: "Composite Fallback Clear Pass",
-};
-
 impl WgpuRenderer {
     /// Sampled-mask path only; the stencil path folds the mask write and blit
     /// into one pass (`blit_composite_with_masks`).
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "a pass takes the encoder, its targets and per-draw state separately"
-    )]
-    pub(super) fn blit_composite_masked(
+    fn blit_composite_masked(
         &self,
-        encoder: &mut wgpu::CommandEncoder,
-        composite_texture: &CompositeTexture,
+        ctx: &mut PassCtx<'_>,
+        blit: Blit<'_>,
         target_view: &wgpu::TextureView,
-        stencil: &StencilTarget,
         blend_mode: BlendMode,
-        part_uniform_offset: u32,
-        scissor: Option<ScreenRect>,
     ) {
         // `FrameTargets::prepare` builds the target to match the pipelines.
-        let Some(mask) = stencil.sampled.as_ref() else {
+        let Some(mask) = ctx.stencil.sampled.as_ref() else {
             return;
         };
         let mut render_pass = self.counted_begin_pass(
-            encoder,
+            ctx.encoder,
             &wgpu::RenderPassDescriptor {
                 label: Some("Masked Blit Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -64,24 +35,26 @@ impl WgpuRenderer {
         );
 
         render_pass.set_pipeline(self.shared.masks.masked_blit().get(blend_mode));
-        render_pass.set_bind_group(0, &composite_texture.blit_bind_group, &[]);
-        render_pass.set_bind_group(1, &self.part_uniform_bind_group, &[part_uniform_offset]);
+        render_pass.set_bind_group(0, &blit.source.blit_bind_group, &[]);
+        render_pass.set_bind_group(
+            1,
+            &self.part_uniform_bind_group,
+            &[blit.part_uniform_offset],
+        );
         render_pass.set_bind_group(2, mask, &[]);
-        if let Some(r) = scissor {
+        if let Some(r) = blit.scissor {
             render_pass.set_scissor_rect(r.x, r.y, r.width, r.height);
         }
         self.frame_draw_calls.fetch_add(1, Ordering::Relaxed);
         render_pass.draw(0..3, 0..1);
     }
 
-    pub(crate) fn blit_composite(
+    fn blit_composite(
         &self,
         encoder: &mut wgpu::CommandEncoder,
-        composite_texture: &CompositeTexture,
+        blit: Blit<'_>,
         target_view: &wgpu::TextureView,
         blend_mode: BlendMode,
-        part_uniform_offset: u32,
-        scissor: Option<ScreenRect>,
     ) {
         let mut render_pass = self.counted_begin_pass(
             encoder,
@@ -104,36 +77,37 @@ impl WgpuRenderer {
         );
 
         render_pass.set_pipeline(self.shared.blits.get(blend_mode));
-        render_pass.set_bind_group(0, &composite_texture.blit_bind_group, &[]);
-        render_pass.set_bind_group(1, &self.part_uniform_bind_group, &[part_uniform_offset]);
-        if let Some(r) = scissor {
+        render_pass.set_bind_group(0, &blit.source.blit_bind_group, &[]);
+        render_pass.set_bind_group(
+            1,
+            &self.part_uniform_bind_group,
+            &[blit.part_uniform_offset],
+        );
+        if let Some(r) = blit.scissor {
             render_pass.set_scissor_rect(r.x, r.y, r.width, r.height);
         }
         self.frame_draw_calls.fetch_add(1, Ordering::Relaxed);
         render_pass.draw(0..3, 0..1);
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "a pass takes the encoder, its targets and per-draw state separately"
-    )]
-    pub(super) fn blit_composite_dst_in_shader(
+    /// Blends `blit` onto `ctx`'s target in the shader, against a snapshot of
+    /// the target taken from the frame's pool. The caller rewinds the pool.
+    fn blit_composite_dst_in_shader(
         &self,
-        encoder: &mut wgpu::CommandEncoder,
-        composite: &CompositeTexture,
-        target_view: &wgpu::TextureView,
-        target_color_texture: &wgpu::Texture,
-        snapshot: &SnapshotTexture,
+        ctx: &mut PassCtx<'_>,
+        blit: Blit<'_>,
         blend: ShaderBlend,
-        part_uniform_offset: u32,
-        width: u32,
-        height: u32,
-        scissor: Option<ScreenRect>,
     ) {
+        let (Some(target_texture), Some(snapshots)) =
+            (ctx.target.texture, ctx.snapshots.as_deref_mut())
+        else {
+            return;
+        };
+        let snapshot = snapshots.acquire(&self.shared, &self.device);
         // The copy runs in encoder order (unlike write_buffer), so it sees every
         // prior pass. A scissored copy suffices: the snapshot is sampled 1:1 and
         // dst-in-shader modes return dst where src alpha is 0.
-        let (copy_origin, copy_extent) = match scissor {
+        let (copy_origin, copy_extent) = match blit.scissor {
             Some(r) => (
                 wgpu::Origin3d {
                     x: r.x,
@@ -149,15 +123,15 @@ impl WgpuRenderer {
             None => (
                 wgpu::Origin3d::ZERO,
                 wgpu::Extent3d {
-                    width: width.max(1),
-                    height: height.max(1),
+                    width: ctx.target.width.max(1),
+                    height: ctx.target.height.max(1),
                     depth_or_array_layers: 1,
                 },
             ),
         };
-        encoder.copy_texture_to_texture(
+        ctx.encoder.copy_texture_to_texture(
             wgpu::TexelCopyTextureInfo {
-                texture: target_color_texture,
+                texture: target_texture,
                 mip_level: 0,
                 origin: copy_origin,
                 aspect: wgpu::TextureAspect::All,
@@ -174,12 +148,12 @@ impl WgpuRenderer {
         let pipeline = self.shared.blit_dst_in_shader(blend);
 
         let mut render_pass = self.counted_begin_pass(
-            encoder,
+            ctx.encoder,
             &wgpu::RenderPassDescriptor {
                 label: Some("Blit (dst-in-shader) Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     depth_slice: None,
-                    view: target_view,
+                    view: ctx.target.view,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Load,
@@ -193,31 +167,27 @@ impl WgpuRenderer {
             },
         );
         render_pass.set_pipeline(pipeline);
-        render_pass.set_bind_group(0, &composite.blit_bind_group, &[]);
-        render_pass.set_bind_group(1, &self.part_uniform_bind_group, &[part_uniform_offset]);
+        render_pass.set_bind_group(0, &blit.source.blit_bind_group, &[]);
+        render_pass.set_bind_group(
+            1,
+            &self.part_uniform_bind_group,
+            &[blit.part_uniform_offset],
+        );
         render_pass.set_bind_group(2, &snapshot.bind_group, &[]);
-        if let Some(r) = scissor {
+        if let Some(r) = blit.scissor {
             render_pass.set_scissor_rect(r.x, r.y, r.width, r.height);
         }
         self.frame_draw_calls.fetch_add(1, Ordering::Relaxed);
         render_pass.draw(0..3, 0..1);
     }
 
-    /// Gives the dst-in-shader blit a src texture independent of the framebuffer.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "a pass takes the encoder, its targets and per-draw state separately"
-    )]
-    pub(super) fn render_part_to_composite_slot(
+    /// Gives the dst-in-shader blit a src texture independent of the
+    /// framebuffer: `ctx` targets the slot.
+    fn render_part_to_composite_slot(
         &mut self,
-        encoder: &mut wgpu::CommandEncoder,
-        stencil: &StencilTarget,
-        slot: &CompositeTexture,
-        mesh_id: u32,
-        texture_id: u32,
-        transform: glam::Mat4,
+        ctx: &mut PassCtx<'_>,
+        draw: PreparedPartDraw,
         mask_sources: &[crate::collect::MaskSourceData],
-        part_uniform_offset: u32,
         scissor: Option<ScreenRect>,
     ) {
         let transparent = wgpu::Color {
@@ -226,30 +196,21 @@ impl WgpuRenderer {
             b: 0.0,
             a: 0.0,
         };
-        let draw = PreparedPartDraw {
-            draw: PartDraw {
-                mesh_id,
-                albedo: texture_id,
-                transform,
-                blend_mode: BlendMode::Normal,
-            },
-            part_uniform_offset,
-        };
 
         if self.shared.has_stencil() {
             let mut state = StencilPassState::new(
-                &slot.view,
-                &stencil.view,
+                ctx.target.view,
+                &ctx.stencil.view,
                 Some(transparent),
-                "Composite Slot Pass (dst-in-shader)",
+                ctx.labels.draw,
                 scissor,
             );
             let mut sink = PartSink::Stencil(&mut state);
             if mask_sources.is_empty() {
-                self.flush_pending_parts(encoder, &mut sink, std::slice::from_ref(&draw));
+                self.flush_pending_parts(ctx, &mut sink, std::slice::from_ref(&draw));
             } else {
                 self.flush_pending_masked(
-                    encoder,
+                    ctx,
                     &mut sink,
                     std::slice::from_ref(&PreparedMaskedPartDraw { draw, mask_sources }),
                 );
@@ -257,67 +218,41 @@ impl WgpuRenderer {
             // If the draw filtered out, this emits the still-pending
             // transparent clear so the blit can't sample stale pool
             // contents.
-            self.end_sink_pass(encoder, &mut sink);
+            self.end_sink_pass(ctx, &mut sink);
             return;
         }
 
         let drew = if mask_sources.is_empty() {
-            self.render_prepared_parts(
-                encoder,
-                &slot.view,
-                &[draw],
-                true,
-                Some(transparent),
-                scissor,
-            )
+            self.render_prepared_parts(ctx, std::slice::from_ref(&draw), Some(transparent), scissor)
         } else {
             self.render_masked_prepared_parts_to(
-                encoder,
-                &slot.view,
-                stencil,
-                &[PreparedMaskedPartDraw { draw, mask_sources }],
-                true,
+                ctx,
+                std::slice::from_ref(&PreparedMaskedPartDraw { draw, mask_sources }),
                 Some(transparent),
-                "Composite Slot Mask Write (dst-in-shader)",
-                "Composite Slot Masked Part (dst-in-shader)",
                 scissor,
             )
         };
 
         if !drew {
             self.explicit_clear_pass(
-                encoder,
-                &slot.view,
+                ctx.encoder,
+                ctx.target.view,
                 transparent,
-                "Composite Slot Fallback Clear (dst-in-shader)",
+                ctx.labels.fallback_clear,
             );
         }
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "a pass takes the encoder, its targets and per-draw state separately"
-    )]
-    pub(crate) fn blit_composite_with_masks(
+    fn blit_composite_with_masks(
         &mut self,
-        encoder: &mut wgpu::CommandEncoder,
-        composite: &CompositeTexture,
+        ctx: &mut PassCtx<'_>,
+        blit: Blit<'_>,
         target_view: &wgpu::TextureView,
-        stencil: &StencilTarget,
         blend_mode: BlendMode,
         mask_sources: &[crate::collect::MaskSourceData],
-        part_uniform_offset: u32,
-        scissor: Option<ScreenRect>,
     ) {
         if mask_sources.is_empty() {
-            self.blit_composite(
-                encoder,
-                composite,
-                target_view,
-                blend_mode,
-                part_uniform_offset,
-                scissor,
-            );
+            self.blit_composite(ctx.encoder, blit, target_view, blend_mode);
             return;
         }
 
@@ -340,26 +275,17 @@ impl WgpuRenderer {
 
         if !self.shared.has_stencil() {
             self.write_mask_sources(
-                encoder,
+                ctx,
                 "Composite Blit Mask Write Pass",
-                stencil,
                 mask_sources,
                 base_offset,
             );
-            self.blit_composite_masked(
-                encoder,
-                composite,
-                target_view,
-                stencil,
-                blend_mode,
-                part_uniform_offset,
-                scissor,
-            );
+            self.blit_composite_masked(ctx, blit, target_view, blend_mode);
             return;
         }
 
         let mut render_pass = self.counted_begin_pass(
-            encoder,
+            ctx.encoder,
             &wgpu::RenderPassDescriptor {
                 label: Some("Masked Blit Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -372,7 +298,7 @@ impl WgpuRenderer {
                     },
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &stencil.view,
+                    view: &ctx.stencil.view,
                     depth_ops: None,
                     stencil_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Clear(0),
@@ -388,38 +314,33 @@ impl WgpuRenderer {
         render_pass.set_bind_group(0, &self.camera_bind_group, &[self.camera_offset]);
         // Outside the children union the composite is a transparent clear and the
         // stencil is never tested.
-        if let Some(r) = scissor {
+        if let Some(r) = blit.scissor {
             render_pass.set_scissor_rect(r.x, r.y, r.width, r.height);
         }
         self.record_mask_sources_stencil(&mut render_pass, mask_sources, base_offset, 1, &mut None);
 
         render_pass.set_pipeline(self.shared.masks.masked_blit().get(blend_mode));
         render_pass.set_stencil_reference(1);
-        render_pass.set_bind_group(0, &composite.blit_bind_group, &[]);
-        render_pass.set_bind_group(1, &self.part_uniform_bind_group, &[part_uniform_offset]);
+        render_pass.set_bind_group(0, &blit.source.blit_bind_group, &[]);
+        render_pass.set_bind_group(
+            1,
+            &self.part_uniform_bind_group,
+            &[blit.part_uniform_offset],
+        );
         self.frame_draw_calls.fetch_add(1, Ordering::Relaxed);
         render_pass.draw(0..3, 0..1);
     }
 
     /// Serves root and nested composites identically. The caller must have
     /// flushed its pending runs and ended the sink's pass.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "a pass takes the encoder, its targets and per-draw state separately"
-    )]
-    pub(super) fn render_composite_drawable(
+    fn render_composite_drawable(
         &mut self,
-        encoder: &mut wgpu::CommandEncoder,
-        stencil: &StencilTarget,
-        target: RenderTarget<'_>,
+        ctx: &mut PassCtx<'_>,
         drawable: &crate::collect::DrawableInfo,
-        render_list: &crate::collect::RenderList,
-        composites: &mut CompositePool,
-        mut snapshots: Option<&mut FramebufferSnapshotPool>,
     ) -> bool {
-        let (width, height) = (target.width, target.height);
         use crate::collect::DrawableInfo;
 
+        let (width, height) = (ctx.target.width, ctx.target.height);
         let DrawableInfo::Composite {
             node_id,
             blend_mode,
@@ -433,7 +354,8 @@ impl WgpuRenderer {
         else {
             return false;
         };
-        let children = render_list.composite_children(*node_id);
+        let list = ctx.list;
+        let children = list.composite_children(*node_id);
         if children.is_empty() {
             return false;
         }
@@ -441,7 +363,7 @@ impl WgpuRenderer {
             tracing::trace_span!("render_composite", masked = !mask_sources.is_empty()).entered();
 
         // Computed before the children render so the borrow doesn't collide.
-        let bounds = self.drawable_screen_bounds(drawable, render_list, width, height);
+        let bounds = self.drawable_screen_bounds(drawable, list, width, height);
         if bounds == ScreenBounds::Empty {
             return false;
         }
@@ -452,200 +374,147 @@ impl WgpuRenderer {
 
         // Rewinding after the blit lets siblings share slots; the pool grows to
         // the nesting depth and no further.
-        let composite_mark = composites.mark();
-        let snapshot_mark = snapshots.as_ref().map(|s| s.mark());
-        let slot = composites.acquire(&self.shared, &self.device);
+        let composite_mark = ctx.composites.mark();
+        let snapshot_mark = ctx.snapshots.as_ref().map(|s| s.mark());
+        let slot = ctx.composites.acquire(&self.shared, &self.device);
         // The slot's clear folds into its first drawing pass, or lands on its
         // own, so the blit never samples stale pool contents.
         self.render_to_target(
-            encoder,
-            stencil,
-            RenderTarget {
-                view: &slot.view,
-                texture: Some(&slot.texture),
-                width,
-                height,
-            },
+            &mut ctx.with_target(
+                RenderTarget {
+                    view: &slot.view,
+                    texture: Some(&slot.texture),
+                    width,
+                    height,
+                },
+                &COMPOSITE_PASSES,
+            ),
             Some(wgpu::Color::TRANSPARENT),
-            &COMPOSITE_PASSES,
             children,
-            render_list,
-            composites,
-            snapshots.as_deref_mut(),
         );
 
+        let blit = Blit {
+            source: &slot,
+            part_uniform_offset,
+            scissor: union,
+        };
         // Without a texture or pool, fall through to the Normal-OVER blit.
-        let mut blitted = false;
-        if let Some(shader_blend) = ShaderBlend::of(*blend_mode)
-            && let (Some(main_tex), Some(snap_pool)) = (target.texture, snapshots.as_deref_mut())
-        {
-            let mut source = slot.clone();
-            let mut source_uniform_offset = part_uniform_offset;
-            if !mask_sources.is_empty() {
-                let masked = composites.acquire(&self.shared, &self.device);
+        match ShaderBlend::of(*blend_mode).filter(|_| ctx.shader_blends()) {
+            Some(shader_blend) if mask_sources.is_empty() => {
+                self.blit_composite_dst_in_shader(ctx, blit, shader_blend);
+            }
+            Some(shader_blend) => {
+                let masked = ctx.composites.acquire(&self.shared, &self.device);
                 self.explicit_clear_pass(
-                    encoder,
+                    ctx.encoder,
                     &masked.view,
                     wgpu::Color::TRANSPARENT,
                     "Masked Composite Source Clear",
                 );
                 self.blit_composite_with_masks(
-                    encoder,
-                    &slot,
+                    ctx,
+                    blit,
                     &masked.view,
-                    stencil,
                     BlendMode::Normal,
                     mask_sources,
-                    part_uniform_offset,
-                    union,
                 );
-                source = masked;
-                source_uniform_offset =
+                let part_uniform_offset =
                     self.write_part_uniform(1.0, glam::Vec3::ONE, glam::Vec3::ZERO, 0.5);
-            }
-            let snapshot = snap_pool.acquire(&self.shared, &self.device);
-            self.blit_composite_dst_in_shader(
-                encoder,
-                &source,
-                target.view,
-                main_tex,
-                snapshot,
-                shader_blend,
-                source_uniform_offset,
-                width,
-                height,
-                union,
-            );
-            blitted = true;
-        }
-
-        if !blitted {
-            let blit_scissor = if blend_transparent_src_is_identity(*blend_mode) {
-                union
-            } else {
-                None
-            };
-            if mask_sources.is_empty() {
-                self.blit_composite(
-                    encoder,
-                    &slot,
-                    target.view,
-                    *blend_mode,
-                    part_uniform_offset,
-                    blit_scissor,
+                self.blit_composite_dst_in_shader(
+                    ctx,
+                    Blit {
+                        source: &masked,
+                        part_uniform_offset,
+                        scissor: union,
+                    },
+                    shader_blend,
                 );
-            } else {
+            }
+            None => {
+                let scissor = if blend_transparent_src_is_identity(*blend_mode) {
+                    union
+                } else {
+                    None
+                };
+                let target_view = ctx.target.view;
                 self.blit_composite_with_masks(
-                    encoder,
-                    &slot,
-                    target.view,
-                    stencil,
+                    ctx,
+                    Blit { scissor, ..blit },
+                    target_view,
                     *blend_mode,
                     mask_sources,
-                    part_uniform_offset,
-                    blit_scissor,
                 );
             }
         }
 
-        composites.rewind(composite_mark);
-        if let (Some(pool), Some(mark)) = (snapshots, snapshot_mark) {
+        ctx.composites.rewind(composite_mark);
+        if let (Some(pool), Some(mark)) = (ctx.snapshots.as_deref_mut(), snapshot_mark) {
             pool.rewind(mark);
         }
         self.current_stats.drawn_composites += 1;
         true
     }
 
-    /// Draws `drawables` into `target`, spending `clear_color` exactly once even
-    /// when nothing draws. Serves the frame target and every composite slot.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "a pass takes the encoder, its targets and per-draw state separately"
-    )]
+    /// Draws `drawables` into `ctx`'s target, spending `clear_color` exactly
+    /// once even when nothing draws. Serves the frame target and every
+    /// composite slot.
     pub(super) fn render_to_target(
         &mut self,
-        encoder: &mut wgpu::CommandEncoder,
-        stencil: &StencilTarget,
-        target: RenderTarget<'_>,
+        ctx: &mut PassCtx<'_>,
         clear_color: Option<wgpu::Color>,
-        labels: &PassLabels,
         drawables: &[crate::collect::DrawableInfo],
-        render_list: &crate::collect::RenderList,
-        composites: &mut CompositePool,
-        snapshots: Option<&mut FramebufferSnapshotPool>,
     ) {
         if self.shared.has_stencil() {
-            let mut state =
-                StencilPassState::new(target.view, &stencil.view, clear_color, labels.draw, None);
-            let mut sink = PartSink::Stencil(&mut state);
-            self.render_drawables(
-                encoder,
-                stencil,
-                &mut sink,
-                target,
-                drawables,
-                render_list,
-                composites,
-                snapshots,
+            let mut state = StencilPassState::new(
+                ctx.target.view,
+                &ctx.stencil.view,
+                clear_color,
+                ctx.labels.draw,
+                None,
             );
-            self.end_sink_pass(encoder, &mut sink);
+            let mut sink = PartSink::Stencil(&mut state);
+            self.render_drawables(ctx, &mut sink, drawables);
+            self.end_sink_pass(ctx, &mut sink);
             return;
         }
 
         let mut has_rendered = false;
         let mut sink = PartSink::Alpha {
-            view: target.view,
-            stencil,
             has_rendered: &mut has_rendered,
             clear_color,
-            mask_write_label: labels.mask_write,
-            masked_draw_label: labels.masked_draw,
         };
-        self.render_drawables(
-            encoder,
-            stencil,
-            &mut sink,
-            target,
-            drawables,
-            render_list,
-            composites,
-            snapshots,
-        );
+        self.render_drawables(ctx, &mut sink, drawables);
         if !has_rendered && let Some(color) = clear_color {
-            self.explicit_clear_pass(encoder, target.view, color, labels.fallback_clear);
+            self.explicit_clear_pass(
+                ctx.encoder,
+                ctx.target.view,
+                color,
+                ctx.labels.fallback_clear,
+            );
         }
     }
 
     /// Splits at drawables that read the target's own contents (composites
     /// and dst-in-shader parts); each records its own passes between part
     /// runs, which keeps z-order.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "a pass takes the encoder, its targets and per-draw state separately"
-    )]
-    pub(super) fn render_drawables(
+    fn render_drawables(
         &mut self,
-        encoder: &mut wgpu::CommandEncoder,
-        stencil: &StencilTarget,
+        ctx: &mut PassCtx<'_>,
         sink: &mut PartSink<'_, '_>,
-        target: RenderTarget<'_>,
         drawables: &[crate::collect::DrawableInfo],
-        render_list: &crate::collect::RenderList,
-        composites: &mut CompositePool,
-        mut snapshots: Option<&mut FramebufferSnapshotPool>,
     ) {
-        let (width, height) = (target.width, target.height);
         use crate::collect::DrawableInfo;
 
+        let (width, height) = (ctx.target.width, ctx.target.height);
         // Without a snapshot pool and a copyable target, dst-in-shader parts
         // draw OVER inside the part runs.
-        let shader_blends = snapshots.is_some() && target.texture.is_some();
+        let shader_blends = ctx.shader_blends();
         let is_barrier = |d: &DrawableInfo| match d {
             DrawableInfo::Composite { .. } => true,
             DrawableInfo::Part { blend_mode, .. } => shader_blends && is_dst_in_shader(*blend_mode),
         };
         if !drawables.iter().any(is_barrier) {
-            return self.render_children_run(encoder, sink, drawables, width, height);
+            return self.render_children_run(ctx, sink, drawables);
         }
 
         let mut run_start = 0;
@@ -653,27 +522,19 @@ impl WgpuRenderer {
             if !is_barrier(drawable) {
                 continue;
             }
-            let bounds = self.drawable_screen_bounds(drawable, render_list, width, height);
+            let bounds = self.drawable_screen_bounds(drawable, ctx.list, width, height);
             if bounds == ScreenBounds::Empty {
                 continue;
             }
 
-            self.render_children_run(encoder, sink, &drawables[run_start..i], width, height);
+            self.render_children_run(ctx, sink, &drawables[run_start..i]);
             run_start = i + 1;
-            self.end_sink_pass(encoder, sink);
-            self.spend_pending_alpha_clear(encoder, sink, "Clear (barrier)");
+            self.end_sink_pass(ctx, sink);
+            self.spend_pending_alpha_clear(ctx, sink, "Clear (barrier)");
 
             match drawable {
                 DrawableInfo::Composite { .. } => {
-                    if self.render_composite_drawable(
-                        encoder,
-                        stencil,
-                        target,
-                        drawable,
-                        render_list,
-                        composites,
-                        snapshots.as_deref_mut(),
-                    ) {
+                    if self.render_composite_drawable(ctx, drawable) {
                         sink.mark_rendered();
                     }
                 }
@@ -689,12 +550,9 @@ impl WgpuRenderer {
                     mask_threshold,
                     ..
                 } => {
-                    // `is_barrier` admits a part only when all three exist.
-                    let (Some(shader_blend), Some(target_texture), Some(snap_pool)) = (
-                        ShaderBlend::of(*blend_mode),
-                        target.texture,
-                        snapshots.as_deref_mut(),
-                    ) else {
+                    // `is_barrier` admits a part only with a snapshot pool
+                    // and a copyable target.
+                    let Some(shader_blend) = ShaderBlend::of(*blend_mode) else {
                         continue;
                     };
                     let part_uniform_offset =
@@ -704,42 +562,52 @@ impl WgpuRenderer {
                     let scissor = bounds.scissor();
                     // Both slots are released after the blit so the pools don't
                     // grow per part; encoder order makes reusing them safe.
-                    let composite_mark = composites.mark();
-                    let snapshot_mark = snap_pool.mark();
-                    let scratch = composites.acquire(&self.shared, &self.device);
+                    let composite_mark = ctx.composites.mark();
+                    let snapshot_mark = ctx.snapshots.as_ref().map(|s| s.mark());
+                    let scratch = ctx.composites.acquire(&self.shared, &self.device);
                     self.render_part_to_composite_slot(
-                        encoder,
-                        stencil,
-                        &scratch,
-                        *mesh_id,
-                        *texture_id,
-                        *transform,
+                        &mut ctx.with_target(
+                            RenderTarget {
+                                view: &scratch.view,
+                                texture: Some(&scratch.texture),
+                                width,
+                                height,
+                            },
+                            &SLOT_PASSES,
+                        ),
+                        PreparedPartDraw {
+                            draw: PartDraw {
+                                mesh_id: *mesh_id,
+                                albedo: *texture_id,
+                                transform: *transform,
+                                blend_mode: BlendMode::Normal,
+                            },
+                            part_uniform_offset,
+                        },
                         mask_sources,
-                        part_uniform_offset,
                         scissor,
                     );
-                    let blit_uniform_offset =
+                    let part_uniform_offset =
                         self.write_part_uniform(1.0, glam::Vec3::ONE, glam::Vec3::ZERO, 0.5);
-                    let snapshot = snap_pool.acquire(&self.shared, &self.device);
                     self.blit_composite_dst_in_shader(
-                        encoder,
-                        &scratch,
-                        target.view,
-                        target_texture,
-                        snapshot,
+                        ctx,
+                        Blit {
+                            source: &scratch,
+                            part_uniform_offset,
+                            scissor,
+                        },
                         shader_blend,
-                        blit_uniform_offset,
-                        width,
-                        height,
-                        scissor,
                     );
-                    composites.rewind(composite_mark);
-                    snap_pool.rewind(snapshot_mark);
+                    ctx.composites.rewind(composite_mark);
+                    if let (Some(pool), Some(mark)) = (ctx.snapshots.as_deref_mut(), snapshot_mark)
+                    {
+                        pool.rewind(mark);
+                    }
                     sink.mark_rendered();
                 }
             }
         }
 
-        self.render_children_run(encoder, sink, &drawables[run_start..], width, height);
+        self.render_children_run(ctx, sink, &drawables[run_start..]);
     }
 }

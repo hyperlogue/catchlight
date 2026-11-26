@@ -64,16 +64,13 @@ impl<'v> StencilPassState<'v> {
     }
 }
 
-/// Alpha is the WebGL fallback: per-batch passes with mask-alpha textures.
+/// Alpha is the WebGL fallback: per-batch passes with mask-alpha textures,
+/// drawn into the pass context's target.
 pub(super) enum PartSink<'a, 'v> {
     Stencil(&'a mut StencilPassState<'v>),
     Alpha {
-        view: &'v wgpu::TextureView,
-        stencil: &'v StencilTarget,
         has_rendered: &'a mut bool,
         clear_color: Option<wgpu::Color>,
-        mask_write_label: &'static str,
-        masked_draw_label: &'static str,
     },
 }
 
@@ -203,27 +200,18 @@ impl WgpuRenderer {
         self.current_stats.texture_binds += texture_binds;
     }
 
-    // Alpha path: a same-signature masked run is one mask-alpha write pass
-    // plus one sampled masked-draw pass. `clear_target` folds a composite-slot
-    // clear into the masked-draw pass. Returns whether that pass was emitted.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "a pass takes the encoder, its targets and per-draw state separately"
-    )]
+    /// Alpha path: a same-signature masked run is one mask-alpha write pass
+    /// plus one sampled masked-draw pass into `ctx`'s target, which `clear`
+    /// folds a clear into. Returns whether that pass was emitted.
     pub(super) fn render_masked_prepared_parts_to(
         &mut self,
-        encoder: &mut wgpu::CommandEncoder,
-        target_view: &wgpu::TextureView,
-        stencil: &StencilTarget,
+        ctx: &mut PassCtx<'_>,
         draws: &[PreparedMaskedPartDraw<'_>],
-        clear_target: bool,
-        clear_color: Option<wgpu::Color>,
-        mask_write_label: &str,
-        masked_draw_label: &str,
+        clear: Option<wgpu::Color>,
         scissor: Option<ScreenRect>,
     ) -> bool {
         // `FrameTargets::prepare` builds the target to match the pipelines.
-        let Some(mask) = stencil.sampled.as_ref() else {
+        let Some(mask) = ctx.stencil.sampled.as_ref() else {
             return false;
         };
         let Some((valid, base_offset, parts_base)) = self.prepare_masked_part_draws(draws) else {
@@ -231,32 +219,18 @@ impl WgpuRenderer {
         };
         let mask_sources = draws[0].mask_sources;
 
-        self.write_mask_sources(
-            encoder,
-            mask_write_label,
-            stencil,
-            mask_sources,
-            base_offset,
-        );
+        let label = ctx.labels.mask_write;
+        self.write_mask_sources(ctx, label, mask_sources, base_offset);
 
-        let load_op = if clear_target {
-            wgpu::LoadOp::Clear(clear_color.unwrap_or(wgpu::Color {
-                r: 0.0,
-                g: 0.0,
-                b: 0.0,
-                a: 0.0,
-            }))
-        } else {
-            wgpu::LoadOp::Load
-        };
+        let load_op = clear.map_or(wgpu::LoadOp::Load, wgpu::LoadOp::Clear);
 
         let mut render_pass = self.counted_begin_pass(
-            encoder,
+            ctx.encoder,
             &wgpu::RenderPassDescriptor {
-                label: Some(masked_draw_label),
+                label: Some(ctx.labels.masked_draw),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     depth_slice: None,
-                    view: target_view,
+                    view: ctx.target.view,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: load_op,
@@ -388,40 +362,29 @@ impl WgpuRenderer {
         self.current_stats.texture_binds += texture_binds;
     }
 
-    // Alpha path. Returns whether a draw pass was emitted, so callers can fold
-    // the composite-slot clear into the first batch that draws.
+    /// Alpha path, into `ctx`'s target. Returns whether a draw pass was
+    /// emitted, so callers can fold the composite-slot clear into the first
+    /// batch that draws.
     pub(super) fn render_prepared_parts(
         &mut self,
-        encoder: &mut wgpu::CommandEncoder,
-        view: &wgpu::TextureView,
+        ctx: &mut PassCtx<'_>,
         drawables: &[PreparedPartDraw],
-        clear: bool,
-        clear_color: Option<wgpu::Color>,
+        clear: Option<wgpu::Color>,
         scissor: Option<ScreenRect>,
     ) -> bool {
         let Some((filtered, base_offset)) = self.prepare_part_draws(drawables) else {
             return false;
         };
 
-        let load_op = if clear {
-            let color = clear_color.unwrap_or(wgpu::Color {
-                r: 0.0,
-                g: 0.0,
-                b: 0.0,
-                a: 0.0,
-            });
-            wgpu::LoadOp::Clear(color)
-        } else {
-            wgpu::LoadOp::Load
-        };
+        let load_op = clear.map_or(wgpu::LoadOp::Load, wgpu::LoadOp::Clear);
 
         let mut render_pass = self.counted_begin_pass(
-            encoder,
+            ctx.encoder,
             &wgpu::RenderPassDescriptor {
                 label: Some("Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     depth_slice: None,
-                    view,
+                    view: ctx.target.view,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: load_op,
@@ -502,15 +465,11 @@ impl WgpuRenderer {
 
     /// Ends the stencil sink's pass before an outside pass touches the target,
     /// emitting a still-pending frame clear first. No-op for the alpha sink.
-    pub(super) fn end_sink_pass(
-        &self,
-        encoder: &mut wgpu::CommandEncoder,
-        sink: &mut PartSink<'_, '_>,
-    ) {
+    pub(super) fn end_sink_pass(&self, ctx: &mut PassCtx<'_>, sink: &mut PartSink<'_, '_>) {
         let PartSink::Stencil(s) = sink else { return };
         s.pass = None;
         if let wgpu::LoadOp::Clear(color) = s.next_load {
-            self.explicit_clear_pass(encoder, s.view, color, "render_list deferred clear");
+            self.explicit_clear_pass(ctx.encoder, s.view, color, "render_list deferred clear");
             s.next_load = wgpu::LoadOp::Load;
         }
     }
@@ -518,7 +477,7 @@ impl WgpuRenderer {
     /// No-op when the batch is empty, so barriers can call it unconditionally.
     pub(super) fn flush_pending_parts(
         &mut self,
-        encoder: &mut wgpu::CommandEncoder,
+        ctx: &mut PassCtx<'_>,
         sink: &mut PartSink<'_, '_>,
         pending: &[PreparedPartDraw],
     ) {
@@ -528,7 +487,7 @@ impl WgpuRenderer {
         match sink {
             PartSink::Stencil(s) => {
                 if let Some((filtered, base_offset)) = self.prepare_part_draws(pending) {
-                    self.open_stencil_pass(encoder, s);
+                    self.open_stencil_pass(ctx.encoder, s);
                     if let Some(pass) = s.pass.as_mut() {
                         self.record_unmasked_part_draws(
                             pass,
@@ -542,14 +501,11 @@ impl WgpuRenderer {
                 }
             }
             PartSink::Alpha {
-                view,
                 has_rendered,
                 clear_color,
-                ..
             } => {
-                let clear = !**has_rendered && clear_color.is_some();
-                let drew =
-                    self.render_prepared_parts(encoder, view, pending, clear, *clear_color, None);
+                let clear = clear_color.filter(|_| !**has_rendered);
+                let drew = self.render_prepared_parts(ctx, pending, clear, None);
                 **has_rendered |= drew;
             }
         }
@@ -557,7 +513,7 @@ impl WgpuRenderer {
 
     pub(super) fn flush_pending_masked(
         &mut self,
-        encoder: &mut wgpu::CommandEncoder,
+        ctx: &mut PassCtx<'_>,
         sink: &mut PartSink<'_, '_>,
         pending: &[PreparedMaskedPartDraw<'_>],
     ) {
@@ -570,13 +526,13 @@ impl WgpuRenderer {
                 if let Some((valid, base_offset, parts_base)) =
                     self.prepare_masked_part_draws(pending)
                 {
-                    self.open_stencil_pass(encoder, s);
+                    self.open_stencil_pass(ctx.encoder, s);
                     // Correctness backstop (unreachable for real rigs):
                     // the 8-bit stencil holds refs 1..=255 per cleared
                     // segment; reopening clears and restarts at 1.
                     if s.next_ref > 255 {
                         s.pass = None;
-                        self.open_stencil_pass(encoder, s);
+                        self.open_stencil_pass(ctx.encoder, s);
                     }
                     let ref_value = s.next_ref;
                     s.next_ref += 1;
@@ -601,25 +557,11 @@ impl WgpuRenderer {
                 }
             }
             PartSink::Alpha {
-                view,
-                stencil,
                 has_rendered,
                 clear_color,
-                mask_write_label,
-                masked_draw_label,
             } => {
-                let clear = !**has_rendered && clear_color.is_some();
-                let drew = self.render_masked_prepared_parts_to(
-                    encoder,
-                    view,
-                    stencil,
-                    pending,
-                    clear,
-                    *clear_color,
-                    mask_write_label,
-                    masked_draw_label,
-                    None,
-                );
+                let clear = clear_color.filter(|_| !**has_rendered);
+                let drew = self.render_masked_prepared_parts_to(ctx, pending, clear, None);
                 **has_rendered |= drew;
             }
         }
@@ -629,14 +571,13 @@ impl WgpuRenderer {
     // The caller owns the sink's end-of-run handling.
     pub(super) fn render_children_run(
         &mut self,
-        encoder: &mut wgpu::CommandEncoder,
+        ctx: &mut PassCtx<'_>,
         sink: &mut PartSink<'_, '_>,
         children: &[crate::collect::DrawableInfo],
-        width: u32,
-        height: u32,
     ) {
         use crate::collect::DrawableInfo;
 
+        let (width, height) = (ctx.target.width, ctx.target.height);
         let mut pending_parts = std::mem::take(&mut self.pending_parts_scratch);
         pending_parts.clear();
         let mut pending_masked: Vec<PreparedMaskedPartDraw> = Vec::new();
@@ -663,7 +604,7 @@ impl WgpuRenderer {
                 self.write_part_uniform(*opacity, *tint, *screen_tint, *mask_threshold);
 
             if mask_sources.is_empty() {
-                self.flush_pending_masked(encoder, sink, &pending_masked);
+                self.flush_pending_masked(ctx, sink, &pending_masked);
                 pending_masked.clear();
                 pending_parts.push(PreparedPartDraw {
                     draw: PartDraw {
@@ -675,12 +616,12 @@ impl WgpuRenderer {
                     part_uniform_offset,
                 });
             } else {
-                self.flush_pending_parts(encoder, sink, &pending_parts);
+                self.flush_pending_parts(ctx, sink, &pending_parts);
                 pending_parts.clear();
                 if let Some(first) = pending_masked.first()
                     && !same_mask_signature(first.mask_sources, mask_sources)
                 {
-                    self.flush_pending_masked(encoder, sink, &pending_masked);
+                    self.flush_pending_masked(ctx, sink, &pending_masked);
                     pending_masked.clear();
                 }
                 pending_masked.push(PreparedMaskedPartDraw {
@@ -698,8 +639,8 @@ impl WgpuRenderer {
             }
         }
 
-        self.flush_pending_parts(encoder, sink, &pending_parts);
-        self.flush_pending_masked(encoder, sink, &pending_masked);
+        self.flush_pending_parts(ctx, sink, &pending_parts);
+        self.flush_pending_masked(ctx, sink, &pending_masked);
         pending_parts.clear();
         self.pending_parts_scratch = pending_parts;
     }
@@ -708,20 +649,18 @@ impl WgpuRenderer {
     /// target.
     pub(super) fn spend_pending_alpha_clear(
         &mut self,
-        encoder: &mut wgpu::CommandEncoder,
+        ctx: &mut PassCtx<'_>,
         sink: &mut PartSink<'_, '_>,
         label: &str,
     ) {
         if let PartSink::Alpha {
-            view,
             has_rendered,
             clear_color,
-            ..
         } = sink
             && !**has_rendered
             && let Some(color) = *clear_color
         {
-            self.explicit_clear_pass(encoder, view, color, label);
+            self.explicit_clear_pass(ctx.encoder, ctx.target.view, color, label);
             **has_rendered = true;
         }
     }

@@ -251,17 +251,18 @@ impl WgpuRenderer {
             let set = list.deform_set.map_or(0, DeformSet::index);
             self.deform_recording_set = set;
             self.deform_recording_base = self.deform_base(set);
-            self.record_list(
+            let mut ctx = PassCtx {
+                encoder: &mut *encoder,
                 list,
-                encoder,
-                target,
                 stencil,
-                composites,
-                dst_in_shader_active.then_some(&mut *snapshots),
-                // The clear belongs to the frame, not to a puppet: a later
-                // list clearing would wipe the ones already recorded.
-                if i == 0 { clear_color } else { None },
-            );
+                composites: &mut *composites,
+                snapshots: dst_in_shader_active.then_some(&mut *snapshots),
+                target,
+                labels: &ROOT_PASSES,
+            };
+            // The clear belongs to the frame, not to a puppet: a later list
+            // clearing would wipe the ones already recorded.
+            self.record_list(&mut ctx, if i == 0 { clear_color } else { None });
             // Each list resets the pool, so the frame's peak is the deepest list's.
             self.current_stats.composite_slots_used = self
                 .current_stats
@@ -285,44 +286,38 @@ impl WgpuRenderer {
 
     /// Frame-level state belongs to [`Self::record_frame`], so this may run
     /// several times per frame.
-    /// `snapshots` is `None` when no dst-in-shader blend will read the target.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "a pass takes the encoder, its targets and per-draw state separately"
-    )]
-    pub(super) fn record_list(
-        &mut self,
-        render_list: &crate::collect::RenderList,
-        encoder: &mut wgpu::CommandEncoder,
-        target: RenderTarget<'_>,
-        stencil: &StencilTarget,
-        composites: &mut CompositePool,
-        mut snapshots: Option<&mut FramebufferSnapshotPool>,
-        clear_color: Option<wgpu::Color>,
-    ) {
-        use crate::collect::DrawableInfo;
-
+    fn record_list(&mut self, ctx: &mut PassCtx<'_>, clear_color: Option<wgpu::Color>) {
         let span = tracing::trace_span!("render_list", drawn_parts = tracing::field::Empty);
         let _entered = span.enter();
 
-        let (width, height) = (target.width, target.height);
-        let dst_in_shader_active = snapshots.is_some();
-        composites.reset();
+        ctx.composites.reset();
         self.composite_bounds.clear();
-        if let Some(s) = snapshots.as_mut() {
+        if let Some(s) = ctx.snapshots.as_deref_mut() {
             s.reset();
         }
-        self.prepare_composite_mask_textures(encoder, render_list, composites, width, height);
+        self.prepare_composite_mask_textures(ctx);
 
-        // Root-composite flattening: OVER is associative, so an identity-blit
-        // root composite whose children all blend OVER draws them straight to the
-        // main view. Nested composites, non-OVER children, and dst-in-shader
-        // children on the snapshot path read the destination and block it.
-        let flatten_children: Option<&[DrawableInfo]> = (|| {
-            if render_list.root_drawables.len() != 1 {
-                return None;
-            }
-            let DrawableInfo::Composite {
+        let list = ctx.list;
+        let drawables = self
+            .flattened_root_composite(ctx)
+            .unwrap_or(&list.root_drawables);
+        self.render_to_target(ctx, clear_color, drawables);
+        span.record("drawn_parts", self.current_stats.drawn_parts);
+    }
+
+    /// OVER is associative, so an identity-blit root composite whose children
+    /// all blend OVER draws them straight to the main view. Nested composites,
+    /// non-OVER children, and dst-in-shader children on the snapshot path read
+    /// the destination and block it.
+    fn flattened_root_composite<'l>(
+        &mut self,
+        ctx: &PassCtx<'l>,
+    ) -> Option<&'l [crate::collect::DrawableInfo]> {
+        use crate::collect::DrawableInfo;
+
+        let list = ctx.list;
+        let [
+            DrawableInfo::Composite {
                 node_id,
                 blend_mode,
                 opacity,
@@ -330,52 +325,40 @@ impl WgpuRenderer {
                 screen_tint,
                 mask_sources,
                 ..
-            } = &render_list.root_drawables[0]
-            else {
-                return None;
+            },
+        ] = list.root_drawables.as_slice()
+        else {
+            return None;
+        };
+        if *blend_mode != BlendMode::Normal
+            || *opacity != 1.0
+            || *tint != glam::Vec3::ONE
+            || *screen_tint != glam::Vec3::ZERO
+            || !mask_sources.is_empty()
+        {
+            return None;
+        }
+        let children = list.composite_children(*node_id);
+        if children.is_empty() {
+            return None;
+        }
+        let shader_blends = ctx.shader_blends();
+        let (width, height) = (ctx.target.width, ctx.target.height);
+        for c in children {
+            let blocks_flattening = match c {
+                DrawableInfo::Composite { .. } => true,
+                DrawableInfo::Part { blend_mode, .. } => {
+                    !renders_as_over(*blend_mode)
+                        || (shader_blends && is_dst_in_shader(*blend_mode))
+                }
             };
-            if *blend_mode != BlendMode::Normal
-                || *opacity != 1.0
-                || *tint != glam::Vec3::ONE
-                || *screen_tint != glam::Vec3::ZERO
-                || !mask_sources.is_empty()
+            if blocks_flattening
+                && self.drawable_screen_bounds(c, list, width, height) != ScreenBounds::Empty
             {
                 return None;
             }
-            let children = render_list.composite_children(*node_id);
-            if children.is_empty() {
-                return None;
-            }
-            for c in children {
-                let blocks_flattening = match c {
-                    DrawableInfo::Composite { .. } => true,
-                    DrawableInfo::Part { blend_mode, .. } => {
-                        !renders_as_over(*blend_mode)
-                            || (dst_in_shader_active && is_dst_in_shader(*blend_mode))
-                    }
-                };
-                if blocks_flattening
-                    && self.drawable_screen_bounds(c, render_list, width, height)
-                        != ScreenBounds::Empty
-                {
-                    return None;
-                }
-            }
-            Some(children)
-        })();
-
-        self.render_to_target(
-            encoder,
-            stencil,
-            target,
-            clear_color,
-            &ROOT_PASSES,
-            flatten_children.unwrap_or(&render_list.root_drawables),
-            render_list,
-            composites,
-            snapshots,
-        );
-        span.record("drawn_parts", self.current_stats.drawn_parts);
+        }
+        Some(children)
     }
 
     /// Must run while the encoder is open and before it is submitted; pair

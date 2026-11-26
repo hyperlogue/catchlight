@@ -53,15 +53,10 @@ pub(super) struct PreparedCompositeMask {
 }
 
 impl WgpuRenderer {
-    pub(super) fn prepare_composite_mask_textures(
-        &mut self,
-        encoder: &mut wgpu::CommandEncoder,
-        render_list: &crate::collect::RenderList,
-        composites: &mut CompositePool,
-        width: u32,
-        height: u32,
-    ) {
+    pub(super) fn prepare_composite_mask_textures(&mut self, ctx: &mut PassCtx<'_>) {
         use crate::collect::{DrawableInfo, MaskSourceData};
+        let render_list = ctx.list;
+        let (width, height) = (ctx.target.width, ctx.target.height);
         self.composite_mask_textures.clear();
         if render_list
             .composite_mask_sources
@@ -113,7 +108,7 @@ impl WgpuRenderer {
             let Some(source) = render_list.composite_mask_source(node_id) else {
                 continue;
             };
-            let slot = composites.acquire(&self.shared, &self.device);
+            let slot = ctx.composites.acquire(&self.shared, &self.device);
             let base_offset = self.reserve_instances(source.parts.len());
             let mut instances = std::mem::take(&mut self.instance_scratch);
             instances.clear();
@@ -137,7 +132,7 @@ impl WgpuRenderer {
             }
 
             let mut pass = self.counted_begin_pass(
-                encoder,
+                ctx.encoder,
                 &wgpu::RenderPassDescriptor {
                     label: Some("Composite Mask Source Pass"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -197,9 +192,8 @@ impl WgpuRenderer {
     /// `base_offset + i * size_of::<InstanceRaw>()`.
     pub(super) fn write_mask_sources(
         &mut self,
-        encoder: &mut wgpu::CommandEncoder,
+        ctx: &mut PassCtx<'_>,
         label: &str,
-        stencil: &StencilTarget,
         mask_sources: &[crate::collect::MaskSourceData],
         base_offset: u64,
     ) {
@@ -253,12 +247,12 @@ impl WgpuRenderer {
         };
 
         let mut render_pass = self.counted_begin_pass(
-            encoder,
+            ctx.encoder,
             &wgpu::RenderPassDescriptor {
                 label: Some(label),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     depth_slice: None,
-                    view: &stencil.view,
+                    view: &ctx.stencil.view,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(alpha_clear),
