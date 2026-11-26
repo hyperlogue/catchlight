@@ -163,7 +163,7 @@ pub fn run(
                     request: None,
                 });
             }
-            persist_manifest(&directory, &manifest)?;
+            persist_failed_manifest(&directory, &manifest);
             return Err(error);
         }
     }
@@ -364,7 +364,7 @@ pub fn run(
                     request: active_request,
                 });
             }
-            persist_manifest(&directory, &manifest)?;
+            persist_failed_manifest(&directory, &manifest);
             Err(error)
         }
     }
@@ -385,6 +385,13 @@ fn persist_manifest(dir: &Option<PathBuf>, manifest: &Option<RunManifest>) -> Re
         atomic_json(&dir.join("run.json"), manifest)?;
     }
     Ok(())
+}
+/// A failed run's manifest is best effort: the disk that refused the render
+/// often refuses run.json too, and the render's own error is the one to report.
+fn persist_failed_manifest(dir: &Option<PathBuf>, manifest: &Option<RunManifest>) {
+    if let Err(error) = persist_manifest(dir, manifest) {
+        eprintln!("catchlight-cli: recording the failed run: {error}");
+    }
 }
 fn draw(
     ctx: &mut RenderContext,
