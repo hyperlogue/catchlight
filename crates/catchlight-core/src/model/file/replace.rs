@@ -56,7 +56,7 @@ impl Model {
         let mut order = Vec::with_capacity(structure.textures.len());
         for want in &structure.textures {
             let found = textures(&want.id).ok_or_else(|| ClmLoadError::MissingTexture {
-                id: want.id.to_string(),
+                id: want.id.clone(),
             })?;
             // The manifest wins over the lookup, so replicas fed the same
             // structure hold the same model.
@@ -66,7 +66,7 @@ impl Model {
                 data: found.data,
             };
             if table.insert(want.id.clone(), texture).is_some() {
-                return Err(duplicate("texture", &want.id));
+                return Err(duplicate(want.id.clone()));
             }
             order.push(want.id.clone());
         }
@@ -198,7 +198,7 @@ mod tests {
             .replace_structure(&server.to_structure_bytes().unwrap(), |_| None)
             .unwrap_err();
 
-        let wanted = server.texture_ids()[0].to_string();
+        let wanted = server.texture_ids()[0].clone();
         assert!(
             matches!(&err, LoadError::Invalid(ClmLoadError::MissingTexture { id }) if *id == wanted),
             "got {err:?}",

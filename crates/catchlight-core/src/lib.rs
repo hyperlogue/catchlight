@@ -24,8 +24,8 @@ pub use components::{
 };
 pub use deform::{DeformShapeError, DeformSource, DeformStack};
 pub use id::{
-    EXTENSION_RESERVED_PREFIX, ExtensionKey, HexSource, IdError, MAX_ID_BYTES, MAX_NAME_BYTES,
-    Name, NodeId, NodeIdKind, ParamId, SeededHex, SlotId, TexId,
+    AnyId, EXTENSION_RESERVED_PREFIX, ExtensionKey, HexSource, IdError, MAX_ID_BYTES,
+    MAX_NAME_BYTES, Name, NodeId, NodeIdKind, ParamId, SeededHex, SlotId, TexId,
 };
 pub use interpolate::InterpolateMode;
 pub use load::{ModelFormat, load_model};
@@ -38,8 +38,8 @@ pub use model::{
     ExtensionWarning, InstallError, Installed, LoadError, Model, ModelBinding, ModelBindingValues,
     ModelComposite, ModelError, ModelMask, ModelMesh, ModelMeshGroup, ModelNode, ModelNodeKind,
     ModelParam, ModelPart, ModelSpine, ModelTexture, ModelWeld, ModelWeldPair, NodeProperties,
-    Pose, Required, Requirement, Requirements, ScalarTarget, Slot, SlotPair, SpineJointError,
-    param_range_is_valid,
+    Pose, Required, Requirement, RequirementOwner, Requirements, ScalarTarget, Slot, SlotPair,
+    SpineJointError, param_range_is_valid,
 };
 pub use motion_response::{MotionResponse, ResponseInput, ResponseSource};
 pub use node::{NodeTree, NodeTreeError};

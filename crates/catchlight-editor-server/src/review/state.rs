@@ -203,10 +203,12 @@ fn require(model: &Model, target: &ReviewTarget) -> Result<(), EditorError> {
             if model.node(node).is_none() {
                 return Err(EditorError::NoNode(node.clone()));
             }
-            model
-                .slot(node, slot)
-                .map(drop)
-                .ok_or(EditorError::Edit(ModelError::UnknownSlot))
+            model.slot(node, slot).map(drop).ok_or_else(|| {
+                EditorError::Edit(ModelError::UnknownSlot {
+                    node: node.clone(),
+                    slot: slot.clone(),
+                })
+            })
         }
     }
 }

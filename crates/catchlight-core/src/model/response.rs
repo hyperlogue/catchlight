@@ -121,7 +121,9 @@ impl Model {
         value: MotionResponse,
     ) -> Result<(), ModelError> {
         if !matches!(
-            self.node(id).ok_or(ModelError::UnknownNode)?.kind,
+            self.node(id)
+                .ok_or_else(|| ModelError::UnknownNode(id.clone()))?
+                .kind,
             ModelNodeKind::MotionResponse(_)
         ) {
             return Err(ModelError::NotMotionResponse);

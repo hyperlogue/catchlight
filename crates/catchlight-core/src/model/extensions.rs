@@ -59,7 +59,7 @@ impl Model {
         value: ExtensionValue,
     ) -> Result<(), ModelError> {
         if key.is_reserved() {
-            return Err(ModelError::ReservedExtension(key.to_string()));
+            return Err(ModelError::ReservedExtension(key));
         }
         self.extensions.map.insert(key, Stored::value(value));
         self.bump();
@@ -69,10 +69,10 @@ impl Model {
     /// A missing key is an error, so a typo is not silently ignored.
     pub fn delete_extension(&mut self, key: &ExtensionKey) -> Result<(), ModelError> {
         if key.is_reserved() {
-            return Err(ModelError::ReservedExtension(key.to_string()));
+            return Err(ModelError::ReservedExtension(key.clone()));
         }
         if self.extensions.map.remove(key).is_none() {
-            return Err(ModelError::UnknownExtension(key.to_string()));
+            return Err(ModelError::UnknownExtension(key.clone()));
         }
         self.bump();
         Ok(())

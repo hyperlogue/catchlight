@@ -31,16 +31,15 @@ impl Model {
         id: &NodeId,
         albedo: Option<TexId>,
     ) -> Result<(), ModelError> {
-        if albedo
-            .as_ref()
-            .is_some_and(|t| !self.textures.contains_key(t))
+        if let Some(albedo) = &albedo
+            && !self.textures.contains_key(albedo)
         {
-            return Err(ModelError::UnknownTexture);
+            return Err(ModelError::UnknownTexture(albedo.clone()));
         }
         match self.nodes.get(id).map(|n| &n.kind) {
             Some(ModelNodeKind::Part(_)) => {}
             Some(_) => return Err(ModelError::NotAPart),
-            None => return Err(ModelError::UnknownNode),
+            None => return Err(ModelError::UnknownNode(id.clone())),
         }
         self.point_albedo(id, albedo);
         self.bump();
@@ -74,12 +73,12 @@ impl Model {
         texture: ModelTexture,
     ) -> Result<(), ModelError> {
         if self.textures.contains_key(&id) {
-            return Err(ModelError::DuplicateId(id.to_string()));
+            return Err(ModelError::DuplicateId(id.into()));
         }
         match self.nodes.get(part).map(|n| &n.kind) {
             Some(ModelNodeKind::Part(_)) => {}
             Some(_) => return Err(ModelError::NotAPart),
-            None => return Err(ModelError::UnknownNode),
+            None => return Err(ModelError::UnknownNode(part.clone())),
         }
         self.textures.insert(id.clone(), texture);
         self.texture_order.push(id.clone());
@@ -90,7 +89,7 @@ impl Model {
 
     pub fn delete_texture(&mut self, id: &TexId) -> Result<(), ModelError> {
         if self.textures.remove(id).is_none() {
-            return Err(ModelError::UnknownTexture);
+            return Err(ModelError::UnknownTexture(id.clone()));
         }
         self.texture_order.retain(|t| t != id);
         for node in self.nodes.values_mut() {
@@ -205,7 +204,7 @@ mod tests {
         ));
         assert!(matches!(
             r.model.add_texture(&stranger, texture(), &mut r.hex),
-            Err(ModelError::UnknownNode)
+            Err(ModelError::UnknownNode(id)) if id == stranger
         ));
         assert!(matches!(
             r.model

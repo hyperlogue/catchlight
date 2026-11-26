@@ -49,7 +49,7 @@ impl Model {
             return Err(ModelError::NonFinite("a param's default"));
         }
         if self.params.contains_key(&id) {
-            return Err(ModelError::DuplicateId(id.to_string()));
+            return Err(ModelError::DuplicateId(id.clone().into()));
         }
         self.params.insert(id.clone(), param);
         if self.is_fragment()
@@ -67,7 +67,7 @@ impl Model {
     /// A two-param binding naming it is removed whole.
     pub fn delete_param(&mut self, id: &ParamId) -> Result<(), ModelError> {
         if self.params.remove(id).is_none() {
-            return Err(ModelError::UnknownParam);
+            return Err(ModelError::UnknownParam(id.clone()));
         }
         self.param_order.retain(|p| p != id);
         self.bindings.retain(|b| !b.key.params.contains(id));

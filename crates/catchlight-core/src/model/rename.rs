@@ -9,15 +9,18 @@ impl Model {
             return Ok(());
         }
         if !self.nodes.contains_key(old) {
-            return Err(ModelError::UnknownNode);
+            return Err(ModelError::UnknownNode(old.clone()));
         }
         if self.nodes.contains_key(&new) {
-            return Err(ModelError::DuplicateId(new.to_string()));
+            return Err(ModelError::DuplicateId(new.clone().into()));
         }
         if self.resolves_response_node(&new) {
             self.validate_response_rename(Some((old, &new)), None)?;
         }
-        let node = self.nodes.remove(old).ok_or(ModelError::UnknownNode)?;
+        let node = self
+            .nodes
+            .remove(old)
+            .ok_or_else(|| ModelError::UnknownNode(old.clone()))?;
         let parent = node.parent.clone();
         let children = node.children.clone();
         self.nodes.insert(new.clone(), node);
@@ -92,17 +95,20 @@ impl Model {
             return Ok(());
         }
         if !self.params.contains_key(old) {
-            return Err(ModelError::UnknownParam);
+            return Err(ModelError::UnknownParam(old.clone()));
         }
         if self.params.contains_key(&new) {
-            return Err(ModelError::DuplicateId(new.to_string()));
+            return Err(ModelError::DuplicateId(new.clone().into()));
         }
         if self.is_fragment()
             && (self.response_owner(old).is_some() || self.response_owner(&new).is_some())
         {
             self.validate_response_rename(None, Some((old, &new)))?;
         }
-        let param = self.params.remove(old).ok_or(ModelError::UnknownParam)?;
+        let param = self
+            .params
+            .remove(old)
+            .ok_or_else(|| ModelError::UnknownParam(old.clone()))?;
         self.params.insert(new.clone(), param);
         for p in &mut self.param_order {
             if p == old {
@@ -164,15 +170,15 @@ impl Model {
             return Ok(());
         }
         if !self.textures.contains_key(old) {
-            return Err(ModelError::UnknownTexture);
+            return Err(ModelError::UnknownTexture(old.clone()));
         }
         if self.textures.contains_key(&new) {
-            return Err(ModelError::DuplicateId(new.to_string()));
+            return Err(ModelError::DuplicateId(new.clone().into()));
         }
         let texture = self
             .textures
             .remove(old)
-            .ok_or(ModelError::UnknownTexture)?;
+            .ok_or_else(|| ModelError::UnknownTexture(old.clone()))?;
         self.textures.insert(new.clone(), texture);
         for t in &mut self.texture_order {
             if t == old {

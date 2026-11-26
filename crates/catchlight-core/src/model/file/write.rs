@@ -34,7 +34,7 @@ impl Model {
                 match validate::WeldEnd::of(self.node(end).map(|n| &n.kind), fragment) {
                     validate::WeldEnd::Part | validate::WeldEnd::Deferred => {}
                     validate::WeldEnd::NotAPart(_) => return Err(ModelError::WeldEndNotAPart),
-                    validate::WeldEnd::Missing => return Err(ModelError::UnknownNode),
+                    validate::WeldEnd::Missing => return Err(ModelError::UnknownNode(end.clone())),
                 }
             }
         }
@@ -53,7 +53,9 @@ impl Model {
         let order = self.nodes_in_order();
         let mut nodes = Vec::with_capacity(order.len());
         for id in &order {
-            let node = self.node(id).ok_or(ModelError::UnknownNode)?;
+            let node = self
+                .node(id)
+                .ok_or_else(|| ModelError::UnknownNode(id.clone()))?;
             nodes.push(ClmNode {
                 id: id.clone(),
                 parent: node.parent().cloned(),
@@ -85,7 +87,9 @@ impl Model {
 
         let mut params = Vec::with_capacity(self.param_order.len());
         for id in &self.param_order {
-            let p = self.param(id).ok_or(ModelError::UnknownParam)?;
+            let p = self
+                .param(id)
+                .ok_or_else(|| ModelError::UnknownParam(id.clone()))?;
             params.push(ClmParam {
                 id: id.clone(),
                 name: p.name.to_string(),
@@ -124,7 +128,9 @@ impl Model {
         let doc = self.to_clm_structure()?;
         let mut textures = Vec::with_capacity(self.texture_order.len());
         for id in &self.texture_order {
-            let t = self.texture(id).ok_or(ModelError::UnknownTexture)?;
+            let t = self
+                .texture(id)
+                .ok_or_else(|| ModelError::UnknownTexture(id.clone()))?;
             textures.push(ClmTexture {
                 id: id.clone(),
                 encoding: t.encoding,
@@ -157,7 +163,9 @@ impl Model {
         let doc = self.to_clm_structure()?;
         let mut textures = Vec::with_capacity(self.texture_order.len());
         for id in &self.texture_order {
-            let t = self.texture(id).ok_or(ModelError::UnknownTexture)?;
+            let t = self
+                .texture(id)
+                .ok_or_else(|| ModelError::UnknownTexture(id.clone()))?;
             textures.push(clm::ClmTextureBytes {
                 id,
                 encoding: t.encoding,
@@ -179,7 +187,9 @@ impl Model {
         let doc = self.to_clm_structure()?;
         let mut textures = Vec::with_capacity(self.texture_order.len());
         for id in &self.texture_order {
-            let t = self.texture(id).ok_or(ModelError::UnknownTexture)?;
+            let t = self
+                .texture(id)
+                .ok_or_else(|| ModelError::UnknownTexture(id.clone()))?;
             textures.push(ClmTextureRef {
                 id: id.clone(),
                 encoding: t.encoding,

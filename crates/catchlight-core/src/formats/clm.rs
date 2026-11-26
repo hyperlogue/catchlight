@@ -139,20 +139,20 @@ pub enum ClmError {
     Container(#[from] ContainerError),
     #[error("CBOR encode: {0}")]
     Encode(#[source] ciborium::ser::Error<std::io::Error>),
-    #[error("extension {key:?} names bytes the file does not carry")]
-    ExtensionBytesMissing { key: String },
-    #[error("the file carries bytes for extension {key:?}, which its structure does not name")]
-    ExtensionBytesOrphan { key: String },
-    #[error("the file carries the bytes of extension {key:?} twice")]
-    ExtensionBytesDuplicate { key: String },
-    #[error("extension {key:?} carries {actual} bytes but its marker says {expected}")]
+    #[error("extension \"{key}\" names bytes the file does not carry")]
+    ExtensionBytesMissing { key: ExtensionKey },
+    #[error("the file carries bytes for extension \"{key}\", which its structure does not name")]
+    ExtensionBytesOrphan { key: ExtensionKey },
+    #[error("the file carries the bytes of extension \"{key}\" twice")]
+    ExtensionBytesDuplicate { key: ExtensionKey },
+    #[error("extension \"{key}\" carries {actual} bytes but its marker says {expected}")]
     ExtensionSizeMismatch {
-        key: String,
+        key: ExtensionKey,
         expected: u64,
         actual: u64,
     },
-    #[error("extension {key:?}'s bytes do not hash to what its marker says")]
-    ExtensionHashMismatch { key: String },
+    #[error("extension \"{key}\"'s bytes do not hash to what its marker says")]
+    ExtensionHashMismatch { key: ExtensionKey },
     #[error("CBOR decode: {0}")]
     Decode(#[source] ciborium::de::Error<std::io::Error>),
     #[error("missing {0} section")]
@@ -648,7 +648,7 @@ pub fn check_extensions(doc: &ClmStructure, blobs: &[ClmExtensionBlob]) -> Resul
     for blob in blobs {
         if carried.insert(&blob.key, blob).is_some() {
             return Err(ClmError::ExtensionBytesDuplicate {
-                key: blob.key.to_string(),
+                key: blob.key.clone(),
             });
         }
     }
@@ -659,18 +659,14 @@ pub fn check_extensions(doc: &ClmStructure, blobs: &[ClmExtensionBlob]) -> Resul
         };
         let blob = carried
             .remove(key)
-            .ok_or_else(|| ClmError::ExtensionBytesMissing {
-                key: key.to_string(),
-            })?;
+            .ok_or_else(|| ClmError::ExtensionBytesMissing { key: key.clone() })?;
         check_marker(key, marker, &blob.data)?;
     }
 
     // Whatever the markers did not claim is a payload nothing names, whether
     // its key is absent from the structure or filed there as a JSON value.
     if let Some((key, _)) = carried.into_iter().next() {
-        return Err(ClmError::ExtensionBytesOrphan {
-            key: key.to_string(),
-        });
+        return Err(ClmError::ExtensionBytesOrphan { key: key.clone() });
     }
     Ok(())
 }
@@ -682,15 +678,13 @@ pub(crate) fn check_marker(
 ) -> Result<(), ClmError> {
     if data.len() as u64 != marker.size {
         return Err(ClmError::ExtensionSizeMismatch {
-            key: key.to_string(),
+            key: key.clone(),
             expected: marker.size,
             actual: data.len() as u64,
         });
     }
     if extension_hash(data) != marker.hash {
-        return Err(ClmError::ExtensionHashMismatch {
-            key: key.to_string(),
-        });
+        return Err(ClmError::ExtensionHashMismatch { key: key.clone() });
     }
     Ok(())
 }

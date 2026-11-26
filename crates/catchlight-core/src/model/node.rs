@@ -411,7 +411,10 @@ impl Model {
         id: &NodeId,
         f: impl FnOnce(&mut NodeProperties) -> R,
     ) -> Result<R, ModelError> {
-        let node = self.nodes.get_mut(id).ok_or(ModelError::UnknownNode)?;
+        let node = self
+            .nodes
+            .get_mut(id)
+            .ok_or_else(|| ModelError::UnknownNode(id.clone()))?;
         let previous = node.properties.clone();
         let out = f(&mut node.properties);
         if let Err(fault) = validate::node_placement(node.z_order, &node.transform) {
@@ -431,7 +434,10 @@ impl Model {
         id: &NodeId,
         f: impl FnOnce(&mut ModelNodeKind) -> R,
     ) -> Result<R, ModelError> {
-        let node = self.nodes.get_mut(id).ok_or(ModelError::UnknownNode)?;
+        let node = self
+            .nodes
+            .get_mut(id)
+            .ok_or_else(|| ModelError::UnknownNode(id.clone()))?;
         let previous = node.kind.clone();
         let out = f(&mut node.kind);
         if let Some(what) = kind_edit_fault(&previous, &node.kind) {
@@ -449,7 +455,10 @@ impl Model {
         if response_changed {
             self.response_index.take();
             if let Err(error) = self.validate_responses() {
-                self.nodes.get_mut(id).ok_or(ModelError::UnknownNode)?.kind = previous;
+                self.nodes
+                    .get_mut(id)
+                    .ok_or_else(|| ModelError::UnknownNode(id.clone()))?
+                    .kind = previous;
                 self.response_index.take();
                 return Err(error.into());
             }
@@ -464,12 +473,12 @@ impl Model {
         node: &NodeId,
         targets: Vec<Option<ParamId>>,
     ) -> Result<(), ModelError> {
-        if targets
+        if let Some(missing) = targets
             .iter()
             .flatten()
-            .any(|p| !self.params.contains_key(p))
+            .find(|p| !self.params.contains_key(*p))
         {
-            return Err(ModelError::UnknownParam);
+            return Err(ModelError::UnknownParam(missing.clone()));
         }
         match self.nodes.get_mut(node).map(|n| &mut n.kind) {
             Some(ModelNodeKind::Spine(spine)) => {
@@ -482,7 +491,7 @@ impl Model {
                 spine.targets = targets.into();
             }
             Some(_) => return Err(ModelError::NotSpine),
-            None => return Err(ModelError::UnknownNode),
+            None => return Err(ModelError::UnknownNode(node.clone())),
         }
         self.bump();
         Ok(())
@@ -500,7 +509,7 @@ impl Model {
                 spine.set_joints(joints);
             }
             Some(_) => return Err(ModelError::NotSpine),
-            None => return Err(ModelError::UnknownNode),
+            None => return Err(ModelError::UnknownNode(node.clone())),
         }
         self.bump();
         Ok(())
@@ -522,7 +531,7 @@ impl Model {
                 return Err(if self.nodes.contains_key(id) {
                     ModelError::NotMeshed
                 } else {
-                    ModelError::UnknownNode
+                    ModelError::UnknownNode(id.clone())
                 });
             }
         };
@@ -602,7 +611,7 @@ impl Model {
     pub(super) fn masks_mut(&mut self, id: &NodeId) -> Result<&mut Vec<ModelMask>, ModelError> {
         match self.nodes.get_mut(id) {
             Some(n) => n.masks_mut().ok_or(ModelError::NotMaskable),
-            None => Err(ModelError::UnknownNode),
+            None => Err(ModelError::UnknownNode(id.clone())),
         }
     }
 
@@ -618,7 +627,7 @@ impl Model {
         match self.nodes.get(source).map(|n| &n.kind) {
             Some(k) if is_mask_source(k) => {}
             Some(_) => return Err(ModelError::NotAMaskSource),
-            None => return Err(ModelError::UnknownNode),
+            None => return Err(ModelError::UnknownNode(source.clone())),
         }
         let source = source.clone();
         self.masks_mut(id)?.push(ModelMask { source, mode });

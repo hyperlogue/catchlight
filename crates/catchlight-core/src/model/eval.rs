@@ -111,7 +111,9 @@ impl Model {
         axis: &[f32],
         pose: &Pose,
     ) -> Result<(usize, usize, f32), ModelError> {
-        let p = self.param(param).ok_or(ModelError::UnknownParam)?;
+        let p = self
+            .param(param)
+            .ok_or_else(|| ModelError::UnknownParam(param.clone()))?;
         if axis.is_empty() {
             return Ok((0, 0, 0.0));
         }

@@ -210,10 +210,10 @@ fn load_limit_info(limit: &LoadLimitError) -> LimitInfo {
 
 fn model_error_code(e: &ModelError) -> ErrorCode {
     match e {
-        ModelError::UnknownNode => ErrorCode::NoNode,
-        ModelError::UnknownParam => ErrorCode::NoParam,
-        ModelError::UnknownTexture => ErrorCode::NoTexture,
-        ModelError::UnknownSlot => ErrorCode::UnknownSlot,
+        ModelError::UnknownNode(_) => ErrorCode::NoNode,
+        ModelError::UnknownParam(_) => ErrorCode::NoParam,
+        ModelError::UnknownTexture(_) => ErrorCode::NoTexture,
+        ModelError::UnknownSlot { .. } => ErrorCode::UnknownSlot,
         ModelError::DuplicateId(_) => ErrorCode::DuplicateId,
         ModelError::DuplicateSlot(_) => ErrorCode::DuplicateSlot,
         ModelError::WeldUnknownSlot(_) => ErrorCode::WeldUnknownSlot,

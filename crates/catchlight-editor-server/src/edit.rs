@@ -325,7 +325,7 @@ fn write_cells(
                     if model.node(&key.node).is_some() {
                         ModelError::NotMeshed
                     } else {
-                        ModelError::UnknownNode
+                        ModelError::UnknownNode(key.node.clone())
                     }
                 })?
                 .verts

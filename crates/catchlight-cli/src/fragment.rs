@@ -8,7 +8,7 @@ use std::path::Path;
 use catchlight_core::extension::IdRef;
 use catchlight_core::formats::clm::{ClmExtension, ClmFile, ClmNodeKind, ClmStructure};
 use catchlight_core::id::NodeId;
-use catchlight_core::{Required, Requirement};
+use catchlight_core::{Required, Requirement, RequirementOwner};
 
 use crate::{Error, file};
 
@@ -124,7 +124,7 @@ pub fn requirements(path: &Path) -> Result<Vec<Requirement>, Error> {
 pub fn scan(clm: &ClmFile) -> Vec<Requirement> {
     let doc = &clm.doc;
     let mut out: Vec<Requirement> = Vec::new();
-    let mut need = |id: Required, field: &'static str, owner: String| {
+    let mut need = |id: Required, field: &'static str, owner: RequirementOwner| {
         out.push(Requirement { id, field, owner });
     };
 
@@ -132,7 +132,7 @@ pub fn scan(clm: &ClmFile) -> Vec<Requirement> {
     let has_param = |id: &catchlight_core::id::ParamId| doc.params.iter().any(|p| &p.id == id);
 
     for node in &doc.nodes {
-        let owner = node.id.to_string();
+        let owner = RequirementOwner::Node(node.id.clone());
         if let Some(parent) = &node.parent
             && !has_node(parent)
         {
@@ -197,7 +197,7 @@ pub fn scan(clm: &ClmFile) -> Vec<Requirement> {
     }
 
     for binding in &doc.bindings {
-        let owner = binding.node.to_string();
+        let owner = RequirementOwner::Node(binding.node.clone());
         if !has_node(&binding.node) {
             need(
                 Required::Node(binding.node.clone()),
@@ -227,11 +227,15 @@ pub fn scan(clm: &ClmFile) -> Vec<Requirement> {
                 need(
                     Required::Slot(end.clone(), slot.clone()),
                     "weld end",
-                    far.to_string(),
+                    RequirementOwner::Node(far.clone()),
                 );
             }
             if weld.pairs.is_empty() {
-                need(Required::Part(end.clone()), "weld end", far.to_string());
+                need(
+                    Required::Part(end.clone()),
+                    "weld end",
+                    RequirementOwner::Node(far.clone()),
+                );
             }
         }
     }
@@ -252,7 +256,7 @@ pub fn scan(clm: &ClmFile) -> Vec<Requirement> {
             need(
                 id,
                 "extension reference",
-                format!("extension {:?}", key.as_str()),
+                RequirementOwner::Extension(key.clone()),
             );
         }
     }
@@ -293,7 +297,7 @@ pub fn render_json(requirements: &[Requirement]) -> String {
                 "id": id,
                 "slot": slot,
                 "field": r.field,
-                "owner": r.owner,
+                "owner": r.owner.to_string(),
             })
         })
         .collect();

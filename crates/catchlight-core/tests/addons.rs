@@ -327,8 +327,7 @@ fn removing_a_subtree_and_installing_it_back_restores_the_model() {
             assert_eq!(
                 cut.install(&addon).unwrap_err().to_string(),
                 InstallError::Collision {
-                    kind: "texture",
-                    id: shared.to_string(),
+                    id: shared.clone().into(),
                 }
                 .to_string(),
                 "seed {seed}, root {root}"

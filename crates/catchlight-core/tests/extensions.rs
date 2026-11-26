@@ -126,7 +126,7 @@ fn deleting_a_key_the_model_does_not_carry_is_an_error() {
     let mut model = Model::new();
     let err = model.delete_extension(&key("acme.absent")).unwrap_err();
     assert!(
-        matches!(&err, ModelError::UnknownExtension(k) if k == "acme.absent"),
+        matches!(&err, ModelError::UnknownExtension(k) if k.as_str() == "acme.absent"),
         "{err}"
     );
 }
@@ -140,7 +140,7 @@ fn a_reserved_key_is_refused_to_an_author_and_accepted_from_a_file() {
     assert!(reserved.is_reserved());
     let err = model.set_extension(reserved.clone(), json()).unwrap_err();
     assert!(
-        matches!(&err, ModelError::ReservedExtension(k) if k == "catchlight.thumbnail"),
+        matches!(&err, ModelError::ReservedExtension(k) if k.as_str() == "catchlight.thumbnail"),
         "{err}"
     );
     assert!(model.delete_extension(&reserved).is_err());
@@ -211,7 +211,7 @@ fn refusal(doc: &ClmStructure, blobs: &[ClmExtensionBlob]) -> clm::ClmError {
 fn a_marker_without_its_bytes_is_refused_by_key() {
     let doc = with_extensions(vec![(key("acme.thumb"), marker(b"abc"))]);
     assert!(
-        matches!(refusal(&doc, &[]), clm::ClmError::ExtensionBytesMissing { key } if key == "acme.thumb")
+        matches!(refusal(&doc, &[]), clm::ClmError::ExtensionBytesMissing { key } if key.as_str() == "acme.thumb")
     );
 }
 
@@ -219,7 +219,7 @@ fn a_marker_without_its_bytes_is_refused_by_key() {
 fn bytes_nothing_names_are_refused_by_key() {
     let empty = root_structure();
     assert!(
-        matches!(refusal(&empty, &[blob("acme.thumb", b"abc")]), clm::ClmError::ExtensionBytesOrphan { key } if key == "acme.thumb")
+        matches!(refusal(&empty, &[blob("acme.thumb", b"abc")]), clm::ClmError::ExtensionBytesOrphan { key } if key.as_str() == "acme.thumb")
     );
     let as_json = with_extensions(vec![(
         key("acme.thumb"),
@@ -240,7 +240,7 @@ fn a_size_or_a_hash_that_disagrees_with_the_marker_is_refused() {
     ));
     assert!(matches!(
         refusal(&doc, &[blob("acme.thumb", b"abd")]),
-        clm::ClmError::ExtensionHashMismatch { key } if key == "acme.thumb"
+        clm::ClmError::ExtensionHashMismatch { key } if key.as_str() == "acme.thumb"
     ));
 }
 
@@ -405,7 +405,7 @@ fn extract_leaves_extensions_behind_and_install_refuses_one() {
     let mut target = Model::new();
     let err = target.install(&carrier).unwrap_err();
     assert!(
-        matches!(&err, InstallError::CarriesExtension { key } if key == "acme.camera"),
+        matches!(&err, InstallError::CarriesExtension { key } if key.as_str() == "acme.camera"),
         "{err}"
     );
 }

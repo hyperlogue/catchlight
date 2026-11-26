@@ -20,7 +20,7 @@ mod texture;
 mod tree;
 mod validate;
 
-pub use addon::{InstallError, Installed, Required, Requirement, Requirements};
+pub use addon::{InstallError, Installed, Required, Requirement, RequirementOwner, Requirements};
 pub use binding::{
     BindingKey, BindingParams, BindingTarget, DenseGrid, ModelBinding, ModelBindingValues,
     ScalarTarget, param_range_is_valid,
@@ -55,7 +55,7 @@ use crate::formats::clm::{
     self as clm, ClmBindingValues, ClmMesh, ClmTransform, TextureAlpha, TextureEncoding,
 };
 use crate::id::{
-    ExtensionKey, HexSource, IdError, Name, NodeId, NodeIdKind, ParamId, SlotId, TexId,
+    AnyId, ExtensionKey, HexSource, IdError, Name, NodeId, NodeIdKind, ParamId, SlotId, TexId,
 };
 
 /// 32-bit Ids collide by birthday around 2^16 siblings; the cap only fires on

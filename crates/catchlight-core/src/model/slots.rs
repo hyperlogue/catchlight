@@ -121,7 +121,7 @@ impl Model {
     pub fn slot_add(&mut self, id: &NodeId, slot: SlotId) -> Result<(), ModelError> {
         let part = self.part_mut(id)?;
         if part.slots.iter().any(|s| s.id == slot) {
-            return Err(ModelError::DuplicateSlot(slot.to_string()));
+            return Err(ModelError::DuplicateSlot(slot));
         }
         Arc::make_mut(&mut part.slots).push(Slot {
             id: slot,
@@ -152,10 +152,13 @@ impl Model {
     ) -> Result<(), ModelError> {
         let part = self.part_mut(id)?;
         let Some(at) = part.slots.iter().position(|s| &s.id == from) else {
-            return Err(ModelError::UnknownSlot);
+            return Err(ModelError::UnknownSlot {
+                node: id.clone(),
+                slot: from.clone(),
+            });
         };
         if &to != from && part.slots.iter().any(|s| s.id == to) {
-            return Err(ModelError::DuplicateSlot(to.to_string()));
+            return Err(ModelError::DuplicateSlot(to.clone()));
         }
         Arc::make_mut(&mut part.slots)[at].id = to.clone();
         for w in &mut self.welds {
@@ -198,7 +201,7 @@ impl Model {
         let vertices = match self.node(id).map(|n| &n.kind) {
             Some(ModelNodeKind::Part(p)) => p.mesh().vertex_count(),
             Some(_) => return Err(ModelError::NotAPart),
-            None => return Err(ModelError::UnknownNode),
+            None => return Err(ModelError::UnknownNode(id.clone())),
         };
         if vertex as usize >= vertices {
             return Err(ModelError::IndexOutOfRange);
@@ -218,7 +221,10 @@ impl Model {
     pub fn slot_delete(&mut self, id: &NodeId, slot: &SlotId) -> Result<(), ModelError> {
         let part = self.part_mut(id)?;
         let Some(at) = part.slots.iter().position(|s| &s.id == slot) else {
-            return Err(ModelError::UnknownSlot);
+            return Err(ModelError::UnknownSlot {
+                node: id.clone(),
+                slot: slot.clone(),
+            });
         };
         Arc::make_mut(&mut part.slots).remove(at);
         for w in &mut self.welds {
@@ -243,7 +249,7 @@ impl Model {
                 ModelNodeKind::Part(p) => Ok(p),
                 _ => Err(ModelError::NotAPart),
             },
-            None => Err(ModelError::UnknownNode),
+            None => Err(ModelError::UnknownNode(id.clone())),
         }
     }
 
@@ -251,7 +257,10 @@ impl Model {
         Arc::make_mut(&mut self.part_mut(id)?.slots)
             .iter_mut()
             .find(|s| &s.id == slot)
-            .ok_or(ModelError::UnknownSlot)
+            .ok_or_else(|| ModelError::UnknownSlot {
+                node: id.clone(),
+                slot: slot.clone(),
+            })
     }
 
     pub fn welds(&self) -> &[ModelWeld] {
@@ -282,7 +291,10 @@ impl Model {
         let at = pairs
             .iter()
             .position(|p| if forward { &p.a } else { &p.b } == slot)
-            .ok_or(ModelError::UnknownSlot)?;
+            .ok_or_else(|| ModelError::UnknownSlot {
+                node: a.clone(),
+                slot: slot.clone(),
+            })?;
         pairs[at].weight = share;
         self.bump();
         Ok(())
@@ -305,14 +317,14 @@ impl Model {
             .map_err(|fault| match fault {
                 validate::WeldFault::SelfPaired => ModelError::WeldSelfPaired,
                 validate::WeldFault::EndNotAPart { .. } => ModelError::WeldEndNotAPart,
-                validate::WeldFault::EndMissing { .. } => ModelError::UnknownNode,
+                validate::WeldFault::EndMissing { end } => ModelError::UnknownNode(end.clone()),
                 validate::WeldFault::Duplicate => ModelError::DuplicateWeld,
                 validate::WeldFault::WeightOutOfRange { .. } => ModelError::WeldWeightOutOfRange,
                 validate::WeldFault::UnknownSlot { slot, .. } => {
-                    ModelError::WeldUnknownSlot(slot.to_string())
+                    ModelError::WeldUnknownSlot(slot.clone())
                 }
                 validate::WeldFault::SlotPairedTwice { slot, .. } => {
-                    ModelError::WeldSlotPairedTwice(slot.to_string())
+                    ModelError::WeldSlotPairedTwice(slot.clone())
                 }
             })?;
         }
@@ -429,11 +441,11 @@ mod tests {
         // The refusals: a slot that is not there, and a name that is.
         assert!(matches!(
             r.model.rename_slot(&part, &slot("l"), slot("x")),
-            Err(ModelError::UnknownSlot)
+            Err(ModelError::UnknownSlot { .. })
         ));
         assert!(matches!(
             r.model.rename_slot(&part, &slot("neck"), slot("r")),
-            Err(ModelError::DuplicateSlot(id)) if id == "r"
+            Err(ModelError::DuplicateSlot(id)) if id.as_str() == "r"
         ));
         r.model
             .rename_slot(&part, &slot("neck"), slot("neck"))
@@ -461,7 +473,7 @@ mod tests {
         assert!(matches!(
             r.model
                 .set_weld_slot_weight(&part, &other, &slot("gone"), 0.5),
-            Err(ModelError::UnknownSlot)
+            Err(ModelError::UnknownSlot { .. })
         ));
         let root = r.root.clone();
         assert!(matches!(
@@ -569,17 +581,17 @@ mod tests {
         ));
         assert!(matches!(
             r.model.slot_add(&ghost, slot("l")),
-            Err(ModelError::UnknownNode)
+            Err(ModelError::UnknownNode(id)) if id == ghost
         ));
 
         r.model.slot_add(&part, slot("l")).unwrap();
         assert!(matches!(
             r.model.slot_add(&part, slot("l")),
-            Err(ModelError::DuplicateSlot(id)) if id == "l"
+            Err(ModelError::DuplicateSlot(id)) if id.as_str() == "l"
         ));
         assert!(matches!(
             r.model.slot_fill(&part, &slot("ghost"), 0),
-            Err(ModelError::UnknownSlot)
+            Err(ModelError::UnknownSlot { node, slot: s }) if node == part && s == slot("ghost")
         ));
         assert!(
             matches!(
@@ -597,7 +609,7 @@ mod tests {
 
         assert!(matches!(
             r.model.slot_delete(&part, &slot("ghost")),
-            Err(ModelError::UnknownSlot)
+            Err(ModelError::UnknownSlot { .. })
         ));
         assert!(
             r.model.slots(&composite).is_none(),
@@ -633,7 +645,7 @@ mod tests {
                 NodeId::new("ghost").unwrap(),
                 Vec::new()
             )]),
-            Err(ModelError::UnknownNode)
+            Err(ModelError::UnknownNode(id)) if id.as_str() == "ghost"
         ));
         assert!(
             matches!(
@@ -648,14 +660,14 @@ mod tests {
         assert!(
             matches!(
                 r.model.set_welds(weld(vec![pair("ghost", 0.5)])),
-                Err(ModelError::WeldUnknownSlot(id)) if id == "ghost"
+                Err(ModelError::WeldUnknownSlot(id)) if id.as_str() == "ghost"
             ),
             "a pair naming a slot its part does not carry",
         );
         assert!(
             matches!(
                 r.model.set_welds(weld(vec![pair("l", 0.5), pair("l", 0.25)])),
-                Err(ModelError::WeldSlotPairedTwice(id)) if id == "l"
+                Err(ModelError::WeldSlotPairedTwice(id)) if id.as_str() == "l"
             ),
             "one slot, two pairs",
         );

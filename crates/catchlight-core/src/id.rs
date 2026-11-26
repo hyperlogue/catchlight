@@ -180,6 +180,52 @@ string_id!(
      within the model. Generated as `slot-<8 hex>` by [`SlotId::generate`]."
 );
 
+/// One of the Ids unique within a model, for an error that may name any of them.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum AnyId {
+    Node(NodeId),
+    Param(ParamId),
+    Texture(TexId),
+}
+
+impl AnyId {
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Self::Node(_) => "node",
+            Self::Param(_) => "param",
+            Self::Texture(_) => "texture",
+        }
+    }
+}
+
+impl fmt::Display for AnyId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Node(id) => id.fmt(f),
+            Self::Param(id) => id.fmt(f),
+            Self::Texture(id) => id.fmt(f),
+        }
+    }
+}
+
+impl From<NodeId> for AnyId {
+    fn from(id: NodeId) -> Self {
+        Self::Node(id)
+    }
+}
+
+impl From<ParamId> for AnyId {
+    fn from(id: ParamId) -> Self {
+        Self::Param(id)
+    }
+}
+
+impl From<TexId> for AnyId {
+    fn from(id: TexId) -> Self {
+        Self::Texture(id)
+    }
+}
+
 /// A reading aid in a generated [`NodeId`]; no code may parse it back out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum NodeIdKind {

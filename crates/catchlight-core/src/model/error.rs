@@ -14,14 +14,14 @@ pub enum ModelError {
         target: &'static str,
         reason: String,
     },
-    #[error("unknown node id")]
-    UnknownNode,
-    #[error("unknown param id")]
-    UnknownParam,
-    #[error("unknown texture id")]
-    UnknownTexture,
-    #[error("id {0:?} is already used in this model")]
-    DuplicateId(String),
+    #[error("unknown node id \"{0}\"")]
+    UnknownNode(NodeId),
+    #[error("unknown param id \"{0}\"")]
+    UnknownParam(ParamId),
+    #[error("unknown texture id \"{0}\"")]
+    UnknownTexture(TexId),
+    #[error("id \"{0}\" is already used in this model")]
+    DuplicateId(AnyId),
     #[error("could not draw a free id in {ID_MINT_ATTEMPTS} attempts")]
     IdExhausted,
     #[error(transparent)]
@@ -48,20 +48,20 @@ pub enum ModelError {
     NotAPart,
     #[error("a mask source must be a part or a composite")]
     NotAMaskSource,
-    #[error("part carries no such vertex slot")]
-    UnknownSlot,
-    #[error("vertex slot {0:?} is already on this part")]
-    DuplicateSlot(String),
+    #[error("part \"{node}\" carries no vertex slot \"{slot}\"")]
+    UnknownSlot { node: NodeId, slot: SlotId },
+    #[error("vertex slot \"{0}\" is already on this part")]
+    DuplicateSlot(SlotId),
     #[error("a weld pairs two different parts, never a part with itself")]
     WeldSelfPaired,
     #[error("a weld's end is not a part")]
     WeldEndNotAPart,
     #[error("those two parts are already welded; one weld records a part pair")]
     DuplicateWeld,
-    #[error("a weld pairs vertex slot {0:?}, which the part on that side does not carry")]
-    WeldUnknownSlot(String),
-    #[error("a weld pairs vertex slot {0:?} twice")]
-    WeldSlotPairedTwice(String),
+    #[error("a weld pairs vertex slot \"{0}\", which the part on that side does not carry")]
+    WeldUnknownSlot(SlotId),
+    #[error("a weld pairs vertex slot \"{0}\" twice")]
+    WeldSlotPairedTwice(SlotId),
     #[error("no weld pairs those two parts")]
     UnknownWeld,
     #[error("a vertex slot's weight is a share of a meeting point, so it must be within 0..=1")]
@@ -88,12 +88,12 @@ pub enum ModelError {
     WrongTarget,
     #[error("index out of range")]
     IndexOutOfRange,
-    #[error("this model carries no extension {0:?}")]
-    UnknownExtension(String),
+    #[error("this model carries no extension \"{0}\"")]
+    UnknownExtension(ExtensionKey),
     #[error(
-        "extension key {0:?} is catchlight's own to define; a vendor key names its vendor first"
+        "extension key \"{0}\" is catchlight's own to define; a vendor key names its vendor first"
     )]
-    ReservedExtension(String),
+    ReservedExtension(ExtensionKey),
     #[error("mesh is malformed: {0}")]
     MalformedMesh(&'static str),
     #[error(".clm codec: {0}")]

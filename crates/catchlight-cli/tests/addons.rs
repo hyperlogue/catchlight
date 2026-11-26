@@ -11,7 +11,9 @@ use catchlight_cli::diff::diff;
 use catchlight_cli::{Error, fragment};
 use catchlight_core::extension::{IdRef, Payload, RawExtension};
 use catchlight_core::id::{ExtensionKey, NodeId, ParamId, SlotId, TexId};
-use catchlight_core::{ExtensionValue, InstallError, Model, Required, Requirement};
+use catchlight_core::{
+    ExtensionValue, InstallError, Model, Required, Requirement, RequirementOwner,
+};
 
 use common::{decode, read, tmp};
 
@@ -238,12 +240,12 @@ fn the_requirements_are_exactly_the_cut_edges() {
             Requirement {
                 id: Required::Node(NodeId::new("root").unwrap()),
                 field: "parent",
-                owner: "node-9".to_string(),
+                owner: RequirementOwner::Node(NodeId::new("node-9").unwrap()),
             },
             Requirement {
                 id: Required::Drawable(NodeId::new("node-5").unwrap()),
                 field: "mask source",
-                owner: "node-9".to_string(),
+                owner: RequirementOwner::Node(NodeId::new("node-9").unwrap()),
             },
         ]
     );
@@ -309,7 +311,7 @@ fn a_shared_texture_is_copied_into_the_addon_and_never_required() {
     assert!(
         matches!(
             &error,
-            Error::Install(InstallError::Collision { kind: "texture", id }) if id == keep.as_str()
+            Error::Install(InstallError::Collision { id: catchlight_core::AnyId::Texture(id) }) if *id == keep
         ),
         "{error}"
     );
@@ -350,22 +352,22 @@ fn a_weld_reaching_into_the_base_requires_its_slots() {
             Requirement {
                 id: Required::Node(NodeId::new("root").unwrap()),
                 field: "parent",
-                owner: "node-2".to_string(),
+                owner: RequirementOwner::Node(NodeId::new("node-2").unwrap()),
             },
             Requirement {
                 id: Required::Slot(NodeId::new("node-1").unwrap(), SlotId::new("s0").unwrap(),),
                 field: "weld end",
-                owner: "node-2".to_string(),
+                owner: RequirementOwner::Node(NodeId::new("node-2").unwrap()),
             },
             Requirement {
                 id: Required::Slot(NodeId::new("node-1").unwrap(), SlotId::new("s1").unwrap(),),
                 field: "weld end",
-                owner: "node-2".to_string(),
+                owner: RequirementOwner::Node(NodeId::new("node-2").unwrap()),
             },
             Requirement {
                 id: Required::Slot(NodeId::new("node-1").unwrap(), SlotId::new("s2").unwrap(),),
                 field: "weld end",
-                owner: "node-2".to_string(),
+                owner: RequirementOwner::Node(NodeId::new("node-2").unwrap()),
             },
         ]
     );
@@ -397,7 +399,7 @@ fn a_weld_with_no_pairs_still_requires_the_part() {
         requirements.contains(&Requirement {
             id: Required::Part(NodeId::new("node-1").unwrap()),
             field: "weld end",
-            owner: "node-2".to_string(),
+            owner: RequirementOwner::Node(NodeId::new("node-2").unwrap()),
         }),
         "{requirements:?}"
     );
@@ -427,7 +429,7 @@ fn an_install_error_is_reported_verbatim() {
         InstallError::Missing {
             id: Required::Drawable(NodeId::new("node-5").unwrap()),
             field: "mask source",
-            owner: "node-9".to_string(),
+            owner: RequirementOwner::Node(NodeId::new("node-9").unwrap()),
         }
         .to_string()
     );
@@ -446,8 +448,7 @@ fn an_id_the_base_already_has_is_a_collision() {
     assert_eq!(
         error.to_string(),
         InstallError::Collision {
-            kind: "node",
-            id: "node-9".to_string(),
+            id: NodeId::new("node-9").unwrap().into(),
         }
         .to_string()
     );

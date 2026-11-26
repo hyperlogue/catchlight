@@ -578,7 +578,10 @@ impl Editor {
                     s.model.set_param_name(&param, Name::truncated(n))?;
                 }
                 if min.is_some() || max.is_some() {
-                    let p = s.model.param(&param).ok_or(ModelError::UnknownParam)?;
+                    let p = s
+                        .model
+                        .param(&param)
+                        .ok_or_else(|| ModelError::UnknownParam(param.clone()))?;
                     let (new_min, new_max) = (min.unwrap_or(p.min), max.unwrap_or(p.max));
                     s.model.set_param_range(&param, new_min, new_max)?;
                 }

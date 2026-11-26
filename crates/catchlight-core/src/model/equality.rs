@@ -20,8 +20,9 @@ impl Model {
             return Ok(false);
         }
         for id in &self.texture_order {
-            let a = self.textures.get(id).ok_or(ModelError::UnknownTexture)?;
-            let b = other.textures.get(id).ok_or(ModelError::UnknownTexture)?;
+            let unknown = || ModelError::UnknownTexture(id.clone());
+            let a = self.textures.get(id).ok_or_else(unknown)?;
+            let b = other.textures.get(id).ok_or_else(unknown)?;
             if a.encoding != b.encoding || a.alpha != b.alpha || a.data != b.data {
                 return Ok(false);
             }

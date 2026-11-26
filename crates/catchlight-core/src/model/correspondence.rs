@@ -133,7 +133,7 @@ impl Model {
             if self.node(node).is_some() {
                 ModelError::NotMeshed
             } else {
-                ModelError::UnknownNode
+                ModelError::UnknownNode(node.clone())
             }
         })?;
         let map = DeformMapping::new(old.verts.len() / 2, mesh.verts.len() / 2, rows)?;

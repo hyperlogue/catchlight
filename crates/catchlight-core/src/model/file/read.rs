@@ -155,7 +155,7 @@ impl Model {
         let mut texture_order = Vec::with_capacity(table.len());
         for (id, texture) in table {
             if textures.insert(id.clone(), texture).is_some() {
-                return Err(duplicate("texture", &id));
+                return Err(duplicate(id));
             }
             texture_order.push(id);
         }
@@ -189,13 +189,13 @@ impl Model {
         for p in &doc.params {
             if !param_range_is_valid(p.min, p.max) {
                 return Err(ClmLoadError::ParamRange {
-                    param: p.id.to_string(),
+                    param: p.id.clone(),
                 }
                 .into());
             }
             if !p.default.is_finite() {
                 return Err(ClmLoadError::ParamDefault {
-                    param: p.id.to_string(),
+                    param: p.id.clone(),
                 }
                 .into());
             }
@@ -211,7 +211,7 @@ impl Model {
                 )
                 .is_some()
             {
-                return Err(duplicate("param", &p.id));
+                return Err(duplicate(p.id.clone()));
             }
             param_order.push(p.id.clone());
         }
@@ -221,7 +221,7 @@ impl Model {
         let mut declared: HashSet<&NodeId> = HashSet::with_capacity(doc.nodes.len());
         for n in &doc.nodes {
             if !declared.insert(&n.id) {
-                return Err(duplicate("node", &n.id));
+                return Err(duplicate(n.id.clone()));
             }
         }
 
@@ -242,8 +242,8 @@ impl Model {
                 Some(parent) if declared.contains(parent) => {
                     if !nodes.contains_key(parent) {
                         return Err(ClmLoadError::NotTopological {
-                            node: cn.id.to_string(),
-                            parent: parent.to_string(),
+                            node: cn.id.clone(),
+                            parent: parent.clone(),
                         }
                         .into());
                     }
@@ -251,8 +251,8 @@ impl Model {
                 Some(parent) => {
                     if !shape.allows_dangling() {
                         return Err(ClmLoadError::DanglingParent {
-                            node: cn.id.to_string(),
-                            parent: parent.to_string(),
+                            node: cn.id.clone(),
+                            parent: parent.clone(),
                         }
                         .into());
                     }
@@ -261,14 +261,14 @@ impl Model {
                 None => {
                     if shape.allows_dangling() {
                         return Err(ClmLoadError::FragmentHasNoParent {
-                            node: cn.id.to_string(),
+                            node: cn.id.clone(),
                         }
                         .into());
                     }
                     if let Some(first) = roots.first() {
                         return Err(ClmLoadError::MultipleRoots {
-                            root: first.to_string(),
-                            node: cn.id.to_string(),
+                            root: first.clone(),
+                            node: cn.id.clone(),
                         }
                         .into());
                     }
@@ -287,7 +287,7 @@ impl Model {
 
             validate::node_placement(cn.z_order, &cn.transform).map_err(|fault| {
                 ClmLoadError::NodeNotFinite {
-                    node: cn.id.to_string(),
+                    node: cn.id.clone(),
                     field: fault.field(),
                 }
             })?;
@@ -301,7 +301,7 @@ impl Model {
                 &cn.id, &cn.kind, node_slots, &declared, &textures, &params, shape,
             )?;
             validate::appearance(&node.kind).map_err(|fault| ClmLoadError::NodeNotFinite {
-                node: cn.id.to_string(),
+                node: cn.id.clone(),
                 field: fault.field(),
             })?;
             nodes.insert(cn.id.clone(), node);
@@ -316,7 +316,7 @@ impl Model {
             for mask in clm_masks_of(&cn.kind) {
                 if mask.source == cn.id {
                     return Err(ClmLoadError::SelfMask {
-                        node: cn.id.to_string(),
+                        node: cn.id.clone(),
                     }
                     .into());
                 }
@@ -325,8 +325,8 @@ impl Model {
                 };
                 if !is_mask_source(&source.kind) {
                     return Err(ClmLoadError::MaskSourceKind {
-                        node: cn.id.to_string(),
-                        mask_source: mask.source.to_string(),
+                        node: cn.id.clone(),
+                        mask_source: mask.source.clone(),
                         kind: source.kind.name(),
                     }
                     .into());
@@ -345,10 +345,7 @@ impl Model {
             })
             .collect();
         if let Some(spare) = texture_order.iter().find(|id| !drawn.contains(id)) {
-            return Err(ClmLoadError::UnusedTexture {
-                id: spare.to_string(),
-            }
-            .into());
+            return Err(ClmLoadError::UnusedTexture { id: spare.clone() }.into());
         }
 
         for cn in &doc.nodes {
@@ -363,17 +360,13 @@ impl Model {
         let mut bound_keys: HashSet<BindingKey> = HashSet::with_capacity(doc.bindings.len());
         for b in &doc.bindings {
             let Some(bound) = nodes.get(&b.node) else {
-                return Err(ClmLoadError::DanglingBindingNode {
-                    id: b.node.to_string(),
-                }
-                .into());
+                return Err(ClmLoadError::DanglingBindingNode { id: b.node.clone() }.into());
             };
-            let owner = || format!("the binding on node {}", b.node);
             for p in &b.params {
                 if !params.contains_key(p) && !shape.allows_dangling() {
-                    return Err(ClmLoadError::DanglingParam {
-                        owner: owner(),
-                        id: p.to_string(),
+                    return Err(ClmLoadError::DanglingBindingParam {
+                        node: b.node.clone(),
+                        id: p.clone(),
                     }
                     .into());
                 }
@@ -385,14 +378,14 @@ impl Model {
                 Ok(()) => {}
                 Err(validate::BindingFault::ColorOnMeshGroup(t)) => {
                     return Err(ClmLoadError::ColorOnMeshGroup {
-                        node: b.node.to_string(),
+                        node: b.node.clone(),
                         target: t.name(),
                     }
                     .into());
                 }
                 Err(validate::BindingFault::DeformOnUnmeshed) => {
                     return Err(ClmLoadError::DeformOnUnmeshed {
-                        node: b.node.to_string(),
+                        node: b.node.clone(),
                         kind: bound.kind.name(),
                     }
                     .into());
@@ -401,7 +394,7 @@ impl Model {
             let vertices = bound.mesh().map_or(0, |m| m.verts.len());
             if let Some((cell, got)) = misfit_deform_cell(vertices, &b.values) {
                 return Err(ClmLoadError::DeformCellShape {
-                    node: b.node.to_string(),
+                    node: b.node.clone(),
                     cell,
                     got,
                     expected: vertices,
@@ -414,7 +407,7 @@ impl Model {
                 [x, y] if x != y => BindingParams::Two(x.clone(), y.clone()),
                 other => {
                     return Err(ClmLoadError::BindingParamCount {
-                        node: b.node.to_string(),
+                        node: b.node.clone(),
                         got: other.len(),
                     }
                     .into());
@@ -422,7 +415,7 @@ impl Model {
             };
             if !validate::binding_positions_are_valid(b.params.len(), &b.key_positions) {
                 return Err(ClmLoadError::BindingPositions {
-                    node: b.node.to_string(),
+                    node: b.node.clone(),
                 }
                 .into());
             }
@@ -441,7 +434,7 @@ impl Model {
                 };
                 if let Some(reason) = reason {
                     return Err(ClmLoadError::BindingCell {
-                        node: b.node.to_string(),
+                        node: b.node.clone(),
                         cell: [x, y],
                         reason,
                     }
@@ -470,7 +463,7 @@ impl Model {
             // reach only one.
             if !bound_keys.insert(key.clone()) {
                 return Err(ClmLoadError::DuplicateBinding {
-                    node: b.node.to_string(),
+                    node: b.node.clone(),
                     target: target.name(),
                 }
                 .into());
@@ -527,23 +520,17 @@ fn clm_masks_of(kind: &ClmNodeKind) -> &[ClmMask] {
 
 fn check_mesh(id: &NodeId, mesh: &ClmMesh) -> Result<(), ClmLoadError> {
     validate_mesh(mesh).map_err(|reason| ClmLoadError::MalformedMesh {
-        node: id.to_string(),
+        node: id.clone(),
         reason,
     })
 }
 
 pub(super) fn bytes_missing(key: &ExtensionKey) -> clm::ClmError {
-    clm::ClmError::ExtensionBytesMissing {
-        key: key.to_string(),
-    }
+    clm::ClmError::ExtensionBytesMissing { key: key.clone() }
 }
 
-pub(super) fn duplicate(kind: &'static str, id: &impl std::fmt::Display) -> LoadError {
-    ClmLoadError::DuplicateId {
-        kind,
-        id: id.to_string(),
-    }
-    .into()
+pub(super) fn duplicate(id: impl Into<AnyId>) -> LoadError {
+    ClmLoadError::DuplicateId { id: id.into() }.into()
 }
 
 fn model_kind(
@@ -563,8 +550,8 @@ fn model_kind(
             if let Some(albedo) = &p.albedo {
                 if !textures.contains_key(albedo) {
                     return Err(ClmLoadError::DanglingTexture {
-                        node: id.to_string(),
-                        id: albedo.to_string(),
+                        node: id.clone(),
+                        id: albedo.clone(),
                     }
                     .into());
                 }
@@ -610,7 +597,7 @@ fn model_spine(
     shape: Shape,
 ) -> Result<ModelSpine, LoadError> {
     validate::spine_joints(&sp.joints).map_err(|fault| {
-        let node = id.to_string();
+        let node = id.clone();
         match fault {
             SpineJointError::NoJoints => ClmLoadError::SpineNoJoints { node },
             SpineJointError::NonFinite(joint) => ClmLoadError::SpineJointField { node, joint },
@@ -624,7 +611,7 @@ fn model_spine(
     if !sp.targets.is_empty() {
         if sp.targets.len() != sp.joints.len() {
             return Err(ClmLoadError::SpineTargetCount {
-                node: id.to_string(),
+                node: id.clone(),
                 targets: sp.targets.len(),
                 joints: sp.joints.len(),
             }
@@ -632,9 +619,9 @@ fn model_spine(
         }
         for target in sp.targets.iter().flatten() {
             if !params.contains_key(target) && !shape.allows_dangling() {
-                return Err(ClmLoadError::DanglingParam {
-                    owner: format!("spine {id}"),
-                    id: target.to_string(),
+                return Err(ClmLoadError::DanglingSpineTarget {
+                    node: id.clone(),
+                    id: target.clone(),
                 }
                 .into());
             }
@@ -655,9 +642,9 @@ fn model_masks(
         .map(|m| {
             if !declared.contains(&m.source) && !shape.allows_dangling() {
                 return Err(ClmLoadError::DanglingNode {
-                    node: id.to_string(),
+                    node: id.clone(),
                     field: "mask source",
-                    id: m.source.to_string(),
+                    id: m.source.clone(),
                 }
                 .into());
             }
@@ -676,8 +663,8 @@ fn read_slots(id: &NodeId, part: &ClmPart) -> Result<(Vec<Slot>, SlotTable), Loa
     for slot in &part.slots {
         if slot.vertex.is_some_and(|v| v as usize >= vertices) {
             return Err(ClmLoadError::SlotOutOfRange {
-                node: id.to_string(),
-                slot: slot.id.to_string(),
+                node: id.clone(),
+                slot: slot.id.clone(),
                 vertex: slot.vertex.unwrap_or_default(),
                 vertices,
             }
@@ -685,8 +672,8 @@ fn read_slots(id: &NodeId, part: &ClmPart) -> Result<(Vec<Slot>, SlotTable), Loa
         }
         if !seen.insert(slot.id.clone()) {
             return Err(ClmLoadError::DuplicateSlot {
-                node: id.to_string(),
-                slot: slot.id.to_string(),
+                node: id.clone(),
+                slot: slot.id.clone(),
             }
             .into());
         }
@@ -719,31 +706,32 @@ fn read_weld<'a>(
         |part, slot| slots.get(part).is_some_and(|known| known.contains(slot)),
     )
     .map_err(|fault| {
-        let (a, b) = (weld.a.to_string(), weld.b.to_string());
+        let (a, b) = (weld.a.clone(), weld.b.clone());
         match fault {
             validate::WeldFault::SelfPaired => ClmLoadError::WeldSelfPaired { node: a },
             validate::WeldFault::EndNotAPart { end, kind } => ClmLoadError::WeldEndNotAPart {
-                node: end.to_string(),
+                node: end.clone(),
                 kind,
             },
-            validate::WeldFault::EndMissing { end } => ClmLoadError::DanglingWeldEnd {
-                node: end.to_string(),
-            },
+            validate::WeldFault::EndMissing { end } => {
+                ClmLoadError::DanglingWeldEnd { node: end.clone() }
+            }
             validate::WeldFault::Duplicate => ClmLoadError::DuplicateWeld { a, b },
             validate::WeldFault::WeightOutOfRange { slot } => ClmLoadError::WeldWeightOutOfRange {
                 a,
                 b,
-                slot: slot.to_string(),
+                slot: slot.clone(),
             },
             validate::WeldFault::UnknownSlot { end, slot } => ClmLoadError::WeldUnknownSlot {
-                node: end.to_string(),
-                slot: slot.to_string(),
+                node: end.clone(),
+                slot: slot.clone(),
             },
             validate::WeldFault::SlotPairedTwice { end, slot } => {
                 ClmLoadError::WeldSlotPairedTwice {
                     a,
                     b,
-                    slot: format!("{end}/{slot}"),
+                    end: end.clone(),
+                    slot: slot.clone(),
                 }
             }
         }

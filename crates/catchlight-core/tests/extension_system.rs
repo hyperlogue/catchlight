@@ -686,7 +686,7 @@ fn install_merges_through_the_extension_and_uninstall_takes_back_its_receipt() {
     let before = base.clone();
     match base.install(&clash) {
         Err(InstallError::ExtensionRefused { key, why }) => {
-            assert_eq!(key, AddonMerge::KEY);
+            assert_eq!(key.as_str(), AddonMerge::KEY);
             assert!(matches!(why, MergeRefused::Conflict(_)));
         }
         other => panic!("{other:?}"),
@@ -727,7 +727,7 @@ fn install_refuses_an_unregistered_extension_by_key() {
     let addon = Model::from_clm_bytes_fragment(&addon.to_clm_bytes().unwrap()).unwrap();
     match base.install(&addon) {
         Err(InstallError::ExtensionNotRegistered { key }) => {
-            assert_eq!(key, AddonUnregistered::KEY);
+            assert_eq!(key.as_str(), AddonUnregistered::KEY);
         }
         other => panic!("{other:?}"),
     }

@@ -14,7 +14,7 @@ impl Model {
         let parent = self
             .nodes
             .get(id)
-            .ok_or(ModelError::UnknownNode)?
+            .ok_or_else(|| ModelError::UnknownNode(id.clone()))?
             .parent
             .clone();
         match parent {
@@ -22,7 +22,7 @@ impl Model {
                 .nodes
                 .get_mut(&p)
                 .map(|n| Arc::make_mut(&mut n.children))
-                .ok_or(ModelError::UnknownNode),
+                .ok_or(ModelError::UnknownNode(p)),
             _ => Ok(&mut self.roots),
         }
     }
@@ -73,10 +73,10 @@ impl Model {
         mut node: ModelNode,
     ) -> Result<(), ModelError> {
         if !self.nodes.contains_key(parent) {
-            return Err(ModelError::UnknownNode);
+            return Err(ModelError::UnknownNode(parent.clone()));
         }
         if self.nodes.contains_key(&id) {
-            return Err(ModelError::DuplicateId(id.to_string()));
+            return Err(ModelError::DuplicateId(id.clone().into()));
         }
         crate::load_budget::tree_depth(self.depth_of(parent) + 1)?;
         validate::node_placement(node.z_order, &node.transform)?;
@@ -116,7 +116,7 @@ impl Model {
             return Err(ModelError::Root("deleted"));
         }
         if !self.nodes.contains_key(id) {
-            return Err(ModelError::UnknownNode);
+            return Err(ModelError::UnknownNode(id.clone()));
         }
         let removed: HashSet<NodeId> = self.subtree(id).into_iter().collect();
         self.remove_nodes(&removed);
@@ -152,8 +152,10 @@ impl Model {
         if self.root() == Some(id) {
             return Err(ModelError::Root("reparented"));
         }
-        if !self.nodes.contains_key(id) || !self.nodes.contains_key(new_parent) {
-            return Err(ModelError::UnknownNode);
+        for node in [id, new_parent] {
+            if !self.nodes.contains_key(node) {
+                return Err(ModelError::UnknownNode(node.clone()));
+            }
         }
         if self.is_self_or_descendant(new_parent, id) {
             return Err(ModelError::Cycle);
@@ -193,7 +195,7 @@ impl Model {
         let cur = siblings
             .iter()
             .position(|c| c == id)
-            .ok_or(ModelError::UnknownNode)?;
+            .ok_or_else(|| ModelError::UnknownNode(id.clone()))?;
         let moved = siblings.remove(cur);
         let index = index.min(siblings.len());
         siblings.insert(index, moved);
@@ -215,7 +217,7 @@ impl Model {
             .nodes
             .get(id)
             .and_then(|n| n.parent.clone())
-            .ok_or(ModelError::UnknownNode)?;
+            .ok_or_else(|| ModelError::UnknownNode(id.clone()))?;
 
         let mut order = Vec::new();
         let mut stack = vec![id.clone()];
@@ -232,7 +234,9 @@ impl Model {
         let mut map = HashMap::new();
         let mut reserved = HashSet::new();
         for old in &order {
-            let node = self.node(old).ok_or(ModelError::UnknownNode)?;
+            let node = self
+                .node(old)
+                .ok_or_else(|| ModelError::UnknownNode(old.clone()))?;
             let parent_id = node.parent().and_then(|p| map.get(p)).unwrap_or(&parent);
             let kind = node.kind.id_kind();
             let new_id = self.mint(
@@ -249,8 +253,9 @@ impl Model {
         }
         let previous_response_count = self.response_count;
         for old in &order {
-            let mut copy = self.node(old).ok_or(ModelError::UnknownNode)?.clone();
-            let new_id = map.get(old).ok_or(ModelError::UnknownNode)?;
+            let unknown = || ModelError::UnknownNode(old.clone());
+            let mut copy = self.node(old).ok_or_else(unknown)?.clone();
+            let new_id = map.get(old).ok_or_else(unknown)?;
             let new_parent = copy.parent().and_then(|p| map.get(p)).unwrap_or(&parent);
             if old == id {
                 copy.name = Name::truncated(format!("{} copy", copy.name));
@@ -322,11 +327,12 @@ impl Model {
             .collect();
         self.welds.extend(welded);
 
-        let new_root = map.get(id).ok_or(ModelError::UnknownNode)?.clone();
+        let unknown = || ModelError::UnknownNode(id.clone());
+        let new_root = map.get(id).ok_or_else(unknown)?.clone();
         let pos = self
             .siblings_of(id)
             .and_then(|s| s.iter().position(|c| c == id))
-            .ok_or(ModelError::UnknownNode)?;
+            .ok_or_else(unknown)?;
         // reorder bumps the generation for the whole duplicate.
         self.reorder(&new_root, pos + 1)?;
         Ok(new_root)
@@ -336,11 +342,10 @@ impl Model {
         // Checked in either shape: an addon carries its own textures, so an
         // albedo is the one cross-reference that never dangles into a base.
         if let ModelNodeKind::Part(p) = &node.kind
-            && p.albedo
-                .as_ref()
-                .is_some_and(|t| !self.textures.contains_key(t))
+            && let Some(albedo) = &p.albedo
+            && !self.textures.contains_key(albedo)
         {
-            return Err(ModelError::UnknownTexture);
+            return Err(ModelError::UnknownTexture(albedo.clone()));
         }
         // A fragment's other cross-references are supposed to dangle into a
         // base; `Model::install` is where they are resolved.
@@ -348,20 +353,20 @@ impl Model {
             return Ok(());
         }
         if let ModelNodeKind::Spine(spine) = &node.kind
-            && spine
+            && let Some(missing) = spine
                 .targets
                 .iter()
                 .flatten()
-                .any(|p| !self.params.contains_key(p))
+                .find(|p| !self.params.contains_key(*p))
         {
-            return Err(ModelError::UnknownParam);
+            return Err(ModelError::UnknownParam(missing.clone()));
         }
         if let Some(masks) = node.masks() {
             for m in masks {
                 match self.nodes.get(&m.source).map(|n| &n.kind) {
                     Some(k) if is_mask_source(k) => {}
                     Some(_) => return Err(ModelError::NotAMaskSource),
-                    None => return Err(ModelError::UnknownNode),
+                    None => return Err(ModelError::UnknownNode(m.source.clone())),
                 }
             }
         }
@@ -704,7 +709,7 @@ mod tests {
 
         assert!(matches!(
             r.model.set_part_albedo(&r.part, Some(orphan_tex.clone())),
-            Err(ModelError::UnknownTexture)
+            Err(ModelError::UnknownTexture(id)) if id == orphan_tex
         ));
         assert!(matches!(
             r.model.set_part_albedo(&r.composite, Some(r.tex.clone())),
@@ -716,7 +721,7 @@ mod tests {
                 orphan_node,
                 Vec::new(),
             )]),
-            Err(ModelError::UnknownNode)
+            Err(ModelError::UnknownNode(_))
         ));
         assert!(
             matches!(
@@ -749,7 +754,7 @@ mod tests {
                 ModelNode::new("smuggler", ModelNodeKind::Part(foreign)),
                 &mut r.hex,
             ),
-            Err(ModelError::UnknownTexture)
+            Err(ModelError::UnknownTexture(_))
         ));
         assert!(r.model.to_clm_bytes().is_ok());
     }

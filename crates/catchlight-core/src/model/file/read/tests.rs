@@ -15,7 +15,7 @@ fn a_complete_model_is_refused_by_the_fragment_reader() {
     let file = sample().to_clm_file().unwrap();
     assert!(matches!(
         fragment_err(&file),
-        ClmLoadError::FragmentHasNoParent { node } if node == "root"
+        ClmLoadError::FragmentHasNoParent { node } if node.as_str() == "root"
     ));
 }
 
@@ -27,8 +27,8 @@ fn a_dangling_parent_is_a_structured_error() {
     assert_eq!(
         load_err(&file),
         ClmLoadError::DanglingParent {
-            node: file.doc.nodes[1].id.to_string(),
-            parent: "ghost".into(),
+            node: file.doc.nodes[1].id.clone(),
+            parent: NodeId::new("ghost").unwrap(),
         }
     );
 }
@@ -70,7 +70,7 @@ fn a_dangling_albedo_is_a_structured_error() {
 
     assert!(matches!(
         load_err(&file),
-        ClmLoadError::DanglingTexture { id, .. } if id == "gone"
+        ClmLoadError::DanglingTexture { id, .. } if id.as_str() == "gone"
     ));
 }
 
@@ -85,7 +85,7 @@ fn a_fragments_albedo_may_not_dangle_either() {
 
     assert!(matches!(
         fragment_err(&file),
-        ClmLoadError::DanglingTexture { id, .. } if id == drawn.as_str()
+        ClmLoadError::DanglingTexture { id, .. } if id == drawn
     ));
 }
 
@@ -102,7 +102,7 @@ fn a_texture_no_part_draws_is_a_structured_error() {
 
     assert!(matches!(
         load_err(&file),
-        ClmLoadError::UnusedTexture { id } if id == "spare"
+        ClmLoadError::UnusedTexture { id } if id.as_str() == "spare"
     ));
 
     let mut file = sample_fragment_file();
@@ -114,7 +114,7 @@ fn a_texture_no_part_draws_is_a_structured_error() {
     });
     assert!(matches!(
         fragment_err(&file),
-        ClmLoadError::UnusedTexture { id } if id == "spare"
+        ClmLoadError::UnusedTexture { id } if id.as_str() == "spare"
     ));
 }
 
@@ -133,7 +133,7 @@ fn a_dangling_mask_source_is_a_structured_error() {
             field: "mask source",
             id,
             ..
-        } if id == "ghost"
+        } if id.as_str() == "ghost"
     ));
 }
 
@@ -152,9 +152,7 @@ fn a_param_range_the_model_would_refuse_is_a_structured_error() {
 
         assert_eq!(
             load_err(&file),
-            ClmLoadError::ParamRange {
-                param: id.to_string(),
-            },
+            ClmLoadError::ParamRange { param: id.clone() },
             "range {min}..{max}",
         );
     }
@@ -174,8 +172,8 @@ fn a_mask_source_that_is_never_drawn_is_a_structured_error() {
     assert_eq!(
         load_err(&file),
         ClmLoadError::MaskSourceKind {
-            node: face.to_string(),
-            mask_source: bend.to_string(),
+            node: face,
+            mask_source: bend,
             kind: "mesh_group",
         }
     );
@@ -190,12 +188,7 @@ fn a_node_masking_itself_is_a_structured_error() {
             c.masks[0].source = face.clone();
         }
     }
-    assert_eq!(
-        load_err(&file),
-        ClmLoadError::SelfMask {
-            node: face.to_string(),
-        }
-    );
+    assert_eq!(load_err(&file), ClmLoadError::SelfMask { node: face });
 
     let mut fragment = sample_fragment_file();
     let upper = node_named(&fragment, "Upper").id.clone();
@@ -205,9 +198,7 @@ fn a_node_masking_itself_is_a_structured_error() {
     });
     assert_eq!(
         fragment_err(&fragment),
-        ClmLoadError::SelfMask {
-            node: upper.to_string(),
-        }
+        ClmLoadError::SelfMask { node: upper }
     );
 }
 
@@ -237,7 +228,7 @@ fn a_deform_binding_on_a_node_with_no_mesh_is_a_structured_error() {
         assert_eq!(
             load_err(&file),
             ClmLoadError::DeformOnUnmeshed {
-                node: node.to_string(),
+                node: node.clone(),
                 kind,
             }
         );
@@ -286,7 +277,7 @@ fn a_malformed_mesh_is_a_structured_error() {
             assert_eq!(
                 load_err(&file),
                 ClmLoadError::MalformedMesh {
-                    node: node.to_string(),
+                    node: node.clone(),
                     reason,
                 },
                 "{name}: {reason}",
@@ -315,7 +306,7 @@ fn group_mesh(node: &mut ClmNode) -> &mut ClmMesh {
 
 #[test]
 fn a_malformed_spine_is_a_structured_error() {
-    fn spine_file(build: impl FnOnce(&mut ClmSpine)) -> (ClmFile, String) {
+    fn spine_file(build: impl FnOnce(&mut ClmSpine)) -> (ClmFile, NodeId) {
         let mut file = sample().to_clm_file().unwrap();
         let param = file.doc.params[0].id.clone();
         let mut spine = ClmSpine {
@@ -335,7 +326,7 @@ fn a_malformed_spine_is_a_structured_error() {
             lock_to_root: false,
             kind: ClmNodeKind::Spine(spine),
         });
-        (file, id.to_string())
+        (file, id)
     }
 
     let (ok, _) = spine_file(|_| {});
@@ -382,8 +373,7 @@ fn a_malformed_spine_is_a_structured_error() {
     let (file, _) = spine_file(|sp| sp.targets[0] = Some(ParamId::new("gone").unwrap()));
     assert!(matches!(
         load_err(&file),
-        ClmLoadError::DanglingParam { ref owner, ref id }
-            if owner.starts_with("spine") && id == "gone"
+        ClmLoadError::DanglingSpineTarget { ref id, .. } if id.as_str() == "gone"
     ));
 }
 
@@ -428,10 +418,7 @@ fn a_duplicate_node_id_is_a_structured_error() {
 
     assert_eq!(
         load_err(&file),
-        ClmLoadError::DuplicateId {
-            kind: "node",
-            id: twin.to_string(),
-        }
+        ClmLoadError::DuplicateId { id: twin.into() }
     );
 }
 
@@ -443,10 +430,7 @@ fn a_duplicate_param_id_is_a_structured_error() {
 
     assert_eq!(
         load_err(&file),
-        ClmLoadError::DuplicateId {
-            kind: "param",
-            id: twin.to_string(),
-        }
+        ClmLoadError::DuplicateId { id: twin.into() }
     );
 }
 
@@ -478,7 +462,7 @@ fn a_binding_over_one_param_twice_is_a_structured_error() {
 fn two_bindings_under_one_key_are_a_structured_error() {
     let mut file = sample().to_clm_file().unwrap();
     let twin = file.doc.bindings[0].clone();
-    let node = twin.node.to_string();
+    let node = twin.node.clone();
     file.doc.bindings.push(twin);
 
     assert_eq!(
@@ -522,7 +506,7 @@ fn a_value_that_is_not_a_number_is_a_structured_error() {
 
     let mut file = sample().to_clm_file().unwrap();
     upper(&mut file).z_order = f32::NAN;
-    let id = upper(&mut file).id.to_string();
+    let id = upper(&mut file).id.clone();
     assert_eq!(
         load_err(&file),
         ClmLoadError::NodeNotFinite {
@@ -559,7 +543,7 @@ fn a_value_that_is_not_a_number_is_a_structured_error() {
     assert_eq!(
         load_err(&file),
         ClmLoadError::ParamDefault {
-            param: file.doc.params[0].id.to_string(),
+            param: file.doc.params[0].id.clone(),
         }
     );
 
@@ -581,7 +565,9 @@ fn a_dangling_binding_node_is_a_structured_error() {
 
     assert_eq!(
         load_err(&file),
-        ClmLoadError::DanglingBindingNode { id: "ghost".into() }
+        ClmLoadError::DanglingBindingNode {
+            id: NodeId::new("ghost").unwrap()
+        }
     );
 }
 
@@ -592,7 +578,7 @@ fn a_dangling_binding_param_is_a_structured_error() {
 
     assert!(matches!(
         load_err(&file),
-        ClmLoadError::DanglingParam { id, .. } if id == "gone"
+        ClmLoadError::DanglingBindingParam { id, .. } if id.as_str() == "gone"
     ));
 }
 
@@ -624,7 +610,7 @@ fn a_colour_binding_on_a_mesh_group_is_a_structured_error() {
         assert_eq!(
             load_err(&file),
             ClmLoadError::ColorOnMeshGroup {
-                node: bend.to_string(),
+                node: bend.clone(),
                 target,
             }
         );
@@ -662,7 +648,7 @@ fn a_deform_cell_the_mesh_cannot_take_is_a_structured_error() {
         assert_eq!(
             load_err(&file),
             ClmLoadError::DeformCellShape {
-                node: node.to_string(),
+                node: node.clone(),
                 cell: [1, 1],
                 got,
                 expected: 8,
@@ -694,7 +680,7 @@ fn a_part_carrying_one_slot_id_twice_is_a_structured_error() {
 
     assert!(matches!(
         load_err(&file),
-        ClmLoadError::DuplicateSlot { slot, .. } if slot == "left"
+        ClmLoadError::DuplicateSlot { slot, .. } if slot.as_str() == "left"
     ));
 }
 
@@ -705,7 +691,7 @@ fn a_weld_pairing_a_slot_the_part_lacks_is_a_structured_error() {
 
     assert!(matches!(
         load_err(&file),
-        ClmLoadError::WeldUnknownSlot { slot, .. } if slot == "ghost"
+        ClmLoadError::WeldUnknownSlot { slot, .. } if slot.as_str() == "ghost"
     ));
 }
 

@@ -506,7 +506,10 @@ impl Model {
     }
 
     pub fn key_count(&self, key: &BindingKey, param: &ParamId) -> Result<u32, ModelError> {
-        let axis = key.params.axis_of(param).ok_or(ModelError::UnknownParam)? as usize;
+        let axis = key
+            .params
+            .axis_of(param)
+            .ok_or_else(|| ModelError::UnknownParam(param.clone()))? as usize;
         let binding = self.binding(key).ok_or(ModelError::UnknownBinding)?;
         Ok(binding.key_positions[axis].len() as u32)
     }
@@ -521,7 +524,8 @@ impl Model {
         key: &BindingKey,
     ) -> Result<(AxisPositions<'_>, AxisPositions<'_>), ModelError> {
         for param in key.params.iter() {
-            self.param(param).ok_or(ModelError::UnknownParam)?;
+            self.param(param)
+                .ok_or_else(|| ModelError::UnknownParam(param.clone()))?;
         }
         if let Some(binding) = self.binding(key) {
             Ok((
@@ -665,7 +669,7 @@ impl Model {
         let kind = self
             .node(&key.node)
             .map(|n| &n.kind)
-            .ok_or(ModelError::UnknownNode)?;
+            .ok_or_else(|| ModelError::UnknownNode(key.node.clone()))?;
         validate::binding_target(kind, key.target).map_err(|fault| match fault {
             validate::BindingFault::DeformOnUnmeshed => ModelError::NotMeshed,
             validate::BindingFault::ColorOnMeshGroup(_) => ModelError::ColorOnMeshGroup,
@@ -891,7 +895,7 @@ impl Model {
             if self.node(&key.node).is_some() {
                 ModelError::NotMeshed
             } else {
-                ModelError::UnknownNode
+                ModelError::UnknownNode(key.node.clone())
             }
         })?;
         if vertices.start > vertices.end || vertices.end > mesh.vertex_count() {
@@ -989,7 +993,7 @@ impl Model {
     ) -> Result<(), ModelError> {
         let mesh = match self.node(&key.node) {
             Some(n) => n.mesh().ok_or(ModelError::NotMeshed)?,
-            None => return Err(ModelError::UnknownNode),
+            None => return Err(ModelError::UnknownNode(key.node.clone())),
         };
         let (verts, origin) = (mesh.verts.clone(), mesh.origin);
         let vcount = verts.len() / 2;
@@ -1050,7 +1054,9 @@ impl Model {
             if min > 0. || max < 0. {
                 return Err(range_error("needs a range containing zero"));
             }
-            let p = self.param(param).ok_or(ModelError::UnknownParam)?;
+            let p = self
+                .param(param)
+                .ok_or_else(|| ModelError::UnknownParam(param.clone()))?;
             let old_zero = normalized_zero(p.min, p.max);
             let new_zero = normalized_zero(min, max);
             if self.bindings_of_param(param).any(|binding| {
@@ -1072,7 +1078,9 @@ impl Model {
     }
 
     fn param_mut(&mut self, param: &ParamId) -> Result<&mut ModelParam, ModelError> {
-        self.params.get_mut(param).ok_or(ModelError::UnknownParam)
+        self.params
+            .get_mut(param)
+            .ok_or_else(|| ModelError::UnknownParam(param.clone()))
     }
 
     /// Existing cells shift to keep their sampled positions.
@@ -1082,7 +1090,10 @@ impl Model {
         param: &ParamId,
         value: f32,
     ) -> Result<usize, ModelError> {
-        let axis = key.params.axis_of(param).ok_or(ModelError::UnknownParam)?;
+        let axis = key
+            .params
+            .axis_of(param)
+            .ok_or_else(|| ModelError::UnknownParam(param.clone()))?;
         let binding = self.binding(key).ok_or(ModelError::UnknownBinding)?;
         if !value.is_finite() || !(0.0..=1.0).contains(&value) {
             return Err(ModelError::CellOutOfRange);
@@ -1115,7 +1126,10 @@ impl Model {
         param: &ParamId,
         index: usize,
     ) -> Result<(), ModelError> {
-        let axis = key.params.axis_of(param).ok_or(ModelError::UnknownParam)?;
+        let axis = key
+            .params
+            .axis_of(param)
+            .ok_or_else(|| ModelError::UnknownParam(param.clone()))?;
         let binding = self.binding(key).ok_or(ModelError::UnknownBinding)?;
         let points = &binding.key_positions[axis as usize];
         if points.len() <= 1 || index >= points.len() {
@@ -1143,7 +1157,10 @@ impl Model {
         index: usize,
         value: f32,
     ) -> Result<(), ModelError> {
-        let axis = key.params.axis_of(param).ok_or(ModelError::UnknownParam)?;
+        let axis = key
+            .params
+            .axis_of(param)
+            .ok_or_else(|| ModelError::UnknownParam(param.clone()))?;
         let binding = self.binding(key).ok_or(ModelError::UnknownBinding)?;
         let points = &binding.key_positions[axis as usize];
         if index >= points.len() {

@@ -51,12 +51,27 @@ impl fmt::Display for Required {
     }
 }
 
+/// What names a required Id.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum RequirementOwner {
+    Node(NodeId),
+    Extension(ExtensionKey),
+}
+
+impl fmt::Display for RequirementOwner {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Node(id) => id.fmt(f),
+            Self::Extension(key) => write!(f, "extension {:?}", key.as_str()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Requirement {
     pub id: Required,
     pub field: &'static str,
-    /// The extension, for a reference.
-    pub owner: String,
+    pub owner: RequirementOwner,
 }
 
 /// Sorted, with the same Id listed once per field that names it.
@@ -127,61 +142,67 @@ pub enum InstallError {
     #[error(transparent)]
     Model(Box<ModelError>),
     #[error(
-        "the addon's root {node:?} names no parent, so it is a complete model and there is \
+        "the addon's root \"{node}\" names no parent, so it is a complete model and there is \
          nowhere in the base to attach it"
     )]
-    NotAnAddon { node: String },
+    NotAnAddon { node: NodeId },
     #[error(
-        "the addon carries param {param:?}: an addon never adds or changes a param, so the \
+        "the addon carries param \"{param}\": an addon never adds or changes a param, so the \
          params it drives have to be in the base model already"
     )]
-    CarriesParam { param: String },
+    CarriesParam { param: ParamId },
     #[error(
-        "the addon carries plain extension {key:?}: a plain annotation has no module to merge \
+        "the addon carries plain extension \"{key}\": a plain annotation has no module to merge \
          it into the base, so only a maintained extension may ride in an addon"
     )]
-    CarriesExtension { key: String },
+    CarriesExtension { key: ExtensionKey },
     #[error(
-        "the addon carries extension {key:?}, which this program has not registered, so it \
-         cannot be merged; register {key:?} before installing"
+        "the addon carries extension \"{key}\", which this program has not registered, so it \
+         cannot be merged; register \"{key}\" before installing"
     )]
-    ExtensionNotRegistered { key: String },
-    #[error("extension {key:?} cannot be read, so the addon's cannot be merged into it: {why}")]
-    ExtensionUnread { key: String, why: Unread },
-    #[error("extension {key:?} refused the addon's data: {why}")]
-    ExtensionRefused { key: String, why: MergeRefused },
+    ExtensionNotRegistered { key: ExtensionKey },
+    #[error("extension \"{key}\" cannot be read, so the addon's cannot be merged into it: {why}")]
+    ExtensionUnread { key: ExtensionKey, why: Unread },
+    #[error("extension \"{key}\" refused the addon's data: {why}")]
+    ExtensionRefused {
+        key: ExtensionKey,
+        why: MergeRefused,
+    },
     #[error(
-        "the addon's {target} binding names node {node:?}, which the addon does not provide: an \
+        "the addon's {target} binding names node \"{node}\", which the addon does not provide: an \
          addon binds its own nodes"
     )]
-    BindsOffAddon { node: String, target: &'static str },
+    BindsOffAddon { node: NodeId, target: &'static str },
     #[error(
-        "the addon provides {kind} {id:?}, which the base model already has: two addons that \
-         provide one Id are alternatives, and only one can be installed at a time"
+        "the addon provides {} \"{id}\", which the base model already has: two addons that \
+         provide one Id are alternatives, and only one can be installed at a time",
+        .id.kind()
     )]
-    Collision { kind: &'static str, id: String },
+    Collision { id: AnyId },
     #[error("the addon's {field} on {owner} names {id}, which the base model does not have")]
     Missing {
         id: Required,
         field: &'static str,
-        owner: String,
+        owner: RequirementOwner,
     },
-    #[error("the addon welds vertex slot {slot:?} on node {node:?}, which carries no such slot")]
-    WeldUnknownSlot { node: String, slot: String },
-    #[error("the addon's weld between {a:?} and {b:?} pairs vertex slot {slot:?} twice")]
-    WeldSlotPairedTwice { a: String, b: String, slot: String },
-    #[error("the addon welds node {node:?}, which is a {kind}; a weld joins two parts")]
-    WeldEndNotAPart { node: String, kind: &'static str },
     #[error(
-        "the addon welds {a:?} to {b:?}, which are already welded; one weld records a pair \
+        "the addon welds vertex slot \"{slot}\" on node \"{node}\", which carries no such slot"
+    )]
+    WeldUnknownSlot { node: NodeId, slot: SlotId },
+    #[error("the addon's weld between \"{a}\" and \"{b}\" pairs vertex slot \"{slot}\" twice")]
+    WeldSlotPairedTwice { a: NodeId, b: NodeId, slot: SlotId },
+    #[error("the addon welds node \"{node}\", which is a {kind}; a weld joins two parts")]
+    WeldEndNotAPart { node: NodeId, kind: &'static str },
+    #[error(
+        "the addon welds \"{a}\" to \"{b}\", which are already welded; one weld records a pair \
          of parts"
     )]
-    DuplicateWeld { a: String, b: String },
+    DuplicateWeld { a: NodeId, b: NodeId },
     #[error(
-        "the addon welds {a:?} to {b:?}, neither of which it provides; an addon may only weld \
+        "the addon welds \"{a}\" to \"{b}\", neither of which it provides; an addon may only weld \
          its own parts"
     )]
-    WeldsOffAddon { a: String, b: String },
+    WeldsOffAddon { a: NodeId, b: NodeId },
 }
 
 impl From<ModelError> for InstallError {
@@ -240,11 +261,11 @@ impl Model {
     /// Empty for a complete model.
     pub fn requirements(&self) -> Requirements {
         let mut out: Vec<Requirement> = Vec::new();
-        let mut need = |id: Required, field: &'static str, owner: &dyn fmt::Display| {
+        let mut need = |id: Required, field: &'static str, owner: &NodeId| {
             out.push(Requirement {
                 id,
                 field,
-                owner: owner.to_string(),
+                owner: RequirementOwner::Node(owner.clone()),
             });
         };
 
@@ -342,7 +363,6 @@ impl Model {
         }
 
         for key in self.extensions.keys() {
-            let owner = format_args!("extension {:?}", key.as_str());
             for r in self.extensions.refs(key).unwrap_or_default() {
                 let id = match r {
                     IdRef::Node(id) if !self.nodes.contains_key(id) => Required::Node(id.clone()),
@@ -354,7 +374,11 @@ impl Model {
                     }
                     _ => continue,
                 };
-                need(id, "extension reference", &owner);
+                out.push(Requirement {
+                    id,
+                    field: "extension reference",
+                    owner: RequirementOwner::Extension(key.clone()),
+                });
             }
         }
 
@@ -442,16 +466,14 @@ impl Model {
         let mut merges = Vec::new();
         for (key, stored) in &addon.extensions.map {
             let refused = |why: Unread| InstallError::ExtensionUnread {
-                key: key.to_string(),
+                key: key.clone(),
                 why,
             };
             let theirs = match Self::registered_extension(stored, key) {
                 Some(Ok(typed)) => typed,
                 Some(Err(why)) => return Err(refused(why)),
                 None => {
-                    return Err(InstallError::ExtensionNotRegistered {
-                        key: key.to_string(),
-                    });
+                    return Err(InstallError::ExtensionNotRegistered { key: key.clone() });
                 }
             };
             let (merged, receipt) = match self.extensions.map.get(key) {
@@ -463,16 +485,14 @@ impl Model {
                         Some(Ok(typed)) => typed,
                         Some(Err(why)) => return Err(refused(why)),
                         None => {
-                            return Err(InstallError::ExtensionNotRegistered {
-                                key: key.to_string(),
-                            });
+                            return Err(InstallError::ExtensionNotRegistered { key: key.clone() });
                         }
                     };
                     ours.data.dyn_merge_addon(&*theirs.data)
                 }
             }
             .map_err(|why| InstallError::ExtensionRefused {
-                key: key.to_string(),
+                key: key.clone(),
                 why,
             })?;
             merges.push(Merge {
@@ -490,16 +510,14 @@ impl Model {
                 continue;
             };
             let Some(parent) = &node.parent else {
-                return Err(InstallError::NotAnAddon {
-                    node: r.to_string(),
-                });
+                return Err(InstallError::NotAnAddon { node: r.clone() });
             };
             crate::load_budget::tree_depth(self.depth_of(parent) + addon.height_of(r))
                 .map_err(|e| InstallError::Model(Box::new(e.into())))?;
         }
         if let Some(param) = addon.param_order.first() {
             return Err(InstallError::CarriesParam {
-                param: param.to_string(),
+                param: param.clone(),
             });
         }
         if let Some(key) = addon
@@ -507,14 +525,12 @@ impl Model {
             .keys()
             .find(|key| addon.extensions.refs(*key).is_none())
         {
-            return Err(InstallError::CarriesExtension {
-                key: key.to_string(),
-            });
+            return Err(InstallError::CarriesExtension { key: key.clone() });
         }
         for b in &addon.bindings {
             if !addon.nodes.contains_key(&b.key.node) {
                 return Err(InstallError::BindsOffAddon {
-                    node: b.key.node.to_string(),
+                    node: b.key.node.clone(),
                     target: b.key.target.name(),
                 });
             }
@@ -523,16 +539,14 @@ impl Model {
         for id in &addon.nodes_in_order() {
             if self.nodes.contains_key(id) {
                 return Err(InstallError::Collision {
-                    kind: "node",
-                    id: id.to_string(),
+                    id: id.clone().into(),
                 });
             }
         }
         for id in &addon.texture_order {
             if self.textures.contains_key(id) {
                 return Err(InstallError::Collision {
-                    kind: "texture",
-                    id: id.to_string(),
+                    id: id.clone().into(),
                 });
             }
         }
@@ -576,8 +590,8 @@ impl Model {
             let (a, b) = (w.a(), w.b());
             if !addon.nodes.contains_key(a) && !addon.nodes.contains_key(b) {
                 return Err(InstallError::WeldsOffAddon {
-                    a: a.to_string(),
-                    b: b.to_string(),
+                    a: a.clone(),
+                    b: b.clone(),
                 });
             }
             validate::weld(
@@ -594,27 +608,27 @@ impl Model {
                     ModelError::WeldWeightOutOfRange.into()
                 }
                 validate::WeldFault::EndNotAPart { end, kind } => InstallError::WeldEndNotAPart {
-                    node: end.to_string(),
+                    node: end.clone(),
                     kind,
                 },
                 validate::WeldFault::EndMissing { end } => InstallError::Missing {
                     id: Required::Part(end.clone()),
                     field: "weld end",
-                    owner: if end == a { b } else { a }.to_string(),
+                    owner: RequirementOwner::Node(if end == a { b } else { a }.clone()),
                 },
                 validate::WeldFault::Duplicate => InstallError::DuplicateWeld {
-                    a: a.to_string(),
-                    b: b.to_string(),
+                    a: a.clone(),
+                    b: b.clone(),
                 },
                 validate::WeldFault::UnknownSlot { end, slot } => InstallError::WeldUnknownSlot {
-                    node: end.to_string(),
-                    slot: slot.to_string(),
+                    node: end.clone(),
+                    slot: slot.clone(),
                 },
                 validate::WeldFault::SlotPairedTwice { slot, .. } => {
                     InstallError::WeldSlotPairedTwice {
-                        a: a.to_string(),
-                        b: b.to_string(),
-                        slot: slot.to_string(),
+                        a: a.clone(),
+                        b: b.clone(),
+                        slot: slot.clone(),
                     }
                 }
             })?;
@@ -923,7 +937,7 @@ mod tests {
 
     fn listed(r: &Requirements) -> Vec<(String, &'static str, String)> {
         r.iter()
-            .map(|q| (q.id.to_string(), q.field, q.owner.clone()))
+            .map(|q| (q.id.to_string(), q.field, q.owner.to_string()))
             .collect()
     }
 
@@ -1041,7 +1055,7 @@ mod tests {
         };
         assert_eq!(id, &Required::Param(b.param.clone()));
         assert_eq!(*field, "binding param");
-        assert_eq!(owner, named(&addon, "Hat").as_str());
+        assert_eq!(*owner, RequirementOwner::Node(named(&addon, "Hat")));
         assert!(err.to_string().contains(b.param.as_str()));
         assert_eq!(stripped.generation(), before, "no half-install");
     }
@@ -1058,7 +1072,7 @@ mod tests {
             InstallError::Missing {
                 id: Required::Slot(b.body.clone(), slot_id("left")),
                 field: "weld end",
-                owner: named(&addon, "Hat").to_string(),
+                owner: RequirementOwner::Node(named(&addon, "Hat")),
             }
             .to_string()
         );
@@ -1082,7 +1096,7 @@ mod tests {
             InstallError::Missing {
                 id: Required::Part(b.body.clone()),
                 field: "weld end",
-                owner: hat.to_string(),
+                owner: RequirementOwner::Node(hat.clone()),
             }
             .to_string()
         );
@@ -1126,7 +1140,7 @@ mod tests {
             InstallError::Missing {
                 id: Required::Part(b.body),
                 field: "weld end",
-                owner: hat.to_string(),
+                owner: RequirementOwner::Node(hat.clone()),
             }
             .to_string()
         );
@@ -1174,7 +1188,7 @@ mod tests {
         let err = b.m.install(&addon).unwrap_err();
         assert!(
             matches!(&err, InstallError::WeldsOffAddon { a, b: other }
-                if *a == arm.to_string() && *other == b.body.to_string()),
+                if *a == arm && *other == b.body.clone()),
             "{err:?}"
         );
         assert_eq!(b.m.generation(), before, "no half-install");
@@ -1195,7 +1209,7 @@ mod tests {
         let err = merged.install(&addon).unwrap_err();
         assert!(
             matches!(&err, InstallError::WeldEndNotAPart { node, kind: "group" }
-                if *node == hat.to_string()),
+                if *node == hat.clone()),
             "{err:?}"
         );
         merged
@@ -1213,8 +1227,7 @@ mod tests {
         assert_eq!(
             b.m.install(&addon).unwrap_err().to_string(),
             InstallError::Collision {
-                kind: "node",
-                id: named(&b.m, "Hat").to_string(),
+                id: named(&b.m, "Hat").into(),
             }
             .to_string()
         );
@@ -1247,8 +1260,7 @@ mod tests {
         assert_eq!(
             m.install(&sandals).unwrap_err().to_string(),
             InstallError::Collision {
-                kind: "node",
-                id: "shoes".into(),
+                id: NodeId::new("shoes").unwrap().into(),
             }
             .to_string()
         );
@@ -1282,8 +1294,7 @@ mod tests {
         assert_eq!(
             b.m.install(&addon).unwrap_err().to_string(),
             InstallError::Collision {
-                kind: "texture",
-                id: b.tex.to_string(),
+                id: b.tex.clone().into(),
             }
             .to_string()
         );
@@ -1302,10 +1313,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             b.m.install(&addon).unwrap_err().to_string(),
-            InstallError::CarriesParam {
-                param: mine.to_string()
-            }
-            .to_string()
+            InstallError::CarriesParam { param: mine }.to_string()
         );
     }
 
@@ -1336,7 +1344,7 @@ mod tests {
         assert_eq!(
             b.m.install(&addon).unwrap_err().to_string(),
             InstallError::BindsOffAddon {
-                node: b.body.to_string(),
+                node: b.body.clone(),
                 target: "deform",
             }
             .to_string()
@@ -1354,7 +1362,7 @@ mod tests {
         assert_eq!(
             b.m.install(&other.m).unwrap_err().to_string(),
             InstallError::NotAnAddon {
-                node: other.m.root().unwrap().to_string(),
+                node: other.m.root().unwrap().clone(),
             }
             .to_string()
         );
