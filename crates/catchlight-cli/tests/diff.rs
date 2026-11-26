@@ -311,7 +311,11 @@ fn the_help_documents_the_id_charset_and_the_exit_statuses() {
     assert!(out.contains("[A-Za-z0-9_./-]"), "{out}");
     assert!(out.contains("starts with none of `.`, `/` or `-`"), "{out}");
     assert!(
-        out.contains("1  `diff` only: the two files differ"),
+        out.contains("1    `diff` only: the two files differ"),
+        "{out}"
+    );
+    assert!(
+        out.contains("141  a reader closed the output pipe"),
         "{out}"
     );
 }
