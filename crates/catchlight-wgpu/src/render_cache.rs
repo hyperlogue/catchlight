@@ -107,6 +107,8 @@ pub struct RenderCache {
     meshes: Vec<UploadedMesh>,
     stats: CacheStats,
     collector: Collector,
+    /// Indexed by mesh slot.
+    retained_scratch: Vec<bool>,
 }
 
 impl std::fmt::Debug for RenderCache {
@@ -139,6 +141,7 @@ impl RenderCache {
             meshes: Vec::new(),
             stats: CacheStats::default(),
             collector: Collector::default(),
+            retained_scratch: Vec::new(),
         };
         cache.rebuild(renderer, model)?;
         Ok(cache)
@@ -264,18 +267,27 @@ impl RenderCache {
 
     /// Apply after collection; the next collection restores the full list.
     pub fn retain_part_colors(
-        &self,
+        &mut self,
         render_list: &mut RenderList,
         mut keep: impl FnMut(&NodeId) -> bool,
     ) {
-        let retained: std::collections::HashSet<u32> = self
-            .node_ids
-            .iter()
-            .zip(&self.mesh_of_node)
-            .filter_map(|(id, mesh)| mesh.filter(|_| keep(id)).map(|slot| slot.0))
-            .collect();
+        let retained = &mut self.retained_scratch;
+        retained.clear();
+        for (id, mesh) in self.node_ids.iter().zip(&self.mesh_of_node) {
+            let Some(MeshIdx(slot)) = *mesh else {
+                continue;
+            };
+            let slot = slot as usize;
+            if retained.len() <= slot {
+                retained.resize(slot + 1, false);
+            }
+            retained[slot] = keep(id);
+        }
+        let retained = &*retained;
         let retain = |drawable: &crate::DrawableInfo| match drawable {
-            crate::DrawableInfo::Part { mesh_id, .. } => retained.contains(mesh_id),
+            crate::DrawableInfo::Part { mesh_id, .. } => {
+                retained.get(*mesh_id as usize).copied().unwrap_or(false)
+            }
             crate::DrawableInfo::Composite { .. } => true,
         };
         render_list.root_drawables.retain(retain);
