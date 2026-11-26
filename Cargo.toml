@@ -79,6 +79,8 @@ getrandom = "0.3"
 # Command lines
 clap = { version = "4", features = ["derive"] }
 ctrlc = "3"
+tempfile = "3"
+rustix = "1"
 
 # TypeScript declarations generated from the Rust wire types. Off by default
 # and behind the `ts` feature on the two crates that carry those types: it is a

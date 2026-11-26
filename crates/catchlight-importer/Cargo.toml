@@ -19,7 +19,7 @@ required-features = ["cli"]
 
 [dependencies]
 anyhow = { workspace = true, optional = true }
-tempfile = { version = "3", optional = true }
+tempfile = { workspace = true, optional = true }
 catchlight-core.workspace = true
 catchlight-extension-animations.workspace = true
 image = { workspace = true, features = ["webp"] }
