@@ -9,14 +9,15 @@ use crate::components::{CatchlightCamera, CatchlightPuppet};
 use crate::plugin::CatchlightSettings;
 use crate::prepare::{CatchlightRenderInner, CatchlightRenderState, ModelGpu, PuppetKey};
 
-/// Render-world half of a `CatchlightPuppet`, retained across frames.
+/// Render-world half of a `CatchlightPuppet`, retained across frames. `pub`
+/// only because `SyncComponent::Target` names it; the module is private.
 #[derive(Component)]
 pub struct ExtractedPuppet {
-    pub model: Arc<Model>,
-    pub model_id: AssetId<CatchlightModel>,
+    pub(crate) model: Arc<Model>,
+    pub(crate) model_id: AssetId<CatchlightModel>,
     /// World-space z; higher renders in front.
-    pub z: f32,
-    pub visible: bool,
+    pub(crate) z: f32,
+    pub(crate) visible: bool,
 }
 
 impl bevy::render::sync_component::SyncComponent for CatchlightPuppet {
