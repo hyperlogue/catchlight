@@ -374,9 +374,12 @@ impl RenderCache {
         }
 
         renderer.retain_textures(&moved);
-        for (&slot, prep) in fresh_slots.iter().zip(prepped.iter()) {
-            renderer.upload_texture(slot as u32, &prep.texture)?;
-        }
+        renderer.upload_textures(
+            fresh_slots
+                .iter()
+                .zip(&prepped)
+                .map(|(&slot, prep)| (slot as u32, &prep.texture)),
+        )?;
         self.texture_count = wanted.len() as u32;
         self.stats.rebuilds += 1;
         self.stats.texture_uploads += fresh_slots.len() as u64;

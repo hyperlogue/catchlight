@@ -169,8 +169,8 @@ pub struct RenderStats {
 /// Per-frame resource-lifecycle counters, reset at every frame entry.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct FrameStats {
-    /// Excludes [`Recorded::submit`]; non-zero only when an upload (mip
-    /// generation) submitted inside the frame.
+    /// Excludes [`Recorded::submit`]. One per batch of texture uploads that
+    /// generated mips, so a rebuild adds at most one.
     pub queue_submits: u32,
     pub queue_writes: u32,
     /// At most 1: `write_buffer` batches at submit start, so a second write to

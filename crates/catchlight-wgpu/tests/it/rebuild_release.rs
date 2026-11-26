@@ -160,6 +160,18 @@ fn a_rebuild_releases_the_slots_the_smaller_model_no_longer_names() {
 }
 
 #[test]
+fn a_rebuild_generates_every_textures_mips_in_one_submit() {
+    pollster::block_on(async {
+        let mut ctx = context().await;
+        let (model, _, _) = three_quad_model();
+        RenderCache::prepare(&mut ctx.renderer, &model, PrepareOptions::default())
+            .expect("prepare");
+        assert_eq!(ctx.renderer.live_texture_slots(), 3);
+        assert_eq!(ctx.renderer.frame_stats().queue_submits, 1);
+    });
+}
+
+#[test]
 fn a_rebuild_keeps_the_textures_it_names_again() {
     pollster::block_on(async {
         let mut ctx = context().await;

@@ -323,14 +323,14 @@ fn nested_composites_keep_tight_bounds_without_clipping_darken() {
         .upload_mesh(0, &catchlight_core::Mesh::quad(1.0, 1.0))
         .expect("mesh");
     ctx.renderer
-        .upload_texture(
+        .upload_textures([(
             0,
             &catchlight_core::DecodedTexture {
                 width: 4,
                 height: 4,
                 rgba: vec![255; 64].into(),
             },
-        )
+        )])
         .expect("texture");
     let composite = |node_id| DrawableInfo::Composite {
         node_id,

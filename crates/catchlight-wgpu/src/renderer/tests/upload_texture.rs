@@ -24,14 +24,14 @@ fn uploads_release_decoded_pixels_and_replace_texture_dimensions() {
             mask_sources: Default::default(),
             mask_threshold: 0.5,
         });
-        ctx.renderer.upload_texture(0, &texture).unwrap();
+        ctx.renderer.upload_textures([(0, &texture)]).unwrap();
         assert_eq!(std::sync::Arc::strong_count(&texture.rgba), 1);
         ctx.render(&list, Some(wgpu::Color::TRANSPARENT));
         let vertical = ctx.read_rgba().unwrap();
 
         texture.width = 2;
         texture.height = 1;
-        ctx.renderer.upload_texture(0, &texture).unwrap();
+        ctx.renderer.upload_textures([(0, &texture)]).unwrap();
         drop(texture);
         assert!(
             pixels.upgrade().is_none(),

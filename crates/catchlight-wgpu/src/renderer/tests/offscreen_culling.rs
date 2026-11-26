@@ -8,14 +8,14 @@ fn context() -> RenderContext {
     let mut ctx = super::render_context(64, 64);
     ctx.renderer.upload_mesh(0, &Mesh::quad(1.0, 1.0)).unwrap();
     ctx.renderer
-        .upload_texture(
+        .upload_textures([(
             0,
             &catchlight_core::DecodedTexture {
                 width: 4,
                 height: 4,
                 rgba: vec![255; 64].into(),
             },
-        )
+        )])
         .unwrap();
     ctx
 }

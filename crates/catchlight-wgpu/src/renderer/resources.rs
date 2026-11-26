@@ -9,14 +9,13 @@ pub(crate) struct Texture {
 /// shaders premultiplied linear, so CPU-side tints are converted to linear.
 pub(super) const PUPPET_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
-/// Fill mips 1.. by successively halving the level above on the GPU.
+/// Records filling mips 1.. by successively halving the level above.
 pub(super) fn generate_mips(
     device: &wgpu::Device,
-    queue: &wgpu::Queue,
+    encoder: &mut wgpu::CommandEncoder,
     texture: &wgpu::Texture,
     mip_level_count: u32,
     pipelines: &Pipelines,
-    label: &str,
 ) {
     if mip_level_count < 2 {
         return;
@@ -31,9 +30,6 @@ pub(super) fn generate_mips(
         })
         .collect();
 
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-        label: Some(&format!("{label} mips")),
-    });
     for target in 1..mip_level_count as usize {
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             layout: &pipelines.mip_bind_group_layout,
@@ -65,19 +61,20 @@ pub(super) fn generate_mips(
         pass.set_bind_group(0, &bind_group, &[]);
         pass.draw(0..3, 0..1);
     }
-    queue.submit(Some(encoder.finish()));
 }
 
 impl Texture {
-    pub(super) fn from_decoded_rgba8(
+    /// The mips are recorded into `encoder`; the texture is complete once it
+    /// is submitted.
+    pub(super) fn from_decoded(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        rgba: &[u8],
-        width: u32,
-        height: u32,
+        encoder: &mut wgpu::CommandEncoder,
+        tex: &DecodedTexture,
         pipelines: &Pipelines,
         label: &str,
     ) -> RendererResult<Self> {
+        let (rgba, width, height) = (&*tex.rgba, tex.width, tex.height);
         let bind_group_layout = &pipelines.texture_bind_group_layout;
         let sampler = &pipelines.texture_sampler;
         let (w, h) = (width, height);
@@ -122,7 +119,7 @@ impl Texture {
             },
             size,
         );
-        generate_mips(device, queue, &texture, mip_level_count, pipelines, label);
+        generate_mips(device, encoder, &texture, mip_level_count, pipelines);
 
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
@@ -384,24 +381,42 @@ impl WgpuRenderer {
         self.textures.get(albedo as usize).map(|t| &t.bind_group)
     }
 
-    pub(crate) fn upload_texture(
+    /// Generates every texture's mips in one submit. Stops at the first
+    /// texture refused, keeping the ones uploaded before it.
+    pub(crate) fn upload_textures<'t>(
         &mut self,
-        texture_id: u32,
-        tex: &DecodedTexture,
+        textures: impl IntoIterator<Item = (u32, &'t DecodedTexture)>,
     ) -> RendererResult<()> {
-        let texture = Texture::from_decoded_rgba8(
-            &self.device,
-            &self.queue,
-            &tex.rgba,
-            tex.width,
-            tex.height,
-            &self.shared,
-            &format!("Texture {texture_id}"),
-        )?;
-        // Mip generation submits its own command buffer.
-        self.frame_stats.queue_submits += u32::from(texture.texture.mip_level_count() > 1);
-
-        self.textures.insert(texture_id as usize, texture);
-        Ok(())
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("texture mips"),
+            });
+        let mut has_mips = false;
+        let mut uploaded = Ok(());
+        for (texture_id, tex) in textures {
+            match Texture::from_decoded(
+                &self.device,
+                &self.queue,
+                &mut encoder,
+                tex,
+                &self.shared,
+                &format!("Texture {texture_id}"),
+            ) {
+                Ok(texture) => {
+                    has_mips |= texture.texture.mip_level_count() > 1;
+                    self.textures.insert(texture_id as usize, texture);
+                }
+                Err(error) => {
+                    uploaded = Err(error);
+                    break;
+                }
+            }
+        }
+        if has_mips {
+            self.queue.submit(Some(encoder.finish()));
+            self.frame_stats.queue_submits += 1;
+        }
+        uploaded
     }
 }

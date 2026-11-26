@@ -82,7 +82,7 @@ fn upload_texture_rejects_zero_dimensions() {
         rgba: Vec::new().into(),
     };
 
-    match r.upload_texture(0, &texture) {
+    match r.upload_textures([(0, &texture)]) {
         Err(RendererError::TextureDimensionsOutOfRange {
             width: 0,
             height: 1,
@@ -103,7 +103,7 @@ fn upload_texture_rejects_device_limit_overflow() {
         rgba: Vec::new().into(),
     };
 
-    match r.upload_texture(0, &texture) {
+    match r.upload_textures([(0, &texture)]) {
         Err(RendererError::TextureDimensionsOutOfRange {
             width,
             height: 1,
@@ -122,7 +122,7 @@ fn upload_texture_rejects_rgba_length_mismatch() {
         rgba: vec![0; 15].into(),
     };
 
-    match r.upload_texture(0, &texture) {
+    match r.upload_textures([(0, &texture)]) {
         Err(RendererError::TextureByteLengthMismatch {
             width: 2,
             height: 2,
