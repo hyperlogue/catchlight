@@ -5,9 +5,12 @@
 //! must be revisited before the inputs widen.
 
 use catchlight_core::formats::clm::ClmMesh;
-use catchlight_core::{LoadBudget, LoadLimitError, LoadResource};
+use catchlight_core::{LoadLimitError, LoadResource};
 
 pub const DEFAULT_AXIS: [f32; 2] = [0.0, -1.0];
+
+/// Most links one fit makes; each becomes a spine joint.
+pub const MAX_LINKS: u32 = 256;
 
 /// In model pixels; below it the link lengths are noise.
 const MIN_EXTENT: f32 = 1e-3;
@@ -51,8 +54,14 @@ pub fn fit_strand(
     if links == 0 {
         return Err(StrandError::ZeroLinks);
     }
-    // Each link becomes a spine joint, so a fit answers to the load limit.
-    LoadBudget::default().charge(LoadResource::SpineJoints, u64::from(links))?;
+    if links > MAX_LINKS {
+        return Err(LoadLimitError {
+            resource: LoadResource::SpineJoints,
+            limit: MAX_LINKS.into(),
+            got: links.into(),
+        }
+        .into());
+    }
     let count = mesh.vertex_count();
     if count == 0 {
         return Err(StrandError::NoVertices);
@@ -196,16 +205,18 @@ mod tests {
     }
 
     #[test]
-    fn more_links_than_spine_joints_load_are_refused() {
+    fn more_links_than_the_limit_are_refused() {
         let mesh = mesh_of(&[[-1.0, 5.0], [1.0, -5.0]]);
-        let limit = catchlight_core::LoadLimits::default().spine_joints;
-        assert!(fit_strand(&mesh, limit as u32, None).is_ok());
         assert_eq!(
-            fit_strand(&mesh, u32::MAX, None),
+            fit_strand(&mesh, MAX_LINKS, None).unwrap().lengths.len(),
+            256
+        );
+        assert_eq!(
+            fit_strand(&mesh, MAX_LINKS + 1, None),
             Err(StrandError::Limit(LoadLimitError {
                 resource: LoadResource::SpineJoints,
-                limit,
-                got: u64::from(u32::MAX),
+                limit: 256,
+                got: 257,
             }))
         );
     }

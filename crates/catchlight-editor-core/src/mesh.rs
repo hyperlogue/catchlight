@@ -2,6 +2,8 @@
 //! derived from vertices plus non-crossing constraint edges, so a state the
 //! tool accepted can always be applied.
 
+use std::collections::HashMap;
+
 use catchlight_core::formats::clm::{ClmIndices, ClmMesh};
 use spade::{ConstrainedDelaunayTriangulation, Point2, Triangulation as _};
 
@@ -17,6 +19,13 @@ pub const MAX_GRID_DIVISIONS: u32 = 128;
 
 /// Largest contour dilation, in texels.
 pub const MAX_CONTOUR_MARGIN: u32 = 128;
+
+/// Most interior rings one contour trace may ask for.
+pub const MAX_CONTOUR_RINGS: u32 = 16;
+
+/// Most vertices a generated mesh may have on one part. Checked as vertices
+/// are placed, so a dense request stops at the cap rather than finishing.
+pub const MAX_GENERATED_VERTICES: u32 = 65_536;
 
 /// Not a [`ModelError`]: a working mesh is not in a model yet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -510,39 +519,141 @@ impl Default for GridKnobs {
     }
 }
 
+/// Points bucketed on a uniform grid, so the points within `cell` of a query
+/// are found in the nine buckets around it rather than by reading them all.
+struct PointGrid {
+    cell: f32,
+    buckets: HashMap<(i64, i64), Vec<GridPoint>>,
+}
+
+/// A point's index and position.
+type GridPoint = (u32, [f32; 2]);
+
+impl PointGrid {
+    /// `cell` must be at least the query radius.
+    fn new(cell: f32) -> Self {
+        Self {
+            cell,
+            buckets: HashMap::new(),
+        }
+    }
+
+    fn key(&self, p: [f32; 2]) -> (i64, i64) {
+        // `as` saturates, so a point far out shares an edge bucket.
+        (
+            (p[0] / self.cell).floor() as i64,
+            (p[1] / self.cell).floor() as i64,
+        )
+    }
+
+    fn insert(&mut self, id: u32, p: [f32; 2]) {
+        self.buckets.entry(self.key(p)).or_default().push((id, p));
+    }
+
+    fn near(&self, p: [f32; 2]) -> impl Iterator<Item = GridPoint> + '_ {
+        let (kx, ky) = self.key(p);
+        (-1..=1)
+            .flat_map(move |dx| {
+                (-1..=1).map(move |dy| (kx.saturating_add(dx), ky.saturating_add(dy)))
+            })
+            .filter_map(|k| self.buckets.get(&k))
+            .flatten()
+            .copied()
+    }
+
+    fn any_within(&self, p: [f32; 2], d2: f32) -> bool {
+        self.near(p).any(|(_, q)| dist2(q, p) < d2)
+    }
+}
+
+/// A mesh being generated: coincidence is checked through a [`PointGrid`],
+/// and the vertex count against [`MAX_GENERATED_VERTICES`].
+struct Generated {
+    mesh: WorkingMesh,
+    grid: PointGrid,
+}
+
+impl Generated {
+    fn new(origin: [f32; 2]) -> Self {
+        Self {
+            mesh: WorkingMesh {
+                verts: Vec::new(),
+                constraints: Vec::new(),
+                origin,
+            },
+            grid: PointGrid::new(MIN_VERTEX_DISTANCE),
+        }
+    }
+
+    fn add(&mut self, pos: [f32; 2]) -> Result<u32, MeshError> {
+        if !pos[0].is_finite() || !pos[1].is_finite() {
+            return Err(MeshError::NotFinite);
+        }
+        if self
+            .grid
+            .any_within(pos, MIN_VERTEX_DISTANCE * MIN_VERTEX_DISTANCE)
+        {
+            return Err(MeshError::Coincident);
+        }
+        let count = self.mesh.vertex_count();
+        within(LoadResource::Vertices, MAX_GENERATED_VERTICES, count + 1)?;
+        let id = count as u32;
+        self.mesh.verts.extend_from_slice(&pos);
+        self.grid.insert(id, pos);
+        Ok(id)
+    }
+}
+
+/// A point that cannot be placed is skipped; only the vertex cap stops a trace.
+fn skip_unplaceable(placed: Result<u32, MeshError>) -> Result<Option<u32>, MeshError> {
+    match placed {
+        Ok(id) => Ok(Some(id)),
+        Err(e @ MeshError::Limit(_)) => Err(e),
+        Err(_) => Ok(None),
+    }
+}
+
 struct FreeVerts<'a> {
     uv_map: &'a UvMap,
     dims: [f32; 2],
     min_d2: f32,
     mirror_x: Option<f32>,
-    placed: Vec<[f32; 2]>,
+    /// Texel positions placed so far; `None` when `min_d2` drops nothing.
+    placed: Option<PointGrid>,
 }
 
 impl FreeVerts<'_> {
     fn record(&mut self, texel: [f32; 2]) {
-        self.placed.push(texel);
+        if let Some(placed) = &mut self.placed {
+            placed.insert(0, texel);
+        }
     }
 
     /// A candidate on the far side of the mirror line is dropped.
-    fn place(&mut self, mesh: &mut WorkingMesh, texel: [f32; 2]) {
+    fn place(&mut self, mesh: &mut Generated, texel: [f32; 2]) -> Result<(), MeshError> {
         match self.mirror_x {
-            Some(m) if texel[0] > m => (),
+            Some(m) if texel[0] > m => Ok(()),
             Some(m) => {
-                self.place_one(mesh, texel);
-                self.place_one(mesh, [2.0 * m - texel[0], texel[1]]);
+                self.place_one(mesh, texel)?;
+                self.place_one(mesh, [2.0 * m - texel[0], texel[1]])
             }
             None => self.place_one(mesh, texel),
         }
     }
 
-    fn place_one(&mut self, mesh: &mut WorkingMesh, texel: [f32; 2]) {
-        if self.placed.iter().any(|q| dist2(*q, texel) < self.min_d2) {
-            return;
+    fn place_one(&mut self, mesh: &mut Generated, texel: [f32; 2]) -> Result<(), MeshError> {
+        if self
+            .placed
+            .as_ref()
+            .is_some_and(|placed| placed.any_within(texel, self.min_d2))
+        {
+            return Ok(());
         }
         let uv = [texel[0] / self.dims[0], texel[1] / self.dims[1]];
-        if mesh.add_vertex(self.uv_map.local(uv)).is_ok() {
-            self.placed.push(texel);
+        if skip_unplaceable(mesh.add(self.uv_map.local(uv)))?.is_some() {
+            self.record(texel);
         }
+        Ok(())
     }
 }
 
@@ -559,6 +670,11 @@ pub fn contour_automesh(
         MAX_CONTOUR_MARGIN,
         knobs.margin as usize,
     )?;
+    within(
+        LoadResource::ContourRings,
+        MAX_CONTOUR_RINGS,
+        knobs.rings.len(),
+    )?;
     let (w, h) = (i64::from(alpha.width), i64::from(alpha.height));
     let mut solid = vec![false; (w * h) as usize];
     for y in 0..h {
@@ -571,22 +687,16 @@ pub fn contour_automesh(
     }
 
     let loops = trace_components(&solid, w, h);
-    let mut mesh = WorkingMesh {
-        verts: Vec::new(),
-        constraints: Vec::new(),
-        origin,
-    };
+    let mut mesh = Generated::new(origin);
+    // NaN compares false against every distance, so a bad number filters
+    // nothing rather than everything; `max` folds it to the default.
+    let min_distance = knobs.min_distance.max(0.0);
     let mut free = FreeVerts {
         uv_map,
         dims: [alpha.width as f32, alpha.height as f32],
-        // NaN compares false against every distance, so a bad number filters
-        // nothing rather than everything; `max` folds it to the default.
-        min_d2: {
-            let d = knobs.min_distance.max(0.0);
-            d * d
-        },
+        min_d2: min_distance * min_distance,
         mirror_x: knobs.mirror_x.filter(|m| m.is_finite()),
-        placed: Vec::new(),
+        placed: (min_distance > 0.0).then(|| PointGrid::new(min_distance)),
     };
 
     // Outlines first: rings and `min_distance` depend on them.
@@ -602,8 +712,8 @@ pub fn contour_automesh(
         let mut ids = Vec::with_capacity(simplified.len());
         for p in &simplified {
             let local = uv_map.local([p[0] / alpha.width as f32, p[1] / alpha.height as f32]);
-            // An `Err` is a point coincident with an earlier contour point.
-            if let Ok(id) = mesh.add_vertex(local) {
+            // A skipped point is coincident with an earlier contour point.
+            if let Some(id) = skip_unplaceable(mesh.add(local))? {
                 ids.push(id);
                 free.record(*p);
             }
@@ -612,7 +722,7 @@ pub fn contour_automesh(
             let a = ids[k];
             let b = ids[(k + 1) % ids.len()];
             // Overlapping simplified loops: skip the pin rather than fail the trace.
-            let _ = mesh.add_constraint(a, b);
+            let _ = mesh.mesh.add_constraint(a, b);
         }
         outlines.push(simplified);
     }
@@ -628,7 +738,7 @@ pub fn contour_automesh(
             let factor = factor.clamp(0.0, 1.0);
             let n = ((outline.len() as f32 * factor).round() as usize).max(1);
             for p in ring_points(outline, c, factor, n) {
-                free.place(&mut mesh, p);
+                free.place(&mut mesh, p)?;
             }
         }
     }
@@ -640,14 +750,14 @@ pub fn contour_automesh(
             let mut x = s / 2;
             while x < w {
                 if interior(&solid, w, h, x, y, s / 2) {
-                    free.place(&mut mesh, [x as f32, y as f32]);
+                    free.place(&mut mesh, [x as f32, y as f32])?;
                 }
                 x += s;
             }
             y += s;
         }
     }
-    Ok(mesh)
+    Ok(mesh.mesh)
 }
 
 fn centroid(points: &[[f32; 2]]) -> [f32; 2] {
@@ -768,17 +878,13 @@ pub fn grid_automesh(
             .collect(),
     );
 
-    let mut mesh = WorkingMesh {
-        verts: Vec::new(),
-        constraints: Vec::new(),
-        origin,
-    };
+    let mut mesh = Generated::new(origin);
     for &y in &ys {
         for &x in &xs {
-            mesh.add_vertex([x, y])?;
+            mesh.add([x, y])?;
         }
     }
-    Ok(mesh)
+    Ok(mesh.mesh)
 }
 
 fn within(resource: LoadResource, limit: u32, requested: usize) -> Result<(), MeshError> {
@@ -1034,7 +1140,7 @@ pub fn refit_deform_offsets(old: &ClmMesh, new_verts: &[f32], old_offsets: &[f32
 
     // Bit-identical vertices keep their offsets verbatim, covering isolated
     // vertices and duplicates the triangle walk would blend or drop.
-    let mut exact: std::collections::HashMap<(u32, u32), u32> = std::collections::HashMap::new();
+    let mut exact: HashMap<(u32, u32), u32> = HashMap::new();
     for i in (0..(old.verts.len() / 2) as u32).rev() {
         let q = old_pos(i);
         exact.insert((q[0].to_bits(), q[1].to_bits()), i);
@@ -1570,6 +1676,56 @@ mod tests {
                 u32::MAX.into()
             )
         );
+
+        let rings = |count: u32| {
+            contour_automesh(
+                &alpha,
+                &ContourKnobs {
+                    rings: vec![0.5; count as usize],
+                    ..ContourKnobs::default()
+                },
+                &uv_map,
+                [0.0, 0.0],
+            )
+            .map(drop)
+        };
+        assert!(rings(MAX_CONTOUR_RINGS).is_ok());
+        assert_eq!(
+            rings(MAX_CONTOUR_RINGS + 1),
+            limit(LoadResource::ContourRings, MAX_CONTOUR_RINGS, 17)
+        );
+    }
+
+    #[test]
+    fn a_trace_denser_than_the_vertex_cap_stops_at_the_cap() {
+        let size = 300u32;
+        let alpha = AlphaMask {
+            width: size,
+            height: size,
+            alpha: vec![255; (size * size) as usize],
+        };
+        let uv_map = UvMap::from_texture_size(size as f32, size as f32);
+        let trace = |spacing| {
+            contour_automesh(
+                &alpha,
+                &ContourKnobs {
+                    spacing,
+                    margin: 0,
+                    ..ContourKnobs::default()
+                },
+                &uv_map,
+                [0.0, 0.0],
+            )
+        };
+        assert_eq!(
+            trace(1).map(drop),
+            Err(MeshError::Limit(LoadLimitError {
+                resource: LoadResource::Vertices,
+                limit: MAX_GENERATED_VERTICES.into(),
+                got: u64::from(MAX_GENERATED_VERTICES) + 1,
+            }))
+        );
+        assert!(trace(2).unwrap().vertex_count() < MAX_GENERATED_VERTICES as usize);
     }
 
     #[test]

@@ -34,6 +34,7 @@ pub enum LoadResource {
     GridDivisions,
     GridLines,
     ContourMargin,
+    ContourRings,
     VertexCoordinates,
 }
 
@@ -68,6 +69,7 @@ impl LoadResource {
             Self::GridDivisions => "grid divisions",
             Self::GridLines => "grid lines",
             Self::ContourMargin => "contour margin",
+            Self::ContourRings => "contour rings",
             Self::VertexCoordinates => "vertex coordinates",
         }
     }
@@ -152,6 +154,7 @@ impl LoadLimits {
             | LoadResource::GridDivisions
             | LoadResource::GridLines
             | LoadResource::ContourMargin
+            | LoadResource::ContourRings
             | LoadResource::VertexCoordinates => u64::MAX,
         }
     }

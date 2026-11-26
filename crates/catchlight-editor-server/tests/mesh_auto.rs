@@ -489,6 +489,18 @@ fn every_refusal_has_its_own_code() {
             "contour margin",
         ),
         (
+            AutoMesh::Contour {
+                threshold: None,
+                simplify: None,
+                margin: None,
+                spacing: None,
+                rings: Some(vec![0.5; 17]),
+                min_distance: None,
+                mirror_x: None,
+            },
+            "contour rings",
+        ),
+        (
             AutoMesh::Grid {
                 threshold: None,
                 cols: Some(u32::MAX),
