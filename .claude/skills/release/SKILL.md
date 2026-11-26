@@ -73,7 +73,10 @@ description: Prepare or cut a Catchlight release with changelog review, a shared
    for the first time cannot use trusted publishing yet; publish it once locally
    (`npm login`, then `node scripts/npm/publish.mjs --publish`), then register
    it as a trusted publisher for `hyperlogue/catchlight`, workflow
-   `release.yml`, environment `release`. While any `@catchlight/editor` version
+   `release.yml`, environment `release`. A new crate cannot be uploaded ahead
+   of the workspace crates it depends on; the user reserves its name with
+   `bash scripts/release/reserve-crates.sh publish <crate>...`, which uploads
+   an empty 0.0.0, and registers the publisher before the tag is pushed. While any `@catchlight/editor` version
    below 0.2.0 is not deprecated, deprecate those versions with a pointer to
    `@catchlight/editor-ui`, within the user's authorization. Rust
    uploads use `.github/scripts/publish-crates.sh publish` with a token
