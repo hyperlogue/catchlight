@@ -89,25 +89,7 @@ impl ValidatedPackage {
                 ));
             }
             if let Some(role) = &layer.role {
-                if !matches!(
-                    role.as_str(),
-                    "mouth"
-                        | "expr"
-                        | "expr_brows"
-                        | "lid_L"
-                        | "lid_R"
-                        | "blush"
-                        | "hole"
-                        | "edge"
-                        | "edge_wide"
-                        | "eye_L"
-                        | "eye_R"
-                        | "iris_L"
-                        | "iris_R"
-                        | "shine_L"
-                        | "shine_R"
-                        | "neck_shadow"
-                ) {
+                if Role::parse(role).is_none() {
                     report.losses.push(format!(
                         "layer {}: role {role} is drawn as a plain layer",
                         layer.id
@@ -160,7 +142,8 @@ impl ValidatedPackage {
         for (i, layer) in self.model.layers.iter().enumerate() {
             let (mesh, points) = bake::mesh(layer, self.model.canvas);
             let mut layer_nodes = Vec::new();
-            let is_mouth = layer.role.as_deref() == Some("mouth");
+            let role = layer.role.as_deref().and_then(Role::parse);
+            let is_mouth = role == Some(Role::Mouth);
             let paths: Vec<&str> = if is_mouth {
                 layer.frames.iter().map(String::as_str).collect()
             } else {
@@ -212,22 +195,11 @@ impl ValidatedPackage {
                 })?;
                 let opacity = if is_mask {
                     0.0
-                } else if is_mouth
-                    || matches!(
-                        layer.role.as_deref(),
-                        Some("expr" | "expr_brows" | "lid_L" | "lid_R")
-                    )
-                {
-                    1.0
                 } else {
-                    match layer.role.as_deref() {
-                        Some(
-                            "expr" | "expr_brows" | "lid_L" | "lid_R" | "blush" | "hole" | "edge"
-                            | "edge_wide" | "eye_L" | "eye_R" | "iris_L" | "iris_R" | "shine_L"
-                            | "shine_R" | "neck_shadow",
-                        ) => 0.0,
-                        _ if layer.show.is_empty() && frame == 0 => 1.0,
-                        _ => 0.0,
+                    match role {
+                        Some(role) => role.rest_opacity(),
+                        None if layer.show.is_empty() && frame == 0 => 1.0,
+                        None => 0.0,
                     }
                 };
                 let masks = if !is_mask {
@@ -354,6 +326,59 @@ impl ValidatedPackage {
         );
         let model = Model::from_clm_file(&file)?;
         Ok(Conversion { model, report })
+    }
+}
+
+/// The layer roles this conversion draws; any other role is drawn as a plain
+/// layer and reported as a loss.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Role {
+    Mouth,
+    Expr,
+    ExprBrows,
+    Lid,
+    Blush,
+    Hole,
+    Edge,
+    EdgeWide,
+    Eye,
+    Iris,
+    Shine,
+    NeckShadow,
+}
+
+impl Role {
+    fn parse(role: &str) -> Option<Self> {
+        Some(match role {
+            "mouth" => Self::Mouth,
+            "expr" => Self::Expr,
+            "expr_brows" => Self::ExprBrows,
+            "lid_L" | "lid_R" => Self::Lid,
+            "blush" => Self::Blush,
+            "hole" => Self::Hole,
+            "edge" => Self::Edge,
+            "edge_wide" => Self::EdgeWide,
+            "eye_L" | "eye_R" => Self::Eye,
+            "iris_L" | "iris_R" => Self::Iris,
+            "shine_L" | "shine_R" => Self::Shine,
+            "neck_shadow" => Self::NeckShadow,
+            _ => return None,
+        })
+    }
+
+    /// Opacity before any binding moves it.
+    fn rest_opacity(self) -> f32 {
+        match self {
+            Self::Mouth | Self::Expr | Self::ExprBrows | Self::Lid => 1.0,
+            Self::Blush
+            | Self::Hole
+            | Self::Edge
+            | Self::EdgeWide
+            | Self::Eye
+            | Self::Iris
+            | Self::Shine
+            | Self::NeckShadow => 0.0,
+        }
     }
 }
 
