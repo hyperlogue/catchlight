@@ -359,7 +359,7 @@ mod tests {
         assert!(matches!(
             err,
             InxParseError::LoadLimit(LoadLimitError {
-                resource: "decoded texture bytes",
+                resource: LoadResource::DecodedTextureBytes,
                 got: 8,
                 ..
             })

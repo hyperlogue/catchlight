@@ -203,7 +203,7 @@ mod tests {
         assert_eq!(
             fit_strand(&mesh, u32::MAX, None),
             Err(StrandError::Limit(LoadLimitError {
-                resource: "spine joints",
+                resource: LoadResource::SpineJoints,
                 limit,
                 got: u64::from(u32::MAX),
             }))

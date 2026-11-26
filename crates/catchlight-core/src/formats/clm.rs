@@ -1292,7 +1292,7 @@ mod tests {
         assert!(matches!(
             err,
             ClmError::LoadLimit(crate::load_budget::LoadLimitError {
-                resource: "encoded bytes",
+                resource: crate::LoadResource::EncodedBytes,
                 ..
             })
         ));

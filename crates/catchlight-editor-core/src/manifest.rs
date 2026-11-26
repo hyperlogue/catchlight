@@ -446,39 +446,39 @@ fn grid_mesh(
         .checked_add(1)
         .and_then(|cols| rows.checked_add(1).and_then(|rows| cols.checked_mul(rows)))
         .ok_or(LoadLimitError {
-            resource: "vertices",
+            resource: LoadResource::Vertices,
             limit: u64::MAX,
             got: u64::MAX,
         })?;
     let index_count = cells.checked_mul(6).ok_or(LoadLimitError {
-        resource: "indices",
+        resource: LoadResource::Indices,
         limit: u64::MAX,
         got: u64::MAX,
     })?;
     budget.charge(LoadResource::Vertices, vertex_count)?;
     budget.charge(LoadResource::Indices, index_count)?;
     let cols = u32::try_from(cols).map_err(|_| LoadLimitError {
-        resource: "manifest grid columns",
+        resource: LoadResource::ManifestGridColumns,
         limit: u32::MAX as u64,
         got: cols,
     })?;
     let rows = u32::try_from(rows).map_err(|_| LoadLimitError {
-        resource: "manifest grid rows",
+        resource: LoadResource::ManifestGridRows,
         limit: u32::MAX as u64,
         got: rows,
     })?;
     let scalar_count = usize::try_from(vertex_count.checked_mul(2).ok_or(LoadLimitError {
-        resource: "vertex coordinates",
+        resource: LoadResource::VertexCoordinates,
         limit: usize::MAX as u64,
         got: u64::MAX,
     })?)
     .map_err(|_| LoadLimitError {
-        resource: "vertex coordinates",
+        resource: LoadResource::VertexCoordinates,
         limit: usize::MAX as u64,
         got: vertex_count.saturating_mul(2),
     })?;
     let index_capacity = usize::try_from(index_count).map_err(|_| LoadLimitError {
-        resource: "indices",
+        resource: LoadResource::Indices,
         limit: usize::MAX as u64,
         got: index_count,
     })?;
@@ -632,7 +632,7 @@ mod tests {
         assert!(matches!(
             err,
             ManifestError::LoadLimit(LoadLimitError {
-                resource: "manifest grid cells",
+                resource: LoadResource::ManifestGridCells,
                 got: 8,
                 ..
             })
@@ -690,7 +690,7 @@ mod tests {
         assert!(matches!(
             err,
             ManifestError::LoadLimit(LoadLimitError {
-                resource: "manifest grid cells",
+                resource: LoadResource::ManifestGridCells,
                 ..
             })
         ));

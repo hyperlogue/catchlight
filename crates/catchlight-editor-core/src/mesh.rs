@@ -6,7 +6,7 @@ use catchlight_core::formats::clm::{ClmIndices, ClmMesh};
 use spade::{ConstrainedDelaunayTriangulation, Point2, Triangulation as _};
 
 use catchlight_core::id::{NodeId, SlotId};
-use catchlight_core::{LoadLimitError, Model, ModelError};
+use catchlight_core::{LoadLimitError, LoadResource, Model, ModelError};
 
 /// Coincident points would merge in the triangulation and corrupt indexing.
 const MIN_VERTEX_DISTANCE: f32 = 1e-3;
@@ -552,7 +552,11 @@ pub fn contour_automesh(
     uv_map: &UvMap,
     origin: [f32; 2],
 ) -> Result<WorkingMesh, MeshError> {
-    within("contour margin", MAX_CONTOUR_MARGIN, knobs.margin as usize)?;
+    within(
+        LoadResource::ContourMargin,
+        MAX_CONTOUR_MARGIN,
+        knobs.margin as usize,
+    )?;
     let (w, h) = (alpha.width as i64, alpha.height as i64);
     let mut solid = vec![false; (w * h) as usize];
     for y in 0..h {
@@ -698,9 +702,13 @@ pub fn grid_automesh(
 ) -> Result<WorkingMesh, MeshError> {
     for (axis, cells) in [(&knobs.axes_x, knobs.cols), (&knobs.axes_y, knobs.rows)] {
         if axis.is_empty() {
-            within("grid divisions", MAX_GRID_DIVISIONS, cells as usize)?;
+            within(
+                LoadResource::GridDivisions,
+                MAX_GRID_DIVISIONS,
+                cells as usize,
+            )?;
         } else {
-            within("grid lines", MAX_GRID_DIVISIONS + 1, axis.len())?;
+            within(LoadResource::GridLines, MAX_GRID_DIVISIONS + 1, axis.len())?;
         }
     }
     let (w, h) = (alpha.width as i64, alpha.height as i64);
@@ -773,7 +781,7 @@ pub fn grid_automesh(
     Ok(mesh)
 }
 
-fn within(resource: &'static str, limit: u32, requested: usize) -> Result<(), MeshError> {
+fn within(resource: LoadResource, limit: u32, requested: usize) -> Result<(), MeshError> {
     let requested = requested as u64;
     if requested > u64::from(limit) {
         return Err(LoadLimitError {
@@ -1514,7 +1522,11 @@ mod tests {
                 ..GridKnobs::default()
             })
             .map(drop),
-            limit("grid divisions", MAX_GRID_DIVISIONS, u32::MAX.into())
+            limit(
+                LoadResource::GridDivisions,
+                MAX_GRID_DIVISIONS,
+                u32::MAX.into()
+            )
         );
         assert_eq!(
             grid(GridKnobs {
@@ -1523,7 +1535,7 @@ mod tests {
             })
             .map(drop),
             limit(
-                "grid lines",
+                LoadResource::GridLines,
                 MAX_GRID_DIVISIONS + 1,
                 u64::from(MAX_GRID_DIVISIONS) + 2
             )
@@ -1547,7 +1559,11 @@ mod tests {
                 [0.0, 0.0],
             )
             .map(drop),
-            limit("contour margin", MAX_CONTOUR_MARGIN, u32::MAX.into())
+            limit(
+                LoadResource::ContourMargin,
+                MAX_CONTOUR_MARGIN,
+                u32::MAX.into()
+            )
         );
     }
 

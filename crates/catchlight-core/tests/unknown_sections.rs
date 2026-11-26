@@ -256,7 +256,7 @@ fn unknown_sections_are_charged_as_encoded_bytes() {
     Model::from_clm_file_with_budget(&file, &mut budget(payloads + 100)).unwrap();
     let err = Model::from_clm_file_with_budget(&file, &mut budget(payloads + 99)).unwrap_err();
     assert!(
-        matches!(&err, ModelError::LoadLimit(e) if e.resource == "encoded bytes"),
+        matches!(&err, ModelError::LoadLimit(e) if e.resource == catchlight_core::LoadResource::EncodedBytes),
         "{err}"
     );
 }

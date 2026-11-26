@@ -2386,7 +2386,7 @@ mod tests {
         assert!(matches!(
             err,
             ModelError::LoadLimit(crate::LoadLimitError {
-                resource: "nodes",
+                resource: LoadResource::Nodes,
                 ..
             })
         ));

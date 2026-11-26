@@ -7,7 +7,7 @@ use catchlight_core::formats::clm::{self, ClmError, ClmExtension, ClmStructure};
 use catchlight_core::formats::container::{self, Section};
 use catchlight_core::id::ExtensionKey;
 use catchlight_core::load_budget::charge_clm_structure;
-use catchlight_core::{LoadBudget, LoadLimitError, LoadLimits, Model, ModelError};
+use catchlight_core::{LoadBudget, LoadLimitError, LoadLimits, LoadResource, Model, ModelError};
 
 fn fixture(name: &str) -> Vec<u8> {
     let path: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -50,7 +50,7 @@ fn a_file_exactly_at_the_encoded_byte_limit_loads() {
     assert_eq!(
         limit_error(err),
         LoadLimitError {
-            resource: "encoded bytes",
+            resource: LoadResource::EncodedBytes,
             limit: size - 1,
             got: size,
         }
@@ -68,7 +68,7 @@ fn a_hand_built_file_still_has_its_payloads_charged() {
     let err =
         Model::from_clm_file_with_budget(&file, &mut budget(|l| l.encoded_bytes = payloads - 1))
             .unwrap_err();
-    assert_eq!(limit_error(err).resource, "encoded bytes");
+    assert_eq!(limit_error(err).resource, LoadResource::EncodedBytes);
 }
 
 /// The section here is not CBOR, so the error says whether the charge came
@@ -110,7 +110,7 @@ fn the_structure_section_is_charged_before_it_is_parsed() {
         matches!(
             err,
             ClmError::LoadLimit(LoadLimitError {
-                resource: "structure bytes",
+                resource: LoadResource::StructureBytes,
                 limit: 63,
                 got: 64,
             })
@@ -125,7 +125,7 @@ fn the_structure_section_is_charged_before_it_is_parsed() {
         matches!(
             err,
             ClmError::LoadLimit(LoadLimitError {
-                resource: "structure bytes",
+                resource: LoadResource::StructureBytes,
                 ..
             })
         ),
@@ -157,7 +157,7 @@ fn spine_joints_and_targets_are_charged() {
 
     assert_eq!(charge(&doc, |l| l.spine_joints = 6), Ok(()));
     let err = charge(&doc, |l| l.spine_joints = 5).unwrap_err();
-    assert_eq!((err.resource, err.got), ("spine joints", 6));
+    assert_eq!((err.resource, err.got), (LoadResource::SpineJoints, 6));
 }
 
 #[test]
@@ -166,7 +166,7 @@ fn welds_and_their_pairs_are_charged() {
 
     assert_eq!(charge(&doc, |l| l.weld_pairs = 4), Ok(()));
     let err = charge(&doc, |l| l.weld_pairs = 3).unwrap_err();
-    assert_eq!((err.resource, err.got), ("weld pairs", 4));
+    assert_eq!((err.resource, err.got), (LoadResource::WeldPairs, 4));
 }
 
 #[test]
@@ -187,7 +187,10 @@ fn extension_values_are_charged() {
 
     assert_eq!(charge(&doc, |l| l.extension_bytes = json + 100), Ok(()));
     let err = charge(&doc, |l| l.extension_bytes = json + 99).unwrap_err();
-    assert_eq!((err.resource, err.got), ("extension bytes", json + 100));
+    assert_eq!(
+        (err.resource, err.got),
+        (LoadResource::ExtensionBytes, json + 100)
+    );
 }
 
 #[test]
@@ -212,7 +215,7 @@ fn a_structure_push_charges_each_texture_once() {
             &mut budget(|l| l.textures = count - 1),
         )
         .unwrap_err();
-    assert_eq!(limit_error(err).resource, "textures");
+    assert_eq!(limit_error(err).resource, LoadResource::Textures);
 }
 
 /// The manifest here is not CBOR, so the error says whether the charge came
@@ -236,7 +239,7 @@ fn the_texture_manifest_is_charged_before_it_is_parsed() {
         matches!(
             err,
             ClmError::LoadLimit(LoadLimitError {
-                resource: "structure bytes",
+                resource: LoadResource::StructureBytes,
                 limit: 63,
                 got: 64,
             })

@@ -3,7 +3,7 @@
 //! [`LoadLimits`] and [`LoadResource`] are `#[non_exhaustive]` so adding a
 //! resource stays an additive change.
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum LoadResource {
     EncodedBytes,
@@ -23,12 +23,27 @@ pub enum LoadResource {
     WeldPairs,
     /// Bytes: a JSON value's compact-text length, a byte value's size.
     ExtensionBytes,
+    // The resources below are checked against a fixed cap where they are
+    // read rather than charged, so a budget does not limit them.
+    /// [`MAX_TEXTURE_DIMENSION`].
+    TextureDimension,
+    /// [`MAX_BINDING_GRID_CELLS`].
+    BindingGrid,
+    ManifestGridColumns,
+    ManifestGridRows,
+    GridDivisions,
+    GridLines,
+    ContourMargin,
+    VertexCoordinates,
 }
 
 pub const MAX_TEXTURE_DIMENSION: u32 = 8_192;
 
 impl LoadResource {
-    fn name(self) -> &'static str {
+    const COUNT: usize = Self::VertexCoordinates as usize + 1;
+
+    /// The name editor clients receive in a limit error.
+    pub fn name(self) -> &'static str {
         match self {
             Self::EncodedBytes => "encoded bytes",
             Self::Textures => "textures",
@@ -46,7 +61,21 @@ impl LoadResource {
             Self::SpineJoints => "spine joints",
             Self::WeldPairs => "weld pairs",
             Self::ExtensionBytes => "extension bytes",
+            Self::TextureDimension => "texture dimension",
+            Self::BindingGrid => "binding grid",
+            Self::ManifestGridColumns => "manifest grid columns",
+            Self::ManifestGridRows => "manifest grid rows",
+            Self::GridDivisions => "grid divisions",
+            Self::GridLines => "grid lines",
+            Self::ContourMargin => "contour margin",
+            Self::VertexCoordinates => "vertex coordinates",
         }
+    }
+}
+
+impl std::fmt::Display for LoadResource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
     }
 }
 
@@ -97,10 +126,41 @@ impl Default for LoadLimits {
     }
 }
 
+impl LoadLimits {
+    fn of(&self, resource: LoadResource) -> u64 {
+        match resource {
+            LoadResource::EncodedBytes => self.encoded_bytes,
+            LoadResource::Textures => self.textures,
+            LoadResource::DecodedTextureBytes => self.decoded_texture_bytes,
+            LoadResource::Nodes => self.nodes,
+            LoadResource::Params => self.params,
+            LoadResource::Vertices => self.vertices,
+            LoadResource::Indices => self.indices,
+            LoadResource::BindingCells => self.binding_cells,
+            LoadResource::DeformOffsets => self.deform_offsets,
+            LoadResource::ManifestGridCells => self.manifest_grid_cells,
+            LoadResource::ResponseInputs => self.response_inputs,
+            LoadResource::Slots => self.slots,
+            LoadResource::StructureBytes => self.structure_bytes,
+            LoadResource::SpineJoints => self.spine_joints,
+            LoadResource::WeldPairs => self.weld_pairs,
+            LoadResource::ExtensionBytes => self.extension_bytes,
+            LoadResource::TextureDimension
+            | LoadResource::BindingGrid
+            | LoadResource::ManifestGridColumns
+            | LoadResource::ManifestGridRows
+            | LoadResource::GridDivisions
+            | LoadResource::GridLines
+            | LoadResource::ContourMargin
+            | LoadResource::VertexCoordinates => u64::MAX,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("{resource} exceeded load limit: {got} > {limit}")]
 pub struct LoadLimitError {
-    pub resource: &'static str,
+    pub resource: LoadResource,
     pub limit: u64,
     pub got: u64,
 }
@@ -108,7 +168,7 @@ pub struct LoadLimitError {
 #[derive(Debug, Clone)]
 pub struct LoadBudget {
     limits: LoadLimits,
-    used: LoadLimits,
+    used: [u64; LoadResource::COUNT],
 }
 
 impl Default for LoadBudget {
@@ -121,68 +181,21 @@ impl LoadBudget {
     pub fn new(limits: LoadLimits) -> Self {
         Self {
             limits,
-            used: LoadLimits {
-                encoded_bytes: 0,
-                textures: 0,
-                decoded_texture_bytes: 0,
-                nodes: 0,
-                params: 0,
-                vertices: 0,
-                indices: 0,
-                binding_cells: 0,
-                deform_offsets: 0,
-                manifest_grid_cells: 0,
-                response_inputs: 0,
-                slots: 0,
-                structure_bytes: 0,
-                spine_joints: 0,
-                weld_pairs: 0,
-                extension_bytes: 0,
-            },
+            used: [0; LoadResource::COUNT],
         }
     }
 
     pub fn charge(&mut self, resource: LoadResource, amount: u64) -> Result<(), LoadLimitError> {
-        let (used, limit) = match resource {
-            LoadResource::EncodedBytes => (&mut self.used.encoded_bytes, self.limits.encoded_bytes),
-            LoadResource::Textures => (&mut self.used.textures, self.limits.textures),
-            LoadResource::DecodedTextureBytes => (
-                &mut self.used.decoded_texture_bytes,
-                self.limits.decoded_texture_bytes,
-            ),
-            LoadResource::Nodes => (&mut self.used.nodes, self.limits.nodes),
-            LoadResource::Params => (&mut self.used.params, self.limits.params),
-            LoadResource::Vertices => (&mut self.used.vertices, self.limits.vertices),
-            LoadResource::Indices => (&mut self.used.indices, self.limits.indices),
-            LoadResource::BindingCells => (&mut self.used.binding_cells, self.limits.binding_cells),
-            LoadResource::DeformOffsets => {
-                (&mut self.used.deform_offsets, self.limits.deform_offsets)
-            }
-            LoadResource::ManifestGridCells => (
-                &mut self.used.manifest_grid_cells,
-                self.limits.manifest_grid_cells,
-            ),
-            LoadResource::ResponseInputs => {
-                (&mut self.used.response_inputs, self.limits.response_inputs)
-            }
-            LoadResource::Slots => (&mut self.used.slots, self.limits.slots),
-            LoadResource::StructureBytes => {
-                (&mut self.used.structure_bytes, self.limits.structure_bytes)
-            }
-            LoadResource::SpineJoints => (&mut self.used.spine_joints, self.limits.spine_joints),
-            LoadResource::WeldPairs => (&mut self.used.weld_pairs, self.limits.weld_pairs),
-            LoadResource::ExtensionBytes => {
-                (&mut self.used.extension_bytes, self.limits.extension_bytes)
-            }
-        };
-        let got = used.checked_add(amount).ok_or_else(|| LoadLimitError {
-            resource: resource.name(),
+        let limit = self.limits.of(resource);
+        let used = &mut self.used[resource as usize];
+        let got = used.checked_add(amount).ok_or(LoadLimitError {
+            resource,
             limit,
             got: u64::MAX,
         })?;
         if got > limit {
             return Err(LoadLimitError {
-                resource: resource.name(),
+                resource,
                 limit,
                 got,
             });
@@ -197,9 +210,9 @@ impl LoadBudget {
         left: u64,
         right: u64,
     ) -> Result<u64, LoadLimitError> {
-        let amount = left.checked_mul(right).ok_or_else(|| LoadLimitError {
-            resource: resource.name(),
-            limit: self.limit(resource),
+        let amount = left.checked_mul(right).ok_or(LoadLimitError {
+            resource,
+            limit: self.limits.of(resource),
             got: u64::MAX,
         })?;
         self.charge(resource, amount)?;
@@ -213,7 +226,7 @@ impl LoadBudget {
     ) -> Result<(), LoadLimitError> {
         if width > MAX_TEXTURE_DIMENSION || height > MAX_TEXTURE_DIMENSION {
             return Err(LoadLimitError {
-                resource: "texture dimension",
+                resource: LoadResource::TextureDimension,
                 limit: MAX_TEXTURE_DIMENSION as u64,
                 got: width.max(height) as u64,
             });
@@ -221,33 +234,12 @@ impl LoadBudget {
         let pixels = u64::from(width)
             .checked_mul(u64::from(height))
             .ok_or(LoadLimitError {
-                resource: "decoded texture bytes",
+                resource: LoadResource::DecodedTextureBytes,
                 limit: self.limits.decoded_texture_bytes,
                 got: u64::MAX,
             })?;
         self.charge_product(LoadResource::DecodedTextureBytes, pixels, 4)?;
         Ok(())
-    }
-
-    fn limit(&self, resource: LoadResource) -> u64 {
-        match resource {
-            LoadResource::EncodedBytes => self.limits.encoded_bytes,
-            LoadResource::Textures => self.limits.textures,
-            LoadResource::DecodedTextureBytes => self.limits.decoded_texture_bytes,
-            LoadResource::Nodes => self.limits.nodes,
-            LoadResource::Params => self.limits.params,
-            LoadResource::Vertices => self.limits.vertices,
-            LoadResource::Indices => self.limits.indices,
-            LoadResource::BindingCells => self.limits.binding_cells,
-            LoadResource::DeformOffsets => self.limits.deform_offsets,
-            LoadResource::ManifestGridCells => self.limits.manifest_grid_cells,
-            LoadResource::ResponseInputs => self.limits.response_inputs,
-            LoadResource::Slots => self.limits.slots,
-            LoadResource::StructureBytes => self.limits.structure_bytes,
-            LoadResource::SpineJoints => self.limits.spine_joints,
-            LoadResource::WeldPairs => self.limits.weld_pairs,
-            LoadResource::ExtensionBytes => self.limits.extension_bytes,
-        }
     }
 }
 
@@ -256,14 +248,15 @@ pub const MAX_BINDING_GRID_CELLS: u64 = 65_536;
 pub(crate) fn binding_grid_cells(
     mut axis_lengths: impl Iterator<Item = u64>,
 ) -> Result<u64, LoadLimitError> {
-    axis_lengths
-        .try_fold(1u64, |acc, len| acc.checked_mul(len))
-        .filter(|cells| *cells <= MAX_BINDING_GRID_CELLS)
-        .ok_or(LoadLimitError {
-            resource: "binding grid",
+    let cells = axis_lengths.try_fold(1u64, |acc, len| acc.checked_mul(len));
+    match cells {
+        Some(cells) if cells <= MAX_BINDING_GRID_CELLS => Ok(cells),
+        got => Err(LoadLimitError {
+            resource: LoadResource::BindingGrid,
             limit: MAX_BINDING_GRID_CELLS,
-            got: u64::MAX,
-        })
+            got: got.unwrap_or(u64::MAX),
+        }),
+    }
 }
 
 /// Charges payload bytes too, for a `ClmFile` built in memory; a file read
@@ -407,7 +400,7 @@ mod tests {
         });
         budget.charge(LoadResource::Nodes, 2).unwrap();
         let err = budget.charge(LoadResource::Nodes, 2).unwrap_err();
-        assert_eq!(err.resource, "nodes");
+        assert_eq!(err.resource, LoadResource::Nodes);
         assert_eq!(err.got, 4);
         budget.charge(LoadResource::Nodes, 1).unwrap();
     }
@@ -418,6 +411,17 @@ mod tests {
         let err = budget
             .charge_product(LoadResource::DeformOffsets, u64::MAX, 2)
             .unwrap_err();
+        assert_eq!(err.got, u64::MAX);
+    }
+
+    #[test]
+    fn an_oversized_binding_grid_reports_its_cell_count() {
+        let err = binding_grid_cells([256, 256, 2].into_iter()).unwrap_err();
+        assert_eq!(
+            (err.resource, err.limit, err.got),
+            (LoadResource::BindingGrid, MAX_BINDING_GRID_CELLS, 131_072)
+        );
+        let err = binding_grid_cells([u64::MAX, 2].into_iter()).unwrap_err();
         assert_eq!(err.got, u64::MAX);
     }
 }

@@ -11,7 +11,9 @@ use catchlight_core::formats::clm::{
     ClmBindingValues, ClmCell, ClmCells, ClmIndices, ClmMesh, ClmTransform,
 };
 use catchlight_core::interpolate::InterpolateMode;
-use catchlight_core::load_budget::{LoadLimitError, LoadLimits, MAX_BINDING_GRID_CELLS};
+use catchlight_core::load_budget::{
+    LoadLimitError, LoadLimits, LoadResource, MAX_BINDING_GRID_CELLS,
+};
 use catchlight_core::NodeId;
 
 use crate::error::ImportError;
@@ -189,7 +191,7 @@ pub(crate) fn convert_binding_values(
         let limit = LoadLimits::default().deform_offsets;
         if offsets > limit {
             return Err(ImportError::LoadLimit(LoadLimitError {
-                resource: "deform offsets",
+                resource: LoadResource::DeformOffsets,
                 limit,
                 got: offsets,
             }));
@@ -399,7 +401,7 @@ fn matrix_columns<'v>(
     let cells = (columns.len() as u64).saturating_mul(height as u64);
     if cells > MAX_BINDING_GRID_CELLS {
         return Err(ImportError::LoadLimit(LoadLimitError {
-            resource: "binding grid",
+            resource: LoadResource::BindingGrid,
             limit: MAX_BINDING_GRID_CELLS,
             got: cells,
         }));

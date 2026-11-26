@@ -606,7 +606,7 @@ mod tests {
                 matches!(
                     err,
                     TextureError::Limit(LoadLimitError {
-                        resource: "texture dimension",
+                        resource: crate::LoadResource::TextureDimension,
                         ..
                     })
                 ),
@@ -624,7 +624,7 @@ mod tests {
         assert_eq!(
             err,
             TextureError::Limit(LoadLimitError {
-                resource: "decoded texture bytes",
+                resource: crate::LoadResource::DecodedTextureBytes,
                 limit: both - 1,
                 got: both,
             })

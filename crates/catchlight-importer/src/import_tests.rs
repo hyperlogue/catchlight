@@ -678,7 +678,7 @@ fn a_value_matrix_past_the_binding_grid_limit_is_refused_before_it_is_filled() {
     let tall = vec![1.0; limit / 2 + 1];
     let err = opacity_binding(json!([tall, tall])).unwrap_err();
     assert!(
-        matches!(&err, ImportError::LoadLimit(e) if e.resource == "binding grid"),
+        matches!(&err, ImportError::LoadLimit(e) if e.resource.name() == "binding grid"),
         "{err}"
     );
 }

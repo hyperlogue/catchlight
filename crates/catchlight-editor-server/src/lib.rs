@@ -186,7 +186,7 @@ impl EditorError {
             | Self::Manifest(ManifestError::Model(ModelError::Clm(clm::ClmError::LoadLimit(
                 limit,
             )))) => Some(LimitInfo {
-                resource: limit.resource.into(),
+                resource: limit.resource.name().into(),
                 limit: limit.limit,
                 requested: limit.got,
             }),
@@ -1983,7 +1983,7 @@ fn spine_fit(
         .ok_or_else(|| EditorError::BadTarget(format!("node {part} holds no mesh to fit")))?;
     let fit = fit_strand(mesh, links, axis).map_err(|e| match e {
         StrandError::Limit(limit) => EditorError::Limit {
-            resource: limit.resource,
+            resource: limit.resource.name(),
             limit: limit.limit,
             requested: limit.got,
         },
