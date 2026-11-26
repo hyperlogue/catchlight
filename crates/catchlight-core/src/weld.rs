@@ -1,13 +1,11 @@
 //! Vertex welding: paired vertices of two Parts are pulled to a weighted
 //! meeting point so a seam stays closed under deforms.
 
-use glam::{Affine2, Mat2, Vec2};
-use smallvec::SmallVec;
-
-use crate::components::{NodeIdx, NodeKind};
+use crate::components::{NodeIdx, NodeKind, PartData};
 use crate::deform::DeformSource;
 use crate::meshgroup::{affine2_from_mat4, linear_mat2};
 use crate::puppet::{Arena, GlobalTransforms};
+use glam::{Affine2, Mat2, Vec2};
 
 /// Each unordered `{a, b}` pair appears in at most one record.
 #[derive(Debug, Clone)]
@@ -54,74 +52,74 @@ pub(crate) fn apply_welds(arena: &mut Arena, transforms: &GlobalTransforms) {
     let _span = tracing::trace_span!("apply_welds").entered();
 
     let welds = std::sync::Arc::clone(&arena.welds);
-    let mut cur_a = std::mem::take(&mut arena.weld_cur_a_scratch);
-    let mut cur_b = std::mem::take(&mut arena.weld_cur_b_scratch);
-    // The pooled Weld slot must be cleared by its first writer each frame.
-    let mut touched: SmallVec<[NodeIdx; 8]> = SmallVec::new();
-    let mut before = std::mem::take(&mut arena.weld_before_scratch);
+    let mut scratch = WeldScratch {
+        delta_a: std::mem::take(&mut arena.weld_delta_a_scratch),
+        delta_b: std::mem::take(&mut arena.weld_delta_b_scratch),
+        // The pooled Weld slot must be cleared by its first writer each frame.
+        touched: std::mem::take(&mut arena.weld_touched_scratch),
+        before: std::mem::take(&mut arena.weld_before_scratch),
+    };
+    scratch.touched.clear();
 
     for weld in welds.iter() {
-        apply_one(
-            arena,
-            transforms,
-            weld,
-            &mut cur_a,
-            &mut cur_b,
-            &mut touched,
-            &mut before,
-        );
+        apply_one(arena, transforms, weld, &mut scratch);
     }
 
-    for (&id, held) in touched.iter().zip(&before) {
+    for (&id, held) in scratch.touched.iter().zip(&scratch.before) {
         if let Some(NodeKind::Part(part)) = arena.get_mut(id).map(|n| &mut n.kind) {
             part.deform_stack.settle_source(DeformSource::Weld, held);
         }
     }
-    arena.weld_before_scratch = before;
+    arena.weld_delta_a_scratch = scratch.delta_a;
+    arena.weld_delta_b_scratch = scratch.delta_b;
+    arena.weld_touched_scratch = scratch.touched;
+    arena.weld_before_scratch = scratch.before;
+}
 
-    arena.weld_cur_a_scratch = cur_a;
-    arena.weld_cur_b_scratch = cur_b;
+/// Frame-persistent buffers, so a fold allocates nothing once they have grown.
+struct WeldScratch {
+    delta_a: Vec<Vec2>,
+    delta_b: Vec<Vec2>,
+    touched: Vec<NodeIdx>,
+    /// Parallel to `touched`: each part's Weld source before this frame's pass.
+    before: Vec<Vec<Vec2>>,
 }
 
 fn apply_one(
     arena: &mut Arena,
     transforms: &GlobalTransforms,
     weld: &Weld,
-    cur_a: &mut Vec<Vec2>,
-    cur_b: &mut Vec<Vec2>,
-    touched: &mut SmallVec<[NodeIdx; 8]>,
-    before: &mut Vec<Vec<Vec2>>,
+    scratch: &mut WeldScratch,
 ) {
     let (Some(side_a), Some(side_b)) = (side(transforms, weld.a), side(transforms, weld.b)) else {
         return;
     };
-    if !read_current(arena, weld.a, cur_a) || !read_current(arena, weld.b, cur_b) {
-        return;
-    }
 
-    let mut delta_a: SmallVec<[Vec2; 32]> = SmallVec::new();
-    let mut delta_b: SmallVec<[Vec2; 32]> = SmallVec::new();
+    let (delta_a, delta_b) = (&mut scratch.delta_a, &mut scratch.delta_b);
+    delta_a.clear();
+    delta_b.clear();
     {
-        let (Some(verts_a), Some(verts_b)) = (part_verts(arena, weld.a), part_verts(arena, weld.b))
-        else {
+        let (Some(a), Some(b)) = (welded_part(arena, weld.a), welded_part(arena, weld.b)) else {
             return;
         };
-        let origin_a = part_origin(arena, weld.a);
-        let origin_b = part_origin(arena, weld.b);
         for pair in &weld.pairs {
             let (ai, bi) = (pair.a_vert as usize, pair.b_vert as usize);
-            let (Some(&base_a), Some(&base_b)) = (verts_a.get(ai), verts_b.get(bi)) else {
+            let (Some(&base_a), Some(&base_b)) = (a.mesh.vertices.get(ai), b.mesh.vertices.get(bi))
+            else {
                 delta_a.push(Vec2::ZERO);
                 delta_b.push(Vec2::ZERO);
                 continue;
             };
-            let (Some(&da), Some(&db)) = (cur_a.get(ai), cur_b.get(bi)) else {
+            let (Some(da), Some(db)) = (
+                a.deform_stack.active_offset(ai),
+                b.deform_stack.active_offset(bi),
+            ) else {
                 delta_a.push(Vec2::ZERO);
                 delta_b.push(Vec2::ZERO);
                 continue;
             };
-            let world_a = side_a.world.transform_point2(base_a - origin_a + da);
-            let world_b = side_b.world.transform_point2(base_b - origin_b + db);
+            let world_a = side_a.world.transform_point2(base_a - a.mesh.origin + da);
+            let world_b = side_b.world.transform_point2(base_b - b.mesh.origin + db);
             let w = pair.weight.clamp(0.0, 1.0);
             delta_a.push((world_b - world_a) * (1.0 - w));
             delta_b.push((world_a - world_b) * w);
@@ -133,46 +131,27 @@ fn apply_one(
         weld.a,
         &side_a,
         weld.pairs.iter().map(|p| p.a_vert),
-        &delta_a,
-        touched,
-        before,
+        &scratch.delta_a,
+        &mut scratch.touched,
+        &mut scratch.before,
     );
     write_pulls(
         arena,
         weld.b,
         &side_b,
         weld.pairs.iter().map(|p| p.b_vert),
-        &delta_b,
-        touched,
-        before,
+        &scratch.delta_b,
+        &mut scratch.touched,
+        &mut scratch.before,
     );
 }
 
-fn read_current(arena: &mut Arena, id: NodeIdx, out: &mut Vec<Vec2>) -> bool {
-    let Some(node) = arena.get_mut(id) else {
-        return false;
-    };
-    if !node.enabled {
-        return false;
-    }
-    let NodeKind::Part(part) = &mut node.kind else {
-        return false;
-    };
-    part.deform_stack.sum_active_into(out);
-    true
-}
-
-fn part_verts(arena: &Arena, id: NodeIdx) -> Option<&[Vec2]> {
-    match arena.get(id).map(|n| &n.kind) {
-        Some(NodeKind::Part(p)) => Some(&p.mesh.vertices),
+/// A disabled part takes no part in its welds.
+fn welded_part(arena: &Arena, id: NodeIdx) -> Option<&PartData> {
+    let node = arena.get(id)?;
+    match &node.kind {
+        NodeKind::Part(part) if node.enabled => Some(part),
         _ => None,
-    }
-}
-
-fn part_origin(arena: &Arena, id: NodeIdx) -> Vec2 {
-    match arena.get(id).map(|n| &n.kind) {
-        Some(NodeKind::Part(p)) => p.mesh.origin,
-        _ => Vec2::ZERO,
     }
 }
 
@@ -182,7 +161,7 @@ fn write_pulls(
     side: &Side,
     verts: impl Iterator<Item = u32>,
     world_deltas: &[Vec2],
-    touched: &mut SmallVec<[NodeIdx; 8]>,
+    touched: &mut Vec<NodeIdx>,
     before: &mut Vec<Vec<Vec2>>,
 ) {
     let Some(node) = arena.get_mut(id) else {

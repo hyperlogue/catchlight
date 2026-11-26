@@ -76,8 +76,9 @@ pub(crate) struct Arena {
     pub(crate) deform_node_ids: Vec<NodeIdx>,
     /// Solve order is list order.
     pub(crate) welds: Arc<Vec<crate::weld::Weld>>,
-    pub(crate) weld_cur_a_scratch: Vec<Vec2>,
-    pub(crate) weld_cur_b_scratch: Vec<Vec2>,
+    pub(crate) weld_delta_a_scratch: Vec<Vec2>,
+    pub(crate) weld_delta_b_scratch: Vec<Vec2>,
+    pub(crate) weld_touched_scratch: Vec<NodeIdx>,
     pub(crate) weld_before_scratch: Vec<Vec<Vec2>>,
     /// `Baked::spine_targets` is parallel to this.
     pub(crate) spine_node_ids: Vec<NodeIdx>,
@@ -105,8 +106,9 @@ impl Arena {
             node_transform_dirty: vec![false],
             deform_node_ids: Vec::new(),
             welds: Arc::default(),
-            weld_cur_a_scratch: Vec::new(),
-            weld_cur_b_scratch: Vec::new(),
+            weld_delta_a_scratch: Vec::new(),
+            weld_delta_b_scratch: Vec::new(),
+            weld_touched_scratch: Vec::new(),
             weld_before_scratch: Vec::new(),
             spine_node_ids: Vec::new(),
             spine_scratch: Vec::new(),

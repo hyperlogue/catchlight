@@ -308,6 +308,18 @@ impl DeformStack {
         self.generation
     }
 
+    /// What [`Self::sum_active_into`] writes at `index`, without summing the
+    /// other vertices; `None` past the stack's vertices.
+    pub fn active_offset(&self, index: usize) -> Option<Vec2> {
+        (index < self.vert_count).then(|| {
+            self.sources
+                .iter()
+                .filter(|s| s.active)
+                .filter_map(|s| s.offsets.get(index))
+                .fold(Vec2::ZERO, |sum, d| sum + *d)
+        })
+    }
+
     pub fn active_offset_except(&self, except: DeformSource, index: usize) -> Vec2 {
         self.sources
             .iter()
@@ -443,6 +455,31 @@ mod tests {
         s.clear_source(DeformSource::Param(0));
         s.sum_active_into(&mut out);
         assert_eq!(out, vec![Vec2::ZERO; 2]);
+    }
+
+    #[test]
+    fn one_active_offset_is_that_vertex_of_the_whole_sum() {
+        let mut s = DeformStack::new(3);
+        s.set(
+            DeformSource::Test,
+            vec![
+                Vec2::new(1.0, 2.0),
+                Vec2::new(3.0, 4.0),
+                Vec2::new(5.0, 6.0),
+            ],
+        )
+        .unwrap();
+        s.set(DeformSource::Param(0), vec![Vec2::new(0.5, -1.0); 3])
+            .unwrap();
+        s.set(DeformSource::Param(1), vec![Vec2::splat(9.0); 3])
+            .unwrap();
+        s.clear_source(DeformSource::Param(1));
+        let mut out = Vec::new();
+        s.sum_active_into(&mut out);
+        for (i, sum) in out.iter().enumerate() {
+            assert_eq!(s.active_offset(i), Some(*sum));
+        }
+        assert_eq!(s.active_offset(3), None);
     }
 
     #[test]
