@@ -1633,6 +1633,7 @@ dependencies = [
  "base64",
  "catchlight-core",
  "catchlight-extension-animations",
+ "clap",
  "flate2",
  "image",
  "image_dds",

@@ -74,8 +74,14 @@ fn livliv_binary_inspects_and_exports_the_final_baking_report() {
         serde_json::to_vec(&manifest).unwrap(),
     )
     .unwrap();
-    succeeded(&dir.run(&["source", "--inspect"]));
+    let inspected = dir.run(&["source", "--inspect"]);
+    succeeded(&inspected);
+    let report: serde_json::Value = serde_json::from_slice(&inspected.stdout).unwrap();
+    assert!(!report["losses"].as_array().unwrap().is_empty());
     succeeded(&dir.run(&["source/model.json", "--inspect"]));
+    let conflicting = dir.run(&["source", "--inspect", "-o", "model.clm"]);
+    assert_eq!(conflicting.status.code(), Some(2));
+    assert!(!dir.0.join("model.clm").exists());
     // ZIP magic selects LivLiv even with a misleading INX suffix.
     let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
     for path in ["model.json", "textures/a.png"] {
@@ -115,8 +121,26 @@ fn livliv_binary_inspects_and_exports_the_final_baking_report() {
 
     assert!(!dir.0.join("source.clm").exists());
     let refused = dir.run(&["source"]);
-    assert!(!refused.status.success());
+    assert_eq!(refused.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&refused.stderr)
+            .contains("catchlight-importer: LivLiv conversion is always approximate")
+    );
     assert!(String::from_utf8_lossy(&refused.stderr).contains("rerun with --allow-lossy"));
+    // A report that cannot be written does not hide why the conversion failed.
+    std::fs::write(dir.0.join("taken.json"), b"").unwrap();
+    let refused = dir.run(&["source", "--report", "taken.json"]);
+    assert_eq!(refused.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(stderr.contains("taken.json"), "{stderr}");
+    assert!(
+        stderr
+            .lines()
+            .last()
+            .unwrap()
+            .contains("rerun with --allow-lossy"),
+        "{stderr}"
+    );
     succeeded(&dir.run(&[
         "source",
         "--allow-lossy",

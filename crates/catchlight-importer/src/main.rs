@@ -5,17 +5,58 @@
 //! that format's validation. ZIP inputs must still contain a `LivLiv` package.
 use anyhow::{Context, Result, bail};
 use catchlight_importer::livliv::{self, Options, Package};
-use std::ffi::OsString;
-use std::io::Read;
+use clap::Parser;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 
+/// Every failure, as in `catchlight-cli`.
+const EXIT_ERROR: u8 = 2;
+/// A reader closed stdout before the report was written.
+const EXIT_BROKEN_PIPE: u8 = 141;
+
+const AFTER_HELP: &str = "\
+Existing outputs are refused. Required watermarks still block export.
+
+Exit status:
+  0    the import or inspection succeeded
+  2    it failed
+  141  a reader closed the output pipe before the report was written";
+
+#[derive(Parser)]
+#[expect(clippy::doc_markdown, reason = "field docs are the plain --help text")]
+#[command(
+    name = "catchlight-importer",
+    about = "Convert an INX/INP model or a LivLiv package into a .clm model",
+    long_about = "Convert an INX/INP model or a LivLiv package into a .clm model.\n\nThe format is \
+                  detected by magic bytes, then by extension. LivLiv directories and their \
+                  model.json files are also accepted.",
+    after_help = AFTER_HELP,
+    after_long_help = AFTER_HELP
+)]
 struct Args {
+    /// The INX/INP file, LivLiv ZIP, LivLiv directory or its model.json.
     input: PathBuf,
+    /// Output model (default: the input with a .clm extension).
+    #[arg(short = 'o', long = "out", conflicts_with = "inspect")]
     output: Option<PathBuf>,
-    report: Option<PathBuf>,
+    /// Validate a LivLiv package and print its compatibility report to stdout
+    /// without exporting.
+    #[arg(long)]
     inspect: bool,
+    /// Accept the approximations the LivLiv report lists; every LivLiv
+    /// conversion needs it.
+    #[arg(long, conflicts_with = "inspect")]
     allow_lossy: bool,
+    /// Also write the LivLiv compatibility report to this file.
+    #[arg(long)]
+    report: Option<PathBuf>,
 }
+
+/// A failed write to stdout, told apart so a closed pipe exits quietly.
+#[derive(Debug, thiserror::Error)]
+#[error("writing output: {0}")]
+struct Stdout(#[source] std::io::Error);
 
 enum Format {
     Inx,
@@ -23,71 +64,26 @@ enum Format {
     LivlivDirectory(PathBuf),
 }
 
-fn main() -> Result<()> {
-    let Some(args) = parse(std::env::args_os().skip(1))? else {
-        return Ok(());
-    };
-    match detect(&args.input)? {
+fn main() -> ExitCode {
+    let args = Args::parse();
+    let result = detect(&args.input).and_then(|format| match format {
         Format::Inx => inx(&args),
         format => livliv(&args, format),
-    }
-}
-
-fn print_usage() {
-    println!("usage: catchlight-importer <input> [-o model.clm] [options]");
-    println!("  Detects INX/INP and LivLiv ZIP packages by magic bytes, then extension.");
-    println!("  LivLiv directories and their model.json files are also accepted.");
-    println!("  -o, --out <path>    Output model (default: input with a .clm extension)");
-    println!("  --inspect          Validate a LivLiv package without exporting");
-    println!("  --allow-lossy      Acknowledge reported LivLiv approximations");
-    println!("  --report <path>    Write the LivLiv compatibility report");
-    println!("  --                 Treat remaining arguments as paths");
-    println!("Existing outputs are refused. Required watermarks still block export.");
-}
-
-fn parse(args: impl Iterator<Item = OsString>) -> Result<Option<Args>> {
-    let mut args = args;
-    let mut input = None;
-    let mut output = None;
-    let mut report = None;
-    let mut inspect = false;
-    let mut allow_lossy = false;
-    let mut positional = false;
-    while let Some(arg) = args.next() {
-        match if positional { None } else { arg.to_str() } {
-            Some("-h" | "--help") => {
-                print_usage();
-                return Ok(None);
-            }
-            Some("--") => positional = true,
-            Some("-o" | "--out") => {
-                output = Some(PathBuf::from(args.next().context("-o requires a path")?));
-            }
-            Some("--report") => {
-                report = Some(PathBuf::from(
-                    args.next().context("--report requires a path")?,
-                ));
-            }
-            Some("--inspect") => inspect = true,
-            Some("--allow-lossy") => allow_lossy = true,
-            Some(flag) if flag.starts_with('-') => {
-                bail!("unknown option: {flag}; use -- before a filename starting with '-'")
-            }
-            _ => {
-                if input.is_some() {
-                    bail!("unexpected argument: {}", arg.to_string_lossy());
-                }
-                input = Some(PathBuf::from(arg));
-            }
+    });
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error)
+            if error
+                .downcast_ref::<Stdout>()
+                .is_some_and(|Stdout(e)| e.kind() == std::io::ErrorKind::BrokenPipe) =>
+        {
+            ExitCode::from(EXIT_BROKEN_PIPE)
+        }
+        Err(error) => {
+            eprintln!("catchlight-importer: {error:#}");
+            ExitCode::from(EXIT_ERROR)
         }
     }
-    Ok(Some(Args {
-        input: input.context("usage: catchlight-importer <input> [-o model.clm] [options]")?,
-        output,
-        report,
-        inspect,
-        allow_lossy,
-    }))
 }
 
 fn detect(input: &Path) -> Result<Format> {
@@ -179,7 +175,15 @@ fn livliv(args: &Args, format: Format) -> Result<()> {
     .validate()?;
     let report = package.report();
     if args.inspect {
-        write_report(&report, args.report.as_deref())?;
+        let json = report_json(&report)?;
+        let mut stdout = std::io::stdout().lock();
+        stdout
+            .write_all(json.as_bytes())
+            .and_then(|()| stdout.flush())
+            .map_err(Stdout)?;
+        if let Some(path) = &args.report {
+            write_new(path, json.as_bytes())?;
+        }
         eprintln!(
             "validated {} ({} layers); conversion blockers: {}",
             package.name(),
@@ -193,7 +197,11 @@ fn livliv(args: &Args, format: Format) -> Result<()> {
     }) {
         Ok(converted) => converted,
         Err(error) => {
-            write_report(&report, args.report.as_deref())?;
+            // The conversion error is the one to report; a failed report
+            // write is only mentioned beside it.
+            if let Err(report_error) = diagnose(&report, args.report.as_deref()) {
+                eprintln!("catchlight-importer: {report_error:#}");
+            }
             return Err(match error {
                 livliv::Error::LossyNotAllowed => anyhow::anyhow!(
                     "{error}; rerun with --allow-lossy to accept the losses the report lists"
@@ -202,7 +210,7 @@ fn livliv(args: &Args, format: Format) -> Result<()> {
             });
         }
     };
-    write_report(&converted.report, args.report.as_deref())?;
+    diagnose(&converted.report, args.report.as_deref())?;
     write_model(args, &converted.model)
 }
 
@@ -217,11 +225,16 @@ fn write_model(args: &Args, model: &catchlight_core::Model) -> Result<()> {
     Ok(())
 }
 
-fn write_report(report: &livliv::Report, path: Option<&Path>) -> Result<()> {
-    let json = serde_json::to_string_pretty(report)?;
-    eprintln!("{json}");
+fn report_json(report: &livliv::Report) -> Result<String> {
+    Ok(format!("{}\n", serde_json::to_string_pretty(report)?))
+}
+
+/// Prints `report` to stderr and writes it to `path` when one is given.
+fn diagnose(report: &livliv::Report, path: Option<&Path>) -> Result<()> {
+    let json = report_json(report)?;
+    eprint!("{json}");
     if let Some(path) = path {
-        write_new(path, format!("{json}\n").as_bytes())?;
+        write_new(path, json.as_bytes())?;
     }
     Ok(())
 }
@@ -240,7 +253,7 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
     #[cfg(unix)]
     builder.permissions(std::os::unix::fs::PermissionsExt::from_mode(0o666));
     let mut file = builder.tempfile_in(dir).with_context(writing)?;
-    std::io::Write::write_all(&mut file, bytes).with_context(writing)?;
+    file.write_all(bytes).with_context(writing)?;
     file.as_file().sync_all().with_context(writing)?;
     file.persist_noclobber(path)
         .map_err(|e| e.error)
