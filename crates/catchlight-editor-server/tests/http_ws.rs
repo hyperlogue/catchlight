@@ -1691,3 +1691,48 @@ fn a_server_that_does_not_serve_its_token_keeps_it_behind_itself() {
     let mut socket = connect(server.addr, TOKEN, None).unwrap();
     new_session(&mut socket, 1);
 }
+
+#[test]
+fn a_non_loopback_address_binds_only_when_remote_clients_are_allowed() {
+    let any: SocketAddr = "0.0.0.0:0".parse().unwrap();
+    let refused = bind_http(Arc::new(Editor::new()), any, HttpOptions::default()).err();
+    assert_eq!(
+        refused.map(|e| e.kind()),
+        Some(std::io::ErrorKind::InvalidInput)
+    );
+
+    let server = bind_http(
+        Arc::new(Editor::new()),
+        any,
+        HttpOptions {
+            token: Some(TOKEN.to_string()),
+            allow_remote: true,
+            ..HttpOptions::default()
+        },
+    )
+    .unwrap();
+    let addr = SocketAddr::from(([127, 0, 0, 1], server.addr.port()));
+    std::thread::spawn(move || {
+        let _ = server.serve();
+    });
+    // The operator hands the token over; it is never served.
+    assert_eq!(http(addr, "GET", "/token", &[], b"").status, 401);
+    // A remote client names this machine however it reaches it.
+    let body = serde_json::to_vec(&Request {
+        id: 1,
+        command: Command::SessionList,
+    })
+    .unwrap();
+    let listed = http(
+        addr,
+        "POST",
+        "/request",
+        &[
+            ("Host", "editor.example:9377"),
+            ("Authorization", &bearer()),
+            ("Content-Type", "application/json"),
+        ],
+        &body,
+    );
+    assert!(matches!(posted(&listed), Reply::Ok { .. }));
+}

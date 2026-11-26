@@ -28,9 +28,12 @@ mod native {
     };
 
     const USAGE: &str = "usage: catchlight-editor-server [--socket <path>] [--store <dir>] \
-                         [--keep <user|beside|dir>] [--http <addr>] \
+                         [--keep <user|beside|dir>] [--http <addr> [--allow-remote]] \
                          [--allow-origin <origin>]... [--connection-file <path>] \
                          [<model.clm>]
+
+  --allow-remote  let --http listen on an address other machines reach; the
+                  token is then never served, so hand it to the client yourself
 
   --keep     where each model's review threads and saved versions are kept:
              `user` (default) in the per-user data directory, `beside` next to
@@ -94,6 +97,7 @@ mod native {
         /// `None` means `CATCHLIGHT_KEEP`, else the per-user directory.
         keep: Option<Keep>,
         http: Option<SocketAddr>,
+        allow_remote: bool,
         allowed_origins: Vec<String>,
         connection_file: Option<PathBuf>,
         model: Option<String>,
@@ -141,6 +145,7 @@ mod native {
             HttpOptions {
                 allowed_origins: args.allowed_origins,
                 token: None,
+                allow_remote: args.allow_remote,
                 ..HttpOptions::default()
             },
         )?;
@@ -206,6 +211,7 @@ mod native {
             store: None,
             keep: None,
             http: None,
+            allow_remote: false,
             allowed_origins: Vec::new(),
             connection_file: None,
             model: None,
@@ -235,6 +241,7 @@ mod native {
                             .map_err(|_| format!("--http {value}: not a host:port address"))?,
                     );
                 }
+                "--allow-remote" => parsed.allow_remote = true,
                 "--allow-origin" => {
                     parsed
                         .allowed_origins
@@ -255,6 +262,18 @@ mod native {
         }
         if parsed.connection_file.is_some() && parsed.http.is_none() {
             return Err("--connection-file records the http door; pass --http too".into());
+        }
+        match parsed.http {
+            None if parsed.allow_remote => {
+                return Err("--allow-remote opens the http door; pass --http too".into());
+            }
+            Some(addr) if !addr.ip().is_loopback() && !parsed.allow_remote => {
+                return Err(format!(
+                    "--http {addr}: not a loopback address; pass --allow-remote to let other \
+                     machines reach it"
+                ));
+            }
+            _ => {}
         }
         Ok(parsed)
     }
@@ -322,6 +341,21 @@ mod native {
             );
             assert!(parse_args(&["--http", "9377"]).is_err());
             assert!(parse_args(&["--http"]).is_err());
+        }
+
+        #[test]
+        fn a_non_loopback_address_needs_remote_clients_allowed() {
+            let err = parse_args(&["--http", "0.0.0.0:9377"]).expect_err("a refusal");
+            assert!(err.contains("--allow-remote"), "{err}");
+            let args =
+                parse_args(&["--http", "0.0.0.0:9377", "--allow-remote"]).expect("remote clients");
+            assert!(args.allow_remote);
+            assert!(
+                !parse_args(&["--http", "127.0.0.1:9377"])
+                    .unwrap()
+                    .allow_remote
+            );
+            assert!(parse_args(&["--allow-remote"]).is_err());
         }
 
         #[test]

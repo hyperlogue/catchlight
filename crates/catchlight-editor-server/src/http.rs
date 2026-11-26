@@ -5,6 +5,9 @@
 //!   port, so a random per-launch token gates every door, and `GET /token`
 //!   answers CORS only for an allowlisted origin, never `*`. `Host` must name
 //!   loopback (421 otherwise) to defeat DNS rebinding.
+//! - **Another machine is opted into.** Only a loopback address binds, and
+//!   only a loopback peer is served, unless [`HttpOptions::allow_remote`] is
+//!   set; then the token is never served and the operator hands it over.
 //! - **On `POST /request`, a status is a transport failure and a refusal is a
 //!   200** carrying `Reply::Err`, exactly as the socket answers it.
 //! - **An event can precede the reply that caused it.** Observers fire inside
@@ -60,6 +63,9 @@ pub struct HttpOptions {
     /// CORS keeps the token from foreign pages, not from other local
     /// processes, so a launcher that passes the token another way turns this off.
     pub serve_token: bool,
+    /// Bind a non-loopback address and serve any peer. `serve_token` is then
+    /// ignored: the token is never served.
+    pub allow_remote: bool,
 }
 
 pub type UiFiles = &'static [(&'static str, &'static [u8])];
@@ -73,6 +79,7 @@ impl Default for HttpOptions {
             ping_interval: DEFAULT_PING_INTERVAL,
             ui: None,
             serve_token: true,
+            allow_remote: false,
         }
     }
 }
@@ -93,6 +100,7 @@ struct ServerState {
     connections: Arc<ConnectionLimiter>,
     ui: Option<UiFiles>,
     serve_token: bool,
+    allow_remote: bool,
 }
 
 /// The allowlist includes the server's own loopback origins, so it can only be
@@ -102,6 +110,12 @@ pub fn bind_http(
     addr: SocketAddr,
     options: HttpOptions,
 ) -> io::Result<HttpServer> {
+    if !addr.ip().is_loopback() && !options.allow_remote {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{addr} is not a loopback address; allow remote clients to listen on it"),
+        ));
+    }
     let listener = TcpListener::bind(addr)?;
     let addr = listener.local_addr()?;
     let token = match options.token {
@@ -125,7 +139,8 @@ pub fn bind_http(
             ping_interval: options.ping_interval,
             connections: Arc::new(ConnectionLimiter::default()),
             ui: options.ui,
-            serve_token: options.serve_token,
+            serve_token: options.serve_token && !options.allow_remote,
+            allow_remote: options.allow_remote,
         }),
     })
 }
@@ -209,6 +224,12 @@ impl Drop for ConnectionPermit {
 }
 
 fn serve_connection(state: &ServerState, stream: TcpStream) {
+    if !stream
+        .peer_addr()
+        .is_ok_and(|peer| peer_allowed(state.allow_remote, peer))
+    {
+        return;
+    }
     let _ = stream.set_nodelay(true);
     if stream.set_read_timeout(Some(HTTP_IO_TIMEOUT)).is_err()
         || stream.set_write_timeout(Some(HTTP_IO_TIMEOUT)).is_err()
@@ -238,7 +259,8 @@ fn serve_connection(state: &ServerState, stream: TcpStream) {
     }
 
     // DNS rebinding: a non-loopback Host is someone else's name for this port.
-    if !host_is_loopback(request.header("host")) {
+    // A remote client names the machine, and the token it brings is the gate.
+    if !state.allow_remote && !host_is_loopback(request.header("host")) {
         let _ = write_response(
             &mut writer,
             &Response::text(
@@ -1182,6 +1204,10 @@ fn cors(response: Response, origin: Option<&str>) -> Response {
     }
 }
 
+fn peer_allowed(allow_remote: bool, peer: SocketAddr) -> bool {
+    allow_remote || peer.ip().to_canonical().is_loopback()
+}
+
 fn host_is_loopback(host: Option<&str>) -> bool {
     let Some(host) = host else {
         return false;
@@ -1339,6 +1365,16 @@ mod tests {
         assert!(!host_is_loopback(Some("evil.example")));
         assert!(!host_is_loopback(Some("localhost.evil.example:8080")));
         assert!(!host_is_loopback(None));
+    }
+
+    #[test]
+    fn only_a_loopback_peer_is_served_unless_remote_clients_are_allowed() {
+        let peer = |addr: &str| addr.parse::<SocketAddr>().unwrap();
+        assert!(peer_allowed(false, peer("127.0.0.1:9")));
+        assert!(peer_allowed(false, peer("[::1]:9")));
+        assert!(peer_allowed(false, peer("[::ffff:127.0.0.1]:9")));
+        assert!(!peer_allowed(false, peer("192.0.2.7:9")));
+        assert!(peer_allowed(true, peer("192.0.2.7:9")));
     }
 
     #[test]
