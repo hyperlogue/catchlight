@@ -272,7 +272,7 @@ pub struct RenderArgs {
     pub clip: ClipArgs,
 }
 impl RenderArgs {
-    pub fn run(self) -> Result<(), Error> {
+    pub fn run(self, cancel: &super::execute::Cancellation) -> Result<(), Error> {
         if let Some(kind) = self.schema {
             let schema = match kind {
                 SchemaKind::Spec => spec::schema(false),
@@ -346,9 +346,7 @@ impl RenderArgs {
                 model_sha256,
                 spec_sha256: spec_hash,
             });
-        let cancel = super::execute::Cancellation::default();
-        cancel.install()?;
-        let result = super::execute::run(&loaded.model, plan, destination, input, &cancel)?;
+        let result = super::execute::run(&loaded.model, plan, destination, input, cancel)?;
         for listing in result.listings {
             println!("{listing}");
         }
@@ -382,7 +380,7 @@ pub struct BoundsArgs {
     pub image: ImageArgs,
 }
 impl BoundsArgs {
-    pub fn run(self) -> Result<(), Error> {
+    pub fn run(self, cancel: &super::execute::Cancellation) -> Result<(), Error> {
         if self.schema {
             return print_json(&super::artifacts::json_schema("bounds")?);
         }
@@ -406,8 +404,6 @@ impl BoundsArgs {
             (None, Some(_)) => return Err(spec::bad("--frame requires an animated request")),
             (None, None) => 0,
         };
-        let cancel = super::execute::Cancellation::default();
-        cancel.install()?;
         let mut runtime = super::frame::FrameRuntime::new(&loaded.model, &request)?;
         for _ in 0..frame {
             if cancel.is_cancelled() {

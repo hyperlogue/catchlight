@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use catchlight_cli::render::execute::Cancellation;
 use catchlight_cli::{
     diff, expression, extension, fragment, humanoid, patch, poses, render, storage, texture, Error,
     EXIT_DIFFERS, EXIT_ERROR,
@@ -495,6 +496,14 @@ fn set_member(group: Group, args: SetArgs, matches: Option<&ArgMatches>) -> Resu
     )?)
 }
 
+/// Only the long-running commands take Ctrl-C as a request to stop cleanly;
+/// the rest keep the default of exiting at once.
+fn interruptible() -> Result<Cancellation, Error> {
+    let cancel = Cancellation::default();
+    cancel.install()?;
+    Ok(cancel)
+}
+
 fn run() -> Result<u8, Error> {
     catchlight_core::extension::register::<Animations>()?;
     catchlight_core::extension::register::<Humanoid>()?;
@@ -561,8 +570,8 @@ fn run() -> Result<u8, Error> {
             let written = poses::run(&file, &out)?;
             println!("{written}");
         }
-        Cmd::Render(args) => args.run()?,
-        Cmd::Bounds(args) => args.run()?,
+        Cmd::Render(args) => args.run(&interruptible()?)?,
+        Cmd::Bounds(args) => args.run(&interruptible()?)?,
         Cmd::Extension(cmd) => return run_extension(cmd),
         Cmd::Humanoid(cmd) => run_humanoid(cmd)?,
         Cmd::Expression(cmd) => {

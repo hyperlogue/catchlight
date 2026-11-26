@@ -35,10 +35,18 @@ impl Cancellation {
     pub fn is_cancelled(&self) -> bool {
         self.0.load(Ordering::Relaxed)
     }
+    /// Routes Ctrl-C to this token for the rest of the process; a second
+    /// Ctrl-C exits at once, for work that never reaches a cancellation check.
+    /// A process can install only one handler, so this belongs in `main`.
     pub fn install(&self) -> Result<(), Error> {
         let token = self.clone();
-        ctrlc::set_handler(move || token.cancel())
-            .map_err(|e| bad(format!("cancellation handler: {e}")))
+        ctrlc::set_handler(move || {
+            if token.is_cancelled() {
+                std::process::exit(130);
+            }
+            token.cancel();
+        })
+        .map_err(|e| bad(format!("cancellation handler: {e}")))
     }
     fn check(&self) -> Result<(), Error> {
         if self.is_cancelled() {

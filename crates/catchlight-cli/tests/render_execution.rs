@@ -270,6 +270,26 @@ fn animation_decimation_reuses_native_clock_and_preserves_motion_responses_and_i
     assert!(!dir.join("decimated/a--000001.png").exists());
 }
 
+#[derive(clap::Parser)]
+struct BoundsCommand {
+    #[command(flatten)]
+    args: catchlight_cli::render::args::BoundsArgs,
+}
+
+#[test]
+fn bounds_runs_more_than_once_in_one_process() {
+    let dir = common::tmp("render-execution-bounds-twice");
+    let path = dir.join("model.clm");
+    write_model(&path);
+    let cancel = Cancellation::default();
+    for _ in 0..2 {
+        let command =
+            <BoundsCommand as clap::Parser>::try_parse_from(["bounds", path.to_str().unwrap()])
+                .unwrap();
+        command.args.run(&cancel).unwrap();
+    }
+}
+
 #[test]
 fn bounds_is_gpu_free_and_lists_excluded_parts_without_adding_them_to_overall() {
     let dir = common::tmp("render-execution-bounds");
