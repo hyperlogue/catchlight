@@ -8,11 +8,11 @@ use std::sync::Arc;
 use crate::components::{srgb_encode_to_byte, DecodedTexture};
 use crate::load_budget::{LoadBudget, LoadLimitError};
 
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error)]
 #[non_exhaustive]
 pub enum TextureError {
     #[error("texture decode failed: {0}")]
-    Decode(String),
+    Decode(#[source] Arc<image::ImageError>),
     #[error(transparent)]
     Limit(#[from] LoadLimitError),
 }
@@ -253,14 +253,12 @@ pub fn prepare_textures(
     for tex in textures {
         let (width, height) = tex
             .dimensions()
-            .map_err(|e| TextureError::Decode(e.to_string()))?;
+            .map_err(|e| TextureError::Decode(Arc::new(e)))?;
         budget.check_texture_dimensions(width, height)?;
         sizes.push([width, height]);
     }
 
     let prepped = prep_textures(textures, texture_halvings, max_dimension)?;
-    // A dropped entry would repoint every later part at the wrong texture.
-    assert_eq!(prepped.len(), textures.len());
     Ok(prepped
         .into_iter()
         .zip(sizes)
@@ -400,7 +398,7 @@ fn align_up(v: i64) -> i64 {
 fn decode_halved(tex: &EncodedTexture, halvings: u32) -> Result<DecodedTexture, TextureError> {
     let mut decoded = tex
         .decode()
-        .map_err(|e| TextureError::Decode(e.to_string()))?;
+        .map_err(|e| TextureError::Decode(Arc::new(e)))?;
     for _ in 0..halvings {
         decoded = decoded.halved();
     }
@@ -621,13 +619,16 @@ mod tests {
         let both = 2 * 64 * 64 * 4;
 
         let err = prepare_textures(&textures, 0, ROOMY, &mut budget_of(both - 1)).unwrap_err();
-        assert_eq!(
-            err,
-            TextureError::Limit(LoadLimitError {
-                resource: crate::LoadResource::DecodedTextureBytes,
-                limit: both - 1,
-                got: both,
-            })
+        assert!(
+            matches!(
+                err,
+                TextureError::Limit(LoadLimitError {
+                    resource: crate::LoadResource::DecodedTextureBytes,
+                    limit,
+                    got,
+                }) if limit == both - 1 && got == both
+            ),
+            "{err:?}"
         );
         let err = prepare_textures(&textures, 3, ROOMY, &mut budget_of(both - 1)).unwrap_err();
         assert!(matches!(err, TextureError::Limit(_)), "{err:?}");

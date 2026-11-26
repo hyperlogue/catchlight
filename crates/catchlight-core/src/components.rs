@@ -479,10 +479,14 @@ impl BlendMode {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("unknown blend mode {0:?}")]
+pub struct UnknownBlendMode(pub String);
+
 impl std::str::FromStr for BlendMode {
-    type Err = String;
+    type Err = UnknownBlendMode;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::from_name(s).ok_or_else(|| s.to_string())
+        Self::from_name(s).ok_or_else(|| UnknownBlendMode(s.to_string()))
     }
 }
 
