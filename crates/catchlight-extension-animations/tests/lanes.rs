@@ -349,6 +349,21 @@ fn each_lane_target_round_trips_through_a_file_and_names_by_string() {
 }
 
 #[test]
+fn a_lane_read_with_keyframes_out_of_order_samples_in_frame_order() {
+    let lane: Lane = serde_json::from_value(serde_json::json!({
+        "control": "mouth_open",
+        "interpolation": "Linear",
+        "keyframes": [{"frame": 4, "value": 1.0}, {"frame": 0, "value": 0.0}],
+    }))
+    .unwrap();
+    assert_eq!(
+        lane.keyframes().iter().map(|k| k.frame).collect::<Vec<_>>(),
+        [0, 4]
+    );
+    assert_eq!(lane.value_at(1.0), 0.25);
+}
+
+#[test]
 fn a_stored_lane_with_two_targets_or_none_does_not_decode() {
     use ciborium::Value;
     let text = |s: &str| Value::Text(s.into());

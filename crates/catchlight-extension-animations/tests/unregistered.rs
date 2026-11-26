@@ -20,14 +20,14 @@ fn an_unregistered_reader_keeps_the_removal_marker_until_a_typed_write() {
         )
         .unwrap();
     *model.extension_or_default::<Animations>().unwrap() = Animations::from_clips([Clip {
-        lanes: vec![Lane {
-            target: LaneTarget::Param(pid("eye")),
-            interpolation: InterpolateMode::Linear,
-            keyframes: vec![Keyframe {
+        lanes: vec![Lane::new(
+            LaneTarget::Param(pid("eye")),
+            InterpolateMode::Linear,
+            vec![Keyframe {
                 frame: 0,
                 value: 1.0,
             }],
-        }],
+        )],
         ..Clip::new("talk")
     }]);
     // Through a file, so the slot is raw.

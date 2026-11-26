@@ -15,14 +15,14 @@ fn a_session_checks_its_animations_as_the_extension_does() {
     let mut model = Model::new();
     *model.extension_or_default::<Animations>().unwrap() = Animations::from_clips([Clip {
         length: 2,
-        lanes: vec![Lane {
-            target: LaneTarget::Param(ParamId::new("ghost").unwrap()),
-            interpolation: InterpolateMode::Linear,
-            keyframes: vec![Keyframe {
+        lanes: vec![Lane::new(
+            LaneTarget::Param(ParamId::new("ghost").unwrap()),
+            InterpolateMode::Linear,
+            vec![Keyframe {
                 frame: 0,
                 value: 1.0,
             }],
-        }],
+        )],
         ..Clip::new("haunt")
     }]);
 

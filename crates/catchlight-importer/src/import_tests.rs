@@ -757,7 +757,7 @@ fn a_clip_carries_its_timing_and_a_lane_per_axis() {
     );
     assert_eq!(
         anim.lanes[0]
-            .keyframes
+            .keyframes()
             .iter()
             .map(|k| (k.frame, k.value))
             .collect::<Vec<_>>(),
@@ -780,7 +780,8 @@ fn a_clip_that_authors_no_timing_takes_the_source_defaults() {
     assert_eq!(anim.timestep, 1.0 / 60.0, "60 fps");
     assert_eq!((anim.length, anim.lead_in, anim.lead_out), (0, None, None));
     assert_eq!(
-        anim.lanes[0].keyframes[0].value, 0.0,
+        anim.lanes[0].keyframes()[0].value,
+        0.0,
         "a keyframe with no value holds zero"
     );
     assert_eq!(
@@ -836,7 +837,7 @@ fn an_interpolation_with_no_equivalent_falls_back_and_keeps_the_lane() {
     let lane = &clips(&file)[0].lanes[0];
     assert_eq!(lane.interpolation, InterpolateMode::Linear);
     assert_eq!(
-        lane.keyframes.len(),
+        lane.keyframes().len(),
         2,
         "an unmodelled curve costs the lane nothing but its curve"
     );

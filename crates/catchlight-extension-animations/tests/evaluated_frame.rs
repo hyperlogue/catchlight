@@ -116,10 +116,10 @@ fn blink() -> Clip {
         length: 31,
         lead_in: Some(6),
         lead_out: Some(28),
-        lanes: vec![Lane {
-            target: LaneTarget::Param(ParamId::new("param-0").unwrap()),
-            interpolation: InterpolateMode::Linear,
-            keyframes: vec![
+        lanes: vec![Lane::new(
+            LaneTarget::Param(ParamId::new("param-0").unwrap()),
+            InterpolateMode::Linear,
+            vec![
                 Keyframe {
                     frame: 0,
                     value: 0.0,
@@ -133,7 +133,7 @@ fn blink() -> Clip {
                     value: 0.25,
                 },
             ],
-        }],
+        )],
     }
 }
 

@@ -307,22 +307,22 @@ fn get_prints_the_animations_byte_payload_as_its_decoded_clips() {
     let clip = Clip {
         length: 4,
         lanes: vec![
-            Lane {
-                target: LaneTarget::Param(param.clone()),
-                interpolation: catchlight_core::InterpolateMode::Linear,
-                keyframes: vec![Keyframe {
+            Lane::new(
+                LaneTarget::Param(param.clone()),
+                catchlight_core::InterpolateMode::Linear,
+                vec![Keyframe {
                     frame: 2,
                     value: 0.5,
                 }],
-            },
-            Lane {
-                target: LaneTarget::Viseme("aa".into()),
-                interpolation: catchlight_core::InterpolateMode::Linear,
-                keyframes: vec![Keyframe {
+            ),
+            Lane::new(
+                LaneTarget::Viseme("aa".into()),
+                catchlight_core::InterpolateMode::Linear,
+                vec![Keyframe {
                     frame: 1,
                     value: 1.0,
                 }],
-            },
+            ),
         ],
         ..Clip::new("nod")
     };

@@ -191,10 +191,12 @@ fn build_blink_animation(model: &Model) -> Option<Clip> {
         length: 102,
         lanes: blink_params
             .into_iter()
-            .map(|param| Lane {
-                target: LaneTarget::Param(param),
-                interpolation: InterpolateMode::Linear,
-                keyframes: keyframes(),
+            .map(|param| {
+                Lane::new(
+                    LaneTarget::Param(param),
+                    InterpolateMode::Linear,
+                    keyframes(),
+                )
             })
             .collect(),
         ..Clip::new(BLINK)

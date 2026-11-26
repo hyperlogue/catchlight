@@ -30,14 +30,13 @@ fn clip(name: &str, timestep: f32, length: u32, param: &ParamId, keys: &[(u32, f
         length,
         lead_in: None,
         lead_out: None,
-        lanes: vec![Lane {
-            target: LaneTarget::Param(param.clone()),
-            interpolation: InterpolateMode::Linear,
-            keyframes: keys
-                .iter()
+        lanes: vec![Lane::new(
+            LaneTarget::Param(param.clone()),
+            InterpolateMode::Linear,
+            keys.iter()
                 .map(|&(frame, value)| Keyframe { frame, value })
                 .collect(),
-        }],
+        )],
     }
 }
 

@@ -41,14 +41,13 @@ fn rig() -> Model {
 }
 
 fn lane(param: &str, keys: &[(u32, f32)]) -> Lane {
-    Lane {
-        target: LaneTarget::Param(pid(param)),
-        interpolation: InterpolateMode::Cubic,
-        keyframes: keys
-            .iter()
+    Lane::new(
+        LaneTarget::Param(pid(param)),
+        InterpolateMode::Cubic,
+        keys.iter()
             .map(|&(frame, value)| Keyframe { frame, value })
             .collect(),
-    }
+    )
 }
 
 fn clip(name: &str, lanes: Vec<Lane>) -> Clip {
@@ -86,10 +85,10 @@ fn clips_round_trip_through_a_file_bit_for_bit_as_a_columnar_byte_payload() {
         lead_in: Some(1),
         lead_out: None,
         lanes: vec![
-            Lane {
-                target: LaneTarget::Param(pid("eye")),
-                interpolation: InterpolateMode::Stepped,
-                keyframes: awkward
+            Lane::new(
+                LaneTarget::Param(pid("eye")),
+                InterpolateMode::Stepped,
+                awkward
                     .iter()
                     .enumerate()
                     .map(|(i, &value)| Keyframe {
@@ -97,7 +96,7 @@ fn clips_round_trip_through_a_file_bit_for_bit_as_a_columnar_byte_payload() {
                         value,
                     })
                     .collect(),
-            },
+            ),
             lane("mouth", &[(0, 0.25), (u32::MAX, -0.5)]),
         ],
     };
@@ -124,7 +123,7 @@ fn clips_round_trip_through_a_file_bit_for_bit_as_a_columnar_byte_payload() {
     let bits = |c: &Clip| -> Vec<u32> {
         c.lanes
             .iter()
-            .flat_map(|l| l.keyframes.iter().map(|k| k.value.to_bits()))
+            .flat_map(|l| l.keyframes().iter().map(|k| k.value.to_bits()))
             .collect()
     };
     assert_eq!(bits(&back), bits(&blink));
@@ -142,7 +141,10 @@ fn insert_replaces_by_name_sorts_keyframes_and_keeps_the_table_compact() {
     assert!(animations
         .insert(clip("a", vec![lane("eye", &[(9, 1.0), (2, 0.0)])]))
         .is_none());
-    assert_eq!(animations.clip("a").unwrap().lanes[0].keyframes[0].frame, 2);
+    assert_eq!(
+        animations.clip("a").unwrap().lanes[0].keyframes()[0].frame,
+        2
+    );
     let old = animations
         .insert(clip("a", vec![lane("mouth", &[(0, 1.0)])]))
         .unwrap();

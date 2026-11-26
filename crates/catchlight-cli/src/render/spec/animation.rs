@@ -108,6 +108,10 @@ impl TryFrom<LaneSchema> for Lane {
             (None, None, None, Some(name)) => LaneTarget::Viseme(name),
             _ => return Err("a lane names exactly one of param, control, expression or viseme"),
         };
+        // Lane::new would sort them, and a spec plays its lanes as given.
+        if l.keyframes.windows(2).any(|w| w[0].frame > w[1].frame) {
+            return Err("animation lane keyframes must be in frame order");
+        }
         Ok(Lane::new(target, l.interpolation, l.keyframes))
     }
 }
@@ -119,7 +123,7 @@ impl From<&Lane> for LaneSchema {
             expression: None,
             viseme: None,
             interpolation: lane.interpolation,
-            keyframes: lane.keyframes.clone(),
+            keyframes: lane.keyframes().to_vec(),
         };
         match &lane.target {
             LaneTarget::Param(id) => out.param = Some(id.clone()),
@@ -165,8 +169,7 @@ mod keyframes {
 }
 
 /// A spec clip plays on the model as given, so it must name the model's
-/// params, the controls it maps and its expressions and visemes, and keep
-/// each lane in frame order.
+/// params, the controls it maps and its expressions and visemes.
 pub(super) fn validate(model: &catchlight_core::Model, clip: &Clip) -> Result<(), Error> {
     if !clip.timestep.is_finite() || clip.timestep <= 0.0 || clip.length == 0 {
         return Err(bad(
@@ -174,7 +177,7 @@ pub(super) fn validate(model: &catchlight_core::Model, clip: &Clip) -> Result<()
         ));
     }
     for lane in &clip.lanes {
-        if lane.keyframes.iter().any(|k| !k.value.is_finite()) {
+        if lane.keyframes().iter().any(|k| !k.value.is_finite()) {
             return Err(bad("animation keyframe values must be finite"));
         }
         match &lane.target {
@@ -192,9 +195,6 @@ pub(super) fn validate(model: &catchlight_core::Model, clip: &Clip) -> Result<()
             }
             LaneTarget::Expression(name) => lane_member(model, Group::Expression, name)?,
             LaneTarget::Viseme(name) => lane_member(model, Group::Viseme, name)?,
-        }
-        if lane.keyframes.windows(2).any(|w| w[0].frame > w[1].frame) {
-            return Err(bad("animation lane keyframes must be in frame order"));
         }
     }
     Ok(())

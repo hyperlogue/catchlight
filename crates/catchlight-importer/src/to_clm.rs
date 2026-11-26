@@ -612,8 +612,6 @@ fn convert_animation_lane(
             value: k.value.unwrap_or(0.0),
         });
     }
-    // inochi2d sorts on load rather than trusting file order.
-    keyframes.sort_by_key(|k| k.frame);
     Some(Lane::new(
         LaneTarget::Param(param.clone()),
         lane_interp(lane.interpolation.as_deref(), animation),

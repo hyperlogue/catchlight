@@ -325,7 +325,7 @@ fn native_animation_shape_matches_the_extension_and_reuses_its_invariants() {
     );
     let mut unsorted = animated(json!({}));
     unsorted["animations"]["pulse"]["lanes"][0]["keyframes"][0]["frame"] = json!(9);
-    assert!(parse(unsorted).resolve(&model()).is_err());
+    assert_bad(unsorted, "frame order");
     let mut missing = animated(json!({}));
     missing["animations"]["pulse"]["lanes"][0]["param"] = json!("missing");
     assert!(parse(missing).resolve(&model()).is_err());

@@ -221,11 +221,11 @@ fn an_animation_is_keyed_by_name() {
     let mut model = Model::from_clm_file(&base).unwrap();
     let nod = |value: f32| Clip {
         length: 12,
-        lanes: vec![Lane {
-            target: LaneTarget::Param(base.doc.params[0].id.clone()),
-            interpolation: catchlight_core::interpolate::InterpolateMode::Linear,
-            keyframes: vec![Keyframe { frame: 0, value }],
-        }],
+        lanes: vec![Lane::new(
+            LaneTarget::Param(base.doc.params[0].id.clone()),
+            catchlight_core::interpolate::InterpolateMode::Linear,
+            vec![Keyframe { frame: 0, value }],
+        )],
         ..Clip::new("nod")
     };
     *model.extension_or_default::<Animations>().unwrap() = Animations::from_clips([nod(1.0)]);

@@ -89,21 +89,29 @@ impl Clip {
 pub struct Lane {
     pub target: LaneTarget,
     pub interpolation: InterpolateMode,
-    /// In frame order; [`Animations::insert`] sorts them.
-    pub keyframes: Vec<Keyframe>,
+    /// In frame order, which sampling relies on.
+    keyframes: Vec<Keyframe>,
 }
 
 impl Lane {
+    /// Sorts `keyframes` into frame order, keeping the given order of
+    /// keyframes on the same frame.
     pub fn new(
         target: LaneTarget,
         interpolation: InterpolateMode,
-        keyframes: Vec<Keyframe>,
+        mut keyframes: Vec<Keyframe>,
     ) -> Self {
+        keyframes.sort_by_key(|k| k.frame);
         Self {
             target,
             interpolation,
             keyframes,
         }
+    }
+
+    /// In frame order.
+    pub fn keyframes(&self) -> &[Keyframe] {
+        &self.keyframes
     }
 
     /// The param a param lane drives.
@@ -306,11 +314,8 @@ impl Animations {
     }
 
     /// Adds `clip`, or replaces the one of the same name in place and returns
-    /// it. Keyframes are sorted into frame order.
-    pub fn insert(&mut self, mut clip: Clip) -> Option<Clip> {
-        for lane in &mut clip.lanes {
-            lane.keyframes.sort_by_key(|k| k.frame);
-        }
+    /// it.
+    pub fn insert(&mut self, clip: Clip) -> Option<Clip> {
         let stored = stored::Clip {
             name: clip.name,
             timestep: clip.timestep,

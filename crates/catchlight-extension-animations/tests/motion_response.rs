@@ -151,10 +151,10 @@ fn cut_clip() -> Clip {
         length: 6,
         lead_in: Some(1),
         lead_out: Some(4),
-        lanes: vec![Lane {
-            target: LaneTarget::Param(pid("roll")),
-            interpolation: catchlight_core::InterpolateMode::Linear,
-            keyframes: vec![
+        lanes: vec![Lane::new(
+            LaneTarget::Param(pid("roll")),
+            catchlight_core::InterpolateMode::Linear,
+            vec![
                 Keyframe {
                     frame: 0,
                     value: -1.,
@@ -164,7 +164,7 @@ fn cut_clip() -> Clip {
                     value: 1.,
                 },
             ],
-        }],
+        )],
     }
 }
 
@@ -245,20 +245,25 @@ fn a_control_lanes_loop_cut_and_restart_initialize_at_the_new_sample() {
 fn a_control_lane_without_a_cut_keeps_the_response_moving() {
     let (m, mut clip) = control_cut();
     // A closed loop: the wrap is no discontinuity.
-    clip.lanes[0].keyframes = vec![
-        Keyframe {
-            frame: 1,
-            value: -1.,
-        },
-        Keyframe {
-            frame: 2,
-            value: 0.,
-        },
-        Keyframe {
-            frame: 3,
-            value: -1.,
-        },
-    ];
+    let lane = &clip.lanes[0];
+    clip.lanes[0] = Lane::new(
+        lane.target.clone(),
+        lane.interpolation,
+        vec![
+            Keyframe {
+                frame: 1,
+                value: -1.,
+            },
+            Keyframe {
+                frame: 2,
+                value: 0.,
+            },
+            Keyframe {
+                frame: 3,
+                value: -1.,
+            },
+        ],
+    );
     let mut p = Played::new(&m);
     let dt = clip.timestep;
     p.player.set_clips(vec![clip]);
@@ -442,10 +447,10 @@ fn seamless_playback_preserves_the_same_cascade_as_uninterrupted_input() {
             length: 4,
             lead_in: None,
             lead_out: None,
-            lanes: vec![Lane {
-                target: LaneTarget::Param(pid("roll")),
-                interpolation: catchlight_core::InterpolateMode::Linear,
-                keyframes: values
+            lanes: vec![Lane::new(
+                LaneTarget::Param(pid("roll")),
+                catchlight_core::InterpolateMode::Linear,
+                values
                     .iter()
                     .enumerate()
                     .map(|(i, &value)| Keyframe {
@@ -453,7 +458,7 @@ fn seamless_playback_preserves_the_same_cascade_as_uninterrupted_input() {
                         value,
                     })
                     .collect(),
-            }],
+            )],
         }]);
         assert!(playing.player.play("turn"));
         for i in 0..16 {
@@ -500,16 +505,16 @@ fn check_sine(count: u32, fps: f32) {
         length: count,
         lead_in: None,
         lead_out: None,
-        lanes: vec![Lane {
-            target: LaneTarget::Param(pid("roll")),
-            interpolation: catchlight_core::InterpolateMode::Linear,
-            keyframes: (0..count)
+        lanes: vec![Lane::new(
+            LaneTarget::Param(pid("roll")),
+            catchlight_core::InterpolateMode::Linear,
+            (0..count)
                 .map(|frame| Keyframe {
                     frame,
                     value: value(frame),
                 })
                 .collect(),
-        }],
+        )],
     }]);
     p.player.play("sine");
     for i in 0..=2 * count {

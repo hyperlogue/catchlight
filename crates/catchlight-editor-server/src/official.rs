@@ -242,7 +242,7 @@ pub(crate) fn clip_list(model: &Model) -> Result<ResponseBody, EditorError> {
                                 LaneTargetInfo::Viseme { name: name.clone() }
                             }
                         },
-                        keyframes: lane.keyframes.len() as u32,
+                        keyframes: lane.keyframes().len() as u32,
                     })
                     .collect(),
                 name: clip.name,

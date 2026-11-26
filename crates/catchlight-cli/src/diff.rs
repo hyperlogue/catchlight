@@ -406,8 +406,8 @@ fn animation_fields(a: &Clip) -> Fields {
             format!(
                 "{}, {} keyframes, {}",
                 enum_name(&lane.interpolation),
-                lane.keyframes.len(),
-                digest(&lane.keyframes)
+                lane.keyframes().len(),
+                digest(&lane.keyframes())
             ),
         );
     }

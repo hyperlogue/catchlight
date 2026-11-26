@@ -93,7 +93,7 @@ impl Clip {
     }
 }
 
-/// Reads `keyframes` in frame order, which [`crate::Animations`] keeps.
+/// Reads `keyframes` in frame order, which [`Lane::new`] puts them in.
 fn value_at(keyframes: &[Keyframe], interpolation: InterpolateMode, t: f32) -> f32 {
     match keyframes {
         [] => 0.0,

@@ -281,10 +281,10 @@ fn a_models_animation_is_baked_onto_every_puppet_that_shares_it() {
         .extension_or_default::<Animations>()
         .expect("a fresh extension") = Animations::from_clips([Clip {
         length: 60,
-        lanes: vec![Lane {
-            target: LaneTarget::Param(param.clone()),
-            interpolation: InterpolateMode::Linear,
-            keyframes: vec![
+        lanes: vec![Lane::new(
+            LaneTarget::Param(param.clone()),
+            InterpolateMode::Linear,
+            vec![
                 Keyframe {
                     frame: 0,
                     value: 0.0,
@@ -294,7 +294,7 @@ fn a_models_animation_is_baked_onto_every_puppet_that_shares_it() {
                     value: 1.0,
                 },
             ],
-        }],
+        )],
         ..Clip::new("Pull")
     }]);
 
