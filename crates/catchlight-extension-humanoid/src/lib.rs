@@ -22,10 +22,10 @@ mod controls;
 pub use arkit::{ARKIT_BLEND_SHAPES, controls_from_arkit};
 pub use controls::{CONTROLS, Control, ControlValues, clamp_control, control};
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 use catchlight_core::extension::{
-    DecodeError, Extension, IdRef, Payload, RawExtension, RemovedRef, Warning,
+    DecodeError, Extension, IdRef, Payload, RawExtension, RefTable, Warning,
 };
 use catchlight_core::{Model, ParamId, Puppet};
 
@@ -66,7 +66,7 @@ fn value_at([low, mid, high]: [f32; 3], control: f32) -> f32 {
 /// plain strings, so a control from a newer standard survives a round trip.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Humanoid {
-    refs: Vec<IdRef>,
+    refs: RefTable,
     controls: BTreeMap<String, stored::Mapping>,
 }
 
@@ -123,9 +123,7 @@ impl Humanoid {
     pub fn controls_for<'a>(&'a self, param: &'a ParamId) -> impl Iterator<Item = &'a str> + 'a {
         self.controls
             .iter()
-            .filter(
-                move |(_, m)| matches!(&self.refs[m.param as usize], IdRef::Param(p) if p == param),
-            )
+            .filter(move |(_, m)| self.refs.param(m.param) == Some(param))
             .map(|(name, _)| name.as_str())
     }
 
@@ -137,7 +135,7 @@ impl Humanoid {
         mapping: ControlMapping,
     ) -> Option<ControlMapping> {
         let stored = stored::Mapping {
-            param: self.intern(IdRef::Param(mapping.param)),
+            param: self.refs.intern(IdRef::Param(mapping.param)),
             stops: mapping.stops,
         };
         let previous = self.controls.insert(control.into(), stored);
@@ -161,7 +159,7 @@ impl Humanoid {
             let Some(value) = controls.get(name) else {
                 continue;
             };
-            let IdRef::Param(param) = &self.refs[m.param as usize] else {
+            let Some(param) = self.refs.param(m.param) else {
                 continue;
             };
             if puppet.is_driven(param) {
@@ -175,39 +173,18 @@ impl Humanoid {
     }
 
     fn resolve(&self, m: &stored::Mapping) -> Option<ControlMapping> {
-        let IdRef::Param(param) = self.refs.get(m.param as usize)? else {
-            return None;
-        };
+        let param = self.refs.param(m.param)?;
         Some(ControlMapping {
             param: param.clone(),
             stops: m.stops,
         })
     }
 
-    fn intern(&mut self, r: IdRef) -> u32 {
-        let at = self.refs.iter().position(|x| *x == r).unwrap_or_else(|| {
-            self.refs.push(r);
-            self.refs.len() - 1
-        });
-        at as u32
-    }
-
     /// Keeps exactly the references some mapping uses, in first-use order.
     fn compact(&mut self) {
-        let old = std::mem::take(&mut self.refs);
-        let mut at = HashMap::new();
-        for m in self.controls.values_mut() {
-            m.param = renumber(&mut self.refs, &mut at, &old[m.param as usize]);
-        }
+        self.refs
+            .compact(self.controls.values_mut().map(|m| &mut m.param));
     }
-}
-
-/// `r`'s index in `refs`, appending it on first use; `at` indexes `refs`.
-fn renumber(refs: &mut Vec<IdRef>, at: &mut HashMap<IdRef, u32>, r: &IdRef) -> u32 {
-    *at.entry(r.clone()).or_insert_with(|| {
-        refs.push(r.clone());
-        (refs.len() - 1) as u32
-    })
 }
 
 impl catchlight_core::extension::sealed::Sealed for Humanoid {}
@@ -222,19 +199,17 @@ impl Extension for Humanoid {
             return Err(DecodeError::new("the payload is bytes, not JSON"));
         };
         let stored: stored::Humanoid = serde_json::from_value(value).map_err(DecodeError::new)?;
+        let refs = RefTable::from(raw.refs);
         for (name, m) in &stored.controls {
-            match raw.refs.get(m.param as usize) {
-                Some(IdRef::Param(_) | IdRef::Removed(RemovedRef::Param(_))) => {}
-                _ => {
-                    return Err(DecodeError::new(format!(
-                        "control {name:?} names reference {}, which is not a param",
-                        m.param
-                    )));
-                }
+            if !refs.names_param(m.param) {
+                return Err(DecodeError::new(format!(
+                    "control {name:?} names reference {}, which is not a param",
+                    m.param
+                )));
             }
         }
         Ok(Self {
-            refs: raw.refs,
+            refs,
             controls: stored.controls,
         })
     }
@@ -245,7 +220,7 @@ impl Extension for Humanoid {
         };
         RawExtension {
             version: Self::VERSION,
-            refs: self.refs.clone(),
+            refs: self.refs.to_vec(),
             // Every field is a string, an integer or a float.
             payload: Payload::Json(serde_json::to_value(stored).unwrap_or_default()),
         }
@@ -262,7 +237,9 @@ impl Extension for Humanoid {
     fn check(&self, model: &Model) -> Vec<Warning> {
         let mut out = Vec::new();
         for (name, m) in &self.controls {
-            let r = &self.refs[m.param as usize];
+            let Some(r) = self.refs.get(m.param) else {
+                continue;
+            };
             if control(name).is_none() {
                 out.push(Warning::new(
                     codes::NONSTANDARD_CONTROL,
@@ -320,7 +297,7 @@ impl Extension for Humanoid {
     fn reconcile(&mut self, _model: &Model) {
         let refs = &self.refs;
         self.controls
-            .retain(|_, m| !refs[m.param as usize].is_removed());
+            .retain(|_, m| refs.get(m.param).is_some_and(|r| !r.is_removed()));
         self.compact();
     }
 }

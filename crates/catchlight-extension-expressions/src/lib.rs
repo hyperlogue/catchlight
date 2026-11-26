@@ -36,11 +36,11 @@ mod standard;
 
 pub use standard::{EMOTIONS, VISEME_CONTROLS, VISEMES, standard_visemes};
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 use catchlight_core::extension::{
     DecodeError, Extension, ExtensionError, IdRef, MergeRefused, Payload, RawExtension, Receipt,
-    RemovedRef, Warning,
+    RefTable, Warning,
 };
 use catchlight_core::{Model, ParamId, Puppet};
 use catchlight_extension_humanoid::{ControlValues, Humanoid, control};
@@ -216,7 +216,7 @@ impl<'a> FromIterator<(&'a str, f32)> for Weights {
 /// reference table, which both groups share.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Expressions {
-    refs: Vec<IdRef>,
+    refs: RefTable,
     /// Indexed by [`Group::index`].
     groups: [Vec<stored::Expression>; 2],
 }
@@ -408,7 +408,7 @@ impl Expressions {
                         value: s.value,
                     }),
                     Target::Param(param) => stored::Setting::Param(stored::ParamSetting {
-                        param: self.intern(IdRef::Param(param)),
+                        param: self.refs.intern(IdRef::Param(param)),
                         value: s.value,
                     }),
                 })
@@ -519,10 +519,7 @@ impl Expressions {
                 let at = match out.iter().position(|(i, _)| *i == index) {
                     Some(at) => at,
                     None => {
-                        let value = match &self.refs[index as usize] {
-                            IdRef::Param(param) => base(param),
-                            _ => None,
-                        };
+                        let value = self.refs.param(index).and_then(&mut base);
                         out.push((index, value));
                         out.len() - 1
                     }
@@ -533,14 +530,10 @@ impl Expressions {
             }
         }
         scratch.values.clear();
-        scratch
-            .values
-            .extend(out.iter().filter_map(|&(index, value)| {
-                match (&self.refs[index as usize], value) {
-                    (IdRef::Param(param), Some(value)) => Some((param.clone(), value)),
-                    _ => None,
-                }
-            }));
+        scratch.values.extend(
+            out.iter()
+                .filter_map(|&(index, value)| Some((self.refs.param(index)?.clone(), value?))),
+        );
         &scratch.values
     }
 
@@ -606,38 +599,27 @@ impl Expressions {
                 .iter()
                 .filter_map(|s| match s {
                     stored::Setting::Control(s) => Some(Setting::control(&s.control, s.value)),
-                    stored::Setting::Param(s) => match self.refs.get(s.param as usize)? {
-                        IdRef::Param(param) => Some(Setting::param(param.clone(), s.value)),
-                        _ => None,
-                    },
+                    stored::Setting::Param(s) => {
+                        Some(Setting::param(self.refs.param(s.param)?.clone(), s.value))
+                    }
                 })
                 .collect(),
         }
     }
 
-    fn intern(&mut self, r: IdRef) -> u32 {
-        let at = self.refs.iter().position(|x| *x == r).unwrap_or_else(|| {
-            self.refs.push(r);
-            self.refs.len() - 1
-        });
-        at as u32
-    }
-
     /// Keeps exactly the references some setting uses, in first-use order:
     /// expressions first, then visemes, and marks which settings play.
     fn compact(&mut self) {
-        let old = std::mem::take(&mut self.refs);
-        let mut at = HashMap::new();
-        for setting in self
-            .groups
-            .iter_mut()
-            .flatten()
-            .flat_map(|e| &mut e.settings)
-        {
-            if let stored::Setting::Param(s) = setting {
-                s.param = renumber(&mut self.refs, &mut at, &old[s.param as usize]);
-            }
-        }
+        self.refs.compact(
+            self.groups
+                .iter_mut()
+                .flatten()
+                .flat_map(|e| &mut e.settings)
+                .filter_map(|setting| match setting {
+                    stored::Setting::Param(s) => Some(&mut s.param),
+                    stored::Setting::Control(_) => None,
+                }),
+        );
         for expression in self.groups.iter_mut().flatten() {
             expression.mark_playable();
         }
@@ -716,8 +698,9 @@ impl Expressions {
                         }
                     }
                     stored::Setting::Param(s) => {
-                        let r = &self.refs[s.param as usize];
-                        let (IdRef::Param(param), Some(Some(h))) = (r, humanoid) else {
+                        let (Some(r @ IdRef::Param(param)), Some(Some(h))) =
+                            (self.refs.get(s.param), humanoid)
+                        else {
                             continue;
                         };
                         let controls: Vec<&str> = h.controls_for(param).collect();
@@ -765,7 +748,7 @@ impl Expressions {
         self.group(group)
             .iter()
             .flat_map(|e| &e.settings)
-            .any(|s| matches!(s, stored::Setting::Param(s) if self.refs[s.param as usize] == *r))
+            .any(|s| matches!(s, stored::Setting::Param(s) if self.refs.get(s.param) == Some(r)))
     }
 
     fn describe(&self, setting: &stored::Setting) -> String {
@@ -774,14 +757,6 @@ impl Expressions {
             stored::Setting::Param(s) => self.refs[s.param as usize].to_string(),
         }
     }
-}
-
-/// `r`'s index in `refs`, appending it on first use; `at` indexes `refs`.
-fn renumber(refs: &mut Vec<IdRef>, at: &mut HashMap<IdRef, u32>, r: &IdRef) -> u32 {
-    *at.entry(r.clone()).or_insert_with(|| {
-        refs.push(r.clone());
-        (refs.len() - 1) as u32
-    })
 }
 
 impl catchlight_core::extension::sealed::Sealed for Expressions {}
@@ -798,6 +773,7 @@ impl Extension for Expressions {
         let stored: stored::Expressions =
             serde_json::from_value(value).map_err(DecodeError::new)?;
         let mut groups = [stored.expressions, stored.visemes];
+        let refs = RefTable::from(raw.refs);
         for (group, members) in Group::ALL.into_iter().zip(&groups) {
             let noun = group.noun();
             for (i, expression) in members.iter().enumerate() {
@@ -811,15 +787,11 @@ impl Extension for Expressions {
                     let stored::Setting::Param(s) = setting else {
                         continue;
                     };
-                    match raw.refs.get(s.param as usize) {
-                        Some(IdRef::Param(_) | IdRef::Removed(RemovedRef::Param(_))) => {}
-                        _ => {
-                            return Err(DecodeError::new(format!(
-                                "a setting of {noun} {:?} names reference {}, which is not a \
-                                 param",
-                                expression.name, s.param
-                            )));
-                        }
+                    if !refs.names_param(s.param) {
+                        return Err(DecodeError::new(format!(
+                            "a setting of {noun} {:?} names reference {}, which is not a param",
+                            expression.name, s.param
+                        )));
                     }
                 }
             }
@@ -827,10 +799,7 @@ impl Extension for Expressions {
         for expression in groups.iter_mut().flatten() {
             expression.mark_playable();
         }
-        Ok(Self {
-            refs: raw.refs,
-            groups,
-        })
+        Ok(Self { refs, groups })
     }
 
     fn encode(&self) -> RawExtension {
@@ -841,7 +810,7 @@ impl Extension for Expressions {
         };
         RawExtension {
             version: Self::VERSION,
-            refs: self.refs.clone(),
+            refs: self.refs.to_vec(),
             // Every field is a string, an integer or a float.
             payload: Payload::Json(serde_json::to_value(stored).unwrap_or_default()),
         }
@@ -866,7 +835,7 @@ impl Extension for Expressions {
         let refs = &self.refs;
         for expression in self.groups.iter_mut().flatten() {
             expression.settings.retain(|s| match s {
-                stored::Setting::Param(s) => !refs[s.param as usize].is_removed(),
+                stored::Setting::Param(s) => refs.get(s.param).is_some_and(|r| !r.is_removed()),
                 stored::Setting::Control(_) => true,
             });
         }
@@ -889,7 +858,7 @@ impl Extension for Expressions {
                 let mut expression = expression.clone();
                 for setting in &mut expression.settings {
                     if let stored::Setting::Param(s) = setting {
-                        s.param = merged.intern(addon.refs[s.param as usize].clone());
+                        s.param = merged.refs.intern(addon.refs[s.param as usize].clone());
                     }
                 }
                 added[group.index()].push(expression.name.clone());

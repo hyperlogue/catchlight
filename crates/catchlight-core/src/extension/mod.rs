@@ -12,7 +12,9 @@ mod store;
 
 use std::any::Any;
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::fmt;
+use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -198,6 +200,80 @@ impl fmt::Display for IdRef {
             }
             Self::Removed(gone) => write!(f, "removed {}", Self::from(gone.clone())),
         }
+    }
+}
+
+/// The reference table a maintained extension keeps beside its payload; the
+/// payload names an Id by its `u32` index here. Reads as a slice, which the
+/// core rewrites in place, so only [`Self::intern`] and [`Self::compact`]
+/// change its length.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RefTable(Vec<IdRef>);
+
+impl RefTable {
+    pub fn get(&self, index: u32) -> Option<&IdRef> {
+        self.0.get(index as usize)
+    }
+
+    /// The param `index` names, or `None` once that param is removed.
+    pub fn param(&self, index: u32) -> Option<&ParamId> {
+        match self.get(index)? {
+            IdRef::Param(param) => Some(param),
+            _ => None,
+        }
+    }
+
+    /// Whether `index` names a param, live or removed: what a decoder holds a
+    /// param index to.
+    pub fn names_param(&self, index: u32) -> bool {
+        matches!(
+            self.get(index),
+            Some(IdRef::Param(_) | IdRef::Removed(RemovedRef::Param(_)))
+        )
+    }
+
+    /// `r`'s index, appending it if the table does not hold it yet.
+    pub fn intern(&mut self, r: IdRef) -> u32 {
+        let at = self.0.iter().position(|x| *x == r).unwrap_or_else(|| {
+            self.0.push(r);
+            self.0.len() - 1
+        });
+        at as u32
+    }
+
+    /// Keeps exactly the entries `indices` use, numbered in the order they are
+    /// first used, and rewrites each index to match. Every index must name an
+    /// entry of this table.
+    pub fn compact<'a>(&mut self, indices: impl IntoIterator<Item = &'a mut u32>) {
+        let old = std::mem::take(&mut self.0);
+        let mut at: HashMap<&IdRef, u32> = HashMap::new();
+        for index in indices {
+            let r = &old[*index as usize];
+            *index = *at.entry(r).or_insert_with(|| {
+                self.0.push(r.clone());
+                (self.0.len() - 1) as u32
+            });
+        }
+    }
+}
+
+impl From<Vec<IdRef>> for RefTable {
+    fn from(refs: Vec<IdRef>) -> Self {
+        Self(refs)
+    }
+}
+
+impl Deref for RefTable {
+    type Target = [IdRef];
+
+    fn deref(&self) -> &[IdRef] {
+        &self.0
+    }
+}
+
+impl DerefMut for RefTable {
+    fn deref_mut(&mut self) -> &mut [IdRef] {
+        &mut self.0
     }
 }
 

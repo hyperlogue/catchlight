@@ -30,11 +30,9 @@ mod sample;
 
 pub use player::{AnimationPlayer, AnimationSample, LiveInputs, Rig};
 
-use std::collections::HashMap;
-
 use catchlight_core::extension::{
     DecodeError, Extension, ExtensionError, IdRef, MergeRefused, Payload, RawExtension, Receipt,
-    RemovedRef, Warning,
+    RefTable, Warning,
 };
 use catchlight_core::{InterpolateMode, Model, ParamId};
 use catchlight_extension_expressions::{Expressions, Group};
@@ -218,7 +216,7 @@ pub struct Keyframe {
 /// across param renames and removals.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Animations {
-    refs: Vec<IdRef>,
+    refs: RefTable,
     clips: Vec<stored::Clip>,
 }
 
@@ -340,7 +338,7 @@ impl Animations {
                     };
                     match lane.target {
                         LaneTarget::Param(param) => {
-                            stored.param = Some(self.intern(IdRef::Param(param)));
+                            stored.param = Some(self.refs.intern(IdRef::Param(param)));
                         }
                         LaneTarget::Control(name) => stored.control = Some(name),
                         LaneTarget::Expression(name) => stored.expression = Some(name),
@@ -406,10 +404,7 @@ impl Animations {
     fn target(&self, lane: &stored::Lane) -> Option<LaneTarget> {
         Some(
             match (&lane.param, &lane.control, &lane.expression, &lane.viseme) {
-                (Some(index), ..) => match self.refs.get(*index as usize)? {
-                    IdRef::Param(param) => LaneTarget::Param(param.clone()),
-                    _ => return None,
-                },
+                (Some(index), ..) => LaneTarget::Param(self.refs.param(*index)?.clone()),
                 (_, Some(name), ..) => LaneTarget::Control(name.clone()),
                 (_, _, Some(name), _) => LaneTarget::Expression(name.clone()),
                 (_, _, _, Some(name)) => LaneTarget::Viseme(name.clone()),
@@ -418,30 +413,21 @@ impl Animations {
         )
     }
 
-    fn intern(&mut self, r: IdRef) -> u32 {
-        let at = self.refs.iter().position(|x| *x == r).unwrap_or_else(|| {
-            self.refs.push(r);
-            self.refs.len() - 1
-        });
-        at as u32
-    }
-
     /// Keeps exactly the references some lane uses, in first-use order.
     fn compact(&mut self) {
-        let old = std::mem::take(&mut self.refs);
-        let mut at = HashMap::new();
-        for lane in self.clips.iter_mut().flat_map(|c| &mut c.lanes) {
-            if let Some(param) = &mut lane.param {
-                *param = renumber(&mut self.refs, &mut at, &old[*param as usize]);
-            }
-        }
+        self.refs.compact(
+            self.clips
+                .iter_mut()
+                .flat_map(|c| &mut c.lanes)
+                .filter_map(|lane| lane.param.as_mut()),
+        );
     }
 
     fn param_lanes(&self) -> impl Iterator<Item = (&stored::Clip, &IdRef)> {
         self.clips.iter().flat_map(move |clip| {
             clip.lanes
                 .iter()
-                .filter_map(move |lane| Some((clip, &self.refs[lane.param? as usize])))
+                .filter_map(move |lane| Some((clip, self.refs.get(lane.param?)?)))
         })
     }
 
@@ -501,14 +487,6 @@ impl Animations {
     }
 }
 
-/// `r`'s index in `refs`, appending it on first use; `at` indexes `refs`.
-fn renumber(refs: &mut Vec<IdRef>, at: &mut HashMap<IdRef, u32>, r: &IdRef) -> u32 {
-    *at.entry(r.clone()).or_insert_with(|| {
-        refs.push(r.clone());
-        (refs.len() - 1) as u32
-    })
-}
-
 impl catchlight_core::extension::sealed::Sealed for Animations {}
 impl catchlight_core::extension::Official for Animations {}
 
@@ -522,6 +500,7 @@ impl Extension for Animations {
         };
         let clips: Vec<stored::Clip> =
             ciborium::from_reader(&bytes[..]).map_err(DecodeError::new)?;
+        let refs = RefTable::from(raw.refs);
         for (i, clip) in clips.iter().enumerate() {
             if clips[..i].iter().any(|c| c.name == clip.name) {
                 return Err(DecodeError::new(format!(
@@ -540,17 +519,13 @@ impl Extension for Animations {
                         clip.name
                     )));
                 }
-                if let Some(param) = lane.param {
-                    match raw.refs.get(param as usize) {
-                        Some(IdRef::Param(_) | IdRef::Removed(RemovedRef::Param(_))) => {}
-                        _ => {
-                            return Err(DecodeError::new(format!(
-                                "a lane of clip {:?} names reference {param}, which is not a \
-                                 param",
-                                clip.name
-                            )));
-                        }
-                    }
+                if let Some(param) = lane.param
+                    && !refs.names_param(param)
+                {
+                    return Err(DecodeError::new(format!(
+                        "a lane of clip {:?} names reference {param}, which is not a param",
+                        clip.name
+                    )));
                 }
                 if lane.frames.len() != lane.values.len() {
                     return Err(DecodeError::new(format!(
@@ -568,10 +543,7 @@ impl Extension for Animations {
                 }
             }
         }
-        Ok(Self {
-            refs: raw.refs,
-            clips,
-        })
+        Ok(Self { refs, clips })
     }
 
     fn encode(&self) -> RawExtension {
@@ -580,7 +552,7 @@ impl Extension for Animations {
         let _ = ciborium::into_writer(&self.clips, &mut bytes);
         RawExtension {
             version: Self::VERSION,
-            refs: self.refs.clone(),
+            refs: self.refs.to_vec(),
             payload: Payload::Bytes(bytes.into()),
         }
     }
@@ -619,8 +591,10 @@ impl Extension for Animations {
     fn reconcile(&mut self, _model: &Model) {
         let refs = &self.refs;
         for clip in &mut self.clips {
-            clip.lanes
-                .retain(|lane| lane.param.is_none_or(|p| !refs[p as usize].is_removed()));
+            clip.lanes.retain(|lane| {
+                lane.param
+                    .is_none_or(|p| refs.get(p).is_some_and(|r| !r.is_removed()))
+            });
         }
         self.compact();
     }
@@ -638,7 +612,7 @@ impl Extension for Animations {
             let mut clip = clip.clone();
             for lane in &mut clip.lanes {
                 if let Some(param) = &mut lane.param {
-                    *param = merged.intern(addon.refs[*param as usize].clone());
+                    *param = merged.refs.intern(addon.refs[*param as usize].clone());
                 }
             }
             added.push(clip.name.clone());
