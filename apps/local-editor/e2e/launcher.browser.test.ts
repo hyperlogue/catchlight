@@ -64,9 +64,17 @@ test.skipIf(!browserExe || !existsSync(exe))(
       page.setDefaultTimeout(60_000);
       const errors: string[] = [];
       page.on("pageerror", (error) => errors.push(error.message));
-      await page.goto(`${url}/#token=${token}`);
+      // A launch link carries a single-use code, never the token.
+      const launch = await fetch(`${url}/launch`, { method: "POST", headers: { Authorization: `Bearer ${token}` } });
+      const { code } = (await launch.json()) as { code: string };
+      await page.goto(`${url}/#code=${code}`);
       await page.getByRole("button", { name: "Open a model", exact: true }).waitFor();
       expect(new URL(page.url()).hash).toBe("");
+      const spent = await fetch(`${url}/token`, { method: "POST", body: JSON.stringify({ code }) });
+      expect(spent.status).toBe(401);
+      // A reload connects with the token the page kept.
+      await page.reload();
+      await page.getByRole("button", { name: "Open a model", exact: true }).waitFor();
 
       expect(cli("session", "open", model)).toContain("session 1");
       const listed = page.locator("[data-catchlight-session]").filter({ hasText: "blend_modes" });

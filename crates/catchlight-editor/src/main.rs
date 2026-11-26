@@ -203,7 +203,8 @@ fn serve(options: Serve) -> Result<ExitCode> {
             }
         }
         if options.open {
-            open_browser(&page_url(&running.url, &running.token));
+            let code = launch_code(&running)?;
+            open_browser(&page_url(&running.url, &code));
         }
         return Ok(ExitCode::SUCCESS);
     }
@@ -233,8 +234,8 @@ fn serve(options: Serve) -> Result<ExitCode> {
              serving the API only"
         );
     }
-    // The page gets the token in its URL fragment, so `GET /token`, which
-    // any local process can read, stays off.
+    // The page trades a single-use code from its URL fragment for the token,
+    // so `GET /token`, which any local process can read, stays off.
     let http_options = || HttpOptions {
         ui: (!ui.is_empty()).then_some(ui),
         serve_token: false,
@@ -255,7 +256,7 @@ fn serve(options: Serve) -> Result<ExitCode> {
         &server,
     )?)));
     drop(lock);
-    let page = page_url(&url, &server.token);
+    let page = page_url(&url, &server.launch_code()?);
     let on_signal = file.clone();
     // Dropping the file is what removes it; a signal skips destructors.
     // `ctrlc`'s `termination` feature covers SIGTERM and SIGHUP too.
@@ -267,7 +268,7 @@ fn serve(options: Serve) -> Result<ExitCode> {
     })
     .context("installing the Ctrl-C handler")?;
 
-    eprintln!("{NAME}: {page}");
+    eprintln!("{NAME}: {url}");
     eprintln!(
         "{NAME}: connection recorded in {}",
         connection_path.display()
@@ -275,6 +276,8 @@ fn serve(options: Serve) -> Result<ExitCode> {
     eprintln!("{NAME}: drive it with `{NAME} <command>`; Ctrl-C stops it");
     if options.open && !ui.is_empty() {
         open_browser(&page);
+    } else if !ui.is_empty() {
+        eprintln!("{NAME}: open {page} in a browser");
     }
     let served = server.serve();
     if let Ok(mut file) = file.lock() {
@@ -460,9 +463,10 @@ fn size(bytes: u64) -> String {
     }
 }
 
-/// The browser never sends the fragment over the wire.
-fn page_url(url: &str, token: &str) -> String {
-    format!("{url}/#token={token}")
+/// The browser never sends the fragment over the wire, and the page spends
+/// the code as it loads.
+fn page_url(url: &str, code: &str) -> String {
+    format!("{url}/#code={code}")
 }
 
 fn launch_lock(connection: &Path) -> Result<std::fs::File> {
@@ -487,32 +491,43 @@ fn launch_lock(connection: &Path) -> Result<std::fs::File> {
 
 /// A port reused by anything else, or a newer editor with another token, fails.
 fn is_live(connection: &Connection) -> bool {
-    let Some(addr) = connection
+    post(connection, "/request", r#"{"id":0,"cmd":"session_list"}"#).is_some()
+}
+
+/// A fresh single-use code from the running editor, asked for with its token.
+fn launch_code(connection: &Connection) -> Result<String> {
+    let body = post(connection, "/launch", "")
+        .ok_or_else(|| anyhow!("the editor at {} gave no launch code", connection.url))?;
+    let reply: serde_json::Value =
+        serde_json::from_slice(&body).context("reading the launch code")?;
+    reply["code"]
+        .as_str()
+        .map(str::to_owned)
+        .ok_or_else(|| anyhow!("the editor at {} gave no launch code", connection.url))
+}
+
+/// The body of a 200 to one authenticated POST, or `None`.
+fn post(connection: &Connection, path: &str, body: &str) -> Option<Vec<u8>> {
+    let addr = connection
         .url
         .strip_prefix("http://")
         .and_then(|a| a.parse::<SocketAddr>().ok())
-    else {
-        return false;
-    };
-    if !addr.ip().is_loopback() {
-        return false;
-    }
-    let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_secs(2)) else {
-        return false;
-    };
+        .filter(|addr| addr.ip().is_loopback())?;
+    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(2)).ok()?;
     let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-    let body = r#"{"id":0,"cmd":"session_list"}"#;
     let request = format!(
-        "POST /request HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {}\r\n\
+        "POST {path} HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {}\r\n\
          Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         connection.token,
         body.len()
     );
     let mut response = Vec::new();
-    if stream.write_all(request.as_bytes()).is_err() || stream.read_to_end(&mut response).is_err() {
-        return false;
-    }
-    response.starts_with(b"HTTP/1.1 200")
+    stream.write_all(request.as_bytes()).ok()?;
+    stream.read_to_end(&mut response).ok()?;
+    let head = response.windows(4).position(|w| w == b"\r\n\r\n")?;
+    response
+        .starts_with(b"HTTP/1.1 200")
+        .then(|| response.split_off(head + 4))
 }
 
 fn open_in_running(running: &Connection, model: &str) -> Result<ExitCode> {
@@ -742,5 +757,32 @@ mod tests {
         assert!(!is_live(&record));
         record.url = "http://127.0.0.1:1".into();
         assert!(!is_live(&record));
+    }
+
+    #[test]
+    fn a_running_editor_mints_a_new_launch_code_for_each_launch() {
+        let server = bind_http(
+            Arc::new(Editor::new()),
+            "127.0.0.1:0".parse().unwrap(),
+            HttpOptions {
+                serve_token: false,
+                ..HttpOptions::default()
+            },
+        )
+        .unwrap();
+        let mut record = Connection {
+            url: format!("http://{}", server.addr),
+            token: server.token.clone(),
+            pid: 1,
+            version: String::new(),
+        };
+        let first = server.launch_code().unwrap();
+        std::thread::spawn(move || server.serve());
+        let second = launch_code(&record).unwrap();
+        assert_ne!(first, second);
+        assert_ne!(second, record.token);
+        assert!(!page_url(&record.url, &second).contains(&record.token));
+        record.token = "someone-else".into();
+        assert!(launch_code(&record).is_err());
     }
 }

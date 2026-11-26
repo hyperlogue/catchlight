@@ -1693,6 +1693,48 @@ fn a_server_that_does_not_serve_its_token_keeps_it_behind_itself() {
 }
 
 #[test]
+fn a_launch_code_is_minted_with_the_token_and_traded_for_it_once() {
+    let server = start_with(|options| options.serve_token = false);
+    assert_eq!(http(server.addr, "POST", "/launch", &[], b"").status, 401);
+    let minted = http(
+        server.addr,
+        "POST",
+        "/launch",
+        &[("Authorization", &bearer())],
+        b"",
+    );
+    assert_eq!(minted.status, 200);
+    let code = serde_json::from_slice::<serde_json::Value>(&minted.body).unwrap()["code"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_ne!(code, TOKEN);
+
+    let redeem = |code: &str| {
+        let body = serde_json::json!({ "code": code }).to_string();
+        http(
+            server.addr,
+            "POST",
+            "/token",
+            &[("Content-Type", "application/json")],
+            body.as_bytes(),
+        )
+    };
+    assert_eq!(redeem("not-a-code").status, 401);
+    let traded = redeem(&code);
+    assert_eq!(traded.status, 200);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&traded.body).unwrap()["token"],
+        TOKEN
+    );
+    assert_eq!(
+        redeem(&code).status,
+        401,
+        "a code is spent by its first trade"
+    );
+}
+
+#[test]
 fn a_non_loopback_address_binds_only_when_remote_clients_are_allowed() {
     let any: SocketAddr = "0.0.0.0:0".parse().unwrap();
     let refused = bind_http(Arc::new(Editor::new()), any, HttpOptions::default()).err();

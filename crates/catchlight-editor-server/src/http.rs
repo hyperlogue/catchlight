@@ -5,6 +5,8 @@
 //!   port, so a random per-launch token gates every door, and `GET /token`
 //!   answers CORS only for an allowlisted origin, never `*`. `Host` must name
 //!   loopback (421 otherwise) to defeat DNS rebinding.
+//! - **A launch link carries a code, not the token.** `POST /launch` (with
+//!   the token) mints a code; `POST /token` trades it for the token once.
 //! - **Another machine is opted into.** Only a loopback address binds, and
 //!   only a loopback peer is served, unless [`HttpOptions::allow_remote`] is
 //!   set; then the token is never served and the operator hands it over.
@@ -18,9 +20,9 @@
 use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Sender};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use catchlight_core::formats::clm::{TextureEncoding, extension_hash};
@@ -101,6 +103,8 @@ struct ServerState {
     ui: Option<UiFiles>,
     serve_token: bool,
     allow_remote: bool,
+    /// Minted and not yet traded for the token.
+    launch_codes: Mutex<Vec<String>>,
 }
 
 /// The allowlist includes the server's own loopback origins, so it can only be
@@ -141,6 +145,7 @@ pub fn bind_http(
             ui: options.ui,
             serve_token: options.serve_token && !options.allow_remote,
             allow_remote: options.allow_remote,
+            launch_codes: Mutex::new(Vec::new()),
         }),
     })
 }
@@ -150,6 +155,11 @@ pub fn serve_http(editor: Arc<Editor>, addr: SocketAddr, options: HttpOptions) -
 }
 
 impl HttpServer {
+    /// A code for a launch link: `POST /token` trades it for the token once.
+    pub fn launch_code(&self) -> io::Result<String> {
+        self.state.mint_launch_code()
+    }
+
     pub fn serve(self) -> io::Result<()> {
         for mut stream in accepted(self.listener.incoming()) {
             let Some(permit) = self.state.connections.try_acquire() else {
@@ -184,6 +194,22 @@ pub(crate) fn accepted<S>(
             None
         }
     })
+}
+
+impl ServerState {
+    fn mint_launch_code(&self) -> io::Result<String> {
+        let code = mint_token()?;
+        crate::lock(&self.launch_codes).push(code.clone());
+        Ok(code)
+    }
+
+    /// The code is spent whether or not the caller ever reads the token.
+    fn redeem_launch_code(&self, given: &str) -> Option<&str> {
+        let mut codes = crate::lock(&self.launch_codes);
+        let at = codes.iter().position(|code| secret_matches(given, code))?;
+        codes.swap_remove(at);
+        Some(&self.token)
+    }
 }
 
 /// A guessable token is no token: every page the browser loads can reach
@@ -310,6 +336,7 @@ fn serve_connection(state: &ServerState, stream: TcpStream) {
     // Gate on the head alone: an unauthenticated caller never gets to spend
     // the upload ceiling.
     if !opens_without_a_token(state, &request)
+        && !trades_a_launch_code(&request)
         && ui_file(state, &request).is_none()
         && !bearer_matches(&request, &state.token)
     {
@@ -342,15 +369,22 @@ fn opens_without_a_token(state: &ServerState, request: &HttpRequest) -> bool {
     state.serve_token && request.method == "GET" && request.path == "/token"
 }
 
+/// Ungated: the code is the credential.
+fn trades_a_launch_code(request: &HttpRequest) -> bool {
+    request.method == "POST" && request.path == "/token"
+}
+
+fn token_response(token: &str) -> Response {
+    Response::new(200, "OK")
+        .with("Content-Type", "application/json")
+        .with("X-Content-Type-Options", "nosniff")
+        .with("Cache-Control", "no-store")
+        .body(format!("{{\"token\":\"{token}\"}}").into_bytes())
+}
+
 fn route(state: &ServerState, request: &HttpRequest, allowed: Option<&str>) -> Response {
     if opens_without_a_token(state, request) {
-        return cors(
-            Response::new(200, "OK")
-                .with("Content-Type", "application/json")
-                .with("X-Content-Type-Options", "nosniff")
-                .body(format!("{{\"token\":\"{}\"}}", state.token).into_bytes()),
-            allowed,
-        );
+        return cors(token_response(&state.token), allowed);
     }
 
     let segments: Vec<&str> = request
@@ -361,6 +395,8 @@ fn route(state: &ServerState, request: &HttpRequest, allowed: Option<&str>) -> R
 
     let response = match (request.method.as_str(), segments.as_slice()) {
         ("POST", ["request"]) => command(state, request),
+        ("POST", ["launch"]) => launch(state),
+        ("POST", ["token"]) => redeem(state, request),
         ("GET", ["sessions", id, "structure"]) => structure(state, id),
         ("GET", ["sessions", id, "clm"]) => clm(state, id),
         ("GET", ["sessions", id, "textures", tex]) => texture(state, id, tex),
@@ -387,7 +423,7 @@ fn ui_file(state: &ServerState, request: &HttpRequest) -> Option<(&'static str, 
 
 fn claimed_by_a_route(path: &str) -> bool {
     let first = path.trim_start_matches('/').split('/').next().unwrap_or("");
-    matches!(first, "token" | "ws" | "request" | "sessions")
+    matches!(first, "token" | "launch" | "ws" | "request" | "sessions")
 }
 
 fn ui_response(path: &str, bytes: &'static [u8]) -> Response {
@@ -418,6 +454,30 @@ fn ui_response(path: &str, bytes: &'static [u8]) -> Response {
         .with("X-Frame-Options", "DENY")
         .with("Content-Security-Policy", "frame-ancestors 'none'")
         .body(Body::Static(bytes))
+}
+
+fn launch(state: &ServerState) -> Response {
+    match state.mint_launch_code() {
+        Ok(code) => Response::new(200, "OK")
+            .with("Content-Type", "application/json")
+            .with("Cache-Control", "no-store")
+            .body(format!("{{\"code\":\"{code}\"}}").into_bytes()),
+        Err(e) => Response::text(500, "Internal Server Error", &e.to_string()),
+    }
+}
+
+fn redeem(state: &ServerState, request: &HttpRequest) -> Response {
+    #[derive(serde::Deserialize)]
+    struct Redeem {
+        code: String,
+    }
+    let Ok(Redeem { code }) = serde_json::from_slice(&request.body) else {
+        return Response::text(400, "Bad Request", "expected {\"code\": \"...\"}");
+    };
+    match state.redeem_launch_code(&code) {
+        Some(token) => token_response(token),
+        None => Response::text(401, "Unauthorized", "unknown or already used launch code"),
+    }
 }
 
 /// Only a body that is not a [`Request`] at all is a 400: there is no `id` to

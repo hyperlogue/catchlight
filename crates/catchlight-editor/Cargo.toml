@@ -29,6 +29,7 @@ catchlight-editor-server.workspace = true
 catchlight-editor-protocol.workspace = true
 catchlight-editor-cli.workspace = true
 anyhow.workspace = true
+serde_json.workspace = true
 # Ctrl-C, SIGTERM and SIGHUP remove the connection file instead of leaving it
 # stale.
 ctrlc = { workspace = true, features = ["termination"] }
@@ -36,7 +37,6 @@ ctrlc = { workspace = true, features = ["termination"] }
 [dev-dependencies]
 # Notices go to a file instead of a harness, for tests/review_listen.rs.
 catchlight-editor-cli = { workspace = true, features = ["fake-harness"] }
-serde_json.workspace = true
 
 # `cargo binstall catchlight-editor` fetches the release archive instead of
 # building; the names are the ones `scripts/release/editor_app.py` writes.

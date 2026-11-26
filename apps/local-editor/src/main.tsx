@@ -10,19 +10,21 @@ import { createRoot } from "react-dom/client";
 import "./app.css";
 
 /**
- * The launcher opens `/#token=…`. The fragment is dropped from the address bar
- * once read; session storage keeps it so a reload still connects.
+ * The launcher opens `/#code=…` with a single-use code, which this trades for
+ * the editor's token. The fragment is dropped from the address bar once read;
+ * session storage keeps the token so a reload still connects.
  */
-function takeToken(): string | undefined {
-  const fromHash = new URLSearchParams(location.hash.slice(1)).get("token");
-  if (fromHash) {
+async function takeToken(): Promise<string | undefined> {
+  const code = new URLSearchParams(location.hash.slice(1)).get("code");
+  if (code) {
     history.replaceState(null, "", location.pathname + location.search);
+    const token = await redeem(code);
     try {
-      sessionStorage.setItem(TOKEN_KEY, fromHash);
+      sessionStorage.setItem(TOKEN_KEY, token);
     } catch {
       // Storage refused: this load still connects; a reload will not.
     }
-    return fromHash;
+    return token;
   }
   try {
     return sessionStorage.getItem(TOKEN_KEY) ?? undefined;
@@ -31,10 +33,23 @@ function takeToken(): string | undefined {
   }
 }
 
+async function redeem(code: string): Promise<string> {
+  const response = await fetch("/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code }),
+  });
+  if (!response.ok) {
+    throw new Error("This link was already used. Run `catchlight-editor` again to open the editor.");
+  }
+  const { token } = (await response.json()) as { token: string };
+  return token;
+}
+
 const TOKEN_KEY = "catchlight-token";
 
 async function start(): Promise<void> {
-  const token = takeToken();
+  const token = await takeToken();
   if (token === undefined) {
     throw new Error("Open the editor with `catchlight-editor`; it opens this page with its access key.");
   }
