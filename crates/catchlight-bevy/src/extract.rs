@@ -25,8 +25,6 @@ impl bevy::render::sync_component::SyncComponent for CatchlightPuppet {
 
 /// Refreshes render caches here because only extract may read the live
 /// puppet: under pipelined rendering the next tick overwrites its deforms.
-// Invariant: the render-state Mutex is only poisoned on panic, treated as fatal.
-#[allow(clippy::unwrap_used)]
 pub(crate) fn extract_puppets(
     mut commands: Commands,
     mut existing: Query<&mut ExtractedPuppet>,
@@ -42,7 +40,7 @@ pub(crate) fn extract_puppets(
         )>,
     >,
 ) {
-    let mut inner = state.inner.lock().unwrap();
+    let mut inner = state.lock();
     inner.options = settings.prepare;
     let formats = inner.formats();
     reprepare_replaced(&mut inner, &models);

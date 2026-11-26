@@ -8,8 +8,6 @@ use bevy::render::{
 use crate::extract::{ExtractedCatchlightCamera, ExtractedPuppet};
 use crate::prepare::{CatchlightRenderInner, CatchlightRenderState, ModelGpu, ModelKey};
 
-// Invariant: the render-state Mutex is only poisoned on panic, treated as fatal.
-#[allow(clippy::unwrap_used)]
 pub(crate) fn catchlight_2d_pass(
     world: &World,
     view: ViewQuery<(
@@ -23,7 +21,7 @@ pub(crate) fn catchlight_2d_pass(
 ) {
     let (view_entity, camera, view, target, _marked) = view.into_inner();
     let state_res = world.resource::<CatchlightRenderState>();
-    let mut guard = state_res.inner.lock().unwrap();
+    let mut guard = state_res.lock();
 
     // 2D cameras leave clip_from_world None; bevy derives it the same way.
     let view_proj = view

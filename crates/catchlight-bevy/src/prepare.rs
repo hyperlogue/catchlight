@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use bevy::prelude::*;
 use bevy::render::renderer::{RenderAdapter, RenderDevice, RenderQueue};
@@ -20,12 +20,16 @@ pub struct CatchlightRenderState {
 }
 
 impl CatchlightRenderState {
+    /// A panic mid-frame poisons the lock; the next frame takes the state as
+    /// it stands rather than panicking every frame after.
+    pub(crate) fn lock(&self) -> MutexGuard<'_, CatchlightRenderInner> {
+        self.inner.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     /// Summed top-level GPU pass time in nanoseconds, lagging 2-3 frames.
     /// Call from a render-world system in `Cleanup`, after the graph submits.
     pub fn drain_gpu_frame_ns(&self) -> Option<u64> {
-        let Ok(mut inner) = self.inner.lock() else {
-            return None;
-        };
+        let mut inner = self.lock();
         let mut total_ns: u64 = 0;
         let mut got_any = false;
         for gpu in inner.gpus.values_mut() {
@@ -44,7 +48,7 @@ impl CatchlightRenderState {
 
     /// Keyed by the paired `RenderEntity`, not the main-world entity.
     pub fn collected_drawables(&self, render_entity: Entity) -> Option<RenderList> {
-        let inner = self.inner.lock().ok()?;
+        let inner = self.lock();
         inner
             .puppets
             .iter()
@@ -55,7 +59,7 @@ impl CatchlightRenderState {
     /// The whole model's tally, since a renderer is shared by every puppet of
     /// one model. Keyed by the paired `RenderEntity`.
     pub fn frame_stats(&self, render_entity: Entity) -> Option<FrameStats> {
-        let inner = self.inner.lock().ok()?;
+        let inner = self.lock();
         let puppet = inner
             .puppets
             .iter()
@@ -66,7 +70,7 @@ impl CatchlightRenderState {
 
     #[doc(hidden)]
     pub fn camera_views_issued(&self, render_entity: Entity) -> Option<u32> {
-        let inner = self.inner.lock().ok()?;
+        let inner = self.lock();
         let puppet = inner
             .puppets
             .iter()
@@ -76,14 +80,11 @@ impl CatchlightRenderState {
     }
 
     pub fn resident_caches(&self) -> usize {
-        self.inner.lock().map(|inner| inner.gpus.len()).unwrap_or(0)
+        self.lock().gpus.len()
     }
 
     pub fn resident_puppets(&self) -> usize {
-        self.inner
-            .lock()
-            .map(|inner| inner.puppets.len())
-            .unwrap_or(0)
+        self.lock().puppets.len()
     }
 }
 
@@ -223,8 +224,6 @@ impl CatchlightRenderInner {
 
 /// Runs in prepare rather than extract to keep uploads out of the sync point,
 /// so a new puppet draws one frame late.
-// Invariant: the render-state Mutex is only poisoned on panic, treated as fatal.
-#[allow(clippy::unwrap_used)]
 pub(crate) fn prepare_puppets(
     device: Res<RenderDevice>,
     queue: Res<RenderQueue>,
@@ -233,7 +232,7 @@ pub(crate) fn prepare_puppets(
     extracted: Query<(Entity, &ExtractedPuppet)>,
     views: Query<&ViewTarget, With<ExtractedCatchlightCamera>>,
 ) {
-    let mut inner = state.inner.lock().unwrap();
+    let mut inner = state.lock();
     let options = inner.options;
 
     for resources in inner.formats.values_mut() {
