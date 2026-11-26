@@ -609,8 +609,8 @@ impl Model {
 
             let node_slots = match &cn.kind {
                 ClmNodeKind::Part(part) => {
-                    let read = read_slots(&cn.id, part)?;
-                    slots.insert(&cn.id, read.iter().map(|s| s.id().clone()).collect());
+                    let (read, table) = read_slots(&cn.id, part)?;
+                    slots.insert(&cn.id, table);
                     read
                 }
                 _ => Vec::new(),
@@ -1177,9 +1177,10 @@ fn model_masks(
         .collect()
 }
 
-fn read_slots(id: &NodeId, part: &ClmPart) -> Result<Vec<Slot>, ModelError> {
+fn read_slots(id: &NodeId, part: &ClmPart) -> Result<(Vec<Slot>, SlotTable), ModelError> {
     let vertices = part.mesh.vertex_count();
     let mut out: Vec<Slot> = Vec::with_capacity(part.slots.len());
+    let mut seen = SlotTable::with_capacity(part.slots.len());
     for slot in &part.slots {
         if slot.vertex.is_some_and(|v| v as usize >= vertices) {
             return Err(ClmLoadError::SlotOutOfRange {
@@ -1190,7 +1191,7 @@ fn read_slots(id: &NodeId, part: &ClmPart) -> Result<Vec<Slot>, ModelError> {
             }
             .into());
         }
-        if out.iter().any(|s| s.id() == &slot.id) {
+        if !seen.insert(slot.id.clone()) {
             return Err(ClmLoadError::DuplicateSlot {
                 node: id.to_string(),
                 slot: slot.id.to_string(),
@@ -1202,7 +1203,7 @@ fn read_slots(id: &NodeId, part: &ClmPart) -> Result<Vec<Slot>, ModelError> {
             vertex: slot.vertex,
         });
     }
-    Ok(out)
+    Ok((out, seen))
 }
 
 /// Whether a slot is filled is not checked: [`ModelWeld::resolve`] skips
