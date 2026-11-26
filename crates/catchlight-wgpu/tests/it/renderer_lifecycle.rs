@@ -13,8 +13,8 @@ use crate::common;
 use crate::common::Scene;
 use catchlight_core::{Mesh, Model};
 use catchlight_wgpu::{
-    CAMERA_RING_SLOTS, FrameStats, FrameTargets, Pipelines, RenderList, RenderStats, RenderTarget,
-    RendererError, Submission, WgpuRenderer, create_orthographic_camera,
+    CAMERA_RING_SLOTS, FrameStats, FrameTargets, PipelineOptions, Pipelines, RenderList,
+    RenderStats, RenderTarget, RendererError, Submission, WgpuRenderer, create_orthographic_camera,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -58,7 +58,7 @@ impl Stage {
             view_formats: &[],
         });
         let view = target.create_view(&wgpu::TextureViewDescriptor::default());
-        let shared = Arc::new(Pipelines::new(&device, format));
+        let shared = Arc::new(Pipelines::new(&device, format, PipelineOptions::default()));
         Self {
             device,
             queue,

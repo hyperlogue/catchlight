@@ -137,6 +137,23 @@ impl MaskPipelines {
     }
 }
 
+/// How [`Pipelines`] mask a part.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum StencilMode {
+    /// The stencil path, except on GL devices (WebGL2 included): Chromium's
+    /// software WebGL2 fails `Depth24PlusStencil8`, so they discard on
+    /// sampled mask alpha instead.
+    #[default]
+    Auto,
+    /// The alpha-discard path on every backend.
+    Off,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct PipelineOptions {
+    pub stencil: StencilMode,
+}
+
 /// Shared across every puppet in one world; built once per (device,
 /// `surface_format`).
 pub struct Pipelines {
@@ -171,11 +188,6 @@ pub struct Pipelines {
 
 fn is_gl(device: &wgpu::Device) -> bool {
     device.adapter_info().backend == wgpu::Backend::Gl
-}
-
-fn stencil_forced_off() -> bool {
-    std::env::var("CATCHLIGHT_DISABLE_STENCIL")
-        .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
 }
 
 fn sampled_texture_layout(device: &wgpu::Device, label: &str) -> wgpu::BindGroupLayout {
@@ -229,14 +241,6 @@ fn stencil_only(
 }
 
 impl Pipelines {
-    /// GL devices (WebGL2 included) get the alpha-discard mask fallback,
-    /// because Chromium's software WebGL2 fails `Depth24PlusStencil8`;
-    /// `CATCHLIGHT_DISABLE_STENCIL=1` forces it elsewhere.
-    pub fn new(device: &wgpu::Device, surface_format: wgpu::TextureFormat) -> Self {
-        let has_stencil = !stencil_forced_off() && !is_gl(device);
-        Self::new_with_options(device, surface_format, has_stencil)
-    }
-
     pub(crate) fn has_stencil(&self) -> bool {
         matches!(self.masks, MaskPipelines::Stencil(_))
     }
@@ -245,11 +249,15 @@ impl Pipelines {
         &self.blit_dst_in_shader_pipelines[blend as usize]
     }
 
-    pub fn new_with_options(
+    pub fn new(
         device: &wgpu::Device,
         surface_format: wgpu::TextureFormat,
-        has_stencil: bool,
+        options: PipelineOptions,
     ) -> Self {
+        let has_stencil = match options.stencil {
+            StencilMode::Auto => !is_gl(device),
+            StencilMode::Off => false,
+        };
         // Without CLAMP_TO_BORDER, out-of-range UVs are discarded so ClampToEdge
         // edge samples don't paint ghost slivers.
         let has_clamp_to_border = device

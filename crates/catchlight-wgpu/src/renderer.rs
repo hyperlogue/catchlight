@@ -34,8 +34,8 @@ use targets::*;
 use wire::*;
 
 use arena::FrameArena;
-pub use pipelines::Pipelines;
 use pipelines::{MaskPipelines, ShaderBlend};
+pub use pipelines::{PipelineOptions, Pipelines, StencilMode};
 pub use {
     deform::DeformSet,
     frame::{CAMERA_RING_SLOTS, Frame, Recorded, Submission},
@@ -312,8 +312,9 @@ pub struct WgpuRenderer {
 }
 
 impl WgpuRenderer {
-    /// Prefer `from_pipelines` to share pipelines across renderers; each
-    /// `Pipelines::new` compiles every pipeline again.
+    /// Builds default-option pipelines. Prefer `from_pipelines` to share
+    /// pipelines across renderers; each `Pipelines::new` compiles every
+    /// pipeline again.
     pub fn new(
         device: wgpu::Device,
         queue: wgpu::Queue,
@@ -325,7 +326,11 @@ impl WgpuRenderer {
             clippy::arc_with_non_send_sync,
             reason = "fires only on wasm32, where wgpu types are not Send"
         )]
-        let shared = std::sync::Arc::new(Pipelines::new(&device, surface_format));
+        let shared = std::sync::Arc::new(Pipelines::new(
+            &device,
+            surface_format,
+            PipelineOptions::default(),
+        ));
         Self::from_pipelines(device, queue, shared)
     }
 

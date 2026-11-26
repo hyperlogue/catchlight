@@ -6,8 +6,8 @@ use crate::render::{
 use crate::{baseline_path, baselines_root, failures_root, repo_root};
 use anyhow::{Context, Result, anyhow};
 use catchlight_wgpu::{
-    FrameTargets, Pipelines, RenderTarget, WgpuRenderer, create_headless_context,
-    read_texture_to_rgba,
+    FrameTargets, PipelineOptions, Pipelines, RenderTarget, StencilMode, WgpuRenderer,
+    create_headless_context, read_texture_to_rgba,
 };
 use image::RgbaImage;
 use std::collections::HashMap;
@@ -27,6 +27,20 @@ pub fn shared_context() -> Result<(wgpu::Device, wgpu::Queue)> {
     let created = pollster::block_on(create_headless_context())
         .map_err(|e| anyhow!("create_headless_context: {e}"))?;
     Ok(context.insert(created).clone())
+}
+
+/// `CATCHLIGHT_DISABLE_STENCIL=1` renders the matrix through the alpha-discard
+/// mask path that GL devices take.
+fn pipeline_options() -> PipelineOptions {
+    let stencil_off = std::env::var("CATCHLIGHT_DISABLE_STENCIL")
+        .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+    PipelineOptions {
+        stencil: if stencil_off {
+            StencilMode::Off
+        } else {
+            StencilMode::Auto
+        },
+    }
 }
 
 /// Renders are serialized through `inner`: `WgpuRenderer`'s per-frame
@@ -69,7 +83,7 @@ impl SharedHarness {
         } else {
             Thresholds::hardware()
         };
-        let pipelines = Arc::new(Pipelines::new(&device, TARGET_FORMAT));
+        let pipelines = Arc::new(Pipelines::new(&device, TARGET_FORMAT, pipeline_options()));
         let mut models_map = HashMap::new();
         for m in models {
             models_map.insert(m.stem.clone(), m);

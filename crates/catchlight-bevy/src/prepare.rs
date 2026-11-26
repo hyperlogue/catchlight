@@ -6,8 +6,8 @@ use bevy::render::renderer::{RenderDevice, RenderQueue};
 use bevy::render::view::ViewTarget;
 use catchlight_core::Model;
 use catchlight_wgpu::{
-    DeformSet, FrameStats, FrameTargets, Pipelines, PrepareOptions, RenderCache, RenderList,
-    Submission, WgpuRenderer,
+    DeformSet, FrameStats, FrameTargets, PipelineOptions, Pipelines, PrepareOptions, RenderCache,
+    RenderList, Submission, WgpuRenderer,
 };
 
 use crate::asset::CatchlightModel;
@@ -182,7 +182,7 @@ pub(crate) fn format_resources<'a>(
     device: &wgpu::Device,
 ) -> &'a mut FormatResources {
     formats.entry(format).or_insert_with(|| {
-        let pipelines = Arc::new(Pipelines::new(device, format));
+        let pipelines = Arc::new(Pipelines::new(device, format, PipelineOptions::default()));
         FormatResources {
             targets: HashMap::new(),
             pipelines,

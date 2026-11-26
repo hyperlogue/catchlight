@@ -834,7 +834,11 @@ pub(crate) mod browser {
                 renderer: WgpuRenderer::from_pipelines(
                     gpu.device.clone(),
                     gpu.queue.clone(),
-                    Arc::new(Pipelines::new(&gpu.device, format)),
+                    Arc::new(Pipelines::new(
+                        &gpu.device,
+                        format,
+                        catchlight_wgpu::PipelineOptions::default(),
+                    )),
                 ),
                 cache: None,
             });

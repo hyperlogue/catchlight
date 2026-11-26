@@ -37,8 +37,9 @@ pub use collect::{
 pub use headless::{Framing, RenderContext};
 pub use render_cache::{CacheStats, PrepareOptions, RenderCache, collect};
 pub use renderer::{
-    CAMERA_RING_SLOTS, DeformSet, Frame, FrameStats, FrameTargets, Pipelines, Recorded,
-    RenderStats, RenderTarget, RendererError, RendererResult, Submission, WgpuRenderer,
+    CAMERA_RING_SLOTS, DeformSet, Frame, FrameStats, FrameTargets, PipelineOptions, Pipelines,
+    Recorded, RenderStats, RenderTarget, RendererError, RendererResult, StencilMode, Submission,
+    WgpuRenderer,
 };
 
 pub fn create_orthographic_camera(camera_height: f32, aspect: f32) -> glam::Mat4 {
