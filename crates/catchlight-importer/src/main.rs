@@ -101,10 +101,12 @@ fn detect(input: &Path) -> Result<Format> {
         return Ok(Format::LivlivDirectory(input.to_path_buf()));
     }
     let mut magic = Vec::with_capacity(8);
+    let reading = || format!("reading {}", input.display());
     std::fs::File::open(input)
-        .with_context(|| format!("reading {}", input.display()))?
+        .with_context(reading)?
         .take(8)
-        .read_to_end(&mut magic)?;
+        .read_to_end(&mut magic)
+        .with_context(reading)?;
     if magic == b"TRNSRTS\0" {
         return Ok(Format::Inx);
     }
@@ -146,23 +148,31 @@ fn inx(args: &Args) -> Result<()> {
     if args.inspect || args.allow_lossy || args.report.is_some() {
         bail!("--inspect, --allow-lossy and --report are only supported for LivLiv inputs");
     }
-    let bytes =
-        std::fs::read(&args.input).with_context(|| format!("reading {}", args.input.display()))?;
-    let model = catchlight_importer::import_inx_bytes(&bytes)
+    let reading = || format!("reading {}", args.input.display());
+    let file = std::fs::File::open(&args.input).with_context(reading)?;
+    // The parser bounds every section against its load budget before reading it.
+    let parsed = catchlight_importer::InxModel::parse(std::io::BufReader::new(file))
+        .with_context(|| format!("importing {}", args.input.display()))?;
+    let model = catchlight_importer::import_inx_model(&parsed)
         .with_context(|| format!("importing {}", args.input.display()))?;
     write_model(args, &model)?;
     Ok(())
 }
 
 fn livliv(args: &Args, format: Format) -> Result<()> {
+    let reading = || format!("reading {}", args.input.display());
     let package = match format {
-        Format::LivlivDirectory(root) => Package::from_directory(&root)?,
+        Format::LivlivDirectory(root) => {
+            Package::from_directory(&root).with_context(|| format!("reading {}", root.display()))?
+        }
         Format::LivlivZip => {
             let mut bytes = Vec::new();
-            std::fs::File::open(&args.input)?
+            std::fs::File::open(&args.input)
+                .with_context(reading)?
                 .take(256 * 1024 * 1024 + 1)
-                .read_to_end(&mut bytes)?;
-            Package::from_zip(&bytes)?
+                .read_to_end(&mut bytes)
+                .with_context(reading)?;
+            Package::from_zip(&bytes).with_context(reading)?
         }
         Format::Inx => bail!("expected a LivLiv package"),
     }
@@ -197,12 +207,7 @@ fn write_model(args: &Args, model: &catchlight_core::Model) -> Result<()> {
         .clone()
         .unwrap_or_else(|| args.input.with_extension("clm"));
     let bytes = model.to_clm_bytes()?;
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&output)
-        .with_context(|| format!("creating {}", output.display()))?;
-    std::io::Write::write_all(&mut file, &bytes)?;
+    write_new(&output, &bytes)?;
     eprintln!("wrote {} ({} bytes)", output.display(), bytes.len());
     Ok(())
 }
@@ -211,11 +216,33 @@ fn write_report(report: &catchlight_importer::livliv::Report, path: Option<&Path
     let json = serde_json::to_string_pretty(report)?;
     eprintln!("{json}");
     if let Some(path) = path {
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(path)?;
-        std::io::Write::write_all(&mut file, format!("{json}\n").as_bytes())?;
+        write_new(path, format!("{json}\n").as_bytes())?;
     }
+    Ok(())
+}
+
+/// Refuses an existing `path`. The bytes land under a temporary name first,
+/// so a failed write leaves nothing at `path` to block the retry.
+fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
+    let writing = || format!("writing {}", path.display());
+    let dir = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let mut builder = tempfile::Builder::new();
+    builder.prefix(".catchlight-importer-");
+    // tempfile's own default is owner-only; a new output takes the umask's.
+    #[cfg(unix)]
+    builder.permissions(std::os::unix::fs::PermissionsExt::from_mode(0o666));
+    let mut file = builder.tempfile_in(dir).with_context(writing)?;
+    std::io::Write::write_all(&mut file, bytes).with_context(writing)?;
+    file.as_file().sync_all().with_context(writing)?;
+    file.persist_noclobber(path)
+        .map_err(|e| e.error)
+        .with_context(|| format!("creating {}", path.display()))?;
+    #[cfg(unix)]
+    std::fs::File::open(dir)
+        .and_then(|d| d.sync_all())
+        .with_context(writing)?;
     Ok(())
 }

@@ -10,7 +10,7 @@ publish = false
 # Library consumers do not build the executable or its command-line dependency.
 [features]
 default = []
-cli = ["dep:anyhow"]
+cli = ["dep:anyhow", "dep:tempfile"]
 
 [[bin]]
 name = "catchlight-importer"
@@ -19,6 +19,7 @@ required-features = ["cli"]
 
 [dependencies]
 anyhow = { workspace = true, optional = true }
+tempfile = { version = "3", optional = true }
 catchlight-core.workspace = true
 catchlight-extension-animations.workspace = true
 image = { workspace = true, features = ["webp"] }

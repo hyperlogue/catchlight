@@ -59,7 +59,7 @@ impl Package {
             if entry.is_dir() || ignored(&name) {
                 continue;
             }
-            let data = bounded_read(&mut entry, size)?;
+            let data = bounded_read(&mut entry, size, Path::new(&name))?;
             if data.len() != size {
                 return Err(Error::Invalid(format!("incorrect entry size: {name}")));
             }
@@ -72,7 +72,8 @@ impl Package {
     /// Symlinks and special files are refused, even when they point inside it.
     pub fn from_directory(root: &Path) -> Result<Self> {
         for ancestor in root.ancestors().filter(|p| !p.as_os_str().is_empty()) {
-            if std::fs::symlink_metadata(ancestor)?
+            if std::fs::symlink_metadata(ancestor)
+                .map_err(io_at(ancestor))?
                 .file_type()
                 .is_symlink()
             {
@@ -86,8 +87,8 @@ impl Package {
         let mut total = 0;
         let mut entries = 0;
         while let Some((dir, prefix)) = pending.pop() {
-            for item in std::fs::read_dir(dir)? {
-                let item = item?;
+            for item in std::fs::read_dir(&dir).map_err(io_at(&dir))? {
+                let item = item.map_err(io_at(&dir))?;
                 entries += 1;
                 if entries > MAX_ENTRIES {
                     return Err(Error::Invalid("package exceeds 2048 entries".into()));
@@ -98,7 +99,8 @@ impl Package {
                     .map_err(|_| Error::Invalid("non-UTF-8 path".into()))?;
                 let name = format!("{prefix}{leaf}");
                 safe_path(&name)?;
-                let kind = item.file_type()?;
+                let path = item.path();
+                let kind = item.file_type().map_err(io_at(&path))?;
                 if kind.is_symlink() {
                     return Err(Error::Invalid(format!("symlink: {name}")));
                 }
@@ -106,12 +108,13 @@ impl Package {
                     continue;
                 }
                 if kind.is_dir() {
-                    pending.push((item.path(), format!("{name}/")));
+                    pending.push((path, format!("{name}/")));
                 } else if kind.is_file() {
-                    let mut file = std::fs::File::open(item.path())?;
-                    let size = usize::try_from(file.metadata()?.len()).unwrap_or(usize::MAX);
+                    let mut file = std::fs::File::open(&path).map_err(io_at(&path))?;
+                    let size = file.metadata().map_err(io_at(&path))?.len();
+                    let size = usize::try_from(size).unwrap_or(usize::MAX);
                     total = charge(total, size)?;
-                    files.insert(name, bounded_read(&mut file, size)?);
+                    files.insert(name, bounded_read(&mut file, size, &path)?);
                 } else {
                     return Err(Error::Invalid(format!("not a regular file: {name}")));
                 }
@@ -177,9 +180,19 @@ fn charge(total: usize, size: usize) -> Result<usize> {
     Ok(total)
 }
 
-fn bounded_read(reader: &mut impl Read, limit: usize) -> Result<Vec<u8>> {
+fn io_at(path: &Path) -> impl FnOnce(std::io::Error) -> Error + '_ {
+    move |source| Error::Io {
+        path: path.to_path_buf(),
+        source,
+    }
+}
+
+fn bounded_read(reader: &mut impl Read, limit: usize, path: &Path) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
-    reader.take(limit as u64 + 1).read_to_end(&mut bytes)?;
+    reader
+        .take(limit as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(io_at(path))?;
     if bytes.len() > limit {
         return Err(Error::Invalid("resource exceeds declared size".into()));
     }

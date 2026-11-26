@@ -31,8 +31,12 @@ pub enum Error {
     Id(#[from] catchlight_core::id::IdError),
     #[error("invalid LivLiv package: {0}")]
     Invalid(String),
-    #[error("LivLiv IO: {0}")]
-    Io(#[from] std::io::Error),
+    #[error("LivLiv IO on {}: {source}", path.display())]
+    Io {
+        path: std::path::PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
     #[error("LivLiv ZIP: {0}")]
     Zip(#[from] zip::result::ZipError),
     #[error("LivLiv JSON: {0}")]

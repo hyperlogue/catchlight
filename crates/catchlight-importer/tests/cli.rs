@@ -264,3 +264,53 @@ fn non_utf8_input_paths_are_detected_by_content() {
     catchlight_core::Model::from_clm_bytes(&std::fs::read(dir.0.join("result.clm")).unwrap())
         .unwrap();
 }
+
+#[cfg(unix)]
+#[test]
+fn outputs_take_the_umask_mode_and_a_refused_one_leaves_no_temporary_behind() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = Workspace::new();
+    let json = br#"{"nodes":{"name":"Root","type":"Node","children":[]},"param":[]}"#;
+    let mut bytes = b"TRNSRTS\0".to_vec();
+    bytes.extend((json.len() as u32).to_be_bytes());
+    bytes.extend(json);
+    bytes.extend(b"TEX_SECT");
+    bytes.extend(0u32.to_be_bytes());
+    std::fs::write(dir.0.join("input.inx"), bytes).unwrap();
+    succeeded(&dir.run(&["input.inx", "-o", "out.clm"]));
+    let mode = |name: &str| {
+        std::fs::metadata(dir.0.join(name))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777
+    };
+    assert_eq!(mode("out.clm"), mode("input.inx"));
+
+    assert!(!dir.run(&["input.inx", "-o", "out.clm"]).status.success());
+    let mut names: Vec<_> = std::fs::read_dir(&dir.0)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["input.inx", "out.clm"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn an_unreadable_package_file_is_named_in_the_error() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = Workspace::new();
+    std::fs::create_dir(dir.0.join("pkg")).unwrap();
+    let manifest = dir.0.join("pkg/model.json");
+    std::fs::write(&manifest, "{}").unwrap();
+    std::fs::set_permissions(&manifest, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::read(&manifest).is_ok() {
+        // Running as root: permissions do not refuse the read.
+        return;
+    }
+    let result = dir.run(&["pkg", "--inspect"]);
+    assert!(!result.status.success());
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(stderr.contains("pkg/model.json"), "{stderr}");
+}
