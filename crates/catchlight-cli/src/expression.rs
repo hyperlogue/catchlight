@@ -8,10 +8,11 @@ use std::path::Path;
 use catchlight_core::Model;
 use catchlight_core::extension::{Extension, Warning};
 use catchlight_core::formats::clm::ClmFile;
-use catchlight_extension_expressions::authoring::{self, AuthoringError};
+use catchlight_extension_expressions::authoring::{self, AuthoringError, OnExisting};
 use catchlight_extension_expressions::{
     EMOTIONS, Expression, Expressions, Group, Setting, Target, VISEMES,
 };
+use catchlight_extension_humanoid::authoring::ControlNames;
 use serde::ser::{Serialize, SerializeMap, Serializer};
 
 use crate::humanoid::{self, Edited, WarningLine, parse_param, warning_lines};
@@ -122,11 +123,7 @@ pub fn list(path: &Path, group: Group) -> Result<Listing, Error> {
     let (model, _) = file::load(&clm, path)?;
     Ok(Listing {
         group,
-        members: expressions
-            .all(group)
-            .into_iter()
-            .map(ExpressionLine::from)
-            .collect(),
+        members: expressions.all(group).map(ExpressionLine::from).collect(),
         warnings: warnings(&model, &expressions, group),
     })
 }
@@ -152,7 +149,12 @@ pub fn set(
     let mut clm = file::read(path)?;
     let (mut model, _) = file::load(&clm, path)?;
     let member = Expression::new(name, settings.clone());
-    let replaced = authoring::set(&mut model, group, name, settings, nonstandard)
+    let names = if nonstandard {
+        ControlNames::AllowNonstandard
+    } else {
+        ControlNames::StandardOnly
+    };
+    let replaced = authoring::set(&mut model, group, name, settings, names)
         .map_err(|e| authoring_error(e, path))?
         .map(ExpressionLine::from);
     let warnings = save(&mut clm, path, &model, group)?;
@@ -183,7 +185,12 @@ pub fn remove(path: &Path, group: Group, name: &str) -> Result<Edited<Expression
 pub fn add_standard_visemes(path: &Path, replace: bool) -> Result<Edited<StandardAdded>, Error> {
     let mut clm = file::read(path)?;
     let (mut model, _) = file::load(&clm, path)?;
-    let report = authoring::add_standard_visemes(&mut model, replace)
+    let existing = if replace {
+        OnExisting::Replace
+    } else {
+        OnExisting::Keep
+    };
+    let report = authoring::add_standard_visemes(&mut model, existing)
         .map_err(|e| authoring_error(e, path))?;
     let warnings = save(&mut clm, path, &model, Group::Viseme)?;
     Ok(Edited {

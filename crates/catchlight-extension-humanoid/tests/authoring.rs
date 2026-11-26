@@ -7,7 +7,7 @@ use catchlight_core::formats::clm::{self, ClmExtension, ClmPayload};
 use catchlight_core::id::ExtensionKey;
 use catchlight_core::{Model, ModelParam, Name, ParamId};
 use catchlight_extension_humanoid::authoring::{
-    AuthoringError, Mapped, map, standard_control, unmap,
+    AuthoringError, ControlNames, Mapped, map, standard_control, unmap,
 };
 use catchlight_extension_humanoid::{ControlMapping, Humanoid};
 
@@ -43,7 +43,14 @@ fn mapping(param: &str, stops: [f32; 3]) -> ControlMapping {
 #[test]
 fn default_stops_follow_the_controls_sidedness_and_explicit_stops_are_kept() {
     let mut model = rig();
-    let mapped = map(&mut model, "head_yaw", &pid("turn"), None, false).unwrap();
+    let mapped = map(
+        &mut model,
+        "head_yaw",
+        &pid("turn"),
+        None,
+        ControlNames::StandardOnly,
+    )
+    .unwrap();
     assert_eq!(
         mapped,
         Mapped {
@@ -51,9 +58,23 @@ fn default_stops_follow_the_controls_sidedness_and_explicit_stops_are_kept() {
             replaced: None,
         }
     );
-    let mapped = map(&mut model, "mouth_open", &pid("jaw"), None, false).unwrap();
+    let mapped = map(
+        &mut model,
+        "mouth_open",
+        &pid("jaw"),
+        None,
+        ControlNames::StandardOnly,
+    )
+    .unwrap();
     assert_eq!(mapped.mapping.stops, [0.2, 0.2, 1.0], "one-sided");
-    let mapped = map(&mut model, "eye_left_squint", &pid("lid"), None, false).unwrap();
+    let mapped = map(
+        &mut model,
+        "eye_left_squint",
+        &pid("lid"),
+        None,
+        ControlNames::StandardOnly,
+    )
+    .unwrap();
     assert_eq!(
         mapped.mapping.stops,
         [1.0, 1.0, 0.0],
@@ -64,7 +85,7 @@ fn default_stops_follow_the_controls_sidedness_and_explicit_stops_are_kept() {
         "head_yaw",
         &pid("turn"),
         Some([1.0, 0.0, -1.0]),
-        false,
+        ControlNames::StandardOnly,
     )
     .unwrap();
     assert_eq!(
@@ -83,7 +104,14 @@ fn default_stops_follow_the_controls_sidedness_and_explicit_stops_are_kept() {
 #[test]
 fn a_nonstandard_name_is_refused_with_the_nearest_unless_allowed() {
     let mut model = rig();
-    let err = map(&mut model, "head_yaww", &pid("turn"), None, false).unwrap_err();
+    let err = map(
+        &mut model,
+        "head_yaww",
+        &pid("turn"),
+        None,
+        ControlNames::StandardOnly,
+    )
+    .unwrap_err();
     assert_eq!(
         err,
         AuthoringError::NonstandardControl {
@@ -97,7 +125,14 @@ fn a_nonstandard_name_is_refused_with_the_nearest_unless_allowed() {
     );
     assert!(model.extensions().is_empty(), "a refusal changes nothing");
 
-    let mapped = map(&mut model, "tail_wag", &pid("jaw"), None, true).unwrap();
+    let mapped = map(
+        &mut model,
+        "tail_wag",
+        &pid("jaw"),
+        None,
+        ControlNames::AllowNonstandard,
+    )
+    .unwrap();
     assert_eq!(
         mapped.mapping.stops,
         [0.0, 0.2, 1.0],
@@ -105,19 +140,25 @@ fn a_nonstandard_name_is_refused_with_the_nearest_unless_allowed() {
     );
 
     assert_eq!(
-        standard_control("", true).unwrap_err(),
+        standard_control("", ControlNames::AllowNonstandard).unwrap_err(),
         AuthoringError::EmptyControlName
     );
     assert_eq!(
-        standard_control("mouth_open", false).unwrap().unwrap().name,
+        standard_control("mouth_open", ControlNames::StandardOnly)
+            .unwrap()
+            .unwrap()
+            .name,
         "mouth_open"
     );
-    assert_eq!(standard_control("tail_wag", true).unwrap(), None);
+    assert_eq!(
+        standard_control("tail_wag", ControlNames::AllowNonstandard).unwrap(),
+        None
+    );
 }
 
 #[test]
 fn a_near_miss_suggests_the_standard_name() {
-    let near = |n| match standard_control(n, false) {
+    let near = |n| match standard_control(n, ControlNames::StandardOnly) {
         Err(AuthoringError::NonstandardControl { nearest, .. }) => nearest,
         other => panic!("{n} is refused: {other:?}"),
     };
@@ -130,7 +171,14 @@ fn a_near_miss_suggests_the_standard_name() {
 fn a_missing_param_and_a_non_finite_stop_are_refused() {
     let mut model = rig();
     assert_eq!(
-        map(&mut model, "head_yaw", &pid("ghost"), None, false).unwrap_err(),
+        map(
+            &mut model,
+            "head_yaw",
+            &pid("ghost"),
+            None,
+            ControlNames::StandardOnly
+        )
+        .unwrap_err(),
         AuthoringError::NoParam(pid("ghost"))
     );
     assert!(matches!(
@@ -139,7 +187,7 @@ fn a_missing_param_and_a_non_finite_stop_are_refused() {
             "head_yaw",
             &pid("turn"),
             Some([0.0, f32::NAN, 1.0]),
-            false
+            ControlNames::StandardOnly
         )
         .unwrap_err(),
         AuthoringError::NonFiniteStop { .. }
@@ -150,8 +198,22 @@ fn a_missing_param_and_a_non_finite_stop_are_refused() {
 #[test]
 fn unmap_returns_the_mapping_and_the_last_one_takes_the_extension_with_it() {
     let mut model = rig();
-    map(&mut model, "head_yaw", &pid("turn"), None, false).unwrap();
-    map(&mut model, "mouth_open", &pid("jaw"), None, false).unwrap();
+    map(
+        &mut model,
+        "head_yaw",
+        &pid("turn"),
+        None,
+        ControlNames::StandardOnly,
+    )
+    .unwrap();
+    map(
+        &mut model,
+        "mouth_open",
+        &pid("jaw"),
+        None,
+        ControlNames::StandardOnly,
+    )
+    .unwrap();
 
     assert_eq!(
         unmap(&mut model, "head_yaw").unwrap(),
@@ -170,7 +232,14 @@ fn unmapping_what_is_not_mapped_is_refused() {
         AuthoringError::NotMapped("head_yaw".into()),
         "with no humanoid data at all"
     );
-    map(&mut model, "mouth_open", &pid("jaw"), None, false).unwrap();
+    map(
+        &mut model,
+        "mouth_open",
+        &pid("jaw"),
+        None,
+        ControlNames::StandardOnly,
+    )
+    .unwrap();
     assert_eq!(
         unmap(&mut model, "head_yaw").unwrap_err(),
         AuthoringError::NotMapped("head_yaw".into())
@@ -194,7 +263,14 @@ fn data_this_build_cannot_read_is_refused_rather_than_overwritten() {
         readable: Humanoid::VERSION,
     }));
     assert_eq!(
-        map(&mut model, "head_yaw", &pid("turn"), None, false).unwrap_err(),
+        map(
+            &mut model,
+            "head_yaw",
+            &pid("turn"),
+            None,
+            ControlNames::StandardOnly
+        )
+        .unwrap_err(),
         newer
     );
     assert_eq!(unmap(&mut model, "head_yaw").unwrap_err(), newer);

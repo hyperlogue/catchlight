@@ -39,11 +39,20 @@ pub struct Mapped {
     pub replaced: Option<ControlMapping>,
 }
 
+/// Which control names an edit accepts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ControlNames {
+    StandardOnly,
+    /// Any name that is not empty, so a control from a newer standard can be
+    /// mapped.
+    AllowNonstandard,
+}
+
 /// The standard control named `name`. A name outside the list is refused
-/// unless `nonstandard`, which yields `None`.
+/// unless `names` allows it, which yields `None`.
 pub fn standard_control(
     name: &str,
-    nonstandard: bool,
+    names: ControlNames,
 ) -> Result<Option<&'static Control>, AuthoringError> {
     if let Some(c) = control(name) {
         return Ok(Some(c));
@@ -51,7 +60,7 @@ pub fn standard_control(
     if name.is_empty() {
         return Err(AuthoringError::EmptyControlName);
     }
-    if nonstandard {
+    if names == ControlNames::AllowNonstandard {
         return Ok(None);
     }
     Err(AuthoringError::NonstandardControl {
@@ -95,9 +104,9 @@ pub fn map(
     control_name: &str,
     param: &ParamId,
     stops: Option<[f32; 3]>,
-    nonstandard: bool,
+    names: ControlNames,
 ) -> Result<Mapped, AuthoringError> {
-    let standard = standard_control(control_name, nonstandard)?;
+    let standard = standard_control(control_name, names)?;
     let limits = model
         .param(param)
         .ok_or_else(|| AuthoringError::NoParam(param.clone()))?;

@@ -6,7 +6,7 @@ use std::path::Path;
 use catchlight_core::extension::{Extension, Warning};
 use catchlight_core::formats::clm::ClmFile;
 use catchlight_core::{Model, ParamId};
-use catchlight_extension_humanoid::authoring::{self, AuthoringError};
+use catchlight_extension_humanoid::authoring::{self, AuthoringError, ControlNames};
 use catchlight_extension_humanoid::{CONTROLS, Humanoid};
 use serde::Serialize;
 
@@ -113,11 +113,16 @@ pub fn map(
     stops: Option<[f32; 3]>,
     nonstandard: bool,
 ) -> Result<Edited<Mapped>, Error> {
-    authoring::standard_control(control_name, nonstandard).map_err(|e| authoring_error(e, path))?;
+    let names = if nonstandard {
+        ControlNames::AllowNonstandard
+    } else {
+        ControlNames::StandardOnly
+    };
+    authoring::standard_control(control_name, names).map_err(|e| authoring_error(e, path))?;
     let mut clm = file::read(path)?;
     let (mut model, _) = file::load(&clm, path)?;
     let param = parse_param(param)?;
-    let mapped = authoring::map(&mut model, control_name, &param, stops, nonstandard)
+    let mapped = authoring::map(&mut model, control_name, &param, stops, names)
         .map_err(|e| authoring_error(e, path))?;
     let warnings = save(&mut clm, path, &model)?;
     Ok(Edited {

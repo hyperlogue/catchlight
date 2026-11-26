@@ -312,8 +312,8 @@ impl Animations {
     }
 
     /// Every clip in order, as [`Self::clip`] reads it.
-    pub fn clips(&self) -> Vec<Clip> {
-        self.clips.iter().map(|c| self.resolve(c)).collect()
+    pub fn clips(&self) -> impl Iterator<Item = Clip> {
+        self.clips.iter().map(|c| self.resolve(c))
     }
 
     /// Adds `clip`, or replaces the one of the same name in place and returns

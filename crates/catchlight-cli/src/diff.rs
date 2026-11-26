@@ -62,7 +62,7 @@ pub fn diff(a: &ClmFile, b: &ClmFile) -> Vec<String> {
     let clips = |file: &ClmFile| {
         extension::typed::<Animations>(file)
             .and_then(Result::ok)
-            .map(|animations| animations.clips())
+            .map(|animations| animations.clips().collect::<Vec<_>>())
             .unwrap_or_default()
     };
     let (clips_a, clips_b) = (clips(a), clips(b));

@@ -5,7 +5,9 @@
 
 use catchlight_core::extension::ExtensionError;
 use catchlight_core::{Model, ParamId};
-use catchlight_extension_humanoid::authoring::{AuthoringError as ControlError, standard_control};
+use catchlight_extension_humanoid::authoring::{
+    AuthoringError as ControlError, ControlNames, standard_control,
+};
 
 use crate::{Expression, Expressions, Group, Setting, Target, standard_visemes};
 
@@ -43,6 +45,13 @@ fn article(group: Group) -> &'static str {
     }
 }
 
+/// What [`add_standard_visemes`] does with a viseme the model already has.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnExisting {
+    Keep,
+    Replace,
+}
+
 /// What [`add_standard_visemes`] did, by viseme name.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StandardAdded {
@@ -54,19 +63,18 @@ pub struct StandardAdded {
 }
 
 /// Checks `settings` in order against `model`: a control value must lie in
-/// the control's range (a standard control's own, -1..1 for a name kept with
-/// `nonstandard`), and a param must exist and take a finite value.
+/// the control's range (a standard control's own, -1..1 for a name `names`
+/// allows outside it), and a param must exist and take a finite value.
 pub fn check_settings(
     model: &Model,
     settings: &[Setting],
-    nonstandard: bool,
+    names: ControlNames,
 ) -> Result<(), AuthoringError> {
     for setting in settings {
         let value = setting.value;
         match &setting.target {
             Target::Control(control) => {
-                let standard =
-                    standard_control(control, nonstandard).map_err(AuthoringError::Control)?;
+                let standard = standard_control(control, names).map_err(AuthoringError::Control)?;
                 let (min, max) = standard.map_or((-1.0, 1.0), |c| (c.min(), c.max()));
                 if !value.is_finite() || !(min..=max).contains(&value) {
                     return Err(AuthoringError::ControlValue {
@@ -100,7 +108,7 @@ pub fn set(
     group: Group,
     name: &str,
     settings: Vec<Setting>,
-    nonstandard: bool,
+    names: ControlNames,
 ) -> Result<Option<Expression>, AuthoringError> {
     if name.is_empty() {
         return Err(AuthoringError::EmptyName(group));
@@ -111,7 +119,7 @@ pub fn set(
             name: name.to_string(),
         });
     }
-    check_settings(model, &settings, nonstandard)?;
+    check_settings(model, &settings, names)?;
     let expressions = model
         .extension_or_default::<Expressions>()
         .map_err(AuthoringError::Unreadable)?;
@@ -139,10 +147,10 @@ pub fn remove(model: &mut Model, group: Group, name: &str) -> Result<Expression,
 
 /// Adds the standard visemes with their default settings after the existing
 /// visemes, in the standard order. An existing viseme of a standard name is
-/// replaced in place when `replace`, and skipped otherwise.
+/// replaced in place or skipped, as `existing` says.
 pub fn add_standard_visemes(
     model: &mut Model,
-    replace: bool,
+    existing: OnExisting,
 ) -> Result<StandardAdded, AuthoringError> {
     let expressions = model
         .extension_or_default::<Expressions>()
@@ -152,7 +160,7 @@ pub fn add_standard_visemes(
         let name = viseme.name.clone();
         if !expressions.contains(Group::Viseme, &name) {
             report.added.push(name);
-        } else if replace {
+        } else if existing == OnExisting::Replace {
             report.replaced.push(name);
         } else {
             report.skipped.push(name);

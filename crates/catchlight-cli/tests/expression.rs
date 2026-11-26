@@ -194,7 +194,7 @@ fn add_standard_skips_existing_visemes_unless_told_to_replace_them() {
     assert_eq!(report["replaced"], json!([]));
     assert_eq!(report["added"].as_array().unwrap().len(), VISEMES.len() - 1);
     let expressions = loaded(&path).extension::<Expressions>().unwrap().clone();
-    assert_eq!(expressions.len(Group::Viseme), VISEMES.len());
+    assert_eq!(expressions.count(Group::Viseme), VISEMES.len());
     assert_eq!(
         expressions.names(Group::Expression).collect::<Vec<_>>(),
         ["ae"]
@@ -278,7 +278,7 @@ fn viseme_commands_edit_only_the_visemes_and_list_only_their_warnings() {
     assert_eq!(removed, oh);
     let expressions = loaded(&path).extension::<Expressions>().unwrap().clone();
     assert!(expressions.contains(Group::Expression, "oh"));
-    assert_eq!(expressions.len(Group::Viseme), 0);
+    assert_eq!(expressions.count(Group::Viseme), 0);
 }
 
 #[test]

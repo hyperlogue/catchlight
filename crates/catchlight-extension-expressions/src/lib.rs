@@ -312,7 +312,8 @@ impl Expressions {
         Self::from_groups(expressions, [])
     }
 
-    pub fn len(&self, group: Group) -> usize {
+    /// How many members `group` has.
+    pub fn count(&self, group: Group) -> usize {
         self.group(group).len()
     }
 
@@ -337,8 +338,8 @@ impl Expressions {
     }
 
     /// Every member of `group` in author order, as [`Self::get`] reads it.
-    pub fn all(&self, group: Group) -> Vec<Expression> {
-        self.group(group).iter().map(|e| self.resolve(e)).collect()
+    pub fn all(&self, group: Group) -> impl Iterator<Item = Expression> {
+        self.group(group).iter().map(|e| self.resolve(e))
     }
 
     /// Adds `expression` to `group`, or replaces the member of the same name

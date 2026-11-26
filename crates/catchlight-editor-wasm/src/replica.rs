@@ -253,7 +253,7 @@ impl ReplicaState {
         let clips = self
             .model
             .extension::<Animations>()
-            .map(Animations::clips)
+            .map(|animations| animations.clips().collect::<Vec<_>>())
             .unwrap_or_default();
         self.player.replace_clips(clips);
     }

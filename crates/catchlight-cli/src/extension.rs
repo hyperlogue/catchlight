@@ -93,8 +93,8 @@ pub fn get(path: &Path, key: &str, out: Option<&Path>) -> Result<Got, Error> {
             key: key.to_string(),
             why,
         })?;
-        let text =
-            serde_json::to_string(&clips.clips()).unwrap_or_else(|_| "<unrenderable>".to_string());
+        let text = serde_json::to_string(&clips.clips().collect::<Vec<_>>())
+            .unwrap_or_else(|_| "<unrenderable>".to_string());
         if let Some(out) = out {
             file::write(out, text.as_bytes())?;
             return Ok(Got::Json(String::new()));

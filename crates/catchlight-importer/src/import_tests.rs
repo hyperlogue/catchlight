@@ -832,6 +832,7 @@ fn clips(file: &ClmFile) -> Vec<Clip> {
         .extension::<Animations>()
         .expect("the import carries its clips")
         .clips()
+        .collect()
 }
 
 fn lane_params(anim: &Clip) -> Vec<String> {
@@ -895,7 +896,14 @@ fn a_clip_carries_its_timing_and_a_lane_per_axis() {
     );
 
     let model = reread(&file);
-    assert_eq!(model.extension::<Animations>().unwrap().clips(), clips);
+    assert_eq!(
+        model
+            .extension::<Animations>()
+            .unwrap()
+            .clips()
+            .collect::<Vec<_>>(),
+        clips
+    );
 }
 
 #[test]

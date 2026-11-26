@@ -89,7 +89,10 @@ fn expressions_round_trip_exactly_through_a_file_as_a_json_payload() {
 
     let reopened = Model::from_clm_bytes(&model.to_clm_bytes().unwrap()).unwrap();
     let back = reopened.extension::<Expressions>().unwrap();
-    assert_eq!(back.all(Group::Expression), [crying, happy]);
+    assert_eq!(
+        back.all(Group::Expression).collect::<Vec<_>>(),
+        [crying, happy]
+    );
 }
 
 #[test]
@@ -373,7 +376,7 @@ fn both_groups_round_trip_through_a_file_and_share_one_table() {
     let reopened = Model::from_clm_bytes(&model.to_clm_bytes().unwrap()).unwrap();
     let back = reopened.extension::<Expressions>().unwrap();
     assert_eq!(back, &both_groups());
-    assert_eq!(back.all(Group::Viseme), both_groups().all(Group::Viseme));
+    assert!(back.all(Group::Viseme).eq(both_groups().all(Group::Viseme)));
 }
 
 #[test]
@@ -390,7 +393,7 @@ fn an_expression_and_a_viseme_of_one_name_coexist() {
     assert_eq!(expressions.names(Group::Viseme).collect::<Vec<_>>(), ["oh"]);
     assert_eq!(expressions.refs(), [IdRef::Param(pid("blush"))]);
     assert!(expressions.remove(Group::Viseme, "happy").is_none());
-    assert_eq!(expressions.len(Group::Expression), 2);
+    assert_eq!(expressions.count(Group::Expression), 2);
 }
 
 #[test]

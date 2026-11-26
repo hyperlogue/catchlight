@@ -107,7 +107,7 @@ impl AnimationPlayer {
 
     /// The clips `animations` holds; nothing plays.
     pub fn from_animations(animations: &Animations) -> Self {
-        Self::new(animations.clips())
+        Self::new(animations.clips().collect::<Arc<[Clip]>>())
     }
 
     pub fn clips(&self) -> &[Clip] {

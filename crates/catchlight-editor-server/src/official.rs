@@ -98,6 +98,14 @@ fn setting(setting: ExpressionSetting) -> Result<Setting, EditorError> {
     }
 }
 
+fn control_names(nonstandard: bool) -> humanoid::ControlNames {
+    if nonstandard {
+        humanoid::ControlNames::AllowNonstandard
+    } else {
+        humanoid::ControlNames::StandardOnly
+    }
+}
+
 pub(crate) fn humanoid_map(
     model: &mut Model,
     control: &str,
@@ -105,7 +113,7 @@ pub(crate) fn humanoid_map(
     stops: Option<[f32; 3]>,
     nonstandard: bool,
 ) -> Result<ResponseBody, EditorError> {
-    let mapped = humanoid::map(model, control, param, stops, nonstandard)?;
+    let mapped = humanoid::map(model, control, param, stops, control_names(nonstandard))?;
     Ok(ResponseBody::HumanoidMapped {
         mapping: mapping_info(control, mapped.mapping),
         replaced: mapped.replaced.map(|m| mapping_info(control, m)),
@@ -134,7 +142,13 @@ pub(crate) fn expression_set(
         .map(setting)
         .collect::<Result<Vec<_>, _>>()?;
     let stored = Expression::new(name, settings.clone());
-    let replaced = expressions::set(model, group(which), name, settings, nonstandard)?;
+    let replaced = expressions::set(
+        model,
+        group(which),
+        name,
+        settings,
+        control_names(nonstandard),
+    )?;
     Ok(ResponseBody::Expression {
         group: which,
         expression: expression_info(stored),
@@ -158,7 +172,12 @@ pub(crate) fn viseme_add_standard(
     model: &mut Model,
     replace: bool,
 ) -> Result<ResponseBody, EditorError> {
-    let report = expressions::add_standard_visemes(model, replace)?;
+    let existing = if replace {
+        expressions::OnExisting::Replace
+    } else {
+        expressions::OnExisting::Keep
+    };
+    let report = expressions::add_standard_visemes(model, existing)?;
     Ok(ResponseBody::VisemesAdded {
         added: report.added,
         replaced: report.replaced,
@@ -204,7 +223,7 @@ pub(crate) fn humanoid_get(model: &Model) -> Result<ResponseBody, EditorError> {
 pub(crate) fn expression_list(model: &Model) -> Result<ResponseBody, EditorError> {
     let data = read::<Expressions>(model)?;
     let members = |g: Group| -> Vec<ExpressionInfo> {
-        data.map(|d| d.all(g).into_iter().map(expression_info).collect())
+        data.map(|d| d.all(g).map(expression_info).collect())
             .unwrap_or_default()
     };
     Ok(ResponseBody::Expressions {
@@ -218,7 +237,7 @@ pub(crate) fn expression_list(model: &Model) -> Result<ResponseBody, EditorError
 /// A lane whose param is gone is left out, as the extension reads it.
 pub(crate) fn clip_list(model: &Model) -> Result<ResponseBody, EditorError> {
     let clips = read::<Animations>(model)?
-        .map(Animations::clips)
+        .map(|animations| animations.clips().collect::<Vec<_>>())
         .unwrap_or_default();
     Ok(ResponseBody::Clips {
         clips: clips
