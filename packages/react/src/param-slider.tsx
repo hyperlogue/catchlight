@@ -22,8 +22,9 @@ export interface ParamSliderRootProps extends Omit<
   param: ParamInfo;
 }
 
-export function ParamSliderRoot({ session, param, onInput, ...rest }: ParamSliderRootProps) {
+export function ParamSliderRoot({ session, param, onInput, disabled, ...rest }: ParamSliderRootProps) {
   const value = useParamValue(session, param);
+  const held = useHeldByMotion(session, param);
 
   const handleInput: InputHandler = (event) => {
     const next = Number(event.currentTarget.value);
@@ -45,6 +46,8 @@ export function ParamSliderRoot({ session, param, onInput, ...rest }: ParamSlide
       value={value}
       onInput={handleInput}
       onChange={noop}
+      disabled={held || disabled}
+      data-held={held ? "" : undefined}
       {...rest}
     />
   );
@@ -200,12 +203,53 @@ function report(onError: ErrorSink, work: Promise<unknown>): void {
   });
 }
 
+/**
+ * A motion response moves its output every frame without invalidating, so a
+ * param it holds is re-read each animation frame; React re-renders only when
+ * the value changed.
+ */
 export function useParamValue(session: Session, param: ParamInfo): number {
+  const held = useHeldByMotion(session, param);
   const read = useCallback(
     () => session.paramValue(param.id) ?? param.default,
     [session, param.id, param.default],
   );
-  return useSyncExternalStore(session.onInvalidate, read, read);
+  const subscribe = useCallback(
+    (changed: () => void) => {
+      const off = session.onInvalidate(changed);
+      if (!held) return off;
+      let frame = requestAnimationFrame(function tick() {
+        changed();
+        frame = requestAnimationFrame(tick);
+      });
+      return () => {
+        off();
+        cancelAnimationFrame(frame);
+      };
+    },
+    [session, held],
+  );
+  return useSyncExternalStore(subscribe, read, read);
+}
+
+const never = (): boolean => false;
+const noSubscription = (): (() => void) => noop;
+
+/** This tab's own pause; editing modes pause motion without setting it. */
+export function useMotionPaused(session: Session | undefined): boolean {
+  const read = useCallback(() => session?.motionPaused() ?? false, [session]);
+  return useSyncExternalStore(session?.onInvalidate ?? noSubscription, session ? read : never);
+}
+
+/** Neither paused nor in an editing mode. */
+export function useMotionRunning(session: Session | undefined): boolean {
+  const read = useCallback(() => session?.motionRunning() ?? false, [session]);
+  return useSyncExternalStore(session?.onInvalidate ?? noSubscription, session ? read : never);
+}
+
+/** Whether a motion response writes `param` now, so posing it would be overridden. */
+export function useHeldByMotion(session: Session | undefined, param: ParamInfo | undefined): boolean {
+  return useMotionRunning(session) && !!param?.driven_by;
 }
 
 // React requires a controlled input's `onChange`; handling the native input

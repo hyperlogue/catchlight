@@ -1,10 +1,19 @@
 import { useBindings } from "./bindings.js";
 import { ReviewBadge, ReviewCommentButton } from "./review.js";
 import type { BindingParams, NodeId, ParamId, ParamInfo, Session } from "@catchlight/core";
-import { useEffect, useState } from "react";
-import { useNodeInfo, useParams } from "./replica.js";
+import { useEffect, useId, useMemo, useState } from "react";
+import type { ComponentProps } from "react";
+import { useNodeInfo, useParams, useTree } from "./replica.js";
+import { flattenTree } from "./authoring.js";
 import { useParamActions } from "./param-actions.js";
-import { ParamSliderRoot, ParamKeysRoot, useParamValue } from "./param-slider.js";
+import {
+  ParamSliderRoot,
+  ParamKeysRoot,
+  useHeldByMotion,
+  useMotionPaused,
+  useMotionRunning,
+  useParamValue,
+} from "./param-slider.js";
 import { ParamFieldsRoot } from "./param-list.js";
 import { BindingGridRoot } from "./binding-grid.js";
 import {
@@ -24,19 +33,40 @@ export function ParamsPanel({
   session,
   selected,
   onSelect,
+  onSelectNode,
   onError,
 }: {
   session: Session;
   selected: ParamId | undefined;
   onSelect: (id: ParamId) => void;
+  /** Selects the motion response that drives a param. */
+  onSelectNode: (id: NodeId) => void;
   onError: ErrorHandler;
 }) {
   const params = useParams(session);
+  const tree = useTree(session);
+  const names = useMemo(() => new Map(flattenTree(tree).map((n) => [n.id, n.name])), [tree]);
+  const running = useMotionRunning(session);
+  const drivenHeading = useId();
   const [search, setSearch] = useState("");
   const [adding, setAdding] = useState(false);
   const [settings, setSettings] = useState<ParamId | undefined>();
   const showing = params.filter((p) =>
     p.name.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()),
+  );
+  const posed = showing.filter((p) => !p.driven_by);
+  const driven = showing.filter((p) => p.driven_by);
+  const card = (param: ParamInfo) => (
+    <ParamCard
+      key={param.id}
+      session={session}
+      param={param}
+      driver={param.driven_by ? (names.get(param.driven_by) ?? param.driven_by) : undefined}
+      selected={selected === param.id}
+      onSelect={() => onSelect(param.id)}
+      onSelectDriver={() => param.driven_by && onSelectNode(param.driven_by)}
+      onSettings={() => setSettings(param.id)}
+    />
   );
   const edit = params.find((p) => p.id === settings);
   return (
@@ -48,18 +78,23 @@ export function ParamsPanel({
           New param
         </button>
       </div>
-      <div data-catchlight-param-cards="">
-        {showing.map((param) => (
-          <ParamCard
-            key={param.id}
-            session={session}
-            param={param}
-            selected={selected === param.id}
-            onSelect={() => onSelect(param.id)}
-            onSettings={() => setSettings(param.id)}
-          />
-        ))}
-      </div>
+      {!!posed.length && <div data-catchlight-param-cards="">{posed.map(card)}</div>}
+      {!!driven.length && (
+        <section data-catchlight-driven-params="" aria-labelledby={drivenHeading}>
+          <div data-catchlight-driven-params-head="">
+            <div>
+              <h3 id={drivenHeading}>Driven by motion</h3>
+              <p data-catchlight-hint="">
+                {running
+                  ? "Motion responses move these. Pause motion to pose them by hand."
+                  : "Motion is paused, so these pose like any param."}
+              </p>
+            </div>
+            <MotionToggle session={session} />
+          </div>
+          <div data-catchlight-param-cards="">{driven.map(card)}</div>
+        </section>
+      )}
       {!params.length && (
         <EmptyState icon="settings" title="A little control goes a long way">
           Create a param, then bind it to a part’s position, rotation, opacity, or mesh.
@@ -93,24 +128,68 @@ export function ParamsPanel({
     </div>
   );
 }
+/**
+ * Pauses this tab's motion responses, never an edit. An editing mode pauses
+ * them on its own; `editing` keeps the button from offering a resume then.
+ */
+export function MotionToggle({
+  session,
+  editing = false,
+  ...rest
+}: { session: Session; editing?: boolean } & Omit<ComponentProps<"button">, "onClick" | "children">) {
+  const paused = useMotionPaused(session);
+  const running = useMotionRunning(session);
+  const held = editing || (!paused && !running);
+  const label = held ? "Motion paused" : paused ? "Resume motion" : "Pause motion";
+  return (
+    <button
+      type="button"
+      data-catchlight-motion-toggle=""
+      aria-label={label}
+      aria-pressed={paused || held}
+      disabled={held}
+      title={
+        held
+          ? "Motion responses are paused while you edit"
+          : paused
+            ? "Let motion responses move their params again"
+            : "Stop motion responses so you can pose their params by hand"
+      }
+      onClick={() => session.setMotionPaused(!paused)}
+      {...rest}
+    >
+      <Icon name="response" width="13" height="13" />
+      <span>{label}</span>
+    </button>
+  );
+}
+
 function ParamCard({
   session,
   param,
+  driver,
   selected,
   onSelect,
+  onSelectDriver,
   onSettings,
 }: {
   session: Session;
   param: ParamInfo;
+  /** The driving response's name, for a param one drives. */
+  driver: string | undefined;
   selected: boolean;
   onSelect: () => void;
+  onSelectDriver: () => void;
   onSettings: () => void;
 }) {
   const value = useParamValue(session, param);
+  const held = useHeldByMotion(session, param);
   return (
     <div
       data-catchlight-param-card=""
       data-selected={selected ? "" : undefined}
+      data-driven={driver !== undefined ? "" : undefined}
+      data-held={held ? "" : undefined}
       onPointerDown={onSelect}
     >
       <div data-catchlight-param-card-head="">
@@ -122,6 +201,21 @@ function ParamCard({
         <ReviewCommentButton target={{ kind: "param", param: param.id }} label={param.name} />
         <IconButton icon="settings" label={`Edit ${param.name}`} onClick={onSettings} />
       </div>
+      {driver !== undefined && (
+        <div data-catchlight-param-driver="">
+          <button
+            type="button"
+            title={`Select the motion response “${driver}”`}
+            onClick={onSelectDriver}
+          >
+            <Icon name="response" width="12" height="12" />
+            <span>
+              Driven by <strong>{driver}</strong>
+            </span>
+          </button>
+          {!held && <small>Motion paused</small>}
+        </div>
+      )}
       <div data-catchlight-param-value-row="">
         <ParamSliderRoot session={session} param={param} />
         <NumberField
@@ -129,6 +223,7 @@ function ParamCard({
           value={value}
           min={param.min}
           max={param.max}
+          disabled={held}
           onCommit={(v) => session.setParam(param.id, v)}
         />
       </div>
@@ -137,6 +232,7 @@ function ParamCard({
         <button
           type="button"
           title="Restore default pose"
+          disabled={held}
           onClick={() => session.setParam(param.id, param.default)}
         >
           {Math.abs(value - param.default) < 0.0001 ? "Default" : "Reset"}
@@ -301,11 +397,16 @@ export function BindingsPanel({
   );
 }
 
-/** A sweep through the range, never authored. Stopping restores the pre-playback value. */
+/**
+ * A sweep through the range, never authored. Stopping restores the
+ * pre-playback value. A param a running motion response holds is never swept.
+ */
 export function usePoseSweep(session: Session | undefined, param: ParamId | undefined) {
   const [playing, setPlaying] = useState(false);
+  const running = useMotionRunning(session);
+  const held = running && !!session?.params().find((p) => p.id === param)?.driven_by;
   useEffect(() => {
-    if (!playing || !session || !param) return;
+    if (!playing || !session || !param || held) return;
     const p = session.params().find((p) => p.id === param);
     if (!p) return;
     const before = session.paramValue(param) ?? p.default;
@@ -321,9 +422,9 @@ export function usePoseSweep(session: Session | undefined, param: ParamId | unde
       cancelAnimationFrame(frame);
       if (!session.closed) session.setParam(param, before);
     };
-  }, [session, param, playing]);
-  useEffect(() => setPlaying(false), [session, param]);
-  return { playing, setPlaying };
+  }, [session, param, playing, held]);
+  useEffect(() => setPlaying(false), [session, param, held]);
+  return { playing, setPlaying, held };
 }
 
 export function DeformPanel({

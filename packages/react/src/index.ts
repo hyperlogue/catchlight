@@ -46,6 +46,9 @@ export {
   ParamKeysRoot,
   ParamSlider,
   ParamSliderRoot,
+  useHeldByMotion,
+  useMotionPaused,
+  useMotionRunning,
 } from "./param-slider.js";
 export type {
   ParamKeysRootProps,
@@ -186,6 +189,7 @@ export { AnimationsPanel, clipSeconds, describeLanes } from "./animations-panel.
 export {
   ParamsPanel,
   BindingsPanel,
+  MotionToggle,
   usePoseSweep,
   DeformPanel,
 } from "./posing-panel.js";

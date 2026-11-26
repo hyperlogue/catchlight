@@ -27,6 +27,7 @@ import {
   Modal,
   ModelHealth,
   NodeTree,
+  MotionToggle,
   ParamsPanel,
   PresenceProvider,
   PropertiesPanel,
@@ -42,6 +43,7 @@ import {
   kindLabels,
   useEditor,
   useFileSave,
+  useParams,
   usePosePublisher,
   usePlayingClip,
   usePoseSweep,
@@ -1396,7 +1398,8 @@ function Workspace({
             <div data-catchlight-dock-actions="">
               <button
                 type="button"
-                disabled={!session || !param || editing.mode !== "arrange"}
+                disabled={!session || !param || editing.mode !== "arrange" || sweep.held}
+                title={sweep.held ? "A motion response moves this param. Pause motion to sweep it." : undefined}
                 aria-pressed={sweep.playing}
                 onClick={() => sweep.setPlaying(!sweep.playing)}
               >
@@ -1417,6 +1420,9 @@ function Workspace({
                   <Icon name="stop" width="13" height="13" />
                   <span>Stop {playingClip}</span>
                 </button>
+              )}
+              {session && (
+                <DrivenMotionToggle session={session} editing={editing.mode !== "arrange"} />
               )}
               <IconButton
                 data-catchlight-pose-reset=""
@@ -1448,6 +1454,7 @@ function Workspace({
                     session={session}
                     selected={param}
                     onSelect={setParam}
+                    onSelectNode={select}
                     onError={onError}
                   />
                 ) : editing.mode === "record" ? (
@@ -1617,4 +1624,10 @@ function Workspace({
 function PosePublisher({ session }: { session: Session }) {
   usePosePublisher(session);
   return null;
+}
+
+/** Shown only for a model with a param a motion response drives. */
+function DrivenMotionToggle({ session, editing }: { session: Session; editing: boolean }) {
+  const driven = useParams(session).some((p) => p.driven_by);
+  return driven ? <MotionToggle session={session} editing={editing} /> : null;
 }

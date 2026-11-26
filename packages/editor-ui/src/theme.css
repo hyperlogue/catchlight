@@ -1196,6 +1196,113 @@
     font-size: 10.5px;
     padding: 0 4px;
   }
+  .catchlight [data-catchlight-driven-params-head] {
+    display: flex;
+    align-items: center;
+    gap: 8px 12px;
+    padding: 4px 10px 2px;
+  }
+  .catchlight [data-catchlight-driven-params-head] > div {
+    flex: 1;
+    min-width: 0;
+  }
+  .catchlight [data-catchlight-driven-params-head] h3 {
+    margin: 0;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--cl-text-dim);
+  }
+  .catchlight [data-catchlight-driven-params-head] [data-catchlight-hint] {
+    margin: 2px 0 4px;
+    font-size: 11px;
+  }
+  .catchlight [data-catchlight-motion-toggle] {
+    flex: none;
+    gap: 5px;
+    font-size: 11px;
+    min-height: 24px;
+    padding: 2px 8px;
+  }
+  .catchlight [data-catchlight-dock-actions] > [data-catchlight-motion-toggle] {
+    min-height: var(--cl-control-height);
+    background: transparent;
+    color: var(--cl-text-secondary);
+  }
+  .catchlight [data-catchlight-dock-actions] > [data-catchlight-motion-toggle][aria-pressed="true"] {
+    background: var(--cl-accent-soft);
+    color: var(--cl-accent);
+  }
+  .catchlight [data-catchlight-param-card][data-driven] [data-catchlight-param-value-row] {
+    grid-column: 2;
+    grid-row: 1;
+  }
+  .catchlight [data-catchlight-param-card][data-driven] [data-catchlight-param-range] {
+    grid-row: 3;
+  }
+  .catchlight [data-catchlight-param-driver] {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    margin-top: -4px;
+    padding-bottom: 2px;
+  }
+  .catchlight [data-catchlight-param-driver] > button {
+    gap: 4px;
+    min-width: 0;
+    min-height: 18px;
+    padding: 0 4px;
+    margin-left: -4px;
+    background: transparent;
+    font-size: 10.5px;
+    color: var(--cl-text-dim);
+  }
+  .catchlight [data-catchlight-param-driver] > button > span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .catchlight [data-catchlight-param-driver] strong {
+    font-weight: 600;
+    color: var(--cl-text-secondary);
+  }
+  .catchlight [data-catchlight-param-driver] svg {
+    flex: none;
+  }
+  .catchlight [data-catchlight-param-driver] > small {
+    flex: none;
+    font-size: 10.5px;
+    color: var(--cl-warn);
+  }
+  .catchlight [data-catchlight-param-driver] > small::before {
+    content: "·";
+    margin-right: 6px;
+    color: var(--cl-text-dim);
+  }
+  .catchlight [data-catchlight-param-card][data-held] input[type="range"]:disabled {
+    cursor: default;
+    opacity: 1;
+    background: linear-gradient(var(--cl-border-strong), var(--cl-border-strong)) center / 100% 1px no-repeat;
+  }
+  .catchlight [data-catchlight-param-card][data-held] input[type="range"]:disabled::-webkit-slider-thumb {
+    background: var(--cl-text-dim);
+    box-shadow: none;
+    width: 8px;
+    height: 8px;
+  }
+  .catchlight [data-catchlight-param-card][data-held] input[type="range"]:disabled::-moz-range-thumb {
+    background: var(--cl-text-dim);
+    width: 8px;
+    height: 8px;
+  }
+  .catchlight [data-catchlight-param-card][data-held] [data-catchlight-number] {
+    background: transparent;
+  }
+  .catchlight [data-catchlight-param-card][data-held] input[type="number"]:disabled {
+    cursor: default;
+    color: var(--cl-text-secondary);
+  }
   .catchlight [data-catchlight-bindings-panel] {
     padding: 12px 16px;
   }
@@ -3980,6 +4087,9 @@
     .catchlight [data-catchlight-clip-stop] > span {
       display: none;
     }
+    .catchlight [data-catchlight-dock-actions] > [data-catchlight-motion-toggle] > span {
+      display: none;
+    }
   }
   @media (max-width: 1150px) {
     .catchlight [data-catchlight-save-state],
@@ -4167,6 +4277,16 @@
     }
     .catchlight [data-catchlight-param-range] {
       grid-column: 1;
+    }
+    .catchlight [data-catchlight-param-card][data-driven] [data-catchlight-param-value-row],
+    .catchlight [data-catchlight-param-card][data-driven] [data-catchlight-param-range],
+    .catchlight [data-catchlight-param-driver] {
+      grid-column: 1;
+      grid-row: auto;
+      margin-top: 0;
+    }
+    .catchlight [data-catchlight-driven-params-head] {
+      flex-wrap: wrap;
     }
     .catchlight [data-catchlight-canvas-actions] > [data-catchlight-panel-toggle] {
       flex: 1;
