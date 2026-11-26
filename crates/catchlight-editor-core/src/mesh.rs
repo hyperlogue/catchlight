@@ -1138,78 +1138,110 @@ fn point_segment_dist(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
     dist2(p, q).sqrt()
 }
 
-/// Each new vertex takes the barycentric blend of the old offsets in the old
-/// rest triangle containing it, clamped to the nearest triangle outside.
-pub fn refit_deform_offsets(old: &ClmMesh, new_verts: &[f32], old_offsets: &[f32]) -> Vec<f32> {
-    let old_tris: Vec<[u32; 3]> = match &old.indices {
-        ClmIndices::U16(v) => v
-            .as_chunks::<3>()
-            .0
-            .iter()
-            .map(|t| [u32::from(t[0]), u32::from(t[1]), u32::from(t[2])])
-            .collect(),
-        ClmIndices::U32(v) => v
-            .as_chunks::<3>()
-            .0
-            .iter()
-            .map(|t| [t[0], t[1], t[2]])
-            .collect(),
-    };
-    let old_pos = |i: u32| -> [f32; 2] {
-        [
-            old.verts.get(i as usize * 2).copied().unwrap_or(0.0),
-            old.verts.get(i as usize * 2 + 1).copied().unwrap_or(0.0),
-        ]
-    };
-    let old_off = |i: u32| -> [f32; 2] {
-        [
-            old_offsets.get(i as usize * 2).copied().unwrap_or(0.0),
-            old_offsets.get(i as usize * 2 + 1).copied().unwrap_or(0.0),
-        ]
-    };
+/// Where each new vertex reads its deform offset from: the barycentric blend
+/// of the old offsets in the old rest triangle containing it, clamped to the
+/// nearest triangle outside. It depends only on the two meshes, so one plan
+/// serves every cell of every binding an edit refits.
+pub struct RefitPlan {
+    sources: Vec<RefitSource>,
+}
 
-    // Bit-identical vertices keep their offsets verbatim, covering isolated
-    // vertices and duplicates the triangle walk would blend or drop.
-    let mut exact: HashMap<(u32, u32), u32> = HashMap::new();
-    for i in (0..(old.verts.len() / 2) as u32).rev() {
-        let q = old_pos(i);
-        exact.insert((q[0].to_bits(), q[1].to_bits()), i);
-    }
-    let mut out = Vec::with_capacity(new_verts.len());
-    for p in new_verts.as_chunks::<2>().0 {
-        let p = [p[0], p[1]];
-        if let Some(&i) = exact.get(&(p[0].to_bits(), p[1].to_bits())) {
-            out.extend_from_slice(&old_off(i));
-            continue;
+enum RefitSource {
+    Exact(u32),
+    /// An old triangle and the clamped barycentric weights of its corners.
+    Blend([u32; 3], [f32; 3]),
+    Zero,
+}
+
+impl RefitPlan {
+    pub fn new(old: &ClmMesh, new_verts: &[f32]) -> Self {
+        let old_tris: Vec<[u32; 3]> = match &old.indices {
+            ClmIndices::U16(v) => v
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .map(|t| [u32::from(t[0]), u32::from(t[1]), u32::from(t[2])])
+                .collect(),
+            ClmIndices::U32(v) => v
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .map(|t| [t[0], t[1], t[2]])
+                .collect(),
+        };
+        let old_pos = |i: u32| -> [f32; 2] {
+            [
+                old.verts.get(i as usize * 2).copied().unwrap_or(0.0),
+                old.verts.get(i as usize * 2 + 1).copied().unwrap_or(0.0),
+            ]
+        };
+
+        // Bit-identical vertices keep their offsets verbatim, covering isolated
+        // vertices and duplicates the triangle walk would blend or drop.
+        let mut exact: HashMap<(u32, u32), u32> = HashMap::new();
+        for i in (0..(old.verts.len() / 2) as u32).rev() {
+            let q = old_pos(i);
+            exact.insert((q[0].to_bits(), q[1].to_bits()), i);
         }
-        let mut best: Option<(f32, [f32; 2])> = None;
-        for t in &old_tris {
-            let (a, b, c) = (old_pos(t[0]), old_pos(t[1]), old_pos(t[2]));
-            let Some(bary) = barycentric(p, a, b, c) else {
-                continue;
+        let sources = new_verts
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|p| {
+                let p = [p[0], p[1]];
+                if let Some(&i) = exact.get(&(p[0].to_bits(), p[1].to_bits())) {
+                    return RefitSource::Exact(i);
+                }
+                let mut best: Option<(f32, [u32; 3], [f32; 3])> = None;
+                for t in &old_tris {
+                    let (a, b, c) = (old_pos(t[0]), old_pos(t[1]), old_pos(t[2]));
+                    let Some(bary) = barycentric(p, a, b, c) else {
+                        continue;
+                    };
+                    let clamped = clamp_bary(bary);
+                    let q = [
+                        a[0] * clamped[0] + b[0] * clamped[1] + c[0] * clamped[2],
+                        a[1] * clamped[0] + b[1] * clamped[1] + c[1] * clamped[2],
+                    ];
+                    let d = dist2(p, q);
+                    if best.is_none_or(|(bd, ..)| d < bd) {
+                        best = Some((d, *t, clamped));
+                    }
+                    if d <= f32::EPSILON {
+                        break;
+                    }
+                }
+                best.map_or(RefitSource::Zero, |(_, t, w)| RefitSource::Blend(t, w))
+            })
+            .collect();
+        Self { sources }
+    }
+
+    /// The new mesh's offsets, flat like `old_offsets`.
+    pub fn apply(&self, old_offsets: &[f32]) -> Vec<f32> {
+        let old_off = |i: u32| -> [f32; 2] {
+            [
+                old_offsets.get(i as usize * 2).copied().unwrap_or(0.0),
+                old_offsets.get(i as usize * 2 + 1).copied().unwrap_or(0.0),
+            ]
+        };
+        let mut out = Vec::with_capacity(self.sources.len() * 2);
+        for source in &self.sources {
+            let off = match *source {
+                RefitSource::Exact(i) => old_off(i),
+                RefitSource::Blend(t, w) => {
+                    let (oa, ob, oc) = (old_off(t[0]), old_off(t[1]), old_off(t[2]));
+                    [
+                        oa[0] * w[0] + ob[0] * w[1] + oc[0] * w[2],
+                        oa[1] * w[0] + ob[1] * w[1] + oc[1] * w[2],
+                    ]
+                }
+                RefitSource::Zero => [0.0, 0.0],
             };
-            let clamped = clamp_bary(bary);
-            let q = [
-                a[0] * clamped[0] + b[0] * clamped[1] + c[0] * clamped[2],
-                a[1] * clamped[0] + b[1] * clamped[1] + c[1] * clamped[2],
-            ];
-            let d = dist2(p, q);
-            let (oa, ob, oc) = (old_off(t[0]), old_off(t[1]), old_off(t[2]));
-            let off = [
-                oa[0] * clamped[0] + ob[0] * clamped[1] + oc[0] * clamped[2],
-                oa[1] * clamped[0] + ob[1] * clamped[1] + oc[1] * clamped[2],
-            ];
-            if best.is_none_or(|(bd, _)| d < bd) {
-                best = Some((d, off));
-            }
-            if d <= f32::EPSILON {
-                break;
-            }
+            out.extend_from_slice(&off);
         }
-        let off = best.map_or([0.0, 0.0], |(_, o)| o);
-        out.extend_from_slice(&off);
+        out
     }
-    out
 }
 
 fn barycentric(p: [f32; 2], a: [f32; 2], b: [f32; 2], c: [f32; 2]) -> Option<[f32; 3]> {
@@ -1252,8 +1284,10 @@ impl ModelMeshExt for Model {
         node: &NodeId,
         mesh: ClmMesh,
     ) -> Result<Vec<SlotId>, ModelError> {
+        let mut plan = None;
         self.set_node_mesh_with(node, mesh, |old, new, offsets| {
-            refit_deform_offsets(old, &new.verts, offsets)
+            plan.get_or_insert_with(|| RefitPlan::new(old, &new.verts))
+                .apply(offsets)
         })
     }
 }
@@ -1796,7 +1830,7 @@ mod tests {
     fn refit_identity_on_same_topology() {
         let q = quad();
         let offsets = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
-        let out = refit_deform_offsets(&q, &q.verts, &offsets);
+        let out = RefitPlan::new(&q, &q.verts).apply(&offsets);
         assert_eq!(out, offsets);
     }
 
@@ -1805,7 +1839,7 @@ mod tests {
         let q = quad();
         // Uniform +10 x offset everywhere -> any interior point gets +10.
         let offsets = vec![10.0, 0.0, 10.0, 0.0, 10.0, 0.0, 10.0, 0.0];
-        let out = refit_deform_offsets(&q, &[0.0, 0.0, 0.5, 0.5], &offsets);
+        let out = RefitPlan::new(&q, &[0.0, 0.0, 0.5, 0.5]).apply(&offsets);
         assert!((out[0] - 10.0).abs() < 1e-4);
         assert!((out[1]).abs() < 1e-4);
         assert!((out[2] - 10.0).abs() < 1e-4);
