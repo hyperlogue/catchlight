@@ -24,7 +24,9 @@ pub fn pick_all(model: &Model, puppet: &Puppet, world: Vec2) -> Vec<u32> {
         match &node.kind {
             NodeKind::Composite(c) if opacity_culled(c.opacity, c.blend_mode) => continue,
             NodeKind::Part(p) => {
-                let missing = p.albedo_texture.0 as usize >= model.texture_ids().len();
+                let missing = p
+                    .albedo_texture
+                    .is_none_or(|t| t.0 as usize >= model.texture_ids().len());
                 if !opacity_culled(p.opacity, p.blend_mode)
                     && !missing
                     && part_contains(p, &transforms.get(id), world)

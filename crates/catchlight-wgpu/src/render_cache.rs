@@ -297,9 +297,12 @@ impl RenderCache {
         }
     }
 
-    /// An unmapped part carries `u32::MAX` and lands out of range.
-    fn tex_idx(&self, albedo: catchlight_core::TextureIdx) -> Option<TexIdx> {
-        (albedo.0 < self.texture_count).then_some(TexIdx(albedo.0))
+    /// `None` for an unmapped part, or for an index past the textures this
+    /// cache holds.
+    fn tex_idx(&self, albedo: Option<catchlight_core::TextureIdx>) -> Option<TexIdx> {
+        albedo
+            .filter(|albedo| albedo.0 < self.texture_count)
+            .map(|albedo| TexIdx(albedo.0))
     }
 
     /// Walks every node; for debug assertions only.

@@ -299,11 +299,10 @@ fn build_node(model: &Model, node: &crate::model::ModelNode) -> Node {
             let deform_stack = DeformStack::new(mesh.vertices.len());
             NodeKind::Part(Box::new(PartData {
                 mesh,
-                albedo_texture: TextureIdx(
-                    p.albedo()
-                        .and_then(|t| model.texture_ids().iter().position(|x| x == t))
-                        .map_or(u32::MAX, |i| i as u32),
-                ),
+                albedo_texture: p
+                    .albedo()
+                    .and_then(|t| model.texture_ids().iter().position(|x| x == t))
+                    .map(|i| TextureIdx(i as u32)),
                 opacity: p.opacity,
                 base_opacity: p.opacity,
                 tint: Vec3::from_array(p.tint),

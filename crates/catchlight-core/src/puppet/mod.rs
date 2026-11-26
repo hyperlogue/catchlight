@@ -1033,6 +1033,49 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_part_without_a_texture_bakes_no_texture_index() {
+        use crate::components::TextureIdx;
+        use crate::formats::clm::{ClmIndices, ClmMesh, TextureAlpha, TextureEncoding};
+        use crate::id::SeededHex;
+        use crate::model::{ModelNode, ModelNodeKind, ModelPart, ModelTexture};
+
+        let mut model = Model::new();
+        let mut hex = SeededHex::new(5);
+        let root = model.root().expect("a fresh model has one root").clone();
+        let mut part = |name: &str, model: &mut Model| {
+            let mesh = ClmMesh {
+                verts: vec![-1.0, -1.0, 1.0, -1.0, 1.0, 1.0],
+                uvs: vec![0.0; 6],
+                indices: ClmIndices::U16(vec![0, 1, 2]),
+                origin: [0.0, 0.0],
+            };
+            let node = ModelNode::new(name, ModelNodeKind::Part(ModelPart::new(mesh)));
+            model.add_node(&root, node, &mut hex).expect("add part")
+        };
+        let bare = part("bare", &mut model);
+        let drawn = part("drawn", &mut model);
+        let texture = ModelTexture {
+            encoding: TextureEncoding::Png,
+            alpha: TextureAlpha::Straight,
+            data: [0x89, b'P', b'N', b'G'][..].into(),
+        };
+        model
+            .add_texture(&drawn, texture, &mut SeededHex::new(6))
+            .expect("add texture");
+
+        let puppet = Puppet::new(&model);
+        let albedo = |id: &NodeId| match puppet.node_idx(id).and_then(|i| puppet.get(i)) {
+            Some(Node {
+                kind: NodeKind::Part(p),
+                ..
+            }) => p.albedo_texture,
+            _ => panic!("{id} is not a baked part"),
+        };
+        assert_eq!(albedo(&bare), None);
+        assert_eq!(albedo(&drawn), Some(TextureIdx(0)));
+    }
+
     /// A clone is the same model, as an undo snapshot is.
     #[test]
     fn a_clone_of_the_model_still_drives_the_puppet() {

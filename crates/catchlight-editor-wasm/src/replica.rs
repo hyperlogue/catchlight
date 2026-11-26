@@ -701,7 +701,10 @@ impl ReplicaState {
             };
             // Opacity 0 culls every blend mode but Darken, whose Min blend ignores blend
             // factors, as the collector decides it.
-            if (part.albedo_texture.0 as usize) >= self.model.texture_ids().len() {
+            if part
+                .albedo_texture
+                .is_none_or(|t| t.0 as usize >= self.model.texture_ids().len())
+            {
                 return;
             }
             if part.opacity == 0.0 && part.blend_mode != BlendMode::Darken {

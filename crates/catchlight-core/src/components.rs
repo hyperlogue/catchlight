@@ -11,7 +11,6 @@ impl NodeIdx {
 }
 
 /// A part's albedo, as a position in [`Model::texture_ids`](crate::Model::texture_ids).
-/// `u32::MAX` means the part draws no texture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TextureIdx(pub u32);
 
@@ -159,7 +158,8 @@ const _: () = assert!(
 #[derive(Debug, Clone)]
 pub struct PartData {
     pub mesh: Arc<Mesh>,
-    pub albedo_texture: TextureIdx,
+    /// `None` for a part that draws no texture.
+    pub albedo_texture: Option<TextureIdx>,
     pub opacity: f32,
     pub base_opacity: f32,
     pub tint: Vec3,
@@ -176,7 +176,7 @@ impl Default for PartData {
     fn default() -> Self {
         Self {
             mesh: Arc::default(),
-            albedo_texture: TextureIdx(0),
+            albedo_texture: Some(TextureIdx(0)),
             opacity: 1.0,
             base_opacity: 1.0,
             tint: Vec3::ONE,

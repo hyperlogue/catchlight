@@ -237,7 +237,7 @@ mod tests {
         let part = PartData {
             deform_stack: DeformStack::new(verts.len()),
             mesh: mesh.into(),
-            albedo_texture: TextureIdx(0),
+            albedo_texture: Some(TextureIdx(0)),
             ..PartData::default()
         };
         let node = Node {
