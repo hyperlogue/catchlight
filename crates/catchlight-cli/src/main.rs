@@ -1,6 +1,7 @@
 //! `catchlight-cli` — argument parsing, printing and exit statuses over [`catchlight_cli`].
 
 use std::path::PathBuf;
+use std::process::ExitCode;
 
 use catchlight_cli::{
     diff, expression, extension, fragment, humanoid, patch, poses, render, storage, texture, Error,
@@ -330,18 +331,17 @@ struct RemoveArgs {
     name: String,
 }
 
-fn main() {
-    let code = match run() {
-        Ok(code) => code,
+fn main() -> ExitCode {
+    match run() {
+        Ok(code) => ExitCode::from(code),
         Err(error) => {
             eprintln!("catchlight-cli: {error}");
-            EXIT_ERROR
+            ExitCode::from(EXIT_ERROR)
         }
-    };
-    std::process::exit(code);
+    }
 }
 
-fn run_extension(cmd: ExtensionCmd) -> Result<i32, Error> {
+fn run_extension(cmd: ExtensionCmd) -> Result<u8, Error> {
     match cmd {
         ExtensionCmd::List { file } => {
             for listed in extension::list(&file)? {
@@ -495,7 +495,7 @@ fn set_member(group: Group, args: SetArgs, matches: Option<&ArgMatches>) -> Resu
     )?)
 }
 
-fn run() -> Result<i32, Error> {
+fn run() -> Result<u8, Error> {
     catchlight_core::extension::register::<Animations>()?;
     catchlight_core::extension::register::<Humanoid>()?;
     catchlight_core::extension::register::<Expressions>()?;

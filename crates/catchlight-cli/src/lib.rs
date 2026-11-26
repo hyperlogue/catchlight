@@ -26,8 +26,8 @@ use catchlight_core::id::IdError;
 use catchlight_core::{InstallError, ModelError};
 
 /// `diff` uses 1 for "the two files differ", so every error is 2.
-pub const EXIT_ERROR: i32 = 2;
-pub const EXIT_DIFFERS: i32 = 1;
+pub const EXIT_ERROR: u8 = 2;
+pub const EXIT_DIFFERS: u8 = 1;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
