@@ -2,7 +2,6 @@
 //! exactly once; UVs stay top-left image coordinates. Higher layer indices get
 //! higher z order. Texture switches become parts controlled by a discrete param.
 use std::collections::BTreeMap;
-use std::io::Cursor;
 
 use catchlight_core::components::{BlendMode, MaskMode};
 use catchlight_core::formats::clm::*;
@@ -11,7 +10,7 @@ use catchlight_core::{Model, NodeId, ParamId, TexId};
 use serde::Serialize;
 use serde_json::json;
 
-use super::{Error, Result, UPSTREAM_REVISION, ValidatedPackage, decode_image};
+use super::{Error, Result, UPSTREAM_REVISION, ValidatedPackage};
 use super::{bake, runtime::Runtime};
 
 /// Machine-readable findings, also stored in the resulting model extension.
@@ -170,25 +169,11 @@ impl ValidatedPackage {
                     id.clone()
                 } else {
                     let id = TexId::new(format!("tex-{}", textures.len()))?;
-                    let bytes = self.package.get(path)?;
-                    let data = if path.ends_with(".png") {
-                        bytes.to_vec()
-                    } else {
-                        let image = decode_image(bytes, path, (layer.w, layer.h))?;
-                        let mut png = Cursor::new(Vec::new());
-                        image
-                            .write_to(&mut png, image::ImageFormat::Png)
-                            .map_err(|source| Error::Image {
-                                name: (*path).to_owned(),
-                                source,
-                            })?;
-                        png.into_inner()
-                    };
                     file.textures.push(ClmTexture {
                         id: id.clone(),
                         encoding: TextureEncoding::Png,
                         alpha: TextureAlpha::Straight,
-                        data,
+                        data: self.png(path)?.to_vec(),
                     });
                     textures.insert((*path).to_owned(), id.clone());
                     id

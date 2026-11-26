@@ -68,6 +68,8 @@ pub struct ValidatedPackage {
     package: Package,
     manifest: Value,
     model: Manifest,
+    /// PNG encodings of the WebP resources, made while validation decodes them.
+    webp_as_png: BTreeMap<String, Vec<u8>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -116,8 +118,9 @@ struct Layer {
 impl Package {
     /// Validate the pinned v4 schema, references, resource presence and image
     /// dimensions before any conversion. All referenced images are decoded,
-    /// including alternate mouth/expression frames. Total decoded RGBA is
-    /// capped at 512 MiB; each image is capped by its layer before decoding.
+    /// including alternate mouth/expression frames, and WebP images are
+    /// re-encoded as PNG for conversion. Total decoded RGBA is capped at
+    /// 512 MiB; each image is capped by its layer before decoding.
     pub fn validate(self) -> Result<ValidatedPackage> {
         let bytes = self.get("model.json")?;
         if bytes.len() > 4 * 1024 * 1024 {
@@ -158,6 +161,7 @@ impl Package {
             }
         }
         let mut dimensions = BTreeMap::new();
+        let mut webp_as_png = BTreeMap::new();
         let mut decoded = 0u64;
         for layer in &model.layers {
             if u64::from(layer.x) + u64::from(layer.w) > u64::from(model.canvas[0])
@@ -218,7 +222,17 @@ impl Package {
                 if decoded > 512 * 1024 * 1024 {
                     return Err(Error::Invalid("decoded images exceed 512 MiB".into()));
                 }
-                decode_image(self.get(name)?, name, dims)?;
+                let image = decode_image(self.get(name)?, name, dims)?;
+                if !name.ends_with(".png") {
+                    let mut png = std::io::Cursor::new(Vec::new());
+                    image
+                        .write_to(&mut png, image::ImageFormat::Png)
+                        .map_err(|source| Error::Image {
+                            name: name.clone(),
+                            source,
+                        })?;
+                    webp_as_png.insert(name.clone(), png.into_inner());
+                }
             }
         }
         for (kind, name) in &model.files {
@@ -236,6 +250,7 @@ impl Package {
             package: self,
             manifest,
             model,
+            webp_as_png,
         })
     }
 }
@@ -255,6 +270,13 @@ impl ValidatedPackage {
     /// Exact source resource bytes after path and existence validation.
     pub fn resource(&self, name: &str) -> Result<&[u8]> {
         self.package.get(name)
+    }
+    /// The resource as PNG bytes: PNG resources verbatim, WebP re-encoded.
+    fn png(&self, name: &str) -> Result<&[u8]> {
+        match self.webp_as_png.get(name) {
+            Some(png) => Ok(png),
+            None => self.package.get(name),
+        }
     }
 }
 
