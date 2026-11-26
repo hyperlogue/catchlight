@@ -14,8 +14,8 @@ use catchlight_core::formats::clm::{
     decode_structure, extension_hash, ClmTextureRef, TextureAlpha, TextureEncoding,
 };
 use catchlight_core::{
-    BlendMode, ExtensionKey, Mat4, Model, ModelTexture, NodeId, NodeKind, ParamId, Puppet,
-    ScratchTransform, TexId, Vec2, Vec3,
+    BlendMode, ExtensionKey, LoadBudget, Mat4, Model, ModelTexture, NodeId, NodeKind, ParamId,
+    Puppet, ScratchTransform, TexId, Vec2, Vec3,
 };
 use catchlight_editor_protocol::{ErrorCode, Reply, Request, RequestId, SessionId};
 use catchlight_editor_server::{replica_reply, Editor};
@@ -132,7 +132,8 @@ impl ReplicaState {
 
     /// The textures `structure` names that are not held, in model order.
     pub fn textures_needed(&self, structure: &[u8]) -> Result<Vec<ClmTextureRef>, String> {
-        let named = structure_texture_ids(structure).map_err(|e| e.to_string())?;
+        let named = structure_texture_ids(structure, &mut LoadBudget::default())
+            .map_err(|e| e.to_string())?;
         Ok(named
             .into_iter()
             .filter(|t| !self.textures.contains_key(&t.id))

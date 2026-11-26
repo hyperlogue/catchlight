@@ -124,7 +124,11 @@ async fn replica_sync(options: PrepareOptions) {
         .expect("repaint");
     let structure = server.to_structure_bytes().unwrap();
 
-    let listed = catchlight_core::formats::clm::structure_texture_ids(&structure).unwrap();
+    let listed = catchlight_core::formats::clm::structure_texture_ids(
+        &structure,
+        &mut catchlight_core::LoadBudget::default(),
+    )
+    .unwrap();
     let missing: Vec<TexId> = listed
         .iter()
         .map(|t| t.id.clone())

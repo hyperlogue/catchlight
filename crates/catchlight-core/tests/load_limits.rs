@@ -189,3 +189,61 @@ fn extension_values_are_charged() {
     let err = charge(&doc, |l| l.extension_bytes = json + 99).unwrap_err();
     assert_eq!((err.resource, err.got), ("extension bytes", json + 100));
 }
+
+#[test]
+fn a_structure_push_charges_each_texture_once() {
+    let model = Model::from_clm_bytes(&fixture("quad_over_bg.clm")).unwrap();
+    let count = model.texture_ids().len() as u64;
+    assert!(count > 0);
+    let structure = model.to_structure_bytes().unwrap();
+
+    let mut replica = model.clone();
+    replica
+        .replace_structure_with_budget(
+            &structure,
+            |id| model.texture(id).cloned(),
+            &mut budget(|l| l.textures = count),
+        )
+        .expect("exactly the model's textures");
+    let err = replica
+        .replace_structure_with_budget(
+            &structure,
+            |id| model.texture(id).cloned(),
+            &mut budget(|l| l.textures = count - 1),
+        )
+        .unwrap_err();
+    assert_eq!(limit_error(err).resource, "textures");
+}
+
+/// The manifest here is not CBOR, so the error says whether the charge came
+/// before the parse.
+#[test]
+fn the_texture_manifest_is_charged_before_it_is_parsed() {
+    let garbage = [0xFFu8; 64];
+    let structure_only = container::write(
+        &clm::MAGIC,
+        clm::FORMAT_VERSION,
+        &[Section {
+            kind: 2,
+            data: &garbage,
+        }],
+    )
+    .unwrap();
+
+    let err = clm::structure_texture_ids(&structure_only, &mut budget(|l| l.structure_bytes = 63))
+        .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            ClmError::LoadLimit(LoadLimitError {
+                resource: "structure bytes",
+                limit: 63,
+                got: 64,
+            })
+        ),
+        "{err:?}"
+    );
+    let err = clm::structure_texture_ids(&structure_only, &mut budget(|l| l.structure_bytes = 64))
+        .unwrap_err();
+    assert!(matches!(err, ClmError::Decode(_)), "{err:?}");
+}

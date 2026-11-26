@@ -17,7 +17,7 @@ use crate::formats::clm::{
 };
 use crate::id::SlotId;
 use crate::load_budget::{
-    charge_clm_file, charge_clm_structure, charge_decoded_clm, charge_texture_payloads, LoadBudget,
+    charge_clm_file, charge_clm_structure, charge_decoded_clm, LoadBudget, LoadResource,
 };
 
 use super::*;
@@ -923,13 +923,10 @@ impl Model {
             }
             order.push(want.id.clone());
         }
-        charge_texture_payloads(
-            order
-                .iter()
-                .filter_map(|id| table.get(id))
-                .map(|t| t.data.len() as u64),
-            budget,
-        )?;
+        // The count was charged with the manifest.
+        for texture in table.values() {
+            budget.charge(LoadResource::EncodedBytes, texture.data.len() as u64)?;
+        }
         charge_clm_structure(&structure.doc, budget)?;
 
         let extensions = extensions_of(&structure.doc, extension_bytes, Some(&self.extensions))?;
@@ -2458,7 +2455,11 @@ mod tests {
     #[test]
     fn a_structures_textures_are_listed_without_building_a_model() {
         let m = sample();
-        let listed = clm::structure_texture_ids(&m.to_structure_bytes().unwrap()).unwrap();
+        let listed = clm::structure_texture_ids(
+            &m.to_structure_bytes().unwrap(),
+            &mut LoadBudget::default(),
+        )
+        .unwrap();
 
         assert_eq!(
             listed.iter().map(|t| t.id.clone()).collect::<Vec<_>>(),

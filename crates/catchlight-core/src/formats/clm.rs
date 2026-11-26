@@ -787,24 +787,37 @@ pub fn decode_structure_with_budget(
         return Err(ClmError::NotAStructure);
     }
     let doc = decode_structure_section(&file, budget)?;
+    let textures = decode_texture_manifest(&file, budget)?;
+    Ok(ClmStructureFile { doc, textures })
+}
+
+/// Lets a client fetch missing payloads before applying the structure.
+pub fn structure_texture_ids(
+    bytes: &[u8],
+    budget: &mut crate::load_budget::LoadBudget,
+) -> Result<Vec<ClmTextureRef>, ClmError> {
+    decode_texture_manifest(&read_container(bytes)?, budget)
+}
+
+/// The manifest is charged as structure bytes before it is decoded, since
+/// its count is read too late to bound the decode.
+fn decode_texture_manifest(
+    file: &container::Container<'_>,
+    budget: &mut crate::load_budget::LoadBudget,
+) -> Result<Vec<ClmTextureRef>, ClmError> {
     let manifest = file
         .section(SECTION_TEXTURE_MANIFEST)
         .ok_or(ClmError::MissingSection("TextureManifest"))?;
+    budget.charge(
+        crate::load_budget::LoadResource::StructureBytes,
+        manifest.len() as u64,
+    )?;
     let textures: Vec<ClmTextureRef> = cbor_from_slice(manifest)?;
     budget.charge(
         crate::load_budget::LoadResource::Textures,
         textures.len() as u64,
     )?;
-    Ok(ClmStructureFile { doc, textures })
-}
-
-/// Lets a client fetch missing payloads before applying the structure.
-pub fn structure_texture_ids(bytes: &[u8]) -> Result<Vec<ClmTextureRef>, ClmError> {
-    let file = read_container(bytes)?;
-    let manifest = file
-        .section(SECTION_TEXTURE_MANIFEST)
-        .ok_or(ClmError::MissingSection("TextureManifest"))?;
-    cbor_from_slice(manifest)
+    Ok(textures)
 }
 
 pub fn decode_with_budget(
