@@ -4,7 +4,7 @@
 export type SessionId = number;
 
 /**
- * The identity of a node. Unique within a model; generated as `<parent id>/<kind>-<8 hex>` by [`NodeId::generate`].
+ * The identity of a node. Unique within a model; generated as `<parent id>/<kind>-<8 hex>` by [`NodeId::generate`], or without the parent where that would be too long.
  */
 export type NodeId = string;
 

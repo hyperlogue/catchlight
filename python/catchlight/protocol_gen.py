@@ -247,7 +247,7 @@ def _decode_class(cls: Any, data: Mapping[str, Any]) -> Any:
 
 SessionId = int
 
-# The identity of a node. Unique within a model; generated as `<parent id>/<kind>-<8 hex>` by [`NodeId::generate`].
+# The identity of a node. Unique within a model; generated as `<parent id>/<kind>-<8 hex>` by [`NodeId::generate`], or without the parent where that would be too long.
 NodeId = str
 
 # The identity of a param. Unique within a model; generated as `param-<8 hex>` by [`ParamId::generate`].
