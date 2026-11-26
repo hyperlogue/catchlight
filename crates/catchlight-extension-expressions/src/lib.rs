@@ -232,7 +232,7 @@ mod stored {
 
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
     #[serde(deny_unknown_fields)]
-    pub(crate) struct Expressions {
+    pub struct Expressions {
         #[serde(default)]
         pub(crate) expressions: Vec<Expression>,
         #[serde(default)]
@@ -241,7 +241,7 @@ mod stored {
 
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
     #[serde(deny_unknown_fields)]
-    pub(crate) struct Expression {
+    pub struct Expression {
         pub(crate) name: String,
         pub(crate) settings: Vec<Setting>,
         /// Whether each setting takes part in blending: its value is finite,
@@ -263,14 +263,14 @@ mod stored {
 
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
     #[serde(untagged)]
-    pub(crate) enum Setting {
+    pub enum Setting {
         Control(ControlSetting),
         Param(ParamSetting),
     }
 
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
     #[serde(deny_unknown_fields)]
-    pub(crate) struct ControlSetting {
+    pub struct ControlSetting {
         pub(crate) control: String,
         #[serde(deserialize_with = "value")]
         pub(crate) value: f32,
@@ -278,7 +278,7 @@ mod stored {
 
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
     #[serde(deny_unknown_fields)]
-    pub(crate) struct ParamSetting {
+    pub struct ParamSetting {
         /// An index into the reference table.
         pub(crate) param: u32,
         #[serde(deserialize_with = "value")]

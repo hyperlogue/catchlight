@@ -18,13 +18,13 @@ use std::collections::HashMap;
 /// A hint is only a starting point, so a stale one costs a scan, never a
 /// wrong answer.
 #[derive(Debug, Clone)]
-pub(crate) struct ChildPins {
+pub struct ChildPins {
     pub(crate) vertices: Vec<u32>,
     observed_vertices: Option<Box<[usize]>>,
 }
 
 #[derive(Debug, Clone, Default)]
-pub(crate) struct MeshGroupPins {
+pub struct MeshGroupPins {
     pub(crate) per_child: HashMap<NodeIdx, ChildPins>,
 }
 
@@ -33,7 +33,7 @@ pub(crate) struct MeshGroupPins {
 /// `find` returns exactly what [`find_triangle_strict_hint`] does; bins only
 /// skip triangles, containment is always decided against the exact point.
 #[derive(Debug, Clone)]
-pub(crate) struct MgTriangleBins {
+pub struct MgTriangleBins {
     /// Lower corner in the lattice's local space, floored.
     bounds_min: Vec2,
     /// At least one unit a side.
@@ -159,7 +159,7 @@ fn triangle_padding(a: Vec2, b: Vec2, c: Vec2) -> Option<Vec2> {
     )
 }
 
-pub(crate) fn barycentric(p: Vec2, a: Vec2, b: Vec2, c: Vec2) -> [f32; 3] {
+pub fn barycentric(p: Vec2, a: Vec2, b: Vec2, c: Vec2) -> [f32; 3] {
     let v0 = b - a;
     let v1 = c - a;
     let v2 = p - a;
@@ -289,7 +289,7 @@ fn local_positions(mesh: &Mesh) -> Vec<Vec2> {
         reason = "glam's SIMD `Mat2::from_cols` on native targets is not const"
     )
 )]
-pub(crate) fn linear_mat2(m: Mat4) -> Mat2 {
+pub fn linear_mat2(m: Mat4) -> Mat2 {
     Mat2::from_cols(
         Vec2::new(m.x_axis.x, m.x_axis.y),
         Vec2::new(m.y_axis.x, m.y_axis.y),
@@ -303,13 +303,13 @@ fn transform_point(m: Mat4, p: Vec2) -> Vec2 {
 
 /// Not `Mat3::from_mat4` + `Affine2::from_mat3`: that round-trip reads the
 /// translation from the Z column and drops it.
-pub(crate) fn affine2_from_mat4(m: Mat4) -> Affine2 {
+pub fn affine2_from_mat4(m: Mat4) -> Affine2 {
     Affine2::from_cols(m.x_axis.xy(), m.y_axis.xy(), m.w_axis.xy())
 }
 
 /// Pins are found in MG-local space; `transforms` must be the arena's
 /// globals computed immediately before baking.
-pub(crate) fn bake_mesh_group_pins(
+pub fn bake_mesh_group_pins(
     arena: &Arena,
     transforms: &GlobalTransforms,
     mesh_group_id: NodeIdx,
@@ -481,7 +481,7 @@ impl Arena {
 /// Children are sampled at their current position (`base + cur_deform`,
 /// excluding this MG's prior source), not the base: sampling at the base
 /// double-pulls against the child's own Param deltas at extreme values.
-pub(crate) fn propagate_mesh_group_deforms(
+pub fn propagate_mesh_group_deforms(
     arena: &mut Arena,
     transforms: &mut GlobalTransforms,
     root: Mat4,

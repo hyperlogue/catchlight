@@ -49,7 +49,7 @@ type FrameCallback = Rc<FrameClosure>;
 /// The WebGL2 tier: one surface, one canvas, one frame loop for every
 /// viewport. Held by the [`Gpu`](crate::Gpu): dropping the element would take
 /// the device.
-pub(crate) struct GlStage {
+pub struct GlStage {
     canvas: web_sys::HtmlCanvasElement,
     surface: RefCell<SurfaceContext>,
     blit: SurfaceBlit,
@@ -639,7 +639,7 @@ impl Inner {
 
 /// A requested backing store, at least one pixel and scaled down to fit a
 /// surface this device will configure.
-pub(crate) fn fit_device((width, height): (u32, u32), max_dimension: u32) -> (u32, u32) {
+pub fn fit_device((width, height): (u32, u32), max_dimension: u32) -> (u32, u32) {
     capped(
         (width.max(1), height.max(1)),
         (max_dimension, max_dimension),

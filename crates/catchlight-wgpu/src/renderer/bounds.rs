@@ -10,7 +10,7 @@ pub(super) struct Aabb2 {
 
 /// Framebuffer pixels, within the viewport.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ScreenRect {
+pub struct ScreenRect {
     pub(super) x: u32,
     pub(super) y: u32,
     pub(super) width: u32,

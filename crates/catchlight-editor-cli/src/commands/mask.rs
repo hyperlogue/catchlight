@@ -11,7 +11,7 @@ use crate::compose::CapturedClient;
 use crate::route::Route;
 
 #[derive(Subcommand)]
-pub(crate) enum MaskCmd {
+pub enum MaskCmd {
     /// Append a mask source (a Part) to a Part/Composite. `--mode mask|dodge`.
     Add {
         node: NodeId,
@@ -44,7 +44,7 @@ pub(crate) enum MaskCmd {
     },
 }
 
-pub(crate) fn route(action: &MaskCmd) -> Route<'_> {
+pub fn route(action: &MaskCmd) -> Route<'_> {
     match action {
         MaskCmd::Add { node, source, mode } => Route::on_session(move |session| Command::MaskAdd {
             session,

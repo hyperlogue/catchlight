@@ -282,7 +282,7 @@ pub fn apply(model: &mut Model, edit: EditOp) -> Result<ResponseBody, EditorErro
     Ok(ResponseBody::Empty)
 }
 
-pub(super) fn validate_cells(
+pub fn validate_cells(
     model: &Model,
     key: &BindingKey,
     cells: impl Iterator<Item = [u32; 2]>,

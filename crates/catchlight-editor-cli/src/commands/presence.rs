@@ -7,7 +7,7 @@ use crate::args::parse_param;
 use crate::route::Route;
 
 #[derive(Subcommand)]
-pub(crate) enum PresenceCmd {
+pub enum PresenceCmd {
     /// Publish pose / selection. `--param <id>=<value>` (repeatable).
     Set {
         #[arg(long = "param", allow_hyphen_values = true, value_parser = parse_param)]
@@ -19,7 +19,7 @@ pub(crate) enum PresenceCmd {
     Get,
 }
 
-pub(crate) fn route(action: &PresenceCmd) -> Route<'_> {
+pub fn route(action: &PresenceCmd) -> Route<'_> {
     match action {
         PresenceCmd::Set { params, select } => {
             Route::on_session(move |session| Command::PresenceSet {

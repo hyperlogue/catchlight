@@ -8,7 +8,7 @@ use crate::cli::resolve_session;
 use crate::route::Route;
 
 #[derive(Subcommand)]
-pub(crate) enum MeshCmd {
+pub enum MeshCmd {
     /// Replace a node's mesh from JSON `{"verts", "uvs", "indices", "origin"}`,
     /// re-fitting its deform bindings and emptying its slots.
     Set {
@@ -49,7 +49,7 @@ pub(crate) enum MeshCmd {
     },
 }
 
-pub(crate) fn route(action: &MeshCmd) -> Route<'_> {
+pub fn route(action: &MeshCmd) -> Route<'_> {
     match action {
         MeshCmd::Set { node, file } => Route::plain(move |cli| {
             #[derive(serde::Deserialize)]

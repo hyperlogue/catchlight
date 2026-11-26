@@ -11,9 +11,9 @@ use smallvec::SmallVec;
 
 /// Makes the renderer's dense-table probe miss, so the draw is skipped and
 /// counted.
-pub(crate) const NO_SLOT: u32 = u32::MAX;
+pub const NO_SLOT: u32 = u32::MAX;
 
-pub(crate) trait DrawSource {
+pub trait DrawSource {
     fn tree(&self) -> &NodeTree;
     fn node(&self, idx: NodeIdx) -> Option<&Node>;
     fn node_count(&self) -> usize;
@@ -345,7 +345,7 @@ fn collect_mask_sources<S: DrawSource + ?Sized>(
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct Collector {
+pub struct Collector {
     enabled_cum: Vec<bool>,
     composite_ancestor: Vec<Option<NodeIdx>>,
     composite_isolates: Vec<bool>,

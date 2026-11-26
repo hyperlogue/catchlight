@@ -10,7 +10,7 @@ use crate::args::{parse_kind, parse_vec2, parse_vec3, wire_enum};
 use crate::route::Route;
 
 #[derive(Subcommand)]
-pub(crate) enum NodeCmd {
+pub enum NodeCmd {
     /// Print the node tree (Ids and names).
     Tree,
     /// Print one node in full, with the field names `node set` takes.
@@ -98,7 +98,7 @@ pub(crate) enum NodeCmd {
     Delete { node: NodeId },
 }
 
-pub(crate) fn route(action: &NodeCmd) -> Route<'_> {
+pub fn route(action: &NodeCmd) -> Route<'_> {
     match action {
         NodeCmd::Tree => Route::on_session(|session| Command::NodeTree { session }),
         NodeCmd::Info { node } => Route::on_session(move |session| Command::NodeInfo {

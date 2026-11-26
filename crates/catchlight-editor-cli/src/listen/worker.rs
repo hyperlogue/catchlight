@@ -27,7 +27,7 @@ const SWEEP_EVERY: Duration = Duration::from_secs(60);
 const GONE_AFTER: Duration = Duration::from_secs(30);
 const MAX_LOG_BYTES: u64 = 1024 * 1024;
 
-pub(crate) fn log(line: &str) {
+pub fn log(line: &str) {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -46,7 +46,7 @@ fn lock_file(store: &Store) -> Result<File> {
 }
 
 /// The running worker's pid, or `None` when none runs.
-pub(crate) fn running(store: &Store) -> Result<Option<u32>> {
+pub fn running(store: &Store) -> Result<Option<u32>> {
     let mut file = lock_file(store)?;
     match file.try_lock() {
         Ok(()) => Ok(None),
@@ -61,7 +61,7 @@ pub(crate) fn running(store: &Store) -> Result<Option<u32>> {
 
 /// How many polls the worker running as `pid` has made, once it has
 /// counted any.
-pub(crate) fn polls(store: &Store, pid: u32) -> Option<u64> {
+pub fn polls(store: &Store, pid: u32) -> Option<u64> {
     let text = std::fs::read_to_string(store.worker_polls()).ok()?;
     let (owner, polls) = text.trim().split_once(' ')?;
     if owner.parse() != Ok(pid) {
@@ -86,7 +86,7 @@ fn write_polls(store: &Store, polls: u64) -> Result<()> {
 }
 
 /// Starts the worker unless one runs. `true` when this call started it.
-pub(crate) fn ensure(store: &Store) -> Result<bool> {
+pub fn ensure(store: &Store) -> Result<bool> {
     if running(store)?.is_some() {
         return Ok(false);
     }
@@ -133,7 +133,7 @@ fn trim_log(store: &Store) {
 }
 
 /// Asks the worker to exit and waits for it. `false` when none ran.
-pub(crate) fn stop(store: &Store) -> Result<bool> {
+pub fn stop(store: &Store) -> Result<bool> {
     let Some(pid) = running(store)? else {
         return Ok(false);
     };
@@ -156,7 +156,7 @@ pub(crate) fn stop(store: &Store) -> Result<bool> {
 /// What the agent reads when comments arrive. `fresh` are the comment ids
 /// the last notice did not cover. Naming them keeps consecutive notices
 /// distinct: Claude Code drops a message identical to the one before it.
-pub(crate) fn notice(reg: &Registration, threads: u32, fresh: &[&str]) -> String {
+pub fn notice(reg: &Registration, threads: u32, fresh: &[&str]) -> String {
     format!(
         "[catchlight] The person sent {} new review comment(s) ({}) on editor session {} \
          (model \"{}\"); {threads} thread(s) now wait for you.\n\
@@ -213,7 +213,7 @@ struct Delivered {
 
 /// `review worker run`: returns when no registration is left, or when asked
 /// to stop.
-pub(crate) fn run(store: &Store) -> Result<()> {
+pub fn run(store: &Store) -> Result<()> {
     let mut lock = lock_file(store)?;
     let deadline = Instant::now() + Duration::from_secs(1);
     // A `running` probe holds the lock for a moment; a worker holds it for

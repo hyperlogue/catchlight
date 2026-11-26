@@ -5,7 +5,7 @@ use catchlight_editor_protocol::*;
 use crate::cli::Cli;
 use crate::{official, review};
 
-pub(crate) fn print_reply(cli: &Cli, reply: &Reply) {
+pub fn print_reply(cli: &Cli, reply: &Reply) {
     if cli.json {
         if let Ok(s) = serde_json::to_string(reply) {
             println!("{s}");
@@ -19,12 +19,12 @@ pub(crate) fn print_reply(cli: &Cli, reply: &Reply) {
     }
 }
 
-pub(crate) fn code_name(code: ErrorCode) -> String {
+pub fn code_name(code: ErrorCode) -> String {
     serde_json::to_string(&code)
         .map_or_else(|_| "error".into(), |s| s.trim_matches('"').to_string())
 }
 
-pub(crate) fn print_body(body: &ResponseBody) {
+pub fn print_body(body: &ResponseBody) {
     match body {
         ResponseBody::MeshInfo { .. }
         | ResponseBody::ModelStructure { .. }

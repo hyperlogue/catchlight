@@ -13,12 +13,12 @@ pub struct Metrics {
     pub pct_above_threshold: f32,
 }
 
-pub(super) struct DiffOutput {
+pub struct DiffOutput {
     pub(super) overlay: RgbaImage,
     pub(super) metrics: Metrics,
 }
 
-pub(super) fn diff_images(expected: &RgbaImage, actual: &RgbaImage) -> DiffOutput {
+pub fn diff_images(expected: &RgbaImage, actual: &RgbaImage) -> DiffOutput {
     let (width, height) = expected.dimensions();
     let pixel_count = width as usize * height as usize;
     let mut differences = vec![0u8; pixel_count];

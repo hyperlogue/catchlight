@@ -13,7 +13,7 @@ use crate::route::Route;
 use crate::transport::Transport;
 
 #[derive(Subcommand)]
-pub(crate) enum SlotCmd {
+pub enum SlotCmd {
     /// Add an unfilled vertex slot to a part. Without `--slot` the editor draws one.
     Add {
         #[arg(long)]
@@ -62,7 +62,7 @@ pub(crate) enum SlotCmd {
     Unfilled,
 }
 
-pub(crate) fn route(action: &SlotCmd) -> Route<'_> {
+pub fn route(action: &SlotCmd) -> Route<'_> {
     match action {
         SlotCmd::Add { node, slot } => Route::on_session(move |session| Command::SlotAdd {
             session,

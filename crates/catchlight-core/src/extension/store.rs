@@ -10,7 +10,7 @@ use crate::model::ExtensionValue;
 
 /// Decoded data, shared between a model, its clones and history snapshots
 /// until one of them writes.
-pub(crate) struct Typed {
+pub struct Typed {
     pub(crate) data: Box<dyn DynExtension>,
     /// Filled on first save, structure feed or comparison; a write replaces
     /// the whole `Typed`, so the cache never outlives the data it encodes.
@@ -53,7 +53,7 @@ impl fmt::Debug for Typed {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) enum Stored {
+pub enum Stored {
     /// A plain value, or a maintained one not yet decoded. A typed read fills
     /// `decoded`; for a plain value it stays empty.
     Value {

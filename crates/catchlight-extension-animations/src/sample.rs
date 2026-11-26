@@ -10,7 +10,7 @@ use catchlight_core::interpolate::cubic;
 use crate::{Clip, Keyframe, Lane};
 
 /// Scale comparisons to the authored units and allow for f32 sampling error.
-pub(crate) fn same_sample(a: f32, b: f32, scale: f32) -> bool {
+pub fn same_sample(a: f32, b: f32, scale: f32) -> bool {
     (a - b).abs() <= 8. * f32::EPSILON * a.abs().max(b.abs()).max(scale.abs())
 }
 

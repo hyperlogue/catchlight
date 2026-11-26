@@ -26,7 +26,7 @@ fn session_hex(id: SessionId) -> SeededHex {
     SeededHex::new(SeededHex::new(ID_SEED ^ id.0 as u32).next_bits())
 }
 
-pub(crate) struct Session {
+pub struct Session {
     pub(crate) model: Model,
     pub(crate) hex: SeededHex,
     pub(crate) title: String,
@@ -212,7 +212,7 @@ impl Session {
 /// A result stamped while its addressed session is still locked. Never recover
 /// this revision by looking up the session after running callbacks or IO.
 #[derive(Debug)]
-pub(crate) struct Captured<T> {
+pub struct Captured<T> {
     pub(crate) value: T,
     pub(crate) rev: Option<u64>,
 }

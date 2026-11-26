@@ -35,7 +35,7 @@ const fn blend_slot(mode: BlendMode) -> usize {
 }
 
 /// One pipeline per fixed-function blend state.
-pub(crate) struct BlendPipelines([wgpu::RenderPipeline; FIXED_BLENDS.len()]);
+pub struct BlendPipelines([wgpu::RenderPipeline; FIXED_BLENDS.len()]);
 
 impl BlendPipelines {
     fn build(make: impl FnMut(BlendMode) -> wgpu::RenderPipeline) -> Self {
@@ -50,7 +50,7 @@ impl BlendPipelines {
 /// Blend modes whose math reads the destination color, which no
 /// fixed-function `BlendState` can express.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ShaderBlend {
+pub enum ShaderBlend {
     Overlay,
     ColorBurn,
     LinearBurn,
@@ -78,13 +78,13 @@ impl ShaderBlend {
 }
 
 /// How a mask reaches the content it clips.
-pub(crate) enum MaskPipelines {
+pub enum MaskPipelines {
     Stencil(StencilMasks),
     Sampled(SampledMasks),
 }
 
 /// Sources REPLACE a stencil reference and content tests Equal against it.
-pub(crate) struct StencilMasks {
+pub struct StencilMasks {
     pub(crate) write: wgpu::RenderPipeline,
     pub(crate) composite_write: wgpu::RenderPipeline,
     /// Seeds an all-DodgeMask batch so dodge sources can punch 0 out of it.
@@ -96,7 +96,7 @@ pub(crate) struct StencilMasks {
 /// For backends without a usable stencil attachment (Chromium swiftshader
 /// WebGL2 fails Depth24PlusStencil8): sources write 1, or 0 for a dodge, into
 /// an offscreen alpha texture that content samples.
-pub(crate) struct SampledMasks {
+pub struct SampledMasks {
     pub(crate) bind_group_layout: wgpu::BindGroupLayout,
     pub(crate) sampler: wgpu::Sampler,
     pub(crate) write: wgpu::RenderPipeline,

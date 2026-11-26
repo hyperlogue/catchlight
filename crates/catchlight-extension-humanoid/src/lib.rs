@@ -78,13 +78,13 @@ mod stored {
 
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
     #[serde(deny_unknown_fields)]
-    pub(crate) struct Humanoid {
+    pub struct Humanoid {
         pub(crate) controls: BTreeMap<String, Mapping>,
     }
 
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
     #[serde(deny_unknown_fields)]
-    pub(crate) struct Mapping {
+    pub struct Mapping {
         /// An index into the reference table.
         pub(crate) param: u32,
         #[serde(deserialize_with = "stops")]

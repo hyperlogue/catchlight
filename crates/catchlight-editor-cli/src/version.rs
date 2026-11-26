@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 use super::*;
 
 #[derive(clap::Args)]
-pub(super) struct VersionArgs {
+pub struct VersionArgs {
     /// The name the person sees on versions you save; as for `review`.
     #[arg(long, global = true, env = "CATCHLIGHT_AGENT")]
     name: Option<String>,
@@ -52,7 +52,7 @@ enum VersionCmd {
 }
 
 /// Who saves: the agent `review` would write as, or the person.
-pub(super) fn author(name: Option<&str>, human: bool) -> ReviewAuthor {
+pub fn author(name: Option<&str>, human: bool) -> ReviewAuthor {
     let who = review::agent(name);
     if human {
         ReviewAuthor::Human {
@@ -67,7 +67,7 @@ pub(super) fn author(name: Option<&str>, human: bool) -> ReviewAuthor {
     }
 }
 
-pub(super) fn run(cli: &Cli, args: &VersionArgs, stream: &mut transport::Transport) -> Result<i32> {
+pub fn run(cli: &Cli, args: &VersionArgs, stream: &mut transport::Transport) -> Result<i32> {
     let session = resolve_session(cli)?;
     let mut siblings = serde_json::Map::new();
     let command = match &args.action {

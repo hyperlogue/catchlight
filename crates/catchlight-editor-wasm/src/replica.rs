@@ -807,7 +807,7 @@ fn scratch_transform(
 /// Built with no GPU: pipelines need a surface format, so the first
 /// `Viewport::new` hands it the device, and the first frame builds the cache.
 #[cfg(target_arch = "wasm32")]
-pub(crate) mod browser {
+pub mod browser {
     use std::cell::RefCell;
     use std::rc::Rc;
     use std::sync::Arc;
@@ -819,14 +819,14 @@ pub(crate) mod browser {
     use super::ReplicaState;
     use crate::{CatchlightEditor, Gpu};
 
-    pub(crate) struct ReplicaRender {
+    pub struct ReplicaRender {
         pub(crate) renderer: WgpuRenderer,
         cache: Option<RenderCache>,
     }
 
     /// `Rc<RefCell<_>>`, not a lock: the browser runs the frame callback and the
     /// JS-facing methods on one thread with no overlap.
-    pub(crate) struct ReplicaInner {
+    pub struct ReplicaInner {
         pub(crate) state: ReplicaState,
         pub(crate) render: Option<ReplicaRender>,
     }

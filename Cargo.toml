@@ -160,6 +160,9 @@ if_not_else = "warn"
 enum_glob_use = "warn"
 must_use_candidate = "warn"
 missing_const_for_fn = "warn"
+# A private module already bounds what it holds, so `pub` says enough
+# there. Not paired with rustc's `unreachable_pub`, which asks the opposite.
+redundant_pub_crate = "warn"
 
 # Size-optimized profile for a future wasm bundle. Kept separate so the
 # default `release` profile stays untouched.

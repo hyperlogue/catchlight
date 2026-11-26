@@ -104,7 +104,7 @@ impl CatchlightRenderState {
     }
 }
 
-pub(crate) struct FormatResources {
+pub struct FormatResources {
     pub pipelines: Arc<Pipelines>,
     /// Per view: two cameras of different sizes would otherwise rebuild one
     /// set of targets on every frame.
@@ -114,7 +114,7 @@ pub(crate) struct FormatResources {
 /// Keyed by asset id: an edit keeps the cache and rebuilds it in place. A
 /// replaced value under the same id shows as a new `Model::identity`.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) struct ModelKey {
+pub struct ModelKey {
     pub model: AssetId<CatchlightModel>,
     pub format: wgpu::TextureFormat,
 }
@@ -129,7 +129,7 @@ struct PrepareAttempt {
 /// Failed prepares, so one is retried, and logged, only once the model or
 /// the options change rather than on every frame.
 #[derive(Default)]
-pub(crate) struct PrepareFailures(HashMap<ModelKey, PrepareAttempt>);
+pub struct PrepareFailures(HashMap<ModelKey, PrepareAttempt>);
 
 impl PrepareFailures {
     const fn attempt(model: &Model, options: PrepareOptions) -> PrepareAttempt {
@@ -166,14 +166,14 @@ impl PrepareFailures {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) struct PuppetKey {
+pub struct PuppetKey {
     pub entity: Entity,
     pub format: wgpu::TextureFormat,
 }
 
 /// One cache per renderer: two caches on one renderer would overwrite each
 /// other's slots.
-pub(crate) struct ModelGpu {
+pub struct ModelGpu {
     pub renderer: WgpuRenderer,
     /// Must be replaced every frame: bevy owns the submit, so the renderer
     /// cannot see the frame boundary.
@@ -184,7 +184,7 @@ pub(crate) struct ModelGpu {
     pub options: PrepareOptions,
 }
 
-pub(crate) struct PuppetGpu {
+pub struct PuppetGpu {
     pub model: ModelKey,
     /// Issued by `model`'s renderer.
     pub deform_set: DeformSet,
@@ -192,7 +192,7 @@ pub(crate) struct PuppetGpu {
     pub collected: bool,
 }
 
-pub(crate) fn format_resources<'a>(
+pub fn format_resources<'a>(
     formats: &'a mut HashMap<wgpu::TextureFormat, FormatResources>,
     format: wgpu::TextureFormat,
     device: &wgpu::Device,
@@ -226,7 +226,7 @@ fn release(renderer: &mut WgpuRenderer, set: DeformSet) {
 
 /// Runs in prepare rather than extract to keep uploads out of the sync point,
 /// so a new puppet draws one frame late.
-pub(crate) fn prepare_puppets(
+pub fn prepare_puppets(
     device: Res<RenderDevice>,
     queue: Res<RenderQueue>,
     mut state: ResMut<CatchlightRenderState>,

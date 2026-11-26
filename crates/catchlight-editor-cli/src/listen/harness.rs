@@ -13,13 +13,13 @@ use serde::{Deserialize, Serialize};
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 const SOCKET_TIMEOUT: Duration = Duration::from_secs(5);
 
-pub(crate) type Env<'a> = &'a dyn Fn(&str) -> Option<String>;
+pub type Env<'a> = &'a dyn Fn(&str) -> Option<String>;
 
 /// Where a notice goes. Holds the harness's own credentials, so it lives
 /// only in owner-only files.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "harness", rename_all = "snake_case")]
-pub(crate) enum Target {
+pub enum Target {
     /// Claude Code's per-session messaging socket.
     Claude { socket: PathBuf, token: String },
     /// `codex queue`, which wakes a persisted thread when it is idle.
@@ -63,7 +63,7 @@ impl Target {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) struct Detected {
+pub struct Detected {
     pub target: Target,
     /// The agent identity that goes with this target, as `review` reads it.
     pub session: Option<String>,
@@ -71,7 +71,7 @@ pub(crate) struct Detected {
 
 /// Why `listen` cannot register: each is exit 5.
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum Unsupported {
+pub enum Unsupported {
     MissingClaudeToken,
     MissingAntigravityConnection,
     NoAdapter,
@@ -101,7 +101,7 @@ fn value(env: Env, name: &str) -> Option<String> {
 /// The target and its identity are chosen together: a partly inherited
 /// Claude environment can sit beside a valid Codex one, and a Codex target
 /// must not wear Claude's session id.
-pub(crate) fn detect(env: Env) -> Result<Detected, Unsupported> {
+pub fn detect(env: Env) -> Result<Detected, Unsupported> {
     #[cfg(feature = "fake-harness")]
     if let Some(file) = value(env, "CATCHLIGHT_FAKE_HARNESS") {
         return Ok(Detected {
@@ -156,7 +156,7 @@ pub(crate) fn detect(env: Env) -> Result<Detected, Unsupported> {
 
 /// Resolves the executables delivery will run and checks that they can,
 /// before anything is registered. The error is `listen`'s exit-5 message.
-pub(crate) fn prepare(target: Target, env: Env) -> Result<Target, String> {
+pub fn prepare(target: Target, env: Env) -> Result<Target, String> {
     let target = match target {
         Target::Codex { thread, .. } => {
             let executable =
@@ -215,7 +215,7 @@ pub(crate) fn prepare(target: Target, env: Env) -> Result<Target, String> {
 
 /// Checks what a target will be used for before a socket is dialled or a
 /// program run with it.
-pub(crate) fn validate(target: &Target) -> Result<(), String> {
+pub fn validate(target: &Target) -> Result<(), String> {
     match target {
         Target::Claude { socket, token } => {
             claude_socket(socket)?;
@@ -360,7 +360,7 @@ fn run(command: &mut Command) -> Result<bool, String> {
 
 /// Hands `text` to the harness. `Ok` means written or queued, not read:
 /// Claude Code's socket answers nothing.
-pub(crate) fn deliver(target: &Target, text: &str, cwd: &Path) -> Result<(), String> {
+pub fn deliver(target: &Target, text: &str, cwd: &Path) -> Result<(), String> {
     validate(target)?;
     match target {
         Target::Claude { socket, token } => {

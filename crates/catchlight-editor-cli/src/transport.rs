@@ -22,14 +22,14 @@ use super::MAX_COMMAND_BYTES;
 const HTTP_TIMEOUT: Duration = Duration::from_secs(300);
 
 #[derive(Default)]
-pub(super) struct Target {
+pub struct Target {
     pub server: Option<String>,
     pub token: Option<String>,
     pub socket: Option<PathBuf>,
     pub connection_first: bool,
 }
 
-pub(super) enum Transport {
+pub enum Transport {
     /// One reader for the connection's life, so bytes read past a reply
     /// stay buffered for the next call.
     #[cfg(unix)]
@@ -37,7 +37,7 @@ pub(super) enum Transport {
     Http(Http),
 }
 
-pub(super) struct Http {
+pub struct Http {
     host: String,
     port: u16,
     token: String,
@@ -47,7 +47,7 @@ pub(super) struct Http {
 /// the same one.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(super) enum Endpoint {
+pub enum Endpoint {
     Socket(PathBuf),
     Http { url: String, token: String },
 }
@@ -74,7 +74,7 @@ impl Endpoint {
 }
 
 /// The transport and the endpoint it reached.
-pub(super) fn resolve(target: &Target) -> Result<(Transport, Endpoint)> {
+pub fn resolve(target: &Target) -> Result<(Transport, Endpoint)> {
     if let Some(url) = &target.server {
         let token = match &target.token {
             Some(token) => token.clone(),

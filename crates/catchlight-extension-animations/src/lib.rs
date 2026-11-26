@@ -231,7 +231,7 @@ mod stored {
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-    pub(crate) struct Clip {
+    pub struct Clip {
         pub(crate) name: String,
         pub(crate) timestep: f32,
         pub(crate) length: u32,
@@ -241,7 +241,7 @@ mod stored {
     }
 
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-    pub(crate) struct Lane {
+    pub struct Lane {
         /// An index into the reference table.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub(crate) param: Option<u32>,
@@ -260,12 +260,12 @@ mod stored {
     mod f32_bytes {
         use serde::{Deserialize, Deserializer, Serializer};
 
-        pub(crate) fn serialize<S: Serializer>(values: &[f32], s: S) -> Result<S::Ok, S::Error> {
+        pub fn serialize<S: Serializer>(values: &[f32], s: S) -> Result<S::Ok, S::Error> {
             let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
             serde_bytes::serialize(&bytes, s)
         }
 
-        pub(crate) fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<f32>, D::Error> {
+        pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<f32>, D::Error> {
             let bytes = serde_bytes::ByteBuf::deserialize(d)?;
             if bytes.len() % 4 != 0 {
                 return Err(serde::de::Error::custom(

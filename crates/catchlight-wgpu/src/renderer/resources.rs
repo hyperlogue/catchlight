@@ -1,6 +1,6 @@
 use super::*;
 
-pub(crate) struct Texture {
+pub struct Texture {
     pub(super) texture: wgpu::Texture,
     pub(super) bind_group: wgpu::BindGroup,
 }
@@ -177,7 +177,7 @@ pub(super) fn validate_rgba8_texture(
         .ok_or(RendererError::TextureByteLengthOverflow { width, height })
 }
 
-pub(crate) struct MeshBuffer {
+pub struct MeshBuffer {
     pub(super) vertex_buffer: wgpu::Buffer,
     pub(super) index_buffer: wgpu::Buffer,
     pub(super) deform_offset: u64,

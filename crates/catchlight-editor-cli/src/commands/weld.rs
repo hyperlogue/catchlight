@@ -10,7 +10,7 @@ use crate::args::parse_pair;
 use crate::route::Route;
 
 #[derive(Subcommand)]
-pub(crate) enum WeldCmd {
+pub enum WeldCmd {
     /// Weld two parts, replacing any existing weld. Each repeatable `--pair` is
     /// `<slot on --a>:<slot on --b>:<weight>`, the weight being `--a`'s share
     /// in 0..=1.
@@ -45,7 +45,7 @@ pub(crate) enum WeldCmd {
     List,
 }
 
-pub(crate) fn route(action: &WeldCmd) -> Route<'_> {
+pub fn route(action: &WeldCmd) -> Route<'_> {
     match action {
         WeldCmd::Set { a, b, pairs } => Route::on_session(move |session| Command::WeldSet {
             session,

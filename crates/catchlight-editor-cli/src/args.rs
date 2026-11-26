@@ -5,14 +5,14 @@ use std::io::Read;
 use anyhow::{Context, Result, anyhow, bail};
 use catchlight_editor_protocol::{NodeKindArg, ParamId, ParamPose, SlotId, SlotPair};
 
-pub(crate) const MAX_COMMAND_BYTES: usize = 1024 * 1024;
+pub const MAX_COMMAND_BYTES: usize = 1024 * 1024;
 
 /// Parses as the wire does, so serde's error names the alternatives.
-pub(crate) fn wire_enum<T: serde::de::DeserializeOwned>(s: &str) -> std::result::Result<T, String> {
+pub fn wire_enum<T: serde::de::DeserializeOwned>(s: &str) -> std::result::Result<T, String> {
     serde_json::from_value(serde_json::Value::String(s.to_owned())).map_err(|e| e.to_string())
 }
 
-pub(crate) fn parse_kind(s: &str) -> Result<NodeKindArg> {
+pub fn parse_kind(s: &str) -> Result<NodeKindArg> {
     Ok(match s.to_ascii_lowercase().as_str() {
         "group" => NodeKindArg::Group,
         "part" => NodeKindArg::Part,
@@ -25,7 +25,7 @@ pub(crate) fn parse_kind(s: &str) -> Result<NodeKindArg> {
     })
 }
 
-pub(crate) fn parse_floats<const N: usize>(s: &str) -> Result<[f32; N]> {
+pub fn parse_floats<const N: usize>(s: &str) -> Result<[f32; N]> {
     let parts: Vec<f32> = s
         .split(',')
         .map(|p| p.trim().parse::<f32>())
@@ -36,15 +36,15 @@ pub(crate) fn parse_floats<const N: usize>(s: &str) -> Result<[f32; N]> {
         .map_err(|_| anyhow!("expected {N} comma-separated numbers, got {s:?}"))
 }
 
-pub(crate) fn parse_vec3(s: &str) -> Result<[f32; 3]> {
+pub fn parse_vec3(s: &str) -> Result<[f32; 3]> {
     parse_floats::<3>(s)
 }
 
-pub(crate) fn parse_vec2(s: &str) -> Result<[f32; 2]> {
+pub fn parse_vec2(s: &str) -> Result<[f32; 2]> {
     parse_floats::<2>(s)
 }
 
-pub(crate) fn read_json(path: &str) -> Result<String> {
+pub fn read_json(path: &str) -> Result<String> {
     if path == "-" {
         read_command_json(std::io::stdin().lock())
     } else {
@@ -66,7 +66,7 @@ fn read_command_json(reader: impl Read) -> Result<String> {
     Ok(String::from_utf8(bytes)?)
 }
 
-pub(crate) fn parse_cell(s: &str) -> Result<[u32; 2]> {
+pub fn parse_cell(s: &str) -> Result<[u32; 2]> {
     let bad = || anyhow!("cell must look like x,y, got {s:?}");
     let (x, y) = s.split_once(',').ok_or_else(bad)?;
     Ok([
@@ -75,7 +75,7 @@ pub(crate) fn parse_cell(s: &str) -> Result<[u32; 2]> {
     ])
 }
 
-pub(crate) fn parse_size(s: &str) -> Result<[u32; 2]> {
+pub fn parse_size(s: &str) -> Result<[u32; 2]> {
     let bad = || anyhow!("size must look like 512x512, got {s:?}");
     let (w, h) = s.split_once(['x', 'X']).ok_or_else(bad)?;
     Ok([
@@ -85,11 +85,11 @@ pub(crate) fn parse_size(s: &str) -> Result<[u32; 2]> {
 }
 
 /// The server's working directory is not this process's.
-pub(crate) fn absolute(path: &str) -> Result<String> {
+pub fn absolute(path: &str) -> Result<String> {
     Ok(std::path::absolute(path)?.display().to_string())
 }
 
-pub(crate) fn parse_param(s: &str) -> Result<ParamPose> {
+pub fn parse_param(s: &str) -> Result<ParamPose> {
     let (id, value) = s
         .split_once('=')
         .ok_or_else(|| anyhow!("pose must look like <param id>=<value>, got {s:?}"))?;
@@ -102,7 +102,7 @@ pub(crate) fn parse_param(s: &str) -> Result<ParamPose> {
     })
 }
 
-pub(crate) fn parse_pair(s: &str) -> Result<SlotPair> {
+pub fn parse_pair(s: &str) -> Result<SlotPair> {
     let bad = || anyhow!("a pair must look like <a slot>:<b slot>:<weight>, got {s:?}");
     let [a, b, weight] = s.split(':').collect::<Vec<_>>()[..] else {
         return Err(bad());
@@ -117,7 +117,7 @@ pub(crate) fn parse_pair(s: &str) -> Result<SlotPair> {
     })
 }
 
-pub(crate) fn read_offsets(path: &str) -> Result<Vec<[f32; 2]>> {
+pub fn read_offsets(path: &str) -> Result<Vec<[f32; 2]>> {
     let text = std::fs::read_to_string(path).with_context(|| format!("reading {path}"))?;
     serde_json::from_str(&text).with_context(|| format!("parsing {path}"))
 }

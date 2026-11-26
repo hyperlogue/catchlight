@@ -21,7 +21,7 @@ use crate::schema::{SchemaMesh, SchemaNode, SchemaParam, SchemaTransform};
 
 /// `.inx` names are not unique, so messages carry the minted Id too.
 #[derive(Clone, Copy)]
-pub(crate) struct NodeRef<'a> {
+pub struct NodeRef<'a> {
     pub(crate) id: &'a NodeId,
     pub(crate) name: &'a str,
 }
@@ -29,7 +29,7 @@ pub(crate) struct NodeRef<'a> {
 /// DFS pre-order, so `parent < self` and sibling order is kept. Duplicate
 /// uuids map to their first occurrence. Uses an explicit stack because
 /// untrusted `.inx` depth is unbounded and recursion could overflow.
-pub(crate) fn flatten(
+pub fn flatten(
     root: &serde_json::Value,
     root_parent: Option<u32>,
     flat: &mut Vec<(SchemaNode, Option<u32>)>,
@@ -68,14 +68,14 @@ fn parse_node_shallow(value: &serde_json::Value) -> Result<SchemaNode, ImportErr
 
 // Short arrays fill missing components individually, so `"scale": [2.0]`
 // keeps its 2.0 instead of snapping to the whole default.
-pub(crate) fn vec2_arr(v: &[f32], default: [f32; 2]) -> [f32; 2] {
+pub fn vec2_arr(v: &[f32], default: [f32; 2]) -> [f32; 2] {
     [
         v.first().copied().unwrap_or(default[0]),
         v.get(1).copied().unwrap_or(default[1]),
     ]
 }
 
-pub(crate) fn vec3_arr(v: &[f32], default: [f32; 3]) -> [f32; 3] {
+pub fn vec3_arr(v: &[f32], default: [f32; 3]) -> [f32; 3] {
     [
         v.first().copied().unwrap_or(default[0]),
         v.get(1).copied().unwrap_or(default[1]),
@@ -83,7 +83,7 @@ pub(crate) fn vec3_arr(v: &[f32], default: [f32; 3]) -> [f32; 3] {
     ]
 }
 
-pub(crate) fn convert_transform(t: Option<&SchemaTransform>) -> ClmTransform {
+pub fn convert_transform(t: Option<&SchemaTransform>) -> ClmTransform {
     let mut transform = match t {
         Some(t) => ClmTransform {
             translation: vec3_arr(&t.trans, [0.0, 0.0, 0.0]),
@@ -106,7 +106,7 @@ fn reflect_transform_y(t: &mut ClmTransform) {
 
 /// Out-of-range indices, or UVs that do not pair with the vertices when
 /// `textured`, are refused: inochi2d's rendering of them is undefined.
-pub(crate) fn convert_mesh(
+pub fn convert_mesh(
     m: Option<&SchemaMesh>,
     node: NodeRef<'_>,
     textured: bool,
@@ -183,7 +183,7 @@ fn reflect_mesh_y(m: &mut ClmMesh) {
 
 /// `.clm` keeps only the `isSet` cells. If our fill does not reproduce the
 /// baked dense matrix from them, every cell is kept to preserve pixel parity.
-pub(crate) fn convert_binding_values(
+pub fn convert_binding_values(
     kind: &str,
     v: &serde_json::Value,
     is_set: Option<&[Vec<bool>]>,
@@ -279,7 +279,7 @@ fn fit_deform_cells(d: &mut Dense<Vec<f32>>, deform_len: usize, node: NodeRef<'_
     }
 }
 
-pub(crate) fn reflect_z(value: f32) -> f32 {
+pub fn reflect_z(value: f32) -> f32 {
     if value == 0.0 { 0.0 } else { -value }
 }
 
@@ -500,7 +500,7 @@ fn matrix_vec2_flat(
 
 /// An unknown name is an error rather than Normal: a wrong-but-valid mode in
 /// the written `.clm` would be unrecoverable.
-pub(crate) fn blend(s: Option<&str>) -> Result<BlendMode, ImportError> {
+pub fn blend(s: Option<&str>) -> Result<BlendMode, ImportError> {
     match s {
         None => Ok(BlendMode::default()),
         Some(name) => BlendMode::from_name(name)
@@ -508,14 +508,14 @@ pub(crate) fn blend(s: Option<&str>) -> Result<BlendMode, ImportError> {
     }
 }
 
-pub(crate) fn mask_mode(s: Option<&str>) -> MaskMode {
+pub fn mask_mode(s: Option<&str>) -> MaskMode {
     match s {
         Some("DodgeMask") => MaskMode::DodgeMask,
         _ => MaskMode::Mask,
     }
 }
 
-pub(crate) fn interp(s: Option<&str>) -> InterpolateMode {
+pub fn interp(s: Option<&str>) -> InterpolateMode {
     match s {
         Some("Nearest") => InterpolateMode::Nearest,
         Some("Stepped") => InterpolateMode::Stepped,
@@ -526,7 +526,7 @@ pub(crate) fn interp(s: Option<&str>) -> InterpolateMode {
 
 /// inochi2d's axis-point defaults. An empty axis collapses to a single stop
 /// so the param can still drive.
-pub(crate) fn axes_of(p: &SchemaParam) -> (Vec<f32>, Vec<f32>) {
+pub fn axes_of(p: &SchemaParam) -> (Vec<f32>, Vec<f32>) {
     let is_vec2 = p.is_vec2.unwrap_or(false);
     let default_y = || if is_vec2 { vec![0.0, 1.0] } else { vec![0.0] };
     let (mut axis_x, mut axis_y) = match p.axis_points.as_ref() {

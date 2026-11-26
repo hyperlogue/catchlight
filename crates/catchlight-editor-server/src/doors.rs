@@ -10,18 +10,16 @@ use std::time::Duration;
 use catchlight_editor_protocol::{ErrorCode, Reply, RequestId};
 
 /// One socket line, or one HTTP body that is not an upload.
-pub(crate) const MAX_REQUEST_BYTES: usize = 1024 * 1024;
+pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 /// Connections one door serves at once.
-pub(crate) const MAX_CONNECTIONS: usize = 64;
+pub const MAX_CONNECTIONS: usize = 64;
 const ACCEPT_RETRY_PAUSE: Duration = Duration::from_millis(50);
 
 /// The connections `incoming` yields, past any that failed to arrive: a
 /// refused accept (an aborted handshake, no descriptors left) is no reason to
 /// stop serving the tabs already open. The pause keeps a persistent failure
 /// from spinning.
-pub(crate) fn accepted<S>(
-    incoming: impl Iterator<Item = io::Result<S>>,
-) -> impl Iterator<Item = S> {
+pub fn accepted<S>(incoming: impl Iterator<Item = io::Result<S>>) -> impl Iterator<Item = S> {
     incoming.filter_map(|stream| match stream {
         Ok(stream) => Some(stream),
         Err(err) => {
@@ -33,7 +31,7 @@ pub(crate) fn accepted<S>(
 }
 
 #[derive(Default)]
-pub(crate) struct ConnectionLimiter {
+pub struct ConnectionLimiter {
     active: AtomicUsize,
 }
 
@@ -48,7 +46,7 @@ impl ConnectionLimiter {
     }
 }
 
-pub(crate) struct ConnectionPermit(Arc<ConnectionLimiter>);
+pub struct ConnectionPermit(Arc<ConnectionLimiter>);
 
 impl Drop for ConnectionPermit {
     fn drop(&mut self) {
@@ -57,7 +55,7 @@ impl Drop for ConnectionPermit {
 }
 
 /// What [`read_line`] found.
-pub(crate) enum Line {
+pub enum Line {
     /// A line through its `\n`, which it keeps.
     Terminated(Vec<u8>),
     /// The input ended partway through a line.
@@ -66,7 +64,7 @@ pub(crate) enum Line {
     End,
 }
 
-pub(crate) enum LineError {
+pub enum LineError {
     /// The line would take more bytes than the budget has left.
     TooLong,
     Io,
@@ -74,7 +72,7 @@ pub(crate) enum LineError {
 
 /// Takes every byte of the line out of `budget`. `wait` runs before each
 /// read that has to go to the stream, with nothing buffered.
-pub(crate) fn read_line<S: Read>(
+pub fn read_line<S: Read>(
     reader: &mut BufReader<S>,
     budget: &mut usize,
     mut wait: impl FnMut(&S) -> io::Result<()>,
@@ -111,7 +109,7 @@ pub(crate) fn read_line<S: Read>(
 
 /// A line that is not a request is still answered against the id the
 /// client is blocked on, or it would wait forever.
-pub(crate) fn refuse_line(line: &[u8], message: String) -> Reply {
+pub fn refuse_line(line: &[u8], message: String) -> Reply {
     Reply::Err {
         op_index: None,
         limit: None,

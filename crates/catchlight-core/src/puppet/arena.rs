@@ -58,7 +58,7 @@ impl Default for GlobalTransforms {
 /// Fields are `pub(crate)` because [`crate::meshgroup`] and [`crate::weld`]
 /// borrow several of them disjointly in one loop.
 #[derive(Clone)]
-pub(crate) struct Arena {
+pub struct Arena {
     // Indexed by NodeIdx.0; NodeIdx is sequential and never removed, so it
     // doubles as the slot index.
     pub(crate) nodes: Vec<Node>,

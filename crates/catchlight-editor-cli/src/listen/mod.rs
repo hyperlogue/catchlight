@@ -22,10 +22,10 @@ use store::{Registration, Store};
 
 /// `listen` cannot work here: no adapter for this harness, or none on this
 /// platform. `review watch` still does.
-pub(crate) const UNSUPPORTED: i32 = 5;
+pub const UNSUPPORTED: i32 = 5;
 
 /// The agent identity that goes with the harness `listen` would notify.
-pub(crate) fn detected_session(env: harness::Env) -> Option<String> {
+pub fn detected_session(env: harness::Env) -> Option<String> {
     harness::detect(env).ok()?.session
 }
 
@@ -59,7 +59,7 @@ fn shell_word(word: &str) -> String {
 
 /// The command an agent runs on a notice: the same editor, session and
 /// images directory every time.
-pub(crate) fn fetch_command(
+pub fn fetch_command(
     program: &str,
     reach: &[String],
     session: SessionId,
@@ -78,7 +78,7 @@ pub(crate) fn fetch_command(
     words.join(" ")
 }
 
-pub(crate) struct Listening<'a> {
+pub struct Listening<'a> {
     pub program: &'a str,
     /// The flags that name this editor: `--socket` or `--server`.
     pub reach: Vec<String>,
@@ -88,7 +88,7 @@ pub(crate) struct Listening<'a> {
     pub json: bool,
 }
 
-pub(crate) fn listen(how: &Listening, stream: &mut Transport) -> Result<i32> {
+pub fn listen(how: &Listening, stream: &mut Transport) -> Result<i32> {
     let env = |name: &str| env(name);
     let target = match harness::detect(&env)
         .map_err(|why| why.to_string())
@@ -216,7 +216,7 @@ pub(crate) fn listen(how: &Listening, stream: &mut Transport) -> Result<i32> {
 
 /// Needs no running editor: an agent may let go after its editor exited.
 /// `editor` narrows it to the one `--socket` or `--server` names.
-pub(crate) fn unlisten(
+pub fn unlisten(
     editor: Option<&Endpoint>,
     session: SessionId,
     who: &ReviewIdentity,
@@ -252,7 +252,7 @@ pub(crate) fn unlisten(
 }
 
 #[derive(clap::Subcommand)]
-pub(crate) enum WorkerCmd {
+pub enum WorkerCmd {
     /// Show whether the worker runs and how many polls it has made, every
     /// registration, and the last delivery failure of each.
     Status,
@@ -265,7 +265,7 @@ pub(crate) enum WorkerCmd {
     Run,
 }
 
-pub(crate) fn worker_command(action: &WorkerCmd, json: bool) -> Result<i32> {
+pub fn worker_command(action: &WorkerCmd, json: bool) -> Result<i32> {
     let store = store()?;
     match action {
         WorkerCmd::Run => {

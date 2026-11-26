@@ -46,7 +46,7 @@ pub use {
 /// A mesh `upload_mesh` refuses. A model's own meshes are validated on
 /// load, so a rebuild meeting one skips the part rather than failing.
 #[derive(Debug, Error)]
-pub(crate) enum MeshError {
+pub enum MeshError {
     #[error("mesh {mesh_id}: vertices.len() ({vertices}) != uvs.len() ({uvs})")]
     VertexUvMismatch {
         mesh_id: u32,

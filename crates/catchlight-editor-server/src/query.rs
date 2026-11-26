@@ -193,7 +193,7 @@ pub fn replica_reply(model: &Model, rev: u64, request: Request) -> Reply {
 pub const MAX_QUERY_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_QUERY_ITEMS: usize = 262_144;
 
-pub(crate) fn check_revision(command: &Command, rev: u64) -> Result<(), EditorError> {
+pub fn check_revision(command: &Command, rev: u64) -> Result<(), EditorError> {
     let expected = match command {
         Command::MeshGet { if_rev, .. }
         | Command::ModelGet { if_rev, .. }
@@ -383,7 +383,7 @@ fn binding_cells(model: &Model, command: &Command) -> Result<ResponseBody, Edito
 }
 
 /// A missing node reads as an empty group so a reply keeps its shape.
-pub(crate) fn build_tree(model: &Model, id: &NodeId) -> TreeNode {
+pub fn build_tree(model: &Model, id: &NodeId) -> TreeNode {
     let (name, kind, z_order, enabled, children) = match model.node(id) {
         Some(n) => (
             n.properties.name.to_string(),
@@ -578,7 +578,7 @@ fn binding_info(model: &Model, binding: &ModelBinding) -> Result<BindingInfo, Ed
     })
 }
 
-pub(crate) fn param_infos(model: &Model) -> Vec<ParamInfo> {
+pub fn param_infos(model: &Model) -> Vec<ParamInfo> {
     let mut out = Vec::with_capacity(model.param_ids().len());
     for pid in model.param_ids() {
         let Some(p) = model.param(pid) else { continue };

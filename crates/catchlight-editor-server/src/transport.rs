@@ -49,7 +49,7 @@ pub fn serve_unix(editor: Arc<Editor>, path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-pub(super) fn bind_unix_listener(path: &Path) -> std::io::Result<UnixListener> {
+pub fn bind_unix_listener(path: &Path) -> std::io::Result<UnixListener> {
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::DirBuilder::new()
             .recursive(true)
@@ -105,7 +105,7 @@ pub(super) fn bind_unix_listener(path: &Path) -> std::io::Result<UnixListener> {
 
 /// Refuses a directory another user owns or may write to: they could swap
 /// the socket inside it.
-pub(super) fn ensure_owned_dir(dir: &Path) -> std::io::Result<std::fs::Metadata> {
+pub fn ensure_owned_dir(dir: &Path) -> std::io::Result<std::fs::Metadata> {
     let metadata = std::fs::symlink_metadata(dir)?;
     let refuse = |why: &str| {
         Err(std::io::Error::new(
@@ -127,7 +127,7 @@ pub(super) fn ensure_owned_dir(dir: &Path) -> std::io::Result<std::fs::Metadata>
 
 /// [`ensure_owned_dir`], and narrowed to `0700` when others may read it:
 /// nobody else can have put anything in it.
-pub(super) fn ensure_private_dir(dir: &Path) -> std::io::Result<()> {
+pub fn ensure_private_dir(dir: &Path) -> std::io::Result<()> {
     if ensure_owned_dir(dir)?.mode() & 0o077 != 0 {
         std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
     }
@@ -160,11 +160,11 @@ impl SocketStartupLock {
     }
 }
 
-pub(super) fn socket_lock_path(socket_path: &Path) -> PathBuf {
+pub fn socket_lock_path(socket_path: &Path) -> PathBuf {
     socket_path.with_extension("sock.lock")
 }
 
-pub(super) fn serve_connection(editor: &Editor, stream: UnixStream) {
+pub fn serve_connection(editor: &Editor, stream: UnixStream) {
     if stream.set_read_timeout(Some(SOCKET_IO_TIMEOUT)).is_err()
         || stream.set_write_timeout(Some(SOCKET_IO_TIMEOUT)).is_err()
     {

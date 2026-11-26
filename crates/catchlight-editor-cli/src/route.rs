@@ -8,14 +8,14 @@ use crate::cli::{Cli, resolve_session};
 use crate::compose::CapturedClient;
 use crate::transport::{Endpoint, Transport};
 
-pub(crate) type Local<'a> = Box<dyn FnOnce(&Cli) -> Result<i32> + 'a>;
-pub(crate) type Typed<'a> = Box<dyn FnOnce(&Cli, &mut Transport, &Reached<'_>) -> Result<i32> + 'a>;
-pub(crate) type Compose<'a> = Box<dyn FnOnce(&mut CapturedClient<'_>) -> Result<Call> + 'a>;
-pub(crate) type Build<'a> = Box<dyn FnOnce(&Cli) -> Result<Call> + 'a>;
+pub type Local<'a> = Box<dyn FnOnce(&Cli) -> Result<i32> + 'a>;
+pub type Typed<'a> = Box<dyn FnOnce(&Cli, &mut Transport, &Reached<'_>) -> Result<i32> + 'a>;
+pub type Compose<'a> = Box<dyn FnOnce(&mut CapturedClient<'_>) -> Result<Call> + 'a>;
+pub type Build<'a> = Box<dyn FnOnce(&Cli) -> Result<Call> + 'a>;
 
 /// Each command's one way through: a command variant with no route does not
 /// compile.
-pub(crate) enum Route<'a> {
+pub enum Route<'a> {
     /// Without reaching an editor; the exit code.
     Local(Local<'a>),
     /// Remembers a session of the editor reached as the default.
@@ -60,13 +60,13 @@ impl<'a> Route<'a> {
     not(unix),
     allow(dead_code, reason = "only the unix review listener uses it")
 )]
-pub(crate) struct Reached<'a> {
+pub struct Reached<'a> {
     pub program: &'a str,
     pub endpoint: &'a Endpoint,
 }
 
 /// A command and the fields sent beside it.
-pub(crate) struct Call {
+pub struct Call {
     pub command: Command,
     /// `files` and `out` paths, absolute: the server shares this filesystem
     /// but not this working directory.

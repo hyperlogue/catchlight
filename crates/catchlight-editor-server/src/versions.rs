@@ -30,7 +30,7 @@ const MAX_KEY_BYTES: usize = 128;
 /// How many versions a model keeps, and how many distinct chunk bytes they
 /// may hold between them; past either, saving is refused.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct VersionLimits {
+pub struct VersionLimits {
     pub versions: u64,
     pub bytes: u64,
 }
@@ -122,7 +122,7 @@ struct Record {
 
 /// A session's versions and what its store is known to hold of them.
 #[derive(Debug, Default)]
-pub(crate) struct Versions {
+pub struct Versions {
     records: Vec<Record>,
     /// Chunks not yet in the store under the session's key: every chunk is
     /// here, in `stored`, or both.
@@ -182,7 +182,7 @@ fn same_author(a: &ReviewAuthor, b: &ReviewAuthor) -> bool {
 }
 
 /// A version save as its author sent it.
-pub(crate) struct Draft {
+pub struct Draft {
     pub label: Option<String>,
     pub summary: Option<String>,
     pub author: ReviewAuthor,

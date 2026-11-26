@@ -36,7 +36,7 @@ fn read_current() -> Result<Option<Current>> {
     }
 }
 
-pub(crate) fn write_current(
+pub fn write_current(
     transport: &mut transport::Transport,
     endpoint: &transport::Endpoint,
     session: SessionId,
@@ -56,7 +56,7 @@ pub(crate) fn write_current(
 }
 
 /// The remembered session, if the editor `transport` reached numbered it.
-pub(crate) fn remembered(
+pub fn remembered(
     transport: &mut transport::Transport,
     endpoint: &transport::Endpoint,
 ) -> Result<Option<SessionId>> {

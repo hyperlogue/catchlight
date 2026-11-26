@@ -22,7 +22,7 @@ use crate::{
     Attachments, Editor, EditorError, Payload, join_key, key_stem, parent_key, review, versions,
 };
 
-pub(super) fn sha256(bytes: &[u8]) -> String {
+pub fn sha256(bytes: &[u8]) -> String {
     Sha256::digest(bytes)
         .iter()
         .map(|byte| format!("{byte:02x}"))

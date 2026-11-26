@@ -26,12 +26,12 @@ use crate::renderer::{DeformSet, RendererResult, WgpuRenderer};
 
 /// A slot in the renderer's mesh table — dense, handed out as meshes upload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub(crate) struct MeshIdx(pub(crate) u32);
+pub struct MeshIdx(pub(crate) u32);
 
 /// A slot in the renderer's texture table — a position in
 /// `Model::texture_ids()`, which is also what a baked part's albedo names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub(crate) struct TexIdx(pub(crate) u32);
+pub struct TexIdx(pub(crate) u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PrepareOptions {

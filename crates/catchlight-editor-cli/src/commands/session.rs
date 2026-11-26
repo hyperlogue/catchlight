@@ -8,7 +8,7 @@ use crate::args::absolute;
 use crate::route::{Call, Route};
 
 #[derive(Subcommand)]
-pub(crate) enum SessionCmd {
+pub enum SessionCmd {
     /// Start a new empty model.
     New {
         #[arg(long)]
@@ -32,7 +32,7 @@ pub(crate) enum SessionCmd {
     Close,
 }
 
-pub(crate) fn route(action: &SessionCmd) -> Route<'_> {
+pub fn route(action: &SessionCmd) -> Route<'_> {
     match action {
         SessionCmd::New { name, clm } => Route::plain(move |_| {
             let call = Call::from(Command::SessionNew {

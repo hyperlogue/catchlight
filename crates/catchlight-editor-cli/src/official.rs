@@ -13,7 +13,7 @@ const EXPRESSIONS: &str = "catchlight.expressions";
 const ANIMATIONS: &str = "catchlight.animations";
 
 #[derive(Subcommand)]
-pub(super) enum HumanoidCmd {
+pub enum HumanoidCmd {
     /// Print the standard controls, and whether each is one-sided, as JSON.
     Controls,
     /// Print the control mappings, the standard controls left unmapped, and
@@ -40,7 +40,7 @@ pub(super) enum HumanoidCmd {
 }
 
 #[derive(clap::Args)]
-pub(super) struct SetArgs {
+pub struct SetArgs {
     /// The name, such as a standard one from `names`.
     name: String,
     /// A humanoid control and its value, within the control's range, as
@@ -57,7 +57,7 @@ pub(super) struct SetArgs {
 }
 
 #[derive(Subcommand)]
-pub(super) enum ExpressionCmd {
+pub enum ExpressionCmd {
     /// Print the standard expression names, the emotions, as JSON.
     Names,
     /// Print every expression with its settings, and the extension's
@@ -72,7 +72,7 @@ pub(super) enum ExpressionCmd {
 }
 
 #[derive(Subcommand)]
-pub(super) enum VisemeCmd {
+pub enum VisemeCmd {
     /// Print the standard viseme names as JSON.
     Names,
     /// Print every viseme with its settings, and the extension's warnings,
@@ -94,7 +94,7 @@ pub(super) enum VisemeCmd {
 }
 
 #[derive(Subcommand)]
-pub(super) enum ClipCmd {
+pub enum ClipCmd {
     /// Print every clip with its timing and what each lane drives, and the
     /// extension's warnings, as JSON.
     List,
@@ -160,11 +160,7 @@ enum Plan {
     Read(Command, Show, Option<&'static str>),
 }
 
-pub(super) fn humanoid(
-    cli: &Cli,
-    action: &HumanoidCmd,
-    stream: &mut transport::Transport,
-) -> Result<i32> {
+pub fn humanoid(cli: &Cli, action: &HumanoidCmd, stream: &mut transport::Transport) -> Result<i32> {
     let session = resolve_session(cli)?;
     let plan = match action {
         HumanoidCmd::Controls => Plan::Read(
@@ -217,7 +213,7 @@ pub(super) fn humanoid(
     execute(cli, session, plan, stream)
 }
 
-pub(super) fn expression(
+pub fn expression(
     cli: &Cli,
     group: ExpressionGroup,
     action: &ExpressionCmd,
@@ -234,7 +230,7 @@ pub(super) fn expression(
     execute(cli, session, plan, stream)
 }
 
-pub(super) fn viseme(
+pub fn viseme(
     cli: &Cli,
     action: &VisemeCmd,
     matches: Option<&ArgMatches>,
@@ -258,7 +254,7 @@ pub(super) fn viseme(
     execute(cli, session, plan, stream)
 }
 
-pub(super) fn clip(cli: &Cli, action: &ClipCmd, stream: &mut transport::Transport) -> Result<i32> {
+pub fn clip(cli: &Cli, action: &ClipCmd, stream: &mut transport::Transport) -> Result<i32> {
     let session = resolve_session(cli)?;
     let plan = match action {
         ClipCmd::List => Plan::Read(
@@ -500,7 +496,7 @@ fn warnings(
 }
 
 /// `extension warnings`: one line per finding, the key first.
-pub(super) fn print_warnings(warnings: &[ExtensionWarningInfo]) {
+pub fn print_warnings(warnings: &[ExtensionWarningInfo]) {
     if warnings.is_empty() {
         println!("no extension warnings");
     }

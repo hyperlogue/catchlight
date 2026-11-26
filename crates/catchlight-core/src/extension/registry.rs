@@ -90,10 +90,7 @@ fn decode_typed<T: Extension>(raw: RawExtension) -> Result<Arc<Typed>, Unread> {
 }
 
 /// `None` when no type is registered under `key`.
-pub(crate) fn decode_registered(
-    key: &str,
-    raw: &RawExtension,
-) -> Option<Result<Arc<Typed>, Unread>> {
+pub fn decode_registered(key: &str, raw: &RawExtension) -> Option<Result<Arc<Typed>, Unread>> {
     let decode = REGISTRY
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner)

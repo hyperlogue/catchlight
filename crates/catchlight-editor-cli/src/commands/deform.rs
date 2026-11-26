@@ -10,7 +10,7 @@ use crate::commands::binding::{BindingParamsArg, cell_write};
 use crate::route::Route;
 
 #[derive(Subcommand)]
-pub(crate) enum DeformCmd {
+pub enum DeformCmd {
     /// Write a raw deform contribution around the rest mesh origin. An absent
     /// binding gets default endpoint axes.
     Set {
@@ -42,7 +42,7 @@ pub(crate) enum DeformCmd {
     },
 }
 
-pub(crate) fn route(action: &DeformCmd) -> Route<'_> {
+pub fn route(action: &DeformCmd) -> Route<'_> {
     Route::composed(move |remote| {
         let (params, node, cell, offsets) = match action {
             DeformCmd::Vertices {

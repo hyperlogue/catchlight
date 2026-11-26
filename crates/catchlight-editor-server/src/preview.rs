@@ -31,7 +31,7 @@ pub enum PreviewError {
 
 type Result<T> = std::result::Result<T, PreviewError>;
 
-pub(super) struct PreviewRenderer {
+pub struct PreviewRenderer {
     ctx: RenderContext,
     cache: Option<(SessionId, RenderCache)>,
 }

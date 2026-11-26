@@ -14,7 +14,7 @@ use crate::cli::resolve_session;
 use crate::route::Route;
 
 #[derive(clap::Args)]
-pub(crate) struct BindingParamsArg {
+pub struct BindingParamsArg {
     #[arg(long)]
     param: ParamId,
     /// A second param; `--cell x,y` then indexes both grid axes.
@@ -32,7 +32,7 @@ impl BindingParamsArg {
 }
 
 #[derive(clap::Args)]
-pub(crate) struct BindingSelection {
+pub struct BindingSelection {
     #[command(flatten)]
     params: BindingParamsArg,
     #[arg(long)]
@@ -42,7 +42,7 @@ pub(crate) struct BindingSelection {
 }
 
 #[derive(Subcommand)]
-pub(crate) enum BindingCmd {
+pub enum BindingCmd {
     /// Insert a normalized key on one binding-owned axis.
     KeyInsert {
         #[command(flatten)]
@@ -177,7 +177,7 @@ pub(crate) enum BindingCmd {
     },
 }
 
-pub(crate) fn route(action: &BindingCmd) -> Route<'_> {
+pub fn route(action: &BindingCmd) -> Route<'_> {
     match action {
         BindingCmd::KeyInsert {
             selection,
@@ -405,7 +405,7 @@ pub(crate) fn route(action: &BindingCmd) -> Route<'_> {
     }
 }
 
-pub(crate) fn cell_write(
+pub fn cell_write(
     node: &NodeId,
     params: BindingParams,
     target: BindingTarget,

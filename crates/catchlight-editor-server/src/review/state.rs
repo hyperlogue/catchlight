@@ -161,7 +161,7 @@ enum Heard {
 }
 
 #[derive(Debug, Default, Clone)]
-pub(crate) struct ReviewState {
+pub struct ReviewState {
     pub(super) threads: Vec<Thread>,
     pub(super) last_thread: u64,
     pub(super) last_comment: u64,
@@ -305,7 +305,7 @@ pub(super) fn identity(who: ReviewIdentity) -> Result<ReviewIdentity, EditorErro
     })
 }
 
-pub(crate) fn author_of(author: ReviewAuthor) -> Result<ReviewAuthor, EditorError> {
+pub fn author_of(author: ReviewAuthor) -> Result<ReviewAuthor, EditorError> {
     let optional = |what: &str, text: Option<String>, max: usize| {
         text.filter(|t| !t.trim().is_empty())
             .map(|t| bounded(what, &t, max))

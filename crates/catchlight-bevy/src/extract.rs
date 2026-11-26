@@ -37,7 +37,7 @@ type MainWorldPuppet = (
 
 /// Refreshes render caches here because only extract may read the live
 /// puppet: under pipelined rendering the next tick overwrites its deforms.
-pub(crate) fn extract_puppets(
+pub fn extract_puppets(
     mut commands: Commands,
     mut existing: Query<&mut ExtractedPuppet>,
     mut state: ResMut<CatchlightRenderState>,
@@ -181,9 +181,9 @@ fn refresh_model<'a>(
 }
 
 #[derive(Component, Default, Clone, Copy)]
-pub(crate) struct ExtractedCatchlightCamera;
+pub struct ExtractedCatchlightCamera;
 
-pub(crate) fn extract_cameras(
+pub fn extract_cameras(
     mut commands: Commands,
     existing: Query<Entity, With<ExtractedCatchlightCamera>>,
     query: Extract<Query<&RenderEntity, With<CatchlightCamera>>>,

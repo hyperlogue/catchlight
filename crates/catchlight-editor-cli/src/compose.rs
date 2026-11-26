@@ -10,7 +10,7 @@ use crate::cli::{Cli, resolve_session};
 use crate::print::code_name;
 use crate::transport;
 
-pub(crate) struct CapturedClient<'a> {
+pub struct CapturedClient<'a> {
     stream: &'a mut transport::Transport,
     pub(crate) session: SessionId,
     revision: Option<u64>,

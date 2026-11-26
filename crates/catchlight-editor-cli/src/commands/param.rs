@@ -6,7 +6,7 @@ use clap::Subcommand;
 use crate::route::Route;
 
 #[derive(Subcommand)]
-pub(crate) enum ParamCmd {
+pub enum ParamCmd {
     /// Create a scalar input parameter. Key positions belong to bindings.
     Add {
         name: String,
@@ -38,7 +38,7 @@ pub(crate) enum ParamCmd {
     Delete { param: ParamId },
 }
 
-pub(crate) fn route(action: &ParamCmd) -> Route<'_> {
+pub fn route(action: &ParamCmd) -> Route<'_> {
     Route::on_session(move |session| match action {
         ParamCmd::Add {
             name,

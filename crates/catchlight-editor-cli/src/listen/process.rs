@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 /// A PID means something only in its boot and PID namespace; `started_at`
 /// tells the agent from an unrelated process that reused its PID.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct AgentProcess {
+pub struct AgentProcess {
     pub pid: u32,
     pub platform: String,
     pub boot_id: String,
@@ -18,14 +18,14 @@ pub(crate) struct AgentProcess {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Liveness {
+pub enum Liveness {
     Alive,
     Dead,
     Unknown,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Entry {
+pub struct Entry {
     pub parent: u32,
     pub uid: u32,
     pub name: String,
@@ -38,7 +38,7 @@ type Read = Option<Option<Entry>>;
 
 /// Parses `/proc/<pid>/stat`. `comm` may itself hold spaces and parentheses;
 /// field 22 is the start time.
-pub(crate) fn parse_linux_stat(stat: &str, uid: u32) -> Option<Entry> {
+pub fn parse_linux_stat(stat: &str, uid: u32) -> Option<Entry> {
     let begin = stat.find('(')?;
     let end = stat.rfind(')')?;
     if begin < 1 || end < begin {
@@ -65,7 +65,7 @@ pub(crate) fn parse_linux_stat(stat: &str, uid: u32) -> Option<Entry> {
 /// Names a harness's long-lived process goes by. Every harness also starts
 /// short-lived helpers under its own name, so both the process name and its
 /// command must match.
-pub(crate) fn harness_names(harness: &str, executable: Option<&Path>) -> Vec<String> {
+pub fn harness_names(harness: &str, executable: Option<&Path>) -> Vec<String> {
     let mut names: Vec<String> = match harness {
         "claude" => vec!["claude".into(), ".claude-wrapped".into()],
         "codex" => vec!["codex".into(), ".codex-wrapped".into()],
@@ -87,7 +87,7 @@ fn basename(path: &str) -> &str {
 /// The nearest ancestor from `first` that is the harness itself. `None`
 /// when isolation hides it: then the registration is left untracked rather
 /// than tied to the life of one tool call.
-pub(crate) fn find_ancestor(
+pub fn find_ancestor(
     names: &[String],
     read: &mut dyn FnMut(u32) -> Read,
     first: u32,
@@ -110,7 +110,7 @@ pub(crate) fn find_ancestor(
 }
 
 /// One inspection of the process table; reads are cached for its life.
-pub(crate) struct Processes {
+pub struct Processes {
     context: Option<(String, String, String)>,
     uid: Option<u32>,
     entries: HashMap<u32, Read>,

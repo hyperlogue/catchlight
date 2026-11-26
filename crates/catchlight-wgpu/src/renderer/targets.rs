@@ -1,7 +1,7 @@
 use super::*;
 
 #[derive(Clone)]
-pub(crate) struct CompositeTexture {
+pub struct CompositeTexture {
     pub(super) view: wgpu::TextureView,
     // A dst-in-shader child blends against this composite's contents, and
     // the snapshot copy needs the texture handle (COPY_SRC), not a view.
@@ -101,7 +101,7 @@ impl SnapshotTexture {
 }
 
 /// Allocates nothing until a dst-in-shader part shows up.
-pub(crate) struct FramebufferSnapshotPool {
+pub struct FramebufferSnapshotPool {
     pub(super) slots: Vec<SnapshotTexture>,
     pub(super) cursor: usize,
     pub(super) width: u32,
@@ -168,7 +168,7 @@ impl FramebufferSnapshotPool {
 
 /// Viewport-sized offscreen textures reused across composites; `reset()` at
 /// the start of every frame.
-pub(crate) struct CompositePool {
+pub struct CompositePool {
     pub(super) slots: Vec<CompositeTexture>,
     pub(super) cursor: usize,
     // Rewinds pull `cursor` back, so it cannot say how many slots a frame needed.
@@ -246,7 +246,7 @@ impl CompositePool {
 /// Viewport-sized mask target shared across every puppet in a frame:
 /// `Depth24PlusStencil8` on the stencil path, otherwise a sampled color
 /// mask texture (WebGL fallback).
-pub(crate) struct StencilTarget {
+pub struct StencilTarget {
     pub(super) texture: wgpu::Texture,
     pub(super) view: wgpu::TextureView,
     /// `Some` exactly on the sampled-mask path.

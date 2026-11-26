@@ -8,7 +8,7 @@ use bevy::render::{
 use crate::extract::{ExtractedCatchlightCamera, ExtractedPuppet};
 use crate::prepare::{CatchlightRenderState, ModelGpu, ModelKey};
 
-pub(crate) fn catchlight_2d_pass(
+pub fn catchlight_2d_pass(
     mut state: ResMut<CatchlightRenderState>,
     extracted: Query<&ExtractedPuppet>,
     view: ViewQuery<(

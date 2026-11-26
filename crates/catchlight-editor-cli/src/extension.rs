@@ -5,7 +5,7 @@
 use super::*;
 
 #[derive(Subcommand)]
-pub(super) enum ExtensionCmd {
+pub enum ExtensionCmd {
     /// List every extension: a JSON value whole, bytes as their size and
     /// hash, and a maintained value with its version and reference table.
     List,
@@ -50,11 +50,7 @@ pub(super) enum ExtensionCmd {
     Warnings,
 }
 
-pub(super) fn run(
-    cli: &Cli,
-    action: &ExtensionCmd,
-    stream: &mut transport::Transport,
-) -> Result<i32> {
+pub fn run(cli: &Cli, action: &ExtensionCmd, stream: &mut transport::Transport) -> Result<i32> {
     let session = resolve_session(cli)?;
     let mut siblings = serde_json::Map::new();
     // `extension_get` always names a file for bytes, which only a byte value

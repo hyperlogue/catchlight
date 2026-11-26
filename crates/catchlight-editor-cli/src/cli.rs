@@ -71,7 +71,7 @@ connection file it writes; --server/--token name one explicitly.";
     about = "Drive a catchlight editor session",
     after_long_help = format!("{ID_HELP}\n\n{AGENT_HELP}")
 )]
-pub(crate) struct Cli {
+pub struct Cli {
     /// Print the raw reply JSON instead of a friendly summary.
     #[arg(long, global = true)]
     pub(crate) json: bool,
@@ -100,7 +100,7 @@ pub(crate) struct Cli {
 }
 
 #[derive(Subcommand)]
-pub(crate) enum Cmd {
+pub enum Cmd {
     /// Send any typed protocol command from JSON; use `-` for stdin.
     Request {
         file: String,
@@ -248,7 +248,7 @@ pub(crate) enum Cmd {
 }
 
 /// `--session`, else the remembered session of the editor this reached.
-pub(crate) fn resolve_session(cli: &Cli) -> Result<SessionId> {
+pub fn resolve_session(cli: &Cli) -> Result<SessionId> {
     cli.session.map(SessionId).ok_or_else(|| {
         anyhow!(
             "no session selected; pass --session <id> or run `session use <id>` / `session new`"

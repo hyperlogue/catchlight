@@ -9,14 +9,14 @@ use glam::{Affine2, Mat2, Vec2};
 
 /// Each unordered `{a, b}` pair appears in at most one record.
 #[derive(Debug, Clone)]
-pub(crate) struct Weld {
+pub struct Weld {
     pub a: NodeIdx,
     pub b: NodeIdx,
     pub pairs: Vec<WeldPair>,
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct WeldPair {
+pub struct WeldPair {
     pub a_vert: u32,
     pub b_vert: u32,
     /// A's share of the meeting point: 1.0 pins A, 0.0 pins B.
@@ -45,7 +45,7 @@ fn side(transforms: &GlobalTransforms, id: NodeIdx) -> Option<Side> {
 
 /// Must run after mesh-group propagation and before `combine_deforms`.
 /// Records solve sequentially, each seeing earlier records' writes.
-pub(crate) fn apply_welds(arena: &mut Arena, transforms: &GlobalTransforms) {
+pub fn apply_welds(arena: &mut Arena, transforms: &GlobalTransforms) {
     if arena.welds.is_empty() {
         return;
     }

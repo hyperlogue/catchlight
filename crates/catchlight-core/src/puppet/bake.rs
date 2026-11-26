@@ -70,7 +70,7 @@ pub(super) struct Baked {
 /// A model's bake, held by the model it was baked from. [`Model::bump`]
 /// clears it; a clone of the model carries it.
 #[derive(Clone, Default)]
-pub(crate) struct BakeMemo(OnceLock<Arc<Baked>>);
+pub struct BakeMemo(OnceLock<Arc<Baked>>);
 
 impl BakeMemo {
     pub(crate) fn clear(&mut self) {

@@ -6,7 +6,7 @@ use clap::Subcommand;
 use crate::route::Route;
 
 #[derive(Subcommand)]
-pub(crate) enum RenameCmd {
+pub enum RenameCmd {
     /// Rename a node's Id, rewriting every reference in the model.
     Node { from: NodeId, to: NodeId },
     /// Rename a param's Id.
@@ -15,7 +15,7 @@ pub(crate) enum RenameCmd {
     Texture { from: TexId, to: TexId },
 }
 
-pub(crate) fn route(action: &RenameCmd) -> Route<'_> {
+pub fn route(action: &RenameCmd) -> Route<'_> {
     let rename = match action {
         RenameCmd::Node { from, to } => Rename::Node {
             from: from.clone(),

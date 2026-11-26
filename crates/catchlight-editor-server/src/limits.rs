@@ -6,7 +6,7 @@ use serde::Serialize;
 
 pub const MAX_REQUEST_JSON_BYTES: usize = 1024 * 1024;
 
-pub(super) fn json_size(
+pub fn json_size(
     value: &impl Serialize,
     resource: &'static str,
     limit: usize,

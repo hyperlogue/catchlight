@@ -73,7 +73,7 @@ where
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
-pub(super) struct SchemaTransform {
+pub struct SchemaTransform {
     #[serde(default, deserialize_with = "de_positional")]
     pub(super) trans: Vec<f32>,
     #[serde(default, deserialize_with = "de_positional")]
@@ -83,7 +83,7 @@ pub(super) struct SchemaTransform {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
-pub(super) struct SchemaMask {
+pub struct SchemaMask {
     #[serde(default, deserialize_with = "de_lenient")]
     pub(super) source: Option<u32>,
     #[serde(default, deserialize_with = "de_lenient")]
@@ -91,7 +91,7 @@ pub(super) struct SchemaMask {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
-pub(super) struct SchemaMesh {
+pub struct SchemaMesh {
     #[serde(default, deserialize_with = "de_positional")]
     pub(super) verts: Vec<f32>,
     #[serde(default, deserialize_with = "de_positional")]
@@ -103,7 +103,7 @@ pub(super) struct SchemaMesh {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
-pub(super) struct SchemaNode {
+pub struct SchemaNode {
     #[serde(default, deserialize_with = "de_lenient")]
     pub(super) uuid: Option<u32>,
     #[serde(default, deserialize_with = "de_lenient")]
@@ -142,7 +142,7 @@ pub(super) struct SchemaNode {
     pub(super) propagate_meshgroup: Option<bool>,
 }
 
-pub(super) fn source_binding_is_color(kind: &str) -> bool {
+pub fn source_binding_is_color(kind: &str) -> bool {
     matches!(
         kind,
         "opacity"
@@ -184,7 +184,7 @@ impl SchemaNode {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
-pub(super) struct SchemaParam {
+pub struct SchemaParam {
     #[serde(default, deserialize_with = "de_lenient")]
     pub(super) uuid: Option<u32>,
     #[serde(default, deserialize_with = "de_lenient")]
@@ -204,7 +204,7 @@ pub(super) struct SchemaParam {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
-pub(super) struct SchemaBinding {
+pub struct SchemaBinding {
     #[serde(default, deserialize_with = "de_lenient")]
     pub(super) node: Option<u32>,
     #[serde(default, deserialize_with = "de_lenient")]
@@ -220,7 +220,7 @@ pub(super) struct SchemaBinding {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
-pub(super) struct SchemaAnimation {
+pub struct SchemaAnimation {
     #[serde(default, deserialize_with = "de_lenient")]
     pub(super) timestep: Option<f32>,
     #[serde(default, deserialize_with = "de_lenient")]
@@ -234,7 +234,7 @@ pub(super) struct SchemaAnimation {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
-pub(super) struct SchemaAnimationLane {
+pub struct SchemaAnimationLane {
     #[serde(default, deserialize_with = "de_lenient")]
     pub(super) uuid: Option<u32>,
     #[serde(default, deserialize_with = "de_lenient")]
@@ -246,7 +246,7 @@ pub(super) struct SchemaAnimationLane {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
-pub(super) struct SchemaKeyframe {
+pub struct SchemaKeyframe {
     #[serde(default, deserialize_with = "de_lenient")]
     pub(super) frame: Option<i32>,
     #[serde(default, deserialize_with = "de_lenient")]

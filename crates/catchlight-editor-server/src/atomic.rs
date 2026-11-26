@@ -10,13 +10,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-pub(crate) fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
+pub fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     write_with_mode(path, bytes, 0o666)
 }
 
 /// `mode` is the Unix permission bits the file is created with, before the
 /// umask; it is ignored elsewhere.
-pub(crate) fn write_with_mode(path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
+pub fn write_with_mode(path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
     let name = path.file_name().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,

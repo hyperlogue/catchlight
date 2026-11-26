@@ -20,7 +20,7 @@ use catchlight_editor_protocol::*;
 use crate::EditorError;
 use crate::session::Session;
 
-pub(crate) fn binding_key(
+pub fn binding_key(
     params: BindingParams,
     node: NodeId,
     target: impl Into<BindingTarget>,
@@ -33,7 +33,7 @@ pub(crate) fn binding_key(
 }
 
 /// Checked before a command mints a param or node around the joints.
-pub(crate) fn check_spine_joints(joints: &[[f32; 2]]) -> Result<(), EditorError> {
+pub fn check_spine_joints(joints: &[[f32; 2]]) -> Result<(), EditorError> {
     ModelSpine::check_joints(joints).map_err(|e| EditorError::BadTarget(e.to_string()))
 }
 
@@ -42,7 +42,7 @@ fn clm_transform_matrix(t: &clm::ClmTransform) -> Mat4 {
 }
 
 /// A response chain can sit between the mesh and its spine.
-pub(crate) fn fitted_spine<'a>(model: &'a Model, node: &'a ModelNode) -> Option<&'a NodeId> {
+pub fn fitted_spine<'a>(model: &'a Model, node: &'a ModelNode) -> Option<&'a NodeId> {
     node.mesh()?;
     let mut parent = node.parent()?;
     loop {
@@ -82,7 +82,7 @@ fn rest_to_frame(model: &Model, id: &NodeId, frame: Option<&NodeId>) -> Result<M
     Ok(matrix)
 }
 
-pub(crate) fn spine_fit(
+pub fn spine_fit(
     s: &mut Session,
     part: &NodeId,
     links: u32,
@@ -210,7 +210,7 @@ pub(crate) fn spine_fit(
     Ok(ResponseBody::SpineFit { node, params })
 }
 
-pub(crate) fn build_mesh(
+pub fn build_mesh(
     verts: Vec<[f32; 2]>,
     uvs: Vec<[f32; 2]>,
     indices: Vec<[u32; 3]>,
@@ -241,11 +241,7 @@ pub(crate) fn build_mesh(
 /// The UV mapping is fitted from the mesh being replaced when there is one:
 /// cropped imported textures are not centred, and a wrong guess moves the art
 /// rather than failing.
-pub(crate) fn automesh(
-    model: &Model,
-    node: &NodeId,
-    mode: AutoMesh,
-) -> Result<ClmMesh, EditorError> {
+pub fn automesh(model: &Model, node: &NodeId, mode: AutoMesh) -> Result<ClmMesh, EditorError> {
     let Some(ModelNodeKind::Part(part)) = model.node(node).map(|n| &n.kind) else {
         return match model.node(node) {
             Some(_) => Err(EditorError::NotAPart(node.clone())),
@@ -320,14 +316,14 @@ pub(crate) fn automesh(
     Ok(working.to_mesh(&uv_map, Some(&alpha))?)
 }
 
-pub(crate) const fn emptied_reply(node: NodeId, emptied: Vec<SlotId>) -> ResponseBody {
+pub const fn emptied_reply(node: NodeId, emptied: Vec<SlotId>) -> ResponseBody {
     ResponseBody::Emptied {
         node,
         slots: emptied,
     }
 }
 
-pub(crate) fn build_weld(a: NodeId, b: NodeId, pairs: Vec<SlotPair>) -> ModelWeld {
+pub fn build_weld(a: NodeId, b: NodeId, pairs: Vec<SlotPair>) -> ModelWeld {
     ModelWeld::new(
         a,
         b,
@@ -342,15 +338,15 @@ pub(crate) fn build_weld(a: NodeId, b: NodeId, pairs: Vec<SlotPair>) -> ModelWel
     )
 }
 
-pub(crate) fn pairs_the_same_parts(one: &ModelWeld, other: &ModelWeld) -> bool {
+pub fn pairs_the_same_parts(one: &ModelWeld, other: &ModelWeld) -> bool {
     (one.a() == other.a() && one.b() == other.b()) || (one.a() == other.b() && one.b() == other.a())
 }
 
-pub(crate) fn joins(weld: &ModelWeld, a: &NodeId, b: &NodeId) -> bool {
+pub fn joins(weld: &ModelWeld, a: &NodeId, b: &NodeId) -> bool {
     (weld.a() == a && weld.b() == b) || (weld.a() == b && weld.b() == a)
 }
 
-pub(crate) fn default_name(kind: NodeKindArg) -> String {
+pub fn default_name(kind: NodeKindArg) -> String {
     match kind {
         NodeKindArg::MotionResponse => "MotionResponse",
         NodeKindArg::Group => "Group",
@@ -361,7 +357,7 @@ pub(crate) fn default_name(kind: NodeKindArg) -> String {
     .to_string()
 }
 
-pub(crate) fn make_kind(kind: NodeKindArg) -> ModelNodeKind {
+pub fn make_kind(kind: NodeKindArg) -> ModelNodeKind {
     match kind {
         NodeKindArg::MotionResponse => ModelNodeKind::MotionResponse(Default::default()),
         NodeKindArg::Group => ModelNodeKind::Group,
@@ -371,11 +367,7 @@ pub(crate) fn make_kind(kind: NodeKindArg) -> ModelNodeKind {
     }
 }
 
-pub(crate) fn apply_patch(
-    model: &mut Model,
-    id: &NodeId,
-    patch: &NodePatch,
-) -> Result<(), EditorError> {
+pub fn apply_patch(model: &mut Model, id: &NodeId, patch: &NodePatch) -> Result<(), EditorError> {
     model.update_node(id, |n| {
         if let Some(name) = &patch.name {
             n.name = Name::truncated(name);
@@ -463,7 +455,7 @@ const fn set_opacity(kind: &mut ModelNodeKind, op: f32) {
     }
 }
 
-pub(crate) fn clm_file_from_json(
+pub fn clm_file_from_json(
     structure: &[u8],
     textures: &[ImportTexture],
     images: Vec<(String, Vec<u8>)>,
@@ -513,10 +505,7 @@ pub(crate) fn clm_file_from_json(
 
 /// Re-parents every root (a complete model's root or a fragment's unparented
 /// nodes) under `parent`; the wire's `parent` wins over what a fragment names.
-pub(crate) fn fragment_under(
-    mut file: clm::ClmFile,
-    parent: &NodeId,
-) -> Result<Model, EditorError> {
+pub fn fragment_under(mut file: clm::ClmFile, parent: &NodeId) -> Result<Model, EditorError> {
     let carried: HashSet<&NodeId> = file.doc.nodes.iter().map(|n| &n.id).collect();
     let roots: Vec<usize> = file
         .doc
@@ -532,7 +521,7 @@ pub(crate) fn fragment_under(
     Ok(Model::from_clm_file_with(&file, ReadOptions::fragment())?)
 }
 
-pub(crate) fn encoding_from_path(path: &str) -> CoreTextureEncoding {
+pub fn encoding_from_path(path: &str) -> CoreTextureEncoding {
     if path.to_ascii_lowercase().ends_with(".tga") {
         CoreTextureEncoding::Tga
     } else {
@@ -540,10 +529,7 @@ pub(crate) fn encoding_from_path(path: &str) -> CoreTextureEncoding {
     }
 }
 
-pub(crate) fn image_dims(
-    bytes: &[u8],
-    encoding: CoreTextureEncoding,
-) -> Result<(u32, u32), EditorError> {
+pub fn image_dims(bytes: &[u8], encoding: CoreTextureEncoding) -> Result<(u32, u32), EditorError> {
     catchlight_editor_core::image_dims_as(bytes, encoding)
         .map_err(|e| EditorError::Image(e.to_string()))
 }

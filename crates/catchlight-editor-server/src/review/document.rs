@@ -157,7 +157,7 @@ impl ReviewState {
 
 /// What the store is known to hold for one session's review.
 #[derive(Debug, Default)]
-pub(crate) struct ReviewKeeping {
+pub struct ReviewKeeping {
     /// The document as last read or written; `None` forces the next write.
     written: Option<Vec<u8>>,
     /// The [`ReviewState::generation`] `written` holds.

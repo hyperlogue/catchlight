@@ -10,5 +10,5 @@ mod state;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use document::ReviewKeeping;
-pub(crate) use state::{ReviewState, author_of};
+pub use document::ReviewKeeping;
+pub use state::{ReviewState, author_of};

@@ -365,12 +365,12 @@ fn kind_edit_fault(before: &ModelNodeKind, after: &ModelNodeKind) -> Option<&'st
     }
 }
 
-pub(crate) const fn is_mask_source(kind: &ModelNodeKind) -> bool {
+pub const fn is_mask_source(kind: &ModelNodeKind) -> bool {
     matches!(kind, ModelNodeKind::Part(_) | ModelNodeKind::Composite(_))
 }
 
 /// A part's albedo is a texture's only user.
-pub(crate) const fn albedo_of(node: &ModelNode) -> Option<&TexId> {
+pub const fn albedo_of(node: &ModelNode) -> Option<&TexId> {
     match &node.kind {
         ModelNodeKind::Part(p) => p.albedo.as_ref(),
         _ => None,

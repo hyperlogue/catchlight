@@ -27,7 +27,7 @@ impl From<expressions::AuthoringError> for EditorError {
     }
 }
 
-pub(crate) const fn humanoid_code(e: &humanoid::AuthoringError) -> ErrorCode {
+pub const fn humanoid_code(e: &humanoid::AuthoringError) -> ErrorCode {
     use humanoid::AuthoringError as E;
     match e {
         E::EmptyControlName | E::NonFiniteStop { .. } => ErrorCode::BadRequest,
@@ -38,7 +38,7 @@ pub(crate) const fn humanoid_code(e: &humanoid::AuthoringError) -> ErrorCode {
     }
 }
 
-pub(crate) const fn expressions_code(e: &expressions::AuthoringError) -> ErrorCode {
+pub const fn expressions_code(e: &expressions::AuthoringError) -> ErrorCode {
     use expressions::AuthoringError as E;
     match e {
         E::EmptyName(_) | E::NoSettings { .. } | E::ControlValue { .. } | E::ParamValue { .. } => {
@@ -106,7 +106,7 @@ const fn control_names(nonstandard: bool) -> humanoid::ControlNames {
     }
 }
 
-pub(crate) fn humanoid_map(
+pub fn humanoid_map(
     model: &mut Model,
     control: &str,
     param: &ParamId,
@@ -120,17 +120,14 @@ pub(crate) fn humanoid_map(
     })
 }
 
-pub(crate) fn humanoid_unmap(
-    model: &mut Model,
-    control: &str,
-) -> Result<ResponseBody, EditorError> {
+pub fn humanoid_unmap(model: &mut Model, control: &str) -> Result<ResponseBody, EditorError> {
     let removed = humanoid::unmap(model, control)?;
     Ok(ResponseBody::HumanoidUnmapped {
         mapping: mapping_info(control, removed),
     })
 }
 
-pub(crate) fn expression_set(
+pub fn expression_set(
     model: &mut Model,
     which: ExpressionGroup,
     name: &str,
@@ -156,7 +153,7 @@ pub(crate) fn expression_set(
     })
 }
 
-pub(crate) fn expression_delete(
+pub fn expression_delete(
     model: &mut Model,
     which: ExpressionGroup,
     name: &str,
@@ -168,10 +165,7 @@ pub(crate) fn expression_delete(
     })
 }
 
-pub(crate) fn viseme_add_standard(
-    model: &mut Model,
-    replace: bool,
-) -> Result<ResponseBody, EditorError> {
+pub fn viseme_add_standard(model: &mut Model, replace: bool) -> Result<ResponseBody, EditorError> {
     let existing = if replace {
         expressions::OnExisting::Replace
     } else {
@@ -200,7 +194,7 @@ fn read<T: catchlight_core::extension::Extension>(
     }
 }
 
-pub(crate) fn humanoid_get(model: &Model) -> Result<ResponseBody, EditorError> {
+pub fn humanoid_get(model: &Model) -> Result<ResponseBody, EditorError> {
     let mappings = read::<Humanoid>(model)?
         .map(|h| {
             h.mappings()
@@ -220,7 +214,7 @@ pub(crate) fn humanoid_get(model: &Model) -> Result<ResponseBody, EditorError> {
     })
 }
 
-pub(crate) fn expression_list(model: &Model) -> Result<ResponseBody, EditorError> {
+pub fn expression_list(model: &Model) -> Result<ResponseBody, EditorError> {
     let data = read::<Expressions>(model)?;
     let members = |g: Group| -> Vec<ExpressionInfo> {
         data.map(|d| d.all(g).map(expression_info).collect())
@@ -235,7 +229,7 @@ pub(crate) fn expression_list(model: &Model) -> Result<ResponseBody, EditorError
 }
 
 /// A lane whose param is gone is left out, as the extension reads it.
-pub(crate) fn clip_list(model: &Model) -> Result<ResponseBody, EditorError> {
+pub fn clip_list(model: &Model) -> Result<ResponseBody, EditorError> {
     let clips = read::<Animations>(model)?
         .map(|animations| animations.clips().collect::<Vec<_>>())
         .unwrap_or_default();
@@ -274,7 +268,7 @@ pub(crate) fn clip_list(model: &Model) -> Result<ResponseBody, EditorError> {
     })
 }
 
-pub(crate) fn extension_warnings(model: &Model) -> ResponseBody {
+pub fn extension_warnings(model: &Model) -> ResponseBody {
     ResponseBody::ExtensionWarnings {
         warnings: model
             .extension_warnings()

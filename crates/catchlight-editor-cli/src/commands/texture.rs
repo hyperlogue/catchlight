@@ -9,7 +9,7 @@ use crate::cli::resolve_session;
 use crate::route::{Call, Route};
 
 #[derive(Subcommand)]
-pub(crate) enum TextureCmd {
+pub enum TextureCmd {
     /// Add a PNG/TGA texture and make a part draw it, in one edit. A texture
     /// the part was the last to draw goes with it.
     Add {
@@ -23,7 +23,7 @@ pub(crate) enum TextureCmd {
     List,
 }
 
-pub(crate) fn route(action: &TextureCmd) -> Route<'_> {
+pub fn route(action: &TextureCmd) -> Route<'_> {
     match action {
         TextureCmd::Add { node, path, id } => Route::plain(move |cli| {
             let command = Command::TextureAdd {

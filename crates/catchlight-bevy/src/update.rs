@@ -3,7 +3,7 @@ use bevy::prelude::*;
 use crate::asset::CatchlightModel;
 use crate::components::CatchlightPuppet;
 
-pub(crate) fn update_puppets(
+pub fn update_puppets(
     time: Res<Time>,
     models: Res<Assets<CatchlightModel>>,
     mut puppets: Query<(&mut CatchlightPuppet, &GlobalTransform)>,

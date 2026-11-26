@@ -9,11 +9,7 @@ use crate::cli::resolve_session;
 use crate::route::{Call, Route};
 
 /// `request`: any typed command, sent as the JSON gives it.
-pub(crate) fn request<'a>(
-    file: &'a str,
-    attachments: &'a [String],
-    out: Option<&'a str>,
-) -> Route<'a> {
+pub fn request<'a>(file: &'a str, attachments: &'a [String], out: Option<&'a str>) -> Route<'a> {
     Route::plain(move |_| {
         let command: Command = serde_json::from_str(&read_json(file)?)?;
         let mut files = Map::new();
@@ -36,7 +32,7 @@ pub(crate) fn request<'a>(
     })
 }
 
-pub(crate) fn edit(file: &str, validate: bool) -> Route<'_> {
+pub fn edit(file: &str, validate: bool) -> Route<'_> {
     Route::composed(move |remote| {
         let edits = serde_json::from_str(&read_json(file)?)?;
         let session = remote.session;
@@ -57,7 +53,7 @@ pub(crate) fn edit(file: &str, validate: bool) -> Route<'_> {
     })
 }
 
-pub(crate) fn history() -> Route<'static> {
+pub fn history() -> Route<'static> {
     Route::plain(|cli| {
         Ok(Command::EditHistoryGet {
             session: resolve_session(cli)?,
@@ -66,7 +62,7 @@ pub(crate) fn history() -> Route<'static> {
     })
 }
 
-pub(crate) fn goto(revision: u64) -> Route<'static> {
+pub fn goto(revision: u64) -> Route<'static> {
     Route::composed(move |remote| {
         Ok(Command::EditGoto {
             session: remote.session,
@@ -76,7 +72,7 @@ pub(crate) fn goto(revision: u64) -> Route<'static> {
     })
 }
 
-pub(crate) fn export(out: &str) -> Route<'_> {
+pub fn export(out: &str) -> Route<'_> {
     Route::composed(move |remote| {
         let command = Command::ModelExport {
             session: remote.session,
@@ -86,7 +82,7 @@ pub(crate) fn export(out: &str) -> Route<'_> {
     })
 }
 
-pub(crate) fn undo() -> Route<'static> {
+pub fn undo() -> Route<'static> {
     Route::composed(|remote| {
         Ok(Command::Undo {
             session: remote.session,
@@ -95,7 +91,7 @@ pub(crate) fn undo() -> Route<'static> {
     })
 }
 
-pub(crate) fn redo() -> Route<'static> {
+pub fn redo() -> Route<'static> {
     Route::composed(|remote| {
         Ok(Command::Redo {
             session: remote.session,
@@ -104,7 +100,7 @@ pub(crate) fn redo() -> Route<'static> {
     })
 }
 
-pub(crate) fn preview<'a>(
+pub fn preview<'a>(
     out: &'a str,
     params: &'a [ParamPose],
     size: Option<[u32; 2]>,

@@ -13,10 +13,10 @@ use super::*;
 
 /// `review watch` ran out its `--timeout` with nothing sent. Apart from 1
 /// (a refused command or failed delivery) and 2 (clap's usage error).
-pub(super) const TIMED_OUT: i32 = 3;
+pub const TIMED_OUT: i32 = 3;
 /// What `fetch` or `watch` printed changed before it was acknowledged: the
 /// comments were deleted, resolved or taken by another agent meanwhile.
-pub(super) const SUPERSEDED: i32 = 4;
+pub const SUPERSEDED: i32 = 4;
 
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -25,7 +25,7 @@ const POLL_INTERVAL: Duration = Duration::from_secs(1);
 const DEFAULT_AGENT: &str = "agent";
 
 #[derive(clap::Args)]
-pub(super) struct ReviewArgs {
+pub struct ReviewArgs {
     /// The name the person sees on your comments. Defaults to your harness
     /// (claude, codex, antigravity), else "agent". Who you are is separate:
     /// the harness session, or `CATCHLIGHT_AGENT_SESSION`.
@@ -54,7 +54,7 @@ fn harness(env: &dyn Fn(&str) -> Option<String>) -> Option<(&'static str, String
 }
 
 /// The agent this process writes as, from its harness and environment.
-pub(super) fn agent(name: Option<&str>) -> ReviewIdentity {
+pub fn agent(name: Option<&str>) -> ReviewIdentity {
     identity(name, &|name| std::env::var(name).ok())
 }
 
@@ -453,7 +453,7 @@ fn message(given: &Option<String>, attach: &[PathBuf]) -> Result<String> {
     }
 }
 
-pub(super) fn route(args: &ReviewArgs) -> Route<'_> {
+pub fn route(args: &ReviewArgs) -> Route<'_> {
     match &args.action {
         ReviewCmd::List {
             all,
@@ -637,7 +637,7 @@ const UNSUPPORTED: i32 = 5;
 
 /// Prints a refusal; the exit code.
 #[cfg(unix)]
-pub(super) fn refused(reply: &Reply) -> i32 {
+pub fn refused(reply: &Reply) -> i32 {
     match reply {
         Reply::Err { code, message, .. } => eprintln!("[{}] {message}", code_name(*code)),
         other => eprintln!("unexpected reply: {other:?}"),
@@ -852,7 +852,7 @@ fn finish(cli: &Cli, reply: &Reply, all: bool, saved: Option<&Saved>) -> i32 {
 
 /// `None` for a body that is not a review's. `saved` is `None` when no
 /// `--attachments-dir` was given.
-pub(super) fn describe(body: &ResponseBody, all: bool, saved: Option<&Saved>) -> Option<String> {
+pub fn describe(body: &ResponseBody, all: bool, saved: Option<&Saved>) -> Option<String> {
     let mut out = String::new();
     match body {
         ResponseBody::Review { review } => {

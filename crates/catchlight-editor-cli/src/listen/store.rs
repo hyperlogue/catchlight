@@ -20,7 +20,7 @@ use crate::transport::Endpoint;
 /// `<base>/catchlight`, the directory the editor keeps `reviews/` in (see
 /// `catchlight_editor_server::user_review_dir`). `CATCHLIGHT_STATE_DIR`
 /// replaces it whole.
-pub(crate) fn state_dir(var: &dyn Fn(&str) -> Option<std::ffi::OsString>) -> Option<PathBuf> {
+pub fn state_dir(var: &dyn Fn(&str) -> Option<std::ffi::OsString>) -> Option<PathBuf> {
     let absolute = |name: &str| var(name).map(PathBuf::from).filter(|p| p.is_absolute());
     if let Some(dir) = absolute("CATCHLIGHT_STATE_DIR") {
         return Some(dir);
@@ -33,8 +33,8 @@ pub(crate) fn state_dir(var: &dyn Fn(&str) -> Option<std::ffi::OsString>) -> Opt
     Some(base.join("catchlight"))
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub(crate) struct Registration {
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Registration {
     /// Changes on every `listen`: the worker writes back only to the
     /// registration it read.
     pub nonce: String,
@@ -70,7 +70,7 @@ impl Registration {
     }
 }
 
-pub(crate) fn file_name(editor: &Endpoint, session: u64, agent: &str) -> String {
+pub fn file_name(editor: &Endpoint, session: u64, agent: &str) -> String {
     let editor = match editor {
         Endpoint::Socket(path) => format!("socket:{}", path.display()),
         Endpoint::Http { url, .. } => format!("http:{}", url.trim_end_matches('/')),
@@ -81,7 +81,7 @@ pub(crate) fn file_name(editor: &Endpoint, session: u64, agent: &str) -> String 
     format!("{hex}.json")
 }
 
-pub(crate) struct Store {
+pub struct Store {
     pub dir: PathBuf,
     /// This user's id, read off a directory it owns.
     pub uid: u32,
@@ -321,7 +321,7 @@ fn private_dir(path: &Path) -> Result<()> {
 mod tests {
     use super::*;
 
-    pub(crate) fn registration(agent: &str, notified: Option<&str>) -> Registration {
+    pub fn registration(agent: &str, notified: Option<&str>) -> Registration {
         Registration {
             nonce: "n".into(),
             editor: Endpoint::Socket("/run/editor.sock".into()),
