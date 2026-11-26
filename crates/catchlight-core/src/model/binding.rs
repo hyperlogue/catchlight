@@ -1163,7 +1163,56 @@ impl Model {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct ModelBinding {
+    pub(super) key: BindingKey,
+    pub(super) key_positions: Vec<Vec<f32>>,
+    pub(super) interpolate_mode: InterpolateMode,
+    pub(super) values: ModelBindingValues,
+    /// Memo of `values`; dropped by [`Self::values_mut`].
+    pub(super) dense: OnceLock<Arc<DenseGrid>>,
+}
+
 impl ModelBinding {
+    /// Normalized key positions, one axis per driving param, in param order.
+    pub fn key_positions(&self) -> &[Vec<f32>] {
+        &self.key_positions
+    }
+
+    pub fn key(&self) -> &BindingKey {
+        &self.key
+    }
+
+    pub fn params(&self) -> &BindingParams {
+        &self.key.params
+    }
+
+    pub fn node(&self) -> &NodeId {
+        &self.key.node
+    }
+
+    pub fn target(&self) -> BindingTarget {
+        self.key.target
+    }
+
+    pub fn interpolate_mode(&self) -> InterpolateMode {
+        self.interpolate_mode
+    }
+
+    pub fn values(&self) -> &ClmBindingValues {
+        &self.values
+    }
+
+    /// Copy-on-write; the only way cells change, which keeps the dense memo valid.
+    pub(super) fn values_mut(&mut self) -> &mut ClmBindingValues {
+        self.dense.take();
+        Arc::make_mut(&mut self.values.0)
+    }
+
+    pub(super) fn invalidate_dense(&mut self) {
+        self.dense.take();
+    }
+
     fn cell_coords_mut(&mut self) -> &mut dyn CellCoords {
         match self.values_mut() {
             ClmBindingValues::Deform(c) => &mut c.cells,
@@ -1184,6 +1233,29 @@ impl ModelBinding {
             | ClmBindingValues::ScreenTintG(c)
             | ClmBindingValues::ScreenTintB(c) => &mut c.cells,
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModelBindingValues(pub(super) Arc<ClmBindingValues>);
+
+impl ModelBindingValues {
+    pub fn to_clm(&self) -> ClmBindingValues {
+        (*self.0).clone()
+    }
+}
+
+impl From<ClmBindingValues> for ModelBindingValues {
+    fn from(values: ClmBindingValues) -> Self {
+        Self(Arc::new(values))
+    }
+}
+
+impl Deref for ModelBindingValues {
+    type Target = ClmBindingValues;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 

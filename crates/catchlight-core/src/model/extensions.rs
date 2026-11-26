@@ -1,5 +1,5 @@
-//! Typed access to a model's extensions, and the core's side of keeping them
-//! consistent with the model.
+//! A model's extensions: stored values, typed access, and the core's side of
+//! keeping them consistent with the model.
 
 use std::any::Any;
 
@@ -9,7 +9,75 @@ use crate::extension::{
 
 use super::*;
 
+/// An extension as stored. JSON values travel inline with the structure;
+/// bytes live in their own section and travel by hash.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExtensionValue {
+    /// A plain annotation: carried, never maintained.
+    Json(serde_json::Value),
+    /// A plain annotation: carried, never maintained.
+    Bytes(Arc<[u8]>),
+    Maintained(RawExtension),
+}
+
+impl ExtensionValue {
+    /// The bytes this value keeps in the `Extensions` section, a maintained
+    /// extension's byte payload among them.
+    pub fn bytes(&self) -> Option<&Arc<[u8]>> {
+        match self {
+            Self::Bytes(data) => Some(data),
+            Self::Maintained(raw) => raw.payload.bytes(),
+            Self::Json(_) => None,
+        }
+    }
+
+    /// The JSON this value carries inline, a maintained extension's JSON
+    /// payload among them.
+    pub fn json(&self) -> Option<&serde_json::Value> {
+        match self {
+            Self::Json(value) => Some(value),
+            Self::Maintained(raw) => raw.payload.json(),
+            Self::Bytes(_) => None,
+        }
+    }
+}
+
 impl Model {
+    pub fn extensions(&self) -> &Extensions {
+        &self.extensions
+    }
+
+    pub fn unknown_sections(&self) -> &[clm::ClmUnknownSection] {
+        &self.unknown_sections
+    }
+
+    /// `catchlight.` keys are reserved and refused. Size caps match the reader's,
+    /// so any value taken can be saved.
+    pub fn set_extension(
+        &mut self,
+        key: ExtensionKey,
+        value: ExtensionValue,
+    ) -> Result<(), ModelError> {
+        if key.is_reserved() {
+            return Err(ModelError::ReservedExtension(key.to_string()));
+        }
+        self.extensions.map.insert(key, Stored::value(value));
+        self.bump();
+        Ok(())
+    }
+
+    /// A missing key is an error, so a typo is not silently ignored.
+    pub fn delete_extension(&mut self, key: &ExtensionKey) -> Result<(), ModelError> {
+        if key.is_reserved() {
+            return Err(ModelError::ReservedExtension(key.to_string()));
+        }
+        if self.extensions.map.remove(key).is_none() {
+            return Err(ModelError::UnknownExtension(key.to_string()));
+        }
+        self.bump();
+        Ok(())
+    }
+
     /// Decodes on first read and caches the result; needs no registry.
     pub fn extension<T: Extension>(&self) -> Result<&T, ExtensionError> {
         let stored = self
