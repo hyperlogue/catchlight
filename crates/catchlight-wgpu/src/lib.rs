@@ -221,15 +221,15 @@ pub async fn create_headless_context() -> RendererResult<(wgpu::Device, wgpu::Qu
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ReadbackLayout {
+pub(crate) struct ReadbackLayout {
     unpadded_bytes_per_row: usize,
     padded_bytes_per_row: u32,
-    buffer_size: u64,
+    pub(crate) buffer_size: u64,
 }
 
 /// `None` for an empty texture or one whose rows overflow the copy layout or
 /// the address space.
-fn readback_layout(width: u32, height: u32) -> Option<ReadbackLayout> {
+pub(crate) fn readback_layout(width: u32, height: u32) -> Option<ReadbackLayout> {
     if width == 0 || height == 0 {
         return None;
     }

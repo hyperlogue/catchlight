@@ -74,3 +74,28 @@ fn a_zero_size_is_clamped_to_one_pixel() {
     ctx.resize(8, 0);
     assert_eq!((ctx.width(), ctx.height()), (8, 1));
 }
+
+#[test]
+fn reading_into_a_buffer_replaces_it_with_the_current_frame() {
+    let (device, queue) = common::shared_context();
+    let renderer = WgpuRenderer::new(device, queue, wgpu::TextureFormat::Rgba8Unorm);
+    let mut ctx = RenderContext::with_renderer(renderer, 64, 64);
+    let model = one_quad_model();
+    let mut cache = RenderCache::prepare(&mut ctx.renderer, &model, PrepareOptions::default())
+        .expect("prepare");
+    let mut puppet = Puppet::new(&model);
+    puppet.tick(&model, 0.0);
+    cache
+        .refresh(&mut ctx.renderer, &model, &puppet)
+        .expect("refresh");
+    let list = collect(&cache, &puppet);
+
+    let mut pixels = vec![7; 3];
+    for (width, height) in [(64, 64), (128, 96), (64, 64)] {
+        let fresh = ctx
+            .render_rgba(&list, CAMERA, width, height, Some(CLEAR))
+            .expect("render");
+        ctx.read_rgba_into(&mut pixels).expect("read back");
+        assert_eq!(pixels, fresh, "at {width}x{height}");
+    }
+}

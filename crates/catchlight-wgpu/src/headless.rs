@@ -5,8 +5,8 @@
 //! before writing straight-alpha output.
 
 use crate::{
-    create_headless_context, create_orthographic_camera_at, read_texture_to_rgba, FrameTargets,
-    RenderList, RenderStats, RenderTarget, RendererResult, WgpuRenderer,
+    create_headless_context, create_readback_buffer, readback_layout, FrameTargets, RenderList,
+    RenderStats, RenderTarget, RendererResult, WgpuRenderer,
 };
 
 /// `height` is in world units; width follows the target's aspect. Distinct
@@ -31,6 +31,8 @@ pub struct RenderContext {
     targets: FrameTargets,
     target: wgpu::Texture,
     view: wgpu::TextureView,
+    /// Sized to `target`; `None` only for a size the copy layout cannot hold.
+    readback: Option<wgpu::Buffer>,
 }
 
 impl RenderContext {
@@ -44,11 +46,13 @@ impl RenderContext {
     pub fn with_renderer(renderer: WgpuRenderer, width: u32, height: u32) -> Self {
         let target = create_target(&renderer, width, height);
         let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+        let readback = create_readback(&renderer, &target);
         Self {
             renderer,
             targets: FrameTargets::new(),
             target,
             view,
+            readback,
         }
     }
 
@@ -74,9 +78,11 @@ impl RenderContext {
         self.view = self
             .target
             .create_view(&wgpu::TextureViewDescriptor::default());
+        self.readback = create_readback(&self.renderer, &self.target);
     }
 
     /// Returns tightly packed premultiplied RGBA8.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn render_rgba(
         &mut self,
         render_list: &RenderList,
@@ -87,11 +93,12 @@ impl RenderContext {
     ) -> RendererResult<Vec<u8>> {
         self.resize(width, height);
         let aspect = self.width() as f32 / self.height() as f32;
-        self.renderer.update_camera(create_orthographic_camera_at(
-            camera.height,
-            aspect,
-            camera.center,
-        ));
+        self.renderer
+            .update_camera(crate::create_orthographic_camera_at(
+                camera.height,
+                aspect,
+                camera.center,
+            ));
         self.render(render_list, clear);
         self.read_rgba()
     }
@@ -120,13 +127,41 @@ impl RenderContext {
         stats
     }
 
+    /// Blocks on the GPU, so it is not offered on wasm32, where the map
+    /// callback cannot run while the thread waits.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn read_rgba(&self) -> RendererResult<Vec<u8>> {
-        pollster::block_on(read_texture_to_rgba(
+        let mut pixels = Vec::new();
+        self.read_rgba_into(&mut pixels)?;
+        Ok(pixels)
+    }
+
+    /// [`Self::read_rgba`] into `out`, replacing its contents, for a caller
+    /// reading every frame.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn read_rgba_into(&self, out: &mut Vec<u8>) -> RendererResult<()> {
+        let readback = crate::Readback::of(&self.target)?;
+        let buffer = self
+            .readback
+            .as_ref()
+            .ok_or(crate::RendererError::ReadbackSize {
+                width: self.target.width(),
+                height: self.target.height(),
+            })?;
+        pollster::block_on(crate::read_texture_into(
             &self.renderer.device,
             &self.renderer.queue,
             &self.target,
+            readback,
+            buffer,
+            out,
         ))
     }
+}
+
+fn create_readback(renderer: &WgpuRenderer, target: &wgpu::Texture) -> Option<wgpu::Buffer> {
+    let layout = readback_layout(target.width(), target.height())?;
+    Some(create_readback_buffer(&renderer.device, layout.buffer_size))
 }
 
 fn create_target(renderer: &WgpuRenderer, width: u32, height: u32) -> wgpu::Texture {
