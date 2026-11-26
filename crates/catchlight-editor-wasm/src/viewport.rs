@@ -398,6 +398,8 @@ struct Inner {
     list: RenderList,
     camera: Camera,
     size: (u32, u32),
+    /// The device's `max_texture_dimension_2d`, which `size` never exceeds.
+    max_dimension: u32,
     dirty: bool,
     /// The last frame's timestamp, so a readback redraws without advancing.
     last_ms: f64,
@@ -637,6 +639,15 @@ impl Inner {
     }
 }
 
+/// A requested backing store, at least one pixel and scaled down to fit a
+/// surface this device will configure.
+pub(crate) fn fit_device((width, height): (u32, u32), max_dimension: u32) -> (u32, u32) {
+    capped(
+        (width.max(1), height.max(1)),
+        (max_dimension, max_dimension),
+    )
+}
+
 /// `size` scaled down to fit `cap`, keeping its aspect.
 fn capped((width, height): (u32, u32), (max_width, max_height): (u32, u32)) -> (u32, u32) {
     let scale = (max_width as f32 / width.max(1) as f32)
@@ -870,7 +881,8 @@ impl Viewport {
         replica: &Replica,
         canvas: web_sys::HtmlCanvasElement,
     ) -> Result<Viewport, JsValue> {
-        let size = (canvas.width().max(1), canvas.height().max(1));
+        let max_dimension = gpu.device.limits().max_texture_dimension_2d;
+        let size = fit_device((canvas.width(), canvas.height()), max_dimension);
 
         let (target, frames) = match &gpu.gl {
             // WebGL2, on the device's own canvas. The surface was configured
@@ -952,6 +964,7 @@ impl Viewport {
                     height: 2.0,
                 },
                 size,
+                max_dimension,
                 dirty: true,
                 last_ms: 0.0,
             })),
@@ -988,8 +1001,8 @@ impl Viewport {
     /// **device** pixels. The caller sets `canvas.width`/`canvas.height` to the
     /// same two numbers.
     pub fn resize(&self, width: u32, height: u32) {
-        let (width, height) = (width.max(1), height.max(1));
         let mut inner = self.inner.borrow_mut();
+        let (width, height) = fit_device((width, height), inner.max_dimension);
         if inner.size == (width, height) {
             return;
         }

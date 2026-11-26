@@ -9,6 +9,7 @@
 //! of it.
 
 use std::rc::Rc;
+use std::sync::Arc;
 
 use catchlight_wgpu::configure_surface;
 use wasm_bindgen::prelude::*;
@@ -90,7 +91,10 @@ impl Gpu {
         let surface = canvas_surface(&instance, canvas.clone())?;
         let adapter = request_adapter(&instance, Some(&surface)).await?;
         let (device, queue) = request_device(&adapter).await?;
-        let (width, height) = (canvas.width().max(1), canvas.height().max(1));
+        let (width, height) = crate::viewport::fit_device(
+            (canvas.width(), canvas.height()),
+            device.limits().max_texture_dimension_2d,
+        );
         let surface = configure_surface(&adapter, &device, surface, width, height);
         let stage = GlStage::new(canvas, surface, &device);
         Ok(Gpu {
@@ -168,7 +172,7 @@ async fn request_device(adapter: &wgpu::Adapter) -> Result<(wgpu::Device, wgpu::
     // 65535 and device creation fails. Catchlight is pure render, so take
     // whatever the adapter actually offers.
     let required_limits = adapter.limits();
-    adapter
+    let (device, queue) = adapter
         .request_device(&wgpu::DeviceDescriptor {
             label: Some("catchlight editor"),
             required_features,
@@ -178,5 +182,11 @@ async fn request_device(adapter: &wgpu::Adapter) -> Result<(wgpu::Device, wgpu::
             experimental_features: wgpu::ExperimentalFeatures::default(),
         })
         .await
-        .map_err(|e| format!("adapter gave no device ({e})"))
+        .map_err(|e| format!("adapter gave no device ({e})"))?;
+    // Without a handler wgpu-core (the WebGL2 tier) panics on any validation
+    // error, and a panic in wasm leaves every `RefCell` borrowed until reload.
+    device.on_uncaptured_error(Arc::new(|error: wgpu::Error| {
+        web_sys::console::error_1(&JsValue::from_str(&error.to_string()));
+    }));
+    Ok((device, queue))
 }
