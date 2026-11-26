@@ -1065,7 +1065,7 @@ fn a_preflight_is_answered_for_an_allowlisted_origin_only() {
     // named here or a browser never sends the command.
     assert_eq!(
         allowed.header("access-control-allow-methods"),
-        Some("GET, POST, PUT, OPTIONS")
+        Some("GET, POST, OPTIONS")
     );
 
     let foreign = http(

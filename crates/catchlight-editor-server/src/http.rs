@@ -443,8 +443,8 @@ fn command(state: &ServerState, request: &HttpRequest) -> Response {
     }
 }
 
-/// Byte-wise is safe: JSON puts non-ASCII only inside string literals, and
-/// `serde_json` already escaped the control characters.
+/// Escaping each non-ASCII char in place is safe: JSON puts them only inside
+/// string literals, and `serde_json` already escaped the control characters.
 fn ascii_json(json: &[u8]) -> String {
     let text = String::from_utf8_lossy(json);
     if text.is_ascii() {
@@ -1146,7 +1146,7 @@ fn cors(response: Response, origin: Option<&str>) -> Response {
                 "Access-Control-Allow-Headers",
                 "Authorization, Content-Type",
             )
-            .with("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
+            .with("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
             .with(
                 "Access-Control-Expose-Headers",
                 "X-Catchlight-Rev, X-Catchlight-Encoding, X-Catchlight-Reply",

@@ -34,7 +34,7 @@ pollster.workspace = true
 tungstenite = "0.30"
 # The per-launch bearer token has to be unguessable, so it comes from the OS.
 getrandom.workspace = true
-# `PUT /files/{key}` carries its storage key in the path, percent-encoded.
+# Query strings and the extension key in a path arrive percent-encoded.
 percent-encoding = "2.3"
 # The binary removes its `--connection-file` on Ctrl-C, SIGTERM and SIGHUP.
 ctrlc = { workspace = true, features = ["termination"] }

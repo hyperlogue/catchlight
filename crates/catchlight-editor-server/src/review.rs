@@ -1,6 +1,6 @@
 //! A session's review threads. Kept beside the model, never in it: no
 //! revision, no history entry, nothing in the model file. A session with a
-//! file writes each change through to the editor's [`ReviewStore`].
+//! file writes each change through to the editor's [`KeptStore`].
 
 use std::collections::{BTreeMap, VecDeque};
 use std::io;
@@ -172,7 +172,7 @@ fn media_type_named(name: &str) -> Option<&'static str> {
         .find(|known| *known == name)
 }
 
-/// What a [`ReviewStore`] knows an image by.
+/// What a [`KeptStore`] knows an image by.
 fn image_name(id: u64, media_type: &str) -> String {
     let ext = match media_type {
         "image/jpeg" => "jpg",

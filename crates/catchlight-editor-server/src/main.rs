@@ -1,4 +1,5 @@
-//! Headless standalone server: create an [`Editor`], listen on a socket, and
+//! Headless standalone server: create an [`Editor`] and serve it on a Unix
+//! socket, over HTTP, or both.
 //!
 //! A unix socket path is bounded at around 100 bytes (`SUN_LEN`). The socket is
 //! Unix-only; elsewhere `--http` is required.
