@@ -138,7 +138,7 @@ pub enum ClmError {
     #[error("container framing: {0}")]
     Container(#[from] ContainerError),
     #[error("CBOR encode: {0}")]
-    Encode(String),
+    Encode(#[source] ciborium::ser::Error<std::io::Error>),
     #[error("extension {key:?} names bytes the file does not carry")]
     ExtensionBytesMissing { key: String },
     #[error("the file carries bytes for extension {key:?}, which its structure does not name")]
@@ -154,7 +154,7 @@ pub enum ClmError {
     #[error("extension {key:?}'s bytes do not hash to what its marker says")]
     ExtensionHashMismatch { key: String },
     #[error("CBOR decode: {0}")]
-    Decode(String),
+    Decode(#[source] ciborium::de::Error<std::io::Error>),
     #[error("missing {0} section")]
     MissingSection(&'static str),
     #[error("unsupported .clm format_version {0}")]
@@ -632,11 +632,11 @@ fn cbor_into<T: Serialize>(
     value: &T,
     out: &mut container::SectionWriter<'_>,
 ) -> Result<(), ClmError> {
-    ciborium::into_writer(value, out).map_err(|e| ClmError::Encode(e.to_string()))
+    ciborium::into_writer(value, out).map_err(ClmError::Encode)
 }
 
 fn cbor_from_slice<T: for<'de> Deserialize<'de>>(bytes: &[u8]) -> Result<T, ClmError> {
-    ciborium::from_reader(bytes).map_err(|e| ClmError::Decode(e.to_string()))
+    ciborium::from_reader(bytes).map_err(ClmError::Decode)
 }
 
 /// Checked on read and on write, so a writer never leaves a marker without
@@ -1010,7 +1010,7 @@ mod tests {
 
     fn cbor_to_vec<T: Serialize>(value: &T) -> Result<Vec<u8>, ClmError> {
         let mut out = Vec::new();
-        ciborium::into_writer(value, &mut out).map_err(|e| ClmError::Encode(e.to_string()))?;
+        ciborium::into_writer(value, &mut out).map_err(ClmError::Encode)?;
         Ok(out)
     }
 
