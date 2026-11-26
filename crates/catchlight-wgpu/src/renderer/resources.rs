@@ -281,9 +281,9 @@ impl WgpuRenderer {
         &mut self,
         mesh_id: u32,
         mesh: &catchlight_core::Mesh,
-    ) -> RendererResult<()> {
+    ) -> Result<(), MeshError> {
         if !mesh.uvs.is_empty() && mesh.vertices.len() != mesh.uvs.len() {
-            return Err(RendererError::MeshVertexUvMismatch {
+            return Err(MeshError::VertexUvMismatch {
                 mesh_id,
                 vertices: mesh.vertices.len(),
                 uvs: mesh.uvs.len(),
@@ -295,7 +295,7 @@ impl WgpuRenderer {
             .iter_u32()
             .find(|&i| (i as usize) >= vertex_count)
         {
-            return Err(RendererError::MeshIndexOutOfBounds {
+            return Err(MeshError::IndexOutOfBounds {
                 mesh_id,
                 index: bad,
                 vertices: vertex_count,

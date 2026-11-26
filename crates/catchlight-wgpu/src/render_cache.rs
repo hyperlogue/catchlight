@@ -65,6 +65,8 @@ pub struct CacheStats {
     pub mesh_uploads: u64,
     /// Same node, mesh contents, and UV crop as the previous build.
     pub meshes_kept: u64,
+    /// Parts left undrawn because their mesh failed to upload.
+    pub meshes_skipped: u64,
 }
 
 struct UploadedMesh {
@@ -449,6 +451,7 @@ impl RenderCache {
                 Ok(()) => self.stats.mesh_uploads += 1,
                 Err(error) => {
                     self.mesh_of_node[node_slot] = None;
+                    self.stats.meshes_skipped += 1;
                     tracing::warn!(node = %up.id, "skipping mesh that failed upload: {error}");
                 }
             }

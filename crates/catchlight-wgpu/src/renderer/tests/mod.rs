@@ -1,5 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+mod errors;
 mod offscreen_culling;
 mod upload_mesh;
 mod upload_texture;

@@ -1,3 +1,4 @@
+use crate::renderer::MeshError;
 use crate::{RendererError, WgpuRenderer};
 use catchlight_core::{DecodedTexture, Mesh, MeshIndices, Vec2};
 
@@ -16,12 +17,12 @@ fn upload_mesh_rejects_vertex_uv_length_mismatch() {
         Vec2::ZERO,
     );
     match r.upload_mesh(42, &mesh) {
-        Err(RendererError::MeshVertexUvMismatch {
+        Err(MeshError::VertexUvMismatch {
             mesh_id: 42,
             vertices: 3,
             uvs: 2,
         }) => {}
-        other => panic!("expected MeshVertexUvMismatch, got {:?}", other),
+        other => panic!("expected VertexUvMismatch, got {:?}", other),
     }
 }
 
@@ -63,12 +64,12 @@ fn upload_mesh_rejects_out_of_bounds_index() {
         Vec2::ZERO,
     );
     match r.upload_mesh(99, &mesh) {
-        Err(RendererError::MeshIndexOutOfBounds {
+        Err(MeshError::IndexOutOfBounds {
             mesh_id: 99,
             index: 9,
             vertices: 3,
         }) => {}
-        other => panic!("expected MeshIndexOutOfBounds, got {:?}", other),
+        other => panic!("expected IndexOutOfBounds, got {:?}", other),
     }
 }
 

@@ -42,22 +42,27 @@ pub use {
     targets::{FrameTargets, RenderTarget},
 };
 
+/// A mesh `upload_mesh` refuses. A model's own meshes are validated on
+/// load, so a rebuild meeting one skips the part rather than failing.
 #[derive(Debug, Error)]
-pub enum RendererError {
+pub(crate) enum MeshError {
     #[error("mesh {mesh_id}: vertices.len() ({vertices}) != uvs.len() ({uvs})")]
-    MeshVertexUvMismatch {
+    VertexUvMismatch {
         mesh_id: u32,
         vertices: usize,
         uvs: usize,
     },
 
     #[error("mesh {mesh_id}: index {index} out of bounds ({vertices} vertices)")]
-    MeshIndexOutOfBounds {
+    IndexOutOfBounds {
         mesh_id: u32,
         index: u32,
         vertices: usize,
     },
+}
 
+#[derive(Debug, Error)]
+pub enum RendererError {
     #[error("texture dimensions {width}x{height} are outside the supported range 1..={limit}")]
     TextureDimensionsOutOfRange { width: u32, height: u32, limit: u32 },
 
@@ -84,28 +89,49 @@ pub enum RendererError {
     ForeignSubmission,
 
     #[error("preparing a model's textures: {0}")]
-    Texture(#[from] catchlight_core::TextureError),
+    Texture(catchlight_core::TextureError),
 
     #[error("preparing a model's textures: {0}")]
-    LoadLimit(#[from] catchlight_core::LoadLimitError),
+    LoadLimit(catchlight_core::LoadLimitError),
 
     #[error("no usable GPU adapter: {0}")]
-    Adapter(#[from] wgpu::RequestAdapterError),
+    Adapter(wgpu::RequestAdapterError),
 
     #[error("requesting the GPU device: {0}")]
-    Device(#[from] wgpu::RequestDeviceError),
+    Device(wgpu::RequestDeviceError),
 
     #[error("a {width}x{height} texture cannot be read back")]
     ReadbackSize { width: u32, height: u32 },
 
     #[error("mapping the readback buffer: {0}")]
-    ReadbackMap(#[from] wgpu::BufferAsyncError),
+    ReadbackMap(wgpu::BufferAsyncError),
 
     #[error("the device dropped the readback before it completed")]
     ReadbackAbandoned,
 
     #[error("waiting for the GPU: {0}")]
-    Poll(#[from] wgpu::PollError),
+    Poll(wgpu::PollError),
+}
+
+// By hand rather than `#[from]`, which would also report the wrapped error
+// as the source that the message already prints.
+macro_rules! from_wrapped {
+    ($($source:ty => $variant:ident),* $(,)?) => {
+        $(impl From<$source> for RendererError {
+            fn from(error: $source) -> Self {
+                Self::$variant(error)
+            }
+        })*
+    };
+}
+
+from_wrapped! {
+    catchlight_core::TextureError => Texture,
+    catchlight_core::LoadLimitError => LoadLimit,
+    wgpu::RequestAdapterError => Adapter,
+    wgpu::RequestDeviceError => Device,
+    wgpu::BufferAsyncError => ReadbackMap,
+    wgpu::PollError => Poll,
 }
 
 pub type RendererResult<T> = Result<T, RendererError>;
