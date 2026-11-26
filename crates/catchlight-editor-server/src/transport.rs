@@ -383,3 +383,249 @@ fn write_reply(writer: &mut impl Write, reply: &Reply) -> std::io::Result<()> {
     encoded.push(b'\n');
     writer.write_all(&encoded)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicU64;
+
+    static SOCKET_TEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+    /// In a directory of this user's own: the shared temp directory is one
+    /// an explicit socket path is refused in.
+    fn socket_test_path(label: &str) -> PathBuf {
+        let sequence = SOCKET_TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("catchlight-sockets-{}", std::process::id()));
+        DirBuilderExt::mode(std::fs::DirBuilder::new().recursive(true), 0o700)
+            .create(&dir)
+            .unwrap();
+        dir.join(format!("{label}-{sequence}.sock"))
+    }
+
+    #[test]
+    fn socket_startup_survives_the_lock_of_a_server_that_died() {
+        let path = socket_test_path("lock");
+        let lock = socket_lock_path(&path);
+        std::fs::write(&lock, b"").unwrap();
+
+        let listener = bind_unix_listener(&path).unwrap();
+        drop(listener);
+        std::fs::remove_file(&path).unwrap();
+
+        let held = std::fs::File::open(&lock).unwrap();
+        held.lock().unwrap();
+        let err = bind_unix_listener(&path).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::WouldBlock);
+        drop(held);
+        std::fs::remove_file(lock).unwrap();
+    }
+
+    #[test]
+    fn a_socket_directory_others_may_write_to_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = socket_test_path("private").with_extension("d");
+        std::fs::create_dir(&dir).unwrap();
+        let mode =
+            |mode| std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(mode)).unwrap();
+        let current = || std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+
+        for open in [0o777, 0o770, 0o702] {
+            mode(open);
+            let err = ensure_private_dir(&dir).unwrap_err();
+            assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied, "{open:o}");
+            assert_eq!(current(), open, "a refused directory is left as it was");
+        }
+        mode(0o755);
+        ensure_private_dir(&dir).unwrap();
+        assert_eq!(current(), 0o700);
+        std::fs::remove_dir(&dir).unwrap();
+
+        // Root owns `/`; no test runs as root.
+        if rustix::process::getuid().as_raw() != 0 {
+            let err = ensure_private_dir(Path::new("/")).unwrap_err();
+            assert!(err.to_string().contains("another user"), "{err}");
+        }
+    }
+
+    #[test]
+    fn a_named_socket_directory_is_refused_when_others_may_write_to_it_and_kept_as_it_is() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = socket_test_path("named").with_extension("d");
+        std::fs::create_dir(&dir).unwrap();
+        let path = dir.join("server.sock");
+        let mode =
+            |mode| std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(mode)).unwrap();
+        let current = || std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+
+        mode(0o777);
+        let err = bind_unix_listener(&path).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(err.to_string().contains("may write"), "{err}");
+        mode(0o755);
+        drop(bind_unix_listener(&path).unwrap());
+        assert_eq!(
+            current(),
+            0o755,
+            "a directory this user owns is not narrowed"
+        );
+        if rustix::process::getuid().as_raw() != 0 {
+            let err = ensure_owned_dir(Path::new("/")).unwrap_err();
+            assert!(err.to_string().contains("another user"), "{err}");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn socket_startup_does_not_replace_a_regular_file() {
+        let path = socket_test_path("regular");
+        std::fs::write(&path, b"keep").unwrap();
+
+        let err = bind_unix_listener(&path).unwrap_err();
+
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(&path).unwrap(), b"keep");
+        std::fs::remove_file(socket_lock_path(&path)).unwrap();
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn socket_startup_preserves_a_live_listener() {
+        let path = socket_test_path("live");
+        let listener = bind_unix_listener(&path).unwrap();
+
+        let err = bind_unix_listener(&path).unwrap_err();
+
+        assert_eq!(err.kind(), std::io::ErrorKind::AddrInUse);
+        UnixStream::connect(&path).unwrap();
+        drop(listener);
+        std::fs::remove_file(socket_lock_path(&path)).unwrap();
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn socket_startup_replaces_a_stale_socket() {
+        let path = socket_test_path("stale");
+        let stale = UnixListener::bind(&path).unwrap();
+        drop(stale);
+
+        let listener = bind_unix_listener(&path).unwrap();
+
+        UnixStream::connect(&path).unwrap();
+        drop(listener);
+        std::fs::remove_file(socket_lock_path(&path)).unwrap();
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn socket_connection_limit_releases_capacity_on_drop() {
+        let limiter = Arc::new(ConnectionLimiter::default());
+        let mut permits = (0..MAX_SOCKET_CONNECTIONS)
+            .map(|_| limiter.try_acquire().unwrap())
+            .collect::<Vec<_>>();
+        assert!(limiter.try_acquire().is_none());
+
+        permits.pop();
+
+        assert!(limiter.try_acquire().is_some());
+    }
+
+    #[test]
+    fn socket_connection_rejects_an_oversized_request() {
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let server_thread = std::thread::spawn(move || {
+            let editor = Editor::new();
+            serve_connection(&editor, server);
+        });
+        client
+            .write_all(&vec![b'x'; MAX_REQUEST_BYTES + 1])
+            .unwrap();
+        client.shutdown(std::net::Shutdown::Write).unwrap();
+
+        let mut line = String::new();
+        BufReader::new(client).read_line(&mut line).unwrap();
+        let reply: Reply = serde_json::from_str(&line).unwrap();
+
+        assert!(matches!(
+            reply,
+            Reply::Err { id: 0, code: ErrorCode::BadRequest, message, .. }
+                if message.contains("request exceeds")
+        ));
+        server_thread.join().unwrap();
+    }
+
+    #[test]
+    fn socket_files_must_name_regular_files() {
+        let (client, server) = UnixStream::pair().unwrap();
+        let server_thread = std::thread::spawn(move || {
+            let editor = Editor::new();
+            serve_connection(&editor, server);
+        });
+        let mut writer = client.try_clone().unwrap();
+        let mut reader = BufReader::new(client);
+        for (id, path) in [(1u64, "/dev/zero"), (2, "/")] {
+            let line = serde_json::json!({
+                "id": id,
+                "cmd": "texture_add",
+                "session": 1,
+                "node": "face",
+                "files": { "texture": path },
+            });
+            writer.write_all(format!("{line}\n").as_bytes()).unwrap();
+            let mut reply = String::new();
+            reader.read_line(&mut reply).unwrap();
+            match serde_json::from_str::<Reply>(&reply).unwrap() {
+                Reply::Err {
+                    id: got,
+                    code,
+                    message,
+                    ..
+                } => {
+                    assert_eq!(got, id);
+                    assert_eq!(code, ErrorCode::BadRequest, "{message}");
+                    assert!(message.contains("not a regular file"), "{message}");
+                }
+                other => panic!("{path} was read: {other:?}"),
+            }
+        }
+        drop(writer);
+        drop(reader);
+        server_thread.join().unwrap();
+    }
+
+    /// A bad Id must be refused with the request's id: a client blocking on
+    /// its own id would otherwise hang.
+    #[test]
+    fn an_invalid_id_on_the_wire_is_an_error_against_the_requests_own_id() {
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let server_thread = std::thread::spawn(move || {
+            let editor = Editor::new();
+            serve_connection(&editor, server);
+        });
+        for line in [
+            br#"{"id":11,"cmd":"node_delete","session":1,"node":"a b"}"#.as_slice(),
+            br#"{"id":12,"cmd":"node_delete","session":1,"node":".hidden"}"#.as_slice(),
+            br#"{"id":13,"cmd":"no_such_command","session":1}"#.as_slice(),
+        ] {
+            client.write_all(line).unwrap();
+            client.write_all(b"\n").unwrap();
+        }
+        client.shutdown(std::net::Shutdown::Write).unwrap();
+
+        let mut reader = BufReader::new(client);
+        for want in [11u64, 12, 13] {
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            match serde_json::from_str::<Reply>(&line).unwrap() {
+                Reply::Err {
+                    id, code, message, ..
+                } => {
+                    assert_eq!(id, want, "the reply correlates to the request");
+                    assert_eq!(code, ErrorCode::BadRequest);
+                    assert!(message.starts_with("bad request:"), "{message}");
+                }
+                other => panic!("expected an error, got {other:?}"),
+            }
+        }
+        server_thread.join().unwrap();
+    }
+}

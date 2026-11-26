@@ -209,7 +209,7 @@ impl ServerState {
     /// Expired codes go as a new one comes, so the set stays small.
     fn mint_launch_code_at(&self, now: Instant) -> io::Result<String> {
         let code = mint_token()?;
-        let mut codes = crate::lock(&self.launch_codes);
+        let mut codes = crate::editor::lock(&self.launch_codes);
         codes.retain(|(_, minted)| live(*minted, now));
         codes.push((code.clone(), now));
         Ok(code)
@@ -221,7 +221,7 @@ impl ServerState {
 
     /// The code is spent whether or not the caller ever reads the token.
     fn redeem_launch_code_at(&self, given: &str, now: Instant) -> Option<&str> {
-        let mut codes = crate::lock(&self.launch_codes);
+        let mut codes = crate::editor::lock(&self.launch_codes);
         let at = codes
             .iter()
             .position(|(code, _)| secret_matches(given, code))?;
@@ -1510,7 +1510,7 @@ mod tests {
         state.mint_launch_code_at(minted).unwrap();
         state.mint_launch_code_at(late).unwrap();
         assert_eq!(
-            crate::lock(&state.launch_codes).len(),
+            crate::editor::lock(&state.launch_codes).len(),
             1,
             "the expired one went"
         );

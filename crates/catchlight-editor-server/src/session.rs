@@ -9,7 +9,8 @@ use catchlight_editor_protocol::*;
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::PreviewError;
-use crate::{Editor, EditorError, KeptStore, lock, review, versions};
+use crate::editor::lock;
+use crate::{Editor, EditorError, KeptStore, review, versions};
 
 #[cfg(test)]
 mod history_tests;
