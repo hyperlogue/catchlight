@@ -12,7 +12,7 @@ use catchlight_extension_animations::{
     AnimationPlayer, Animations, Clip, Keyframe, Lane, LaneTarget, LiveInputs, Rig,
 };
 use catchlight_wgpu::{
-    GpuContext, PrepareOptions, RenderCache, RenderList, SurfaceContext, WgpuRenderer,
+    Acquired, GpuContext, PrepareOptions, RenderCache, RenderList, SurfaceContext, WgpuRenderer,
     create_orthographic_camera_at,
 };
 use std::path::Path;
@@ -434,10 +434,17 @@ impl ApplicationHandler for App {
                     }
                     cache.collect_into(&self.puppet, &mut self.render_list);
 
-                    let Some((frame, view)) = surface_ctx.acquire() else {
-                        surface_ctx.reconfigure(&renderer.device);
-                        window.request_redraw();
-                        return;
+                    let (frame, view) = match surface_ctx.acquire() {
+                        Acquired::Frame { frame, view } => (frame, view),
+                        Acquired::Skip => {
+                            window.request_redraw();
+                            return;
+                        }
+                        Acquired::Reconfigure => {
+                            surface_ctx.reconfigure(&renderer.device);
+                            window.request_redraw();
+                            return;
+                        }
                     };
 
                     let clear_color = Some(wgpu::Color {

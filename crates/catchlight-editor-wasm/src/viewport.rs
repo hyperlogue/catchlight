@@ -17,7 +17,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
 use catchlight_wgpu::{
-    FrameTargets, RenderList, RenderTarget, RendererError, SurfaceContext,
+    Acquired, FrameTargets, RenderList, RenderTarget, RendererError, SurfaceContext,
     create_orthographic_camera_at,
 };
 use wasm_bindgen::prelude::*;
@@ -571,12 +571,15 @@ impl Inner {
             (_, Some(context)) => context,
             (_, None) => return Err("this viewport has no surface to present".to_string()),
         };
-        // A resized canvas or a hidden-then-shown tab refuses a texture; reconfigure.
-        let Some((frame, view)) = surface.acquire() else {
-            if let Some(device) = replica.device() {
-                surface.reconfigure(device);
+        let (frame, view) = match surface.acquire() {
+            Acquired::Frame { frame, view } => (frame, view),
+            Acquired::Skip => return Ok(Drawn::NoTexture),
+            Acquired::Reconfigure => {
+                if let Some(device) = replica.device() {
+                    surface.reconfigure(device);
+                }
+                return Ok(Drawn::NoTexture);
             }
-            return Ok(Drawn::NoTexture);
         };
         let target_view = match &self.target {
             Target::Extra(extra) => &extra.view,

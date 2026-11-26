@@ -35,7 +35,7 @@ pub use collect::{
     CompositeMaskPartData, CompositeMaskSourceData, DrawableInfo, MaskSourceData, MaskSources,
     RenderList,
 };
-pub use gpu::{GpuContext, SurfaceContext};
+pub use gpu::{Acquired, GpuContext, SurfaceContext};
 pub use headless::{Framing, RenderContext};
 pub use render_cache::{CacheStats, PrepareOptions, RenderCache, collect};
 pub use renderer::{

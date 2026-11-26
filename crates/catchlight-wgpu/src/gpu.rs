@@ -162,17 +162,33 @@ impl SurfaceContext {
         self.surface.configure(device, &self.config);
     }
 
-    pub fn acquire(&self) -> Option<(wgpu::SurfaceTexture, wgpu::TextureView)> {
-        // `None` tells the caller to re-acquire.
-        let (wgpu::CurrentSurfaceTexture::Success(frame)
-        | wgpu::CurrentSurfaceTexture::Suboptimal(frame)) = self.surface.get_current_texture()
-        else {
-            return None;
-        };
-        let view = frame.texture.create_view(&wgpu::TextureViewDescriptor {
-            format: Some(self.render_format),
-            ..Default::default()
-        });
-        Some((frame, view))
+    pub fn acquire(&self) -> Acquired {
+        use wgpu::CurrentSurfaceTexture as Current;
+        match self.surface.get_current_texture() {
+            Current::Success(frame) | Current::Suboptimal(frame) => {
+                let view = frame.texture.create_view(&wgpu::TextureViewDescriptor {
+                    format: Some(self.render_format),
+                    ..Default::default()
+                });
+                Acquired::Frame { frame, view }
+            }
+            Current::Timeout | Current::Occluded | Current::Validation => Acquired::Skip,
+            Current::Outdated | Current::Lost => Acquired::Reconfigure,
+        }
     }
+}
+
+/// What [`SurfaceContext::acquire`] found.
+pub enum Acquired {
+    /// Draw through `view` (in `render_format`), then present `frame`.
+    Frame {
+        frame: wgpu::SurfaceTexture,
+        view: wgpu::TextureView,
+    },
+    /// The surface timed out or its window is hidden: draw nothing this
+    /// frame and try again on the next.
+    Skip,
+    /// The surface no longer matches its window:
+    /// [`SurfaceContext::reconfigure`] it before the next attempt.
+    Reconfigure,
 }
