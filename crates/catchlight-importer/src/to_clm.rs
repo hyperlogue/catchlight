@@ -128,11 +128,11 @@ pub fn from_inx_model(model: &InxModel) -> Result<ClmFile, ImportError> {
                 });
             }
         }
-        bindings.extend(
-            p.bindings
-                .iter()
-                .filter_map(|b| convert_binding(b, &slots[i], &nodes, &refs, &axis_x, &axis_y)),
-        );
+        for b in &p.bindings {
+            bindings.extend(convert_binding(
+                b, &slots[i], &nodes, &refs, &axis_x, &axis_y,
+            )?);
+        }
     }
 
     // Ids follow source texture order, so dropping one never renumbers the rest.
@@ -473,29 +473,39 @@ fn convert_binding(
     refs: &Refs<'_>,
     axis_x: &[f32],
     axis_y: &[f32],
-) -> Option<ClmBinding> {
-    let node = refs.node_of_uuid(b.node?)?;
-    let target = nodes.iter().find(|n| &n.id == node);
-    let values_json = b.values.as_ref()?;
+) -> Result<Option<ClmBinding>, ImportError> {
     let kind = b.param_name.as_deref().unwrap_or("");
+    // `nodes` is parallel to `refs.node_ids`.
+    let Some(target) = b
+        .node
+        .and_then(|uuid| refs.uuid_node.get(&uuid))
+        .and_then(|&index| nodes.get(index as usize))
+    else {
+        tracing::warn!(
+            "dropping a {kind:?} binding: its node {:?} is not in this rig",
+            b.node
+        );
+        return Ok(None);
+    };
+    let node = &target.id;
+    let Some(values_json) = b.values.as_ref() else {
+        tracing::warn!("dropping a {kind:?} binding on node {node}: it carries no values");
+        return Ok(None);
+    };
     // The `.clm` loader rejects a colour binding on a mesh group.
-    if source_binding_is_color(kind)
-        && matches!(target.map(|n| &n.kind), Some(ClmNodeKind::MeshGroup(_)))
-    {
+    if source_binding_is_color(kind) && matches!(target.kind, ClmNodeKind::MeshGroup(_)) {
         tracing::debug!(
             "dropping {:?} binding on mesh group node {}: a mesh group is never drawn",
             kind,
             node
         );
-        return None;
+        return Ok(None);
     }
     let named = NodeRef {
         id: node,
-        name: target.map_or("", |n| n.name.as_str()),
+        name: target.name.as_str(),
     };
-    let deform_len = target
-        .and_then(|n| mesh_of(&n.kind))
-        .map_or(0, |m| m.verts.len());
+    let deform_len = mesh_of(&target.kind).map_or(0, |m| m.verts.len());
     // Moves nothing, and the `.clm` loader refuses it (`NotMeshed`).
     if kind == "deform" && deform_len == 0 {
         tracing::warn!(
@@ -503,9 +513,9 @@ fn convert_binding(
             named.id,
             named.name,
         );
-        return None;
+        return Ok(None);
     }
-    let values = convert_binding_values(
+    let Some(values) = convert_binding_values(
         kind,
         values_json,
         b.is_set.as_deref(),
@@ -513,8 +523,11 @@ fn convert_binding(
         axis_y,
         named,
         deform_len,
-    )?;
-    Some(ClmBinding {
+    )?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(ClmBinding {
         params: slot.params(),
         key_positions: match slot {
             Slot::One(_) => vec![axis_x.to_vec()],
@@ -523,7 +536,7 @@ fn convert_binding(
         node: node.clone(),
         interpolate_mode: interp(b.interpolate_mode.as_deref()),
         values,
-    })
+    }))
 }
 
 /// inochi2d 0.8.6 writes `animations` as an object keyed by clip name; older

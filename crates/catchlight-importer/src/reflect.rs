@@ -10,6 +10,7 @@ use catchlight_core::formats::clm::{
     ClmBindingValues, ClmCell, ClmCells, ClmIndices, ClmMesh, ClmTransform,
 };
 use catchlight_core::interpolate::InterpolateMode;
+use catchlight_core::load_budget::{LoadLimitError, LoadLimits, MAX_BINDING_GRID_CELLS};
 use catchlight_core::NodeId;
 
 use crate::error::ImportError;
@@ -171,13 +172,22 @@ pub(crate) fn convert_binding_values(
     axis_y: &[f32],
     node: NodeRef<'_>,
     deform_len: usize,
-) -> Option<ClmBindingValues> {
+) -> Result<Option<ClmBindingValues>, ImportError> {
     if kind == "deform" {
-        let mut d = matrix_vec2_flat(v);
+        let mut d = matrix_vec2_flat(v, node)?;
         for cell in &mut d.data {
             for y in cell.iter_mut().skip(1).step_by(2) {
                 *y = -*y;
             }
+        }
+        let offsets = (d.data.len() as u64).saturating_mul(deform_len as u64 / 2);
+        let limit = LoadLimits::default().deform_offsets;
+        if offsets > limit {
+            return Err(ImportError::LoadLimit(LoadLimitError {
+                resource: "deform offsets",
+                limit,
+                got: offsets,
+            }));
         }
         fit_deform_cells(&mut d, deform_len, node);
         let cells = sparsify(
@@ -188,7 +198,7 @@ pub(crate) fn convert_binding_values(
             &vec![0.0f32; deform_len],
             close_vec,
         );
-        return Some(ClmBindingValues::Deform(cells));
+        return Ok(Some(ClmBindingValues::Deform(cells)));
     }
     let reflected = matches!(
         kind,
@@ -198,7 +208,7 @@ pub(crate) fn convert_binding_values(
         "transform.s.x" | "transform.s.y" | "opacity" | "tint.r" | "tint.g" | "tint.b" => 1.0f32,
         _ => 0.0,
     };
-    let mut d = matrix_f32(v);
+    let mut d = matrix_f32(v, node, kind)?;
     if reflected {
         for val in &mut d.data {
             *val = if kind == "zSort" {
@@ -209,7 +219,7 @@ pub(crate) fn convert_binding_values(
         }
     }
     let cells = sparsify(d, is_set, axis_x, axis_y, &identity, close_f32);
-    Some(match kind {
+    Ok(Some(match kind {
         "zSort" => ClmBindingValues::ZOrder(cells),
         "transform.t.x" => ClmBindingValues::TransformTX(cells),
         "transform.t.y" => ClmBindingValues::TransformTY(cells),
@@ -226,8 +236,8 @@ pub(crate) fn convert_binding_values(
         "screenTint.g" => ClmBindingValues::ScreenTintG(cells),
         "screenTint.b" => ClmBindingValues::ScreenTintB(cells),
         // No renderer path reads emissionStrength or unknown targets.
-        _ => return None,
-    })
+        _ => return Ok(None),
+    }))
 }
 
 /// Zipping a ragged deform cell against the mesh draws what the source drew:
@@ -347,51 +357,89 @@ fn close_vec(a: &Vec<f32>, b: &Vec<f32>) -> bool {
     })
 }
 
-/// inx matrices are `values[x][y]` (outer = x-axis points).
-fn matrix_dims(rows: &[serde_json::Value]) -> (usize, usize) {
-    let width = rows.len();
-    let height = rows
-        .first()
-        .and_then(|c| c.as_array())
-        .map(|a| a.len())
-        .unwrap_or(0);
-    (width, height)
+type Columns<'v> = Vec<&'v [serde_json::Value]>;
+
+/// inx matrices are `values[x][y]` (outer = x-axis points). Every column must
+/// be as tall as the first, and the grid must fit the `.clm` loader's limit,
+/// before anything is allocated for it.
+fn matrix_columns<'v>(
+    v: &'v serde_json::Value,
+    node: NodeRef<'_>,
+    kind: &str,
+) -> Result<Option<(Columns<'v>, usize)>, ImportError> {
+    let Some(rows) = v.as_array() else {
+        return Ok(None);
+    };
+    let malformed = |detail: String| {
+        ImportError::MalformedPayload(format!(
+            "node {} ({:?}): {kind:?} binding values {detail}",
+            node.id, node.name
+        ))
+    };
+    let mut columns: Columns<'v> = Vec::with_capacity(rows.len());
+    for (x, col) in rows.iter().enumerate() {
+        let Some(col) = col.as_array() else {
+            return Err(malformed(format!("column {x} is not an array")));
+        };
+        if let Some(first) = columns.first() {
+            if col.len() != first.len() {
+                return Err(malformed(format!(
+                    "column {x} holds {} cells where column 0 holds {}",
+                    col.len(),
+                    first.len()
+                )));
+            }
+        }
+        columns.push(col.as_slice());
+    }
+    let height = columns.first().map_or(0, |c| c.len());
+    if height == 0 {
+        return Ok(None);
+    }
+    let cells = (columns.len() as u64).saturating_mul(height as u64);
+    if cells > MAX_BINDING_GRID_CELLS {
+        return Err(ImportError::LoadLimit(LoadLimitError {
+            resource: "binding grid",
+            limit: MAX_BINDING_GRID_CELLS,
+            got: cells,
+        }));
+    }
+    Ok(Some((columns, height)))
 }
 
-fn matrix_f32(v: &serde_json::Value) -> Dense<f32> {
-    let Some(rows) = v.as_array() else {
-        return Dense::default();
+fn matrix_f32(
+    v: &serde_json::Value,
+    node: NodeRef<'_>,
+    kind: &str,
+) -> Result<Dense<f32>, ImportError> {
+    let Some((columns, height)) = matrix_columns(v, node, kind)? else {
+        return Ok(Dense::default());
     };
-    let (width, height) = matrix_dims(rows);
-    if width == 0 || height == 0 {
-        return Dense::default();
-    }
+    let width = columns.len();
     let mut data = vec![0.0f32; width * height];
-    for (x, col) in rows.iter().enumerate() {
-        let Some(arr) = col.as_array() else { continue };
-        for (y, cell) in arr.iter().enumerate().take(height) {
+    for (x, col) in columns.iter().enumerate() {
+        for (y, cell) in col.iter().enumerate() {
             data[y * width + x] = cell.as_f64().unwrap_or(0.0) as f32;
         }
     }
-    Dense {
+    Ok(Dense {
         width,
         height,
         data,
-    }
+    })
 }
 
-fn matrix_vec2_flat(v: &serde_json::Value) -> Dense<Vec<f32>> {
-    let Some(rows) = v.as_array() else {
-        return Dense::default();
+fn matrix_vec2_flat(
+    v: &serde_json::Value,
+    node: NodeRef<'_>,
+) -> Result<Dense<Vec<f32>>, ImportError> {
+    let Some((columns, height)) = matrix_columns(v, node, "deform")? else {
+        return Ok(Dense::default());
     };
-    let (width, height) = matrix_dims(rows);
-    if width == 0 || height == 0 {
-        return Dense::default();
-    }
+    let width = columns.len();
     let mut data: Vec<Vec<f32>> = vec![Vec::new(); width * height];
-    for (x, col) in rows.iter().enumerate() {
-        let Some(arr) = col.as_array() else { continue };
-        for (y, cell) in arr.iter().enumerate().take(height) {
+    for (x, col) in columns.iter().enumerate() {
+        for (y, cell) in col.iter().enumerate() {
             let mut flat = Vec::new();
             if let Some(points) = cell.as_array() {
                 for p in points {
@@ -407,11 +455,11 @@ fn matrix_vec2_flat(v: &serde_json::Value) -> Dense<Vec<f32>> {
             data[y * width + x] = flat;
         }
     }
-    Dense {
+    Ok(Dense {
         width,
         height,
         data,
-    }
+    })
 }
 
 /// An unknown name is an error rather than Normal: a wrong-but-valid mode in

@@ -556,6 +556,43 @@ fn a_deform_cell_that_disagrees_with_the_mesh_is_zipped_against_it() {
     reread(&file);
 }
 
+fn opacity_binding(values: serde_json::Value) -> Result<ClmFile, ImportError> {
+    import(
+        json!({
+            "nodes": {
+                "uuid": 1, "name": "root", "type": "Node",
+                "children": [two_vertex_part(2, "part")]
+            },
+            "param": one_binding(json!({
+                "node": 2, "param_name": "opacity", "values": values
+            }))
+        }),
+        1,
+    )
+}
+
+#[test]
+fn a_ragged_value_matrix_is_refused_naming_the_node() {
+    let err = opacity_binding(json!([[1.0, 1.0], [1.0]])).unwrap_err();
+    assert!(
+        matches!(&err, ImportError::MalformedPayload(m) if m.contains("node-1") && m.contains("column 1")),
+        "{err}"
+    );
+    let err = opacity_binding(json!([[1.0], 1.0])).unwrap_err();
+    assert!(matches!(err, ImportError::MalformedPayload(_)), "{err}");
+}
+
+#[test]
+fn a_value_matrix_past_the_binding_grid_limit_is_refused_before_it_is_filled() {
+    let limit = catchlight_core::load_budget::MAX_BINDING_GRID_CELLS as usize;
+    let tall = vec![1.0; limit / 2 + 1];
+    let err = opacity_binding(json!([tall, tall])).unwrap_err();
+    assert!(
+        matches!(&err, ImportError::LoadLimit(e) if e.resource == "binding grid"),
+        "{err}"
+    );
+}
+
 #[test]
 fn a_deform_binding_on_a_node_with_no_mesh_is_dropped() {
     let file = import(
