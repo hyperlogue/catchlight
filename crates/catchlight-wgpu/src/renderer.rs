@@ -320,22 +320,6 @@ impl WgpuRenderer {
         Self::from_pipelines(device, queue, shared)
     }
 
-    /// GL (WebGL2) takes the alpha-discard fallback because Chromium
-    /// swiftshader fails Depth24PlusStencil8. `CATCHLIGHT_DISABLE_STENCIL`
-    /// forces it elsewhere.
-    pub fn new_autodetect(
-        adapter: &wgpu::Adapter,
-        device: wgpu::Device,
-        queue: wgpu::Queue,
-        surface_format: wgpu::TextureFormat,
-    ) -> Self {
-        // `Arc` for the reason given in `new` above.
-        #[allow(clippy::arc_with_non_send_sync)]
-        let shared =
-            std::sync::Arc::new(Pipelines::new_autodetect(adapter, &device, surface_format));
-        Self::from_pipelines(device, queue, shared)
-    }
-
     pub fn from_pipelines(
         device: wgpu::Device,
         queue: wgpu::Queue,

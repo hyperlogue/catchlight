@@ -798,9 +798,6 @@ pub(crate) mod browser {
             format: wgpu::TextureFormat,
         ) -> Result<&mut ReplicaRender, String> {
             let render = self.render.get_or_insert_with(|| ReplicaRender {
-                // `new_autodetect`, not `new`: WebGL2 takes the shader
-                // alpha-discard path because Chromium's software WebGL2 fails
-                // to bind a Depth24PlusStencil8 attachment.
                 // `Arc` because that is what a renderer shares pipelines
                 // through; on wasm there is one thread and nothing to send,
                 // exactly as in `WgpuRenderer::new`.
@@ -808,7 +805,7 @@ pub(crate) mod browser {
                 renderer: WgpuRenderer::from_pipelines(
                     gpu.device.clone(),
                     gpu.queue.clone(),
-                    Arc::new(Pipelines::new_autodetect(&gpu.adapter, &gpu.device, format)),
+                    Arc::new(Pipelines::new(&gpu.device, format)),
                 ),
                 cache: None,
             });

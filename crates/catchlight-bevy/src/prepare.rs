@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use bevy::prelude::*;
-use bevy::render::renderer::{RenderAdapter, RenderDevice, RenderQueue};
+use bevy::render::renderer::{RenderDevice, RenderQueue};
 use bevy::render::view::ViewTarget;
 use catchlight_core::Model;
 use catchlight_wgpu::{
@@ -179,11 +179,10 @@ pub(crate) struct PuppetGpu {
 pub(crate) fn format_resources<'a>(
     formats: &'a mut HashMap<wgpu::TextureFormat, FormatResources>,
     format: wgpu::TextureFormat,
-    adapter: &wgpu::Adapter,
     device: &wgpu::Device,
 ) -> &'a mut FormatResources {
     formats.entry(format).or_insert_with(|| {
-        let pipelines = Arc::new(Pipelines::new_autodetect(adapter, device, format));
+        let pipelines = Arc::new(Pipelines::new(device, format));
         FormatResources {
             targets: HashMap::new(),
             pipelines,
@@ -227,7 +226,6 @@ impl CatchlightRenderInner {
 pub(crate) fn prepare_puppets(
     device: Res<RenderDevice>,
     queue: Res<RenderQueue>,
-    adapter: Res<RenderAdapter>,
     state: Res<CatchlightRenderState>,
     extracted: Query<(Entity, &ExtractedPuppet)>,
     views: Query<&ViewTarget, With<ExtractedCatchlightCamera>>,
@@ -248,10 +246,9 @@ pub(crate) fn prepare_puppets(
     let pipelines: Vec<_> = view_formats
         .iter()
         .map(|&format| {
-            let pipelines =
-                format_resources(&mut inner.formats, format, &adapter.0, device.wgpu_device())
-                    .pipelines
-                    .clone();
+            let pipelines = format_resources(&mut inner.formats, format, device.wgpu_device())
+                .pipelines
+                .clone();
             (format, pipelines)
         })
         .collect();

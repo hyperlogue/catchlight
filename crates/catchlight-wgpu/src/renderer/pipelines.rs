@@ -164,9 +164,13 @@ pub struct Pipelines {
     // Rounded up to `min_uniform_buffer_offset_alignment`. Blits share the
     // wire format.
     pub(crate) part_uniform_stride: u64,
-    // Native backends drive `first_instance` in hardware; GL/WebGL2 and the
-    // adapter-less constructors re-slice the instance buffer per draw.
+    // Native backends drive `first_instance` in hardware; GL/WebGL2
+    // re-slices the instance buffer per draw.
     pub(crate) base_instance: bool,
+}
+
+fn is_gl(device: &wgpu::Device) -> bool {
+    device.adapter_info().backend == wgpu::Backend::Gl
 }
 
 fn stencil_forced_off() -> bool {
@@ -226,25 +230,12 @@ fn stencil_only(
 }
 
 impl Pipelines {
-    /// `CATCHLIGHT_DISABLE_STENCIL=1` forces the alpha-discard fallback.
-    pub fn new(device: &wgpu::Device, surface_format: wgpu::TextureFormat) -> Self {
-        Self::new_with_options(device, surface_format, !stencil_forced_off())
-    }
-
-    /// GL adapters (WebGL2 included) get the stencil-free fallback;
+    /// GL devices (WebGL2 included) get the alpha-discard mask fallback,
+    /// because Chromium's software WebGL2 fails Depth24PlusStencil8;
     /// `CATCHLIGHT_DISABLE_STENCIL=1` forces it elsewhere.
-    pub fn new_autodetect(
-        adapter: &wgpu::Adapter,
-        device: &wgpu::Device,
-        surface_format: wgpu::TextureFormat,
-    ) -> Self {
-        let non_gl = adapter.get_info().backend != wgpu::Backend::Gl;
-        let has_stencil = !stencil_forced_off() && non_gl;
-        let mut pipelines = Self::new_with_options(device, surface_format, has_stencil);
-        // wgpu's GL backend only emulates `first_instance` by rebinding per draw,
-        // so GL keeps the explicit per-draw slice.
-        pipelines.base_instance = non_gl;
-        pipelines
+    pub fn new(device: &wgpu::Device, surface_format: wgpu::TextureFormat) -> Self {
+        let has_stencil = !stencil_forced_off() && !is_gl(device);
+        Self::new_with_options(device, surface_format, has_stencil)
     }
 
     pub(crate) fn has_stencil(&self) -> bool {
@@ -802,8 +793,9 @@ impl Pipelines {
             texture_sampler,
             part_uniform_bind_group_layout,
             part_uniform_stride,
-            // `new_autodetect` overrides this from the adapter.
-            base_instance: false,
+            // wgpu's GL backend only emulates `first_instance` by rebinding
+            // per draw, so GL keeps the explicit per-draw slice.
+            base_instance: !is_gl(device),
         }
     }
 }
