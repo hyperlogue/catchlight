@@ -248,8 +248,9 @@ impl WgpuRenderer {
         self.begin_frame_uniforms(uniform_slot_count as u32, continues);
 
         for (i, list) in lists.iter().enumerate() {
-            self.deform_recording_set = list.deform_set;
-            self.deform_recording_base = self.deform_base(list.deform_set);
+            let set = list.deform_set.map_or(0, DeformSet::index);
+            self.deform_recording_set = set;
+            self.deform_recording_base = self.deform_base(set);
             self.record_list(
                 list,
                 encoder,
@@ -267,7 +268,7 @@ impl WgpuRenderer {
                 .composite_slots_used
                 .max(composites.stats().0 as u32);
         }
-        self.deform_recording_set = DeformSet::FIRST;
+        self.deform_recording_set = 0;
         self.deform_recording_base = 0;
 
         if let (Some(profiler), Some(query)) = (self.gpu_profiler.as_ref(), gpu_query) {

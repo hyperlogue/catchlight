@@ -2,22 +2,17 @@ use super::*;
 
 /// One puppet's copy of the cache's mesh layout in the deform atlas, so
 /// puppets sharing a [`crate::RenderCache`] do not overwrite each other's
-/// deforms within one submit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct DeformSet(pub(super) u32);
-
-impl DeformSet {
-    pub const FIRST: Self = Self(0);
-
-    #[doc(hidden)]
-    pub fn index(self) -> u32 {
-        self.0
-    }
+/// deforms within one submit. Only the renderer that issued it accepts it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct DeformSet {
+    pub(super) renderer: u64,
+    pub(super) index: u32,
 }
 
-impl Default for DeformSet {
-    fn default() -> Self {
-        Self::FIRST
+impl DeformSet {
+    #[doc(hidden)]
+    pub fn index(self) -> u32 {
+        self.index
     }
 }
 
@@ -105,8 +100,25 @@ impl WgpuRenderer {
 
     /// Where `set`'s copy of the mesh layout starts. Derived rather than
     /// stored, so a rebuild that changes the stride moves every set at once.
-    pub(super) fn deform_base(&self, set: DeformSet) -> u64 {
-        u64::from(set.0) * self.deform_stride()
+    pub(super) fn deform_base(&self, index: u32) -> u64 {
+        u64::from(index) * self.deform_stride()
+    }
+
+    /// The set [`crate::RenderCache::refresh`] uploads into. It is never
+    /// released.
+    pub fn first_deform_set(&self) -> DeformSet {
+        DeformSet {
+            renderer: self.id,
+            index: 0,
+        }
+    }
+
+    fn check_deform_set(&self, set: DeformSet) -> RendererResult<()> {
+        if set.renderer == self.id {
+            Ok(())
+        } else {
+            Err(RendererError::ForeignDeformSet)
+        }
     }
 
     /// Take a deform set for one more puppet of this renderer's model. Release
@@ -121,22 +133,28 @@ impl WgpuRenderer {
         };
         self.deform_sets[index as usize] = DeformSetState::live();
         self.deform_sets[index as usize].needs_clear = true;
-        DeformSet(index)
+        DeformSet {
+            renderer: self.id,
+            index,
+        }
     }
 
-    /// [`DeformSet::FIRST`] is never released.
-    pub fn release_deform_set(&mut self, set: DeformSet) {
-        if set == DeformSet::FIRST {
-            return;
+    /// Refuses a set another renderer issued. Releasing
+    /// [`Self::first_deform_set`] or an already released set does nothing.
+    pub fn release_deform_set(&mut self, set: DeformSet) -> RendererResult<()> {
+        self.check_deform_set(set)?;
+        if set.index == 0 {
+            return Ok(());
         }
-        let Some(state) = self.deform_sets.get_mut(set.0 as usize) else {
-            return;
+        let Some(state) = self.deform_sets.get_mut(set.index as usize) else {
+            return Ok(());
         };
         if !state.live {
-            return;
+            return Ok(());
         }
         *state = DeformSetState::default();
-        self.deform_free.push(set.0);
+        self.deform_free.push(set.index);
+        Ok(())
     }
 
     #[doc(hidden)]
@@ -160,28 +178,30 @@ impl WgpuRenderer {
     }
 
     /// Meshes that went inactive are zeroed, otherwise the vertex shader keeps
-    /// reading a stale config's offsets.
+    /// reading a stale config's offsets. Refuses a set another renderer
+    /// issued.
     pub(crate) fn upload_deforms<'a>(
         &mut self,
         set: DeformSet,
         active: impl Iterator<Item = (u32, u64, &'a [glam::Vec2])>,
-    ) {
+    ) -> RendererResult<()> {
         // Coalesce dirty ranges only across gaps this small: below it,
         // one write over the untouched bytes beats a second write_buffer's
         // fixed overhead; above it, the copied span is pure waste.
         const DEFORM_MERGE_GAP: u64 = 4096;
 
+        self.check_deform_set(set)?;
         self.ensure_deform_sets_sized();
-        let base = self.deform_base(set);
+        let base = self.deform_base(set.index);
         let stride = self.deform_stride();
         let Some(mut state) = self
             .deform_sets
-            .get_mut(set.0 as usize)
+            .get_mut(set.index as usize)
             .filter(|state| state.live)
             .map(std::mem::take)
         else {
-            tracing::warn!(set = set.0, "upload_deforms: no such deform set");
-            return;
+            tracing::warn!(set = set.index, "upload_deforms: no such deform set");
+            return Ok(());
         };
         state.still_active.clear();
         let mut ranges = std::mem::take(&mut self.deform_write_ranges);
@@ -281,8 +301,9 @@ impl WgpuRenderer {
 
         ranges.clear();
         self.deform_write_ranges = ranges;
-        if let Some(slot) = self.deform_sets.get_mut(set.0 as usize) {
+        if let Some(slot) = self.deform_sets.get_mut(set.index as usize) {
             *slot = state;
         }
+        Ok(())
     }
 }

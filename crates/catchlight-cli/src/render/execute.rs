@@ -308,8 +308,9 @@ pub fn run(
                 }
                 Ok::<_, Error>(())
             })();
-            ctx.renderer.release_deform_set(deform_set);
+            let released = ctx.renderer.release_deform_set(deform_set);
             request_result?;
+            released.map_err(|e| Error::gpu("release", e))?;
             if let Some(sink) = sink {
                 cancel.check()?;
                 sink.finish()?;

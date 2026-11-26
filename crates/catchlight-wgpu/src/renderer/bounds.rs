@@ -116,7 +116,7 @@ impl WgpuRenderer {
         // two puppets of one model expand the same mesh by different amounts.
         let pad = self
             .deform_sets
-            .get(self.deform_recording_set.0 as usize)
+            .get(self.deform_recording_set as usize)
             .and_then(|set| set.max.get(mesh_id as usize))
             .copied()
             .unwrap_or(0.0);

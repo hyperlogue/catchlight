@@ -88,6 +88,9 @@ pub enum RendererError {
     #[error("this submission token was made by a different renderer")]
     ForeignSubmission,
 
+    #[error("this deform set was issued by a different renderer")]
+    ForeignDeformSet,
+
     #[error("preparing a model's textures: {0}")]
     Texture(catchlight_core::TextureError),
 
@@ -287,7 +290,7 @@ pub struct WgpuRenderer {
     frame_sizing_closed: bool,
     /// None without `Features::TIMESTAMP_QUERY`; CPU `tracing` spans only.
     gpu_profiler: Option<wgpu_profiler::GpuProfiler>,
-    /// Indexed by set; slot 0 is [`DeformSet::FIRST`].
+    /// Indexed by set; slot 0 is [`Self::first_deform_set`].
     deform_sets: Vec<DeformSetState>,
     deform_free: Vec<u32>,
     deform_inactive_scratch: Vec<u32>,
@@ -295,7 +298,7 @@ pub struct WgpuRenderer {
     // the untouched span between them.
     deform_write_ranges: Vec<(u64, u64)>,
     /// Frame-scoped: `record_frame` points these at each list before recording it.
-    deform_recording_set: DeformSet,
+    deform_recording_set: u32,
     deform_recording_base: u64,
     /// CPU copy kept so per-part bounds can project to clip space.
     camera_view_proj: glam::Mat4,
@@ -429,7 +432,7 @@ impl WgpuRenderer {
             deform_free: Vec::new(),
             deform_inactive_scratch: Vec::new(),
             deform_write_ranges: Vec::new(),
-            deform_recording_set: DeformSet::FIRST,
+            deform_recording_set: 0,
             deform_recording_base: 0,
             camera_view_proj: glam::Mat4::IDENTITY,
             draw_filter_scratch: Vec::new(),

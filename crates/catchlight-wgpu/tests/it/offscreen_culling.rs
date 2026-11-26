@@ -3,7 +3,7 @@ use crate::common;
 #[test]
 fn each_puppets_deforms_can_bring_offscreen_geometry_into_view() {
     use catchlight_core::{ModelComposite, ModelNodeKind, Puppet, Vec2};
-    use catchlight_wgpu::{DeformSet, PrepareOptions, RenderCache, RenderList};
+    use catchlight_wgpu::{PrepareOptions, RenderCache, RenderList};
     use common::apply_uniform_scratch_deform;
 
     let mut ctx = common::render_context(64, 64);
@@ -21,7 +21,7 @@ fn each_puppets_deforms_can_bring_offscreen_geometry_into_view() {
     let mut cache =
         RenderCache::prepare(&mut ctx.renderer, &model, PrepareOptions::default()).unwrap();
     let sets = [
-        DeformSet::FIRST,
+        ctx.renderer.first_deform_set(),
         ctx.renderer.acquire_deform_set(),
         ctx.renderer.acquire_deform_set(),
     ];

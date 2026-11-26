@@ -170,7 +170,7 @@ pub(crate) struct ModelGpu {
 
 pub(crate) struct PuppetGpu {
     pub model: ModelKey,
-    /// Must be released to `model`'s renderer, not another.
+    /// Issued by `model`'s renderer.
     pub deform_set: DeformSet,
     pub render_list: RenderList,
     pub collected: bool,
@@ -218,6 +218,12 @@ pub(crate) struct CatchlightRenderInner {
 impl CatchlightRenderInner {
     pub(crate) fn formats(&self) -> Vec<wgpu::TextureFormat> {
         self.formats.keys().copied().collect()
+    }
+}
+
+fn release(renderer: &mut WgpuRenderer, set: DeformSet) {
+    if let Err(error) = renderer.release_deform_set(set) {
+        tracing::error!("catchlight: releasing a deform set failed: {error}");
     }
 }
 
@@ -325,7 +331,7 @@ pub(crate) fn prepare_puppets(
                     let released = puppet.deform_set;
                     puppet.deform_set = model_gpu.renderer.acquire_deform_set();
                     if let Some(old_gpu) = gpus.get_mut(&old) {
-                        old_gpu.renderer.release_deform_set(released);
+                        release(&mut old_gpu.renderer, released);
                     }
                 }
                 None => {
@@ -360,7 +366,7 @@ pub(crate) fn prepare_puppets(
             live_models.insert(puppet.model);
         } else {
             if let Some(gpu) = gpus.get_mut(&puppet.model) {
-                gpu.renderer.release_deform_set(puppet.deform_set);
+                release(&mut gpu.renderer, puppet.deform_set);
             }
         }
         live

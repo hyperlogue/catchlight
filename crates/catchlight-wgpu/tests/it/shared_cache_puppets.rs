@@ -7,7 +7,7 @@ use crate::common::apply_uniform_scratch_deform;
 
 use catchlight_core::{Mesh, Model, Puppet, Vec2};
 use catchlight_wgpu::{
-    DeformSet, PrepareOptions, RenderCache, RenderContext, RenderList, WgpuRenderer,
+    PrepareOptions, RenderCache, RenderContext, RenderList, RendererError, WgpuRenderer,
     create_orthographic_camera,
 };
 
@@ -85,7 +85,7 @@ fn two_puppets_of_one_model_share_a_cache_and_keep_their_own_deforms() {
     let mut cache = RenderCache::prepare(&mut ctx.renderer, &model, PrepareOptions::default())
         .expect("prepare one cache for the model");
 
-    let left_set = DeformSet::FIRST;
+    let left_set = ctx.renderer.first_deform_set();
     let right_set = ctx.renderer.acquire_deform_set();
     assert_ne!(left_set, right_set, "a second puppet gets a second set");
     assert_eq!(ctx.renderer.live_deform_sets(), 2);
@@ -172,8 +172,8 @@ fn a_released_deform_set_is_reused_and_starts_clean() {
     ctx.render(&list, Some(CLEAR));
     let shifted = drawn_span(&ctx.read_rgba().unwrap()).expect("drew");
 
-    ctx.renderer.release_deform_set(first);
-    assert_eq!(ctx.renderer.live_deform_sets(), 1, "only FIRST is left");
+    ctx.renderer.release_deform_set(first).unwrap();
+    assert_eq!(ctx.renderer.live_deform_sets(), 1, "only the first is left");
     let second = ctx.renderer.acquire_deform_set();
     assert_eq!(second, first, "the index is recycled, not grown past");
 
@@ -192,6 +192,42 @@ fn a_released_deform_set_is_reused_and_starts_clean() {
 }
 
 #[test]
+fn a_deform_set_is_refused_by_a_renderer_that_did_not_issue_it() {
+    let model = one_quad_model();
+    let mut ours = ctx();
+    let mut theirs = ctx();
+    let mut cache = RenderCache::prepare(&mut ours.renderer, &model, PrepareOptions::default())
+        .expect("prepare");
+    let foreign = theirs.renderer.acquire_deform_set();
+
+    let mut list = RenderList::default();
+    let refreshed = cache.refresh_puppet(
+        &mut ours.renderer,
+        &model,
+        &posed(&model, SHIFT),
+        foreign,
+        &mut list,
+    );
+    assert!(
+        matches!(refreshed, Err(RendererError::ForeignDeformSet)),
+        "{refreshed:?}",
+    );
+
+    let ours_before = ours.renderer.live_deform_sets();
+    let released = ours.renderer.release_deform_set(foreign);
+    assert!(
+        matches!(released, Err(RendererError::ForeignDeformSet)),
+        "{released:?}",
+    );
+    assert_eq!(ours.renderer.live_deform_sets(), ours_before);
+    assert_eq!(
+        theirs.renderer.live_deform_sets(),
+        2,
+        "the set stays live where it was issued"
+    );
+}
+
+#[test]
 fn one_frame_of_many_puppets_takes_one_write_per_frame_buffer() {
     let model = one_quad_model();
     let mut ctx = ctx();
@@ -201,7 +237,7 @@ fn one_frame_of_many_puppets_takes_one_write_per_frame_buffer() {
     let mut lists = Vec::new();
     for i in 0..8 {
         let set = if i == 0 {
-            DeformSet::FIRST
+            ctx.renderer.first_deform_set()
         } else {
             ctx.renderer.acquire_deform_set()
         };

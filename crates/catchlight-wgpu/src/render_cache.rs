@@ -3,7 +3,7 @@
 //! - A cache's slots name GPU state in the [`WgpuRenderer`] that prepared it;
 //!   two caches sharing a renderer overwrite each other's slots. Every puppet
 //!   of one model shares one cache, each with its own
-//!   [`DeformSet`].
+//!   [`DeformSet`], which only that renderer accepts.
 //! - A cache, puppet and model passed to `refresh` together must share
 //!   identity and generation; a mismatch is a caller bug, `debug_assert!`ed.
 //! - A rebuild keeps a GPU texture by Id when its payload `Arc` is
@@ -176,15 +176,17 @@ impl RenderCache {
             .map(|mesh| mesh.0)
     }
 
-    /// Uploads deforms into [`DeformSet::FIRST`], rebuilding first if `model`
-    /// moved. For several puppets of one model, use [`Self::refresh_puppet`].
+    /// Uploads deforms into the renderer's first deform set, rebuilding first
+    /// if `model` moved. For several puppets of one model, use
+    /// [`Self::refresh_puppet`].
     pub fn refresh(
         &mut self,
         renderer: &mut WgpuRenderer,
         model: &Model,
         puppet: &Puppet,
     ) -> RendererResult<()> {
-        self.refresh_deforms(renderer, model, puppet, DeformSet::FIRST)
+        let set = renderer.first_deform_set();
+        self.refresh_deforms(renderer, model, puppet, set)
     }
 
     /// Take `set` from
@@ -200,7 +202,7 @@ impl RenderCache {
     ) -> RendererResult<()> {
         self.refresh_deforms(renderer, model, puppet, set)?;
         self.collect_into(puppet, render_list);
-        render_list.deform_set = set;
+        render_list.deform_set = Some(set);
         Ok(())
     }
 
@@ -249,8 +251,7 @@ impl RenderCache {
             let slot = mesh_of_node.get(idx.0 as usize).copied().flatten()?;
             Some((slot.0, stack.generation(), stack.combined()))
         });
-        renderer.upload_deforms(set, active);
-        Ok(())
+        renderer.upload_deforms(set, active)
     }
 
     pub fn collect_into(&mut self, puppet: &Puppet, render_list: &mut RenderList) {

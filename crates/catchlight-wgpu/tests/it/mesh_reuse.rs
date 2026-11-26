@@ -41,12 +41,12 @@ fn edits_reuse_geometry_and_keep_three_puppets_equal_to_fresh_uploads() {
     let mut ctx = common::render_context(96, 96);
     let mut reference = common::render_context(96, 96);
     let sets = [
-        DeformSet::FIRST,
+        ctx.renderer.first_deform_set(),
         ctx.renderer.acquire_deform_set(),
         ctx.renderer.acquire_deform_set(),
     ];
     let reference_sets = [
-        DeformSet::FIRST,
+        reference.renderer.first_deform_set(),
         reference.renderer.acquire_deform_set(),
         reference.renderer.acquire_deform_set(),
     ];
@@ -164,7 +164,7 @@ fn rebuild_reuploads_meshes_the_renderer_dropped() {
     let mut model = build.model;
     let mut cache =
         RenderCache::prepare(&mut ctx.renderer, &model, PrepareOptions::default()).unwrap();
-    let sets = [DeformSet::FIRST];
+    let sets = [ctx.renderer.first_deform_set()];
     let (expected, _) = render_poses(&mut ctx, &mut cache, &model, &sets, None);
 
     ctx.renderer.clear_meshes();

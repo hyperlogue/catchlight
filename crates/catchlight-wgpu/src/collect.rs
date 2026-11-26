@@ -121,7 +121,8 @@ pub struct RenderList {
     pub(crate) composite_children: Vec<Vec<DrawableInfo>>,
     /// Indexed by the mask-source composite's `node_id` slot.
     pub(crate) composite_mask_sources: Vec<Option<CompositeMaskSourceData>>,
-    pub(crate) deform_set: DeformSet,
+    /// `None` for the renderer's first set.
+    pub(crate) deform_set: Option<DeformSet>,
 }
 
 impl RenderList {
@@ -158,7 +159,9 @@ impl RenderList {
         self.composite_mask_sources.get(node_id as usize)?.as_ref()
     }
 
-    pub fn deform_set(&self) -> DeformSet {
+    /// The set [`crate::RenderCache::refresh_puppet`] collected this list
+    /// for; `None` for the renderer's first set.
+    pub fn deform_set(&self) -> Option<DeformSet> {
         self.deform_set
     }
 
