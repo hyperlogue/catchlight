@@ -106,7 +106,8 @@ impl FileStorage {
             }
             Err(e) => return Err(e),
         };
-        if resolved.starts_with(&self.root) {
+        // An unresolved root is empty, and every path starts with the empty path.
+        if !self.root.as_os_str().is_empty() && resolved.starts_with(&self.root) {
             Ok(resolved)
         } else {
             Err(io::Error::new(
@@ -234,6 +235,16 @@ mod tests {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn an_unresolved_root_reaches_nothing() {
+        let store = FileStorage {
+            root: PathBuf::new(),
+        };
+        let here = std::env::temp_dir().display().to_string();
+        let refused = store.resolve(&here).unwrap_err();
+        assert_eq!(refused.kind(), io::ErrorKind::PermissionDenied);
+    }
+
     #[test]
     fn a_root_that_does_not_exist_is_refused_by_name() {
         let missing = scratch_dir("missing").join("not-here");
