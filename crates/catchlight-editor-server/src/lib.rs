@@ -869,25 +869,34 @@ impl Editor {
             let before = session.rev;
             let snapshot = session.model.clone();
             let missing = session.review.missing(&session.model);
-            let result = f(&mut session).and_then(|value| {
+            let published = f(&mut session).and_then(|value| {
                 if snapshot.authored_eq(&session.model)? {
-                    session.model = snapshot.clone();
-                    session.rev = before;
-                } else {
-                    let next = before
-                        .checked_add(1)
-                        .ok_or(EditorError::RevisionExhausted)?;
-                    let model = session.model.clone();
-                    session.history.record(model, next)?;
+                    return Ok((value, None));
+                }
+                let next = before
+                    .checked_add(1)
+                    .ok_or(EditorError::RevisionExhausted)?;
+                let model = session.model.clone();
+                session.history.record(model, next)?;
+                Ok((value, Some(next)))
+            });
+            let result = match published {
+                Ok((value, Some(next))) => {
                     session.rev = next;
                     session.snapshot = None;
+                    Ok(Captured::at(value, next))
                 }
-                Ok(Captured::at(value, session.rev))
-            });
-            if result.is_err() {
-                session.model = snapshot;
-                session.rev = before;
-            }
+                Ok((value, None)) => {
+                    session.model = snapshot;
+                    session.rev = before;
+                    Ok(Captured::at(value, before))
+                }
+                Err(e) => {
+                    session.model = snapshot;
+                    session.rev = before;
+                    Err(e)
+                }
+            };
             let moved = (session.rev != before).then_some(session.rev);
             let reviewed =
                 session.review.take_touched() || missing != session.review.missing(&session.model);
@@ -1173,17 +1182,10 @@ impl Editor {
             | Command::ExtensionWarnings { session }
             | Command::HumanoidGet { session }
             | Command::ExpressionList { session }
-            | Command::ClipList { session } => {
-                let captured = self.with_session_captured(session, |s| {
-                    query::check_revision(&cmd, s.rev)?;
-                    Ok(s.model.clone())
-                })?;
-                let body = query::replica_query(&captured.value, &cmd)?;
-                Ok(Captured {
-                    value: body,
-                    rev: captured.rev,
-                })
-            }
+            | Command::ClipList { session } => self.with_session_captured(session, |s| {
+                query::check_revision(&cmd, s.rev)?;
+                query::replica_query(&s.model, &cmd)
+            }),
             Command::BindingCellsSet {
                 session,
                 if_rev,
@@ -1246,16 +1248,12 @@ impl Editor {
                 edits,
             } => {
                 edit::check_batch(&edits)?;
-                let captured = self.with_session_captured(session, |s| {
+                self.with_session_captured(session, |s| {
                     s.check_revision(Some(if_rev))?;
-                    Ok(s.model.clone())
-                })?;
-                let mut candidate = captured.value.clone();
-                let results = edit::execute(&mut candidate, edits)?;
-                let changed = !captured.value.authored_eq(&candidate)?;
-                Ok(Captured {
-                    value: ResponseBody::EditResults { changed, results },
-                    rev: captured.rev,
+                    let mut candidate = s.model.clone();
+                    let results = edit::execute(&mut candidate, edits)?;
+                    let changed = !s.model.authored_eq(&candidate)?;
+                    Ok(ResponseBody::EditResults { changed, results })
                 })
             }
             Command::NodeAdd {
