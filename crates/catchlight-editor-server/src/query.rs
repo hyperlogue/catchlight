@@ -582,6 +582,7 @@ pub(crate) fn param_infos(model: &Model) -> Vec<ParamInfo> {
             default: p.default,
             initial_positions: model.initial_positions(pid),
             bindings: model.bindings_of_param(pid).count() as u32,
+            driven_by: model.response_owner(pid).cloned(),
         });
     }
     out

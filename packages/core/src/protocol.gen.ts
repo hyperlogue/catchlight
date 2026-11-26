@@ -2242,6 +2242,10 @@ export type ParamInfo = {
    */
   initial_positions: Array<number>,
   bindings: number,
+  /**
+   * The motion response whose output this is.
+   */
+  driven_by?: NodeId | null,
 };
 
 /**

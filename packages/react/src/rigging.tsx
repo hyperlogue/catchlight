@@ -282,20 +282,18 @@ function ResponseFields({
   const { run, busy } = useCommand(session, onError);
   const { sources, outputCandidates } = useReplica(session, (s) => {
     const nodes = flattenTree(s.tree());
-    const owners = new Map<string, string>();
     const poseInputs = new Set<string>();
     for (const node of nodes) {
       if (node.kind !== "motion_response") continue;
       const driver = s.nodeInfo(node.id)?.motion_response;
       if (!driver) continue;
-      if (driver.output_param) owners.set(driver.output_param, node.id);
       for (const { source } of driver.inputs) {
         if (source.kind === "pose_param") poseInputs.add(source.param);
       }
     }
     const params = s.params();
     const choices: { label: string; source: ResponseSource }[] = params
-      .filter((p) => !owners.has(p.id))
+      .filter((p) => !p.driven_by)
       .map((p) => ({
         label: p.name,
         source: { kind: "pose_param", param: p.id },
@@ -318,7 +316,7 @@ function ResponseFields({
     }
     const outputCandidates = params
       .filter((p) => p.default === 0 && !poseInputs.has(p.id))
-      .map((p) => ({ param: p, owner: owners.get(p.id) }));
+      .map((p) => ({ param: p, owner: p.driven_by }));
     return { sources: choices, outputCandidates };
   });
   const choices =

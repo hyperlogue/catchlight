@@ -1009,3 +1009,55 @@ fn response_settings_round_trip_through_edits_and_replica_inspection() {
     };
     assert_eq!(node.motion_response, Some(settings));
 }
+
+#[test]
+fn the_param_list_names_the_response_that_drives_a_param() {
+    use catchlight_editor_protocol::MotionResponse;
+    let f = Fixture::build();
+    let sway = match f.step(Command::ParamAdd {
+        session: f.session,
+        name: "Sway".into(),
+        min: -1.0,
+        max: 1.0,
+        default: 0.0,
+        param: Some(ParamId::new("sway").unwrap()),
+    }) {
+        ResponseBody::Param { param } => param,
+        other => panic!("expected Param, got {other:?}"),
+    };
+    let response = f.node(Command::NodeAdd {
+        session: f.session,
+        parent: f.group.clone(),
+        kind: NodeKindArg::MotionResponse,
+        name: Some("hair".into()),
+        node: None,
+    });
+    let set_output = |output_param: Option<ParamId>| {
+        f.step(Command::MotionResponseSet {
+            session: f.session,
+            node: response.clone(),
+            response: MotionResponse {
+                output_param,
+                ..MotionResponse::default()
+            },
+        });
+    };
+    let drivers = || match ok(f.agree(Command::ParamList { session: f.session })) {
+        ResponseBody::Params { params } => params
+            .into_iter()
+            .map(|p| (p.id.to_string(), p.driven_by))
+            .collect::<Vec<_>>(),
+        other => panic!("expected Params, got {other:?}"),
+    };
+
+    set_output(Some(sway.clone()));
+    assert_eq!(
+        drivers(),
+        vec![
+            ("pull".to_string(), None),
+            ("sway".to_string(), Some(response.clone()))
+        ]
+    );
+    set_output(None);
+    assert!(drivers().iter().all(|(_, owner)| owner.is_none()));
+}

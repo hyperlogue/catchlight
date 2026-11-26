@@ -1675,8 +1675,12 @@ fn print_body(body: &ResponseBody) {
                 println!("(no params)");
             }
             for p in params {
+                let driven = match &p.driven_by {
+                    Some(node) => format!(" driven_by={node}"),
+                    None => String::new(),
+                };
                 println!(
-                    "param {}  {}  [{}, {}] default={} bindings={}",
+                    "param {}  {}  [{}, {}] default={} bindings={}{driven}",
                     p.id, p.name, p.min, p.max, p.default, p.bindings
                 );
             }

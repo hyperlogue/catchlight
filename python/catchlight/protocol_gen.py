@@ -5338,6 +5338,8 @@ class ParamInfo:
     # Normalized keys a new binding on this axis starts with.
     initial_positions: list[float]
     bindings: int = 0
+    # The motion response whose output this is.
+    driven_by: NodeId | None = None
 
 
 @dataclass(frozen=True, kw_only=True)

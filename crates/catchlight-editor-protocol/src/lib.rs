@@ -3002,6 +3002,9 @@ pub struct ParamInfo {
     pub initial_positions: Vec<f32>,
     #[serde(default)]
     pub bindings: u32,
+    /// The motion response whose output this is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub driven_by: Option<NodeId>,
 }
 
 /// Compact identity contribution; deform identity does not repeat vertex zeros.
