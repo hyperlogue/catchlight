@@ -1539,6 +1539,131 @@ pub struct WeldDeleteArgs {
     pub b: NodeId,
 }
 
+/// A command that performs exactly one [`EditOp`]: the op, the session it
+/// edits and the revision it expects there.
+#[derive(Debug, Clone)]
+pub struct SessionEdit {
+    pub session: SessionId,
+    pub if_rev: Option<u64>,
+    pub op: EditOp,
+}
+
+impl TryFrom<Command> for SessionEdit {
+    /// The command back when it is not one batch op, such as an add that
+    /// leaves its new Id to the editor.
+    type Error = Command;
+
+    fn try_from(command: Command) -> Result<Self, Command> {
+        let (session, if_rev, op) = match command {
+            Command::NodeAdd {
+                session,
+                parent,
+                kind,
+                name,
+                node: Some(node),
+            } => (
+                session,
+                None,
+                EditOp::NodeAdd {
+                    parent,
+                    kind,
+                    name,
+                    node,
+                },
+            ),
+            Command::NodeSet {
+                session,
+                node,
+                patch,
+            } => (session, None, EditOp::NodeSet { node, patch }),
+            Command::NodeReparent { session, edit } => {
+                (session, None, EditOp::NodeReparent { edit })
+            }
+            Command::NodeReorder { session, edit } => (session, None, EditOp::NodeReorder { edit }),
+            Command::MaskAdd { session, edit } => (session, None, EditOp::MaskAdd { edit }),
+            Command::MaskDelete { session, edit } => (session, None, EditOp::MaskDelete { edit }),
+            Command::MeshSet {
+                session,
+                if_rev,
+                edit,
+            } => (session, if_rev, EditOp::MeshSet { edit }),
+            Command::BindingKeyInsert {
+                session,
+                if_rev,
+                params,
+                edit,
+            } => (session, if_rev, EditOp::BindingKeyInsert { params, edit }),
+            Command::BindingKeyDelete {
+                session,
+                if_rev,
+                params,
+                edit,
+            } => (session, if_rev, EditOp::BindingKeyDelete { params, edit }),
+            Command::BindingKeyMove {
+                session,
+                if_rev,
+                params,
+                edit,
+            } => (session, if_rev, EditOp::BindingKeyMove { params, edit }),
+            Command::BindingCellsSet {
+                session,
+                if_rev,
+                params,
+                edit,
+            } => (
+                session,
+                Some(if_rev),
+                EditOp::BindingCellsSet { params, edit },
+            ),
+            Command::BindingCellsUnset {
+                session,
+                if_rev,
+                params,
+                edit,
+            } => (
+                session,
+                Some(if_rev),
+                EditOp::BindingCellsUnset { params, edit },
+            ),
+            Command::BindingAdd {
+                session,
+                params,
+                edit,
+            } => (session, None, EditOp::BindingAdd { params, edit }),
+            Command::BindingDelete {
+                session,
+                params,
+                edit,
+            } => (session, None, EditOp::BindingDelete { params, edit }),
+            Command::BindingInterpolationSet {
+                session,
+                params,
+                edit,
+            } => (
+                session,
+                None,
+                EditOp::BindingInterpolationSet { params, edit },
+            ),
+            Command::SlotAdd {
+                session,
+                node,
+                slot: Some(slot),
+            } => (session, None, EditOp::SlotAdd { node, slot }),
+            Command::SlotFill { session, edit } => (session, None, EditOp::SlotFill { edit }),
+            Command::SlotClear { session, edit } => (session, None, EditOp::SlotClear { edit }),
+            Command::SlotDelete { session, edit } => (session, None, EditOp::SlotDelete { edit }),
+            Command::WeldSet { session, edit } => (session, None, EditOp::WeldSet { edit }),
+            Command::WeldDelete { session, edit } => (session, None, EditOp::WeldDelete { edit }),
+            other => return Err(other),
+        };
+        Ok(Self {
+            session,
+            if_rev,
+            op,
+        })
+    }
+}
+
 /// Exactly one source and its declared attachments initialize a new session.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "format", rename_all = "snake_case", deny_unknown_fields)]
@@ -3845,6 +3970,27 @@ mod tests {
             EditOp::WeldSet { edit } => assert!(edit.pairs.is_empty()),
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn an_add_is_one_batch_op_only_when_it_names_its_id() {
+        let add = |slot| Command::SlotAdd {
+            session: SessionId(1),
+            node: node("a"),
+            slot,
+        };
+        match SessionEdit::try_from(add(Some(SlotId::new("s").unwrap()))) {
+            Ok(SessionEdit {
+                op: EditOp::SlotAdd { slot, .. },
+                if_rev: None,
+                ..
+            }) => assert_eq!(slot.as_str(), "s"),
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(
+            SessionEdit::try_from(add(None)),
+            Err(Command::SlotAdd { slot: None, .. })
+        ));
     }
 
     #[test]
