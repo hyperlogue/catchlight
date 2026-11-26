@@ -944,7 +944,10 @@ mod tests {
     fn named(m: &Model, name: &str) -> NodeId {
         m.nodes_in_order()
             .into_iter()
-            .find(|id| m.node(id).is_some_and(|n| n.name.as_str() == name))
+            .find(|id| {
+                m.node(id)
+                    .is_some_and(|n| n.properties.name.as_str() == name)
+            })
             .unwrap_or_else(|| panic!("no node named {name}"))
     }
 
@@ -1267,6 +1270,7 @@ mod tests {
         assert_eq!(
             m.node(&NodeId::new("shoes").unwrap())
                 .unwrap()
+                .properties
                 .name
                 .as_str(),
             "Boots"
@@ -1277,6 +1281,7 @@ mod tests {
         assert_eq!(
             m.node(&NodeId::new("shoes").unwrap())
                 .unwrap()
+                .properties
                 .name
                 .as_str(),
             "Sandals"

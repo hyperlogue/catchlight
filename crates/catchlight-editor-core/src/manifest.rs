@@ -236,12 +236,12 @@ impl ModelManifestExt for Model {
                 let (kind, albedo) = build_kind(mn, &tex_dims, budget)?;
                 let mut node =
                     ModelNode::new(mn.name.clone().unwrap_or_else(|| mn.id.clone()), kind);
-                node.transform = ClmTransform {
+                node.properties.transform = ClmTransform {
                     translation: mn.translate.unwrap_or([0.0; 3]),
                     rotation: mn.rotate.unwrap_or([0.0; 3]),
                     scale: mn.scale.unwrap_or([1.0, 1.0]),
                 };
-                node.z_order = mn.z_order;
+                node.properties.z_order = mn.z_order;
                 let id = m.add_node(&parent, node, &mut hex)?;
                 if let Some(name) = albedo {
                     match tex_ids.get(name) {
@@ -350,12 +350,12 @@ impl ModelManifestExt for Model {
             nodes.push(ManifestNode {
                 id: node_name.get(id).cloned().unwrap_or_default(),
                 parent,
-                name: Some(n.name.to_string()),
+                name: Some(n.properties.name.to_string()),
                 kind,
-                translate: Some(n.transform.translation),
-                rotate: Some(n.transform.rotation),
-                scale: Some(n.transform.scale),
-                z_order: n.z_order,
+                translate: Some(n.properties.transform.translation),
+                rotate: Some(n.properties.transform.rotation),
+                scale: Some(n.properties.transform.scale),
+                z_order: n.properties.z_order,
                 texture,
                 mesh: None,
             });

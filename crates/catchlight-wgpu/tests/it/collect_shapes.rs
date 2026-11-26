@@ -157,7 +157,11 @@ fn a_composite_mask_source_keeps_its_descendant_parts() {
         model
             .nodes_in_order()
             .into_iter()
-            .find(|id| model.node(id).is_some_and(|n| n.name.as_str() == name))
+            .find(|id| {
+                model
+                    .node(id)
+                    .is_some_and(|n| n.properties.name.as_str() == name)
+            })
             .unwrap_or_else(|| panic!("the fixture has a node named {name}"))
     };
     let source = named("CompositeMaskSource");

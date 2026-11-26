@@ -425,7 +425,12 @@ mod tests {
     }
 
     fn root_name(model: &Model) -> &str {
-        model.node(model.root().unwrap()).unwrap().name.as_str()
+        model
+            .node(model.root().unwrap())
+            .unwrap()
+            .properties
+            .name
+            .as_str()
     }
 
     fn history() -> ModelHistory {

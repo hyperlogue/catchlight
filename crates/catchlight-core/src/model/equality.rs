@@ -77,11 +77,11 @@ impl Model {
 
 fn node_eq(a: &ModelNode, b: &ModelNode) -> bool {
     a.parent == b.parent
-        && a.name.as_str() == b.name.as_str()
-        && a.enabled == b.enabled
-        && a.z_order == b.z_order
-        && a.transform == b.transform
-        && a.lock_to_root == b.lock_to_root
+        && a.properties.name.as_str() == b.properties.name.as_str()
+        && a.properties.enabled == b.properties.enabled
+        && a.properties.z_order == b.properties.z_order
+        && a.properties.transform == b.properties.transform
+        && a.properties.lock_to_root == b.properties.lock_to_root
         && kind_eq(&a.kind, &b.kind)
 }
 
@@ -148,7 +148,7 @@ mod tests {
         assert_ne!(model.identity(), other.identity());
         assert!(model.authored_eq(&other).unwrap());
         let root = other.root().unwrap().clone();
-        let initial_name = other.node(&root).unwrap().name.clone();
+        let initial_name = other.node(&root).unwrap().properties.name.clone();
         other
             .update_node(&root, |node| node.name = Name::truncated("changed"))
             .unwrap();
@@ -534,7 +534,7 @@ mod tests {
         }
 
         let mut touched = r.model.clone();
-        let name = touched.node(&r.upper).unwrap().name.clone();
+        let name = touched.node(&r.upper).unwrap().properties.name.clone();
         touched.update_node(&r.upper, |n| n.name = name).unwrap();
         assert_ne!(touched.generation(), r.model.generation());
         assert!(by_writing_both(&r.model, &touched));

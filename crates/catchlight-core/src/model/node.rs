@@ -13,7 +13,7 @@ pub struct NodeProperties {
 
 #[derive(Debug, Clone)]
 pub struct ModelNode {
-    pub(super) properties: NodeProperties,
+    pub properties: NodeProperties,
     pub kind: ModelNodeKind,
     pub(super) parent: Option<NodeId>,
     // Like meshes, node-owned lists are shared across snapshots and edit rollback.
@@ -246,19 +246,6 @@ impl ModelSpine {
     }
 }
 
-impl Deref for ModelNode {
-    type Target = NodeProperties;
-    fn deref(&self) -> &NodeProperties {
-        &self.properties
-    }
-}
-
-impl std::ops::DerefMut for ModelNode {
-    fn deref_mut(&mut self) -> &mut NodeProperties {
-        &mut self.properties
-    }
-}
-
 impl ModelNode {
     /// The label is truncated rather than rejected.
     pub fn new(name: impl AsRef<str>, kind: ModelNodeKind) -> Self {
@@ -417,7 +404,9 @@ impl Model {
             .ok_or_else(|| ModelError::UnknownNode(id.clone()))?;
         let previous = node.properties.clone();
         let out = f(&mut node.properties);
-        if let Err(fault) = validate::node_placement(node.z_order, &node.transform) {
+        if let Err(fault) =
+            validate::node_placement(node.properties.z_order, &node.properties.transform)
+        {
             node.properties = previous;
             return Err(fault.into());
         }

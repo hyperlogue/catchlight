@@ -59,11 +59,11 @@ impl Model {
             nodes.push(ClmNode {
                 id: id.clone(),
                 parent: node.parent().cloned(),
-                name: node.name.to_string(),
-                enabled: node.enabled,
-                z_order: node.z_order,
-                transform: node.transform,
-                lock_to_root: node.lock_to_root,
+                name: node.properties.name.to_string(),
+                enabled: node.properties.enabled,
+                z_order: node.properties.z_order,
+                transform: node.properties.transform,
+                lock_to_root: node.properties.lock_to_root,
                 kind: clm_kind(&node.kind),
             });
         }
@@ -277,7 +277,10 @@ mod tests {
         let upper = m
             .nodes_in_order()
             .into_iter()
-            .find(|id| m.node(id).is_some_and(|n| n.name.as_str() == "Upper"))
+            .find(|id| {
+                m.node(id)
+                    .is_some_and(|n| n.properties.name.as_str() == "Upper")
+            })
             .unwrap();
         assert!(matches!(
             m.set_node_mesh_with(&upper, quad(0.0), |_, _, offsets| offsets[..2].to_vec()),

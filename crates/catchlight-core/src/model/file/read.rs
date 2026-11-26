@@ -304,10 +304,10 @@ impl Model {
             })?;
             let mut node = ModelNode::new(&cn.name, ModelNodeKind::Group);
             node.parent.clone_from(&cn.parent);
-            node.enabled = cn.enabled;
-            node.z_order = cn.z_order;
-            node.transform = cn.transform;
-            node.lock_to_root = cn.lock_to_root;
+            node.properties.enabled = cn.enabled;
+            node.properties.z_order = cn.z_order;
+            node.properties.transform = cn.transform;
+            node.properties.lock_to_root = cn.lock_to_root;
             node.kind = model_kind(
                 &cn.id, &cn.kind, node_slots, &declared, &textures, &params, shape,
             )?;

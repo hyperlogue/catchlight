@@ -79,7 +79,7 @@ impl Model {
             return Err(ModelError::DuplicateId(id.clone().into()));
         }
         crate::load_budget::tree_depth(self.depth_of(parent) + 1)?;
-        validate::node_placement(node.z_order, &node.transform)?;
+        validate::node_placement(node.properties.z_order, &node.properties.transform)?;
         validate::appearance(&node.kind)?;
         if let Some(mesh) = node.mesh() {
             validate_mesh(mesh).map_err(ModelError::MalformedMesh)?;
@@ -258,7 +258,7 @@ impl Model {
             let new_id = map.get(old).ok_or_else(unknown)?;
             let new_parent = copy.parent().and_then(|p| map.get(p)).unwrap_or(&parent);
             if old == id {
-                copy.name = Name::truncated(format!("{} copy", copy.name));
+                copy.properties.name = Name::truncated(format!("{} copy", copy.properties.name));
             }
             copy.parent = Some(new_parent.clone());
             copy.children = Arc::default();
@@ -635,7 +635,7 @@ mod tests {
             m.node(&root).unwrap().children(),
             &[group.clone(), copy.clone()]
         );
-        assert_eq!(m.node(&copy).unwrap().name.as_str(), "g copy");
+        assert_eq!(m.node(&copy).unwrap().properties.name.as_str(), "g copy");
 
         let copy_children = m.node(&copy).unwrap().children().to_vec();
         assert_eq!(copy_children.len(), 2);

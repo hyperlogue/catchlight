@@ -184,7 +184,7 @@ mod tests {
                 origin: [origin.x, origin.y],
             };
             let mut node = ModelNode::new("part", ModelNodeKind::Part(ModelPart::new(clm)));
-            node.z_order = z_order;
+            node.properties.z_order = z_order;
             let id = self
                 .model
                 .add_node(parent, node, &mut self.hex)

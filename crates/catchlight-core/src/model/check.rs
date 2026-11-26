@@ -24,7 +24,7 @@ impl Model {
                             id.clone(),
                             format!(
                                 "part {:?} has no texture (the renderer culls it)",
-                                n.name.as_str()
+                                n.properties.name.as_str()
                             ),
                         ));
                     }
@@ -35,7 +35,7 @@ impl Model {
                             id.clone(),
                             format!(
                                 "part {:?} has {} vertices but {} uvs",
-                                n.name.as_str(),
+                                n.properties.name.as_str(),
                                 verts,
                                 mesh.uvs.len() / 2
                             ),
@@ -47,7 +47,7 @@ impl Model {
                             id.clone(),
                             format!(
                                 "part {:?} is textured but its mesh has no triangles",
-                                n.name.as_str()
+                                n.properties.name.as_str()
                             ),
                         ));
                     }
@@ -56,7 +56,7 @@ impl Model {
                 ModelNodeKind::Spine(spine) if spine.targets().iter().all(Option::is_none) => {
                     out.push(warn(
                         id,
-                        format!("spine {:?} reads no bend param", n.name.as_str()),
+                        format!("spine {:?} reads no bend param", n.properties.name.as_str()),
                     ));
                 }
                 _ => {}
@@ -389,7 +389,10 @@ mod tests {
         let group = m
             .nodes_in_order()
             .into_iter()
-            .find(|id| m.node(id).is_some_and(|n| n.name.as_str() == "lattice"))
+            .find(|id| {
+                m.node(id)
+                    .is_some_and(|n| n.properties.name.as_str() == "lattice")
+            })
             .unwrap();
         assert!(matches!(
             m.add_binding(&BindingKey::new(

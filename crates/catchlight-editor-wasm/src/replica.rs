@@ -629,7 +629,7 @@ impl ReplicaState {
     /// node where it is rather than at NaN.
     pub fn translation_after_world_delta(&self, node: &str, dx: f32, dy: f32) -> Option<[f32; 3]> {
         let id = node.parse::<NodeId>().ok()?;
-        let authored = self.model.node(&id)?.transform.translation;
+        let authored = self.model.node(&id)?.properties.transform.translation;
         let parent = self
             .model
             .node(&id)

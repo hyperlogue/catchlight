@@ -43,7 +43,12 @@ fn rename(editor: &Editor, session: SessionId, name: &str) -> Captured<ResponseB
 fn name(editor: &Editor, session: SessionId) -> String {
     editor
         .with_model(session, |model| {
-            model.node(model.root().unwrap()).unwrap().name.to_string()
+            model
+                .node(model.root().unwrap())
+                .unwrap()
+                .properties
+                .name
+                .to_string()
         })
         .unwrap()
 }

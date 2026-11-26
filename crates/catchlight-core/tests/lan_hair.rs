@@ -63,8 +63,9 @@ fn guide(model: &Model, spine: &str) -> Vec<Vec2> {
     let mut to_model = catchlight_core::Mat4::IDENTITY;
     let mut at = Some(&id);
     while let Some(node) = at.and_then(|id| model.node(id)) {
-        to_model =
-            catchlight_core::components::Transform::from(&node.transform).to_matrix() * to_model;
+        to_model = catchlight_core::components::Transform::from(&node.properties.transform)
+            .to_matrix()
+            * to_model;
         at = node.parent();
     }
     let catchlight_core::model::ModelNodeKind::Spine(data) = &model.node(&id).unwrap().kind else {

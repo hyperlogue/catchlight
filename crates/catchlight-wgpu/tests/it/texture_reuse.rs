@@ -123,7 +123,11 @@ async fn replica_sync(options: PrepareOptions) {
     let right = server
         .nodes_in_order()
         .into_iter()
-        .find(|id| server.node(id).is_some_and(|n| n.name.as_str() == "right"))
+        .find(|id| {
+            server
+                .node(id)
+                .is_some_and(|n| n.properties.name.as_str() == "right")
+        })
         .expect("the part named right");
     let green = common::solid_texture(8, 8, [40, 200, 60, 255]);
     server

@@ -114,7 +114,7 @@ impl Build {
         kind: ModelNodeKind,
     ) -> NodeId {
         let mut node = ModelNode::new(name, kind);
-        node.z_order = z_order;
+        node.properties.z_order = z_order;
         self.model
             .add_node(parent, node, &mut self.hex)
             .expect("add node")

@@ -200,7 +200,7 @@ impl Responses {
                 parent: node.parent().cloned(),
                 config: config.clone(),
                 omega: std::f64::consts::TAU / f64::from(config.period_s),
-                enabled: node.enabled,
+                enabled: node.properties.enabled,
                 output,
                 terms,
                 vertices,

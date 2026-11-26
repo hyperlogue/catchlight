@@ -454,7 +454,7 @@ fn validate_title(title: &str) -> Result<(), EditorError> {
 }
 
 fn model_title(model: &Model) -> Option<String> {
-    let title = &model.node(model.root()?)?.name;
+    let title = &model.node(model.root()?)?.properties.name;
     (!title.is_empty()).then(|| title.to_string())
 }
 

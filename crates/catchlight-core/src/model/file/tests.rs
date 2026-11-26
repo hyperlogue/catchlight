@@ -126,7 +126,10 @@ pub(super) fn sample() -> Model {
 pub(super) fn named(m: &Model, name: &str) -> NodeId {
     m.nodes_in_order()
         .into_iter()
-        .find(|id| m.node(id).is_some_and(|n| n.name.as_str() == name))
+        .find(|id| {
+            m.node(id)
+                .is_some_and(|n| n.properties.name.as_str() == name)
+        })
         .unwrap_or_else(|| panic!("no node named {name}"))
 }
 
@@ -240,8 +243,8 @@ fn ids_and_names_survive_the_round_trip() {
     assert_eq!(reopened.texture_ids(), m.texture_ids());
     for id in m.nodes_in_order() {
         assert_eq!(
-            reopened.node(&id).unwrap().name.as_str(),
-            m.node(&id).unwrap().name.as_str(),
+            reopened.node(&id).unwrap().properties.name.as_str(),
+            m.node(&id).unwrap().properties.name.as_str(),
             "name of {id}",
         );
     }

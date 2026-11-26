@@ -312,7 +312,7 @@ fn a_cut_preserves_slot_velocity_when_another_response_moves_the_rendered_vertex
     let root = m.root().unwrap().clone();
     let other = nid("other_art");
     let mut art = m.node(&nid("art")).unwrap().clone();
-    art.name = Name::truncated("other");
+    art.properties.name = Name::truncated("other");
     m.add_node_with_id(other.clone(), &root, art).unwrap();
     m.add_param_with_id(
         pid("slide"),

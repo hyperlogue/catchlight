@@ -52,7 +52,7 @@ fn identity(model: &Model) -> Vec<String> {
         let node = model.node(&id).expect("node in order");
         out.push(format!(
             "node {id} {:?} parent={:?}",
-            node.name.as_str(),
+            node.properties.name.as_str(),
             node.parent().map(ToString::to_string)
         ));
     }

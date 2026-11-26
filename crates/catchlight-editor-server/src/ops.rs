@@ -72,8 +72,8 @@ fn rest_to_frame(model: &Model, id: &NodeId, frame: Option<&NodeId>) -> Result<M
         let node = model
             .node(id)
             .ok_or_else(|| EditorError::NoNode(id.clone()))?;
-        matrix = clm_transform_matrix(&node.transform) * matrix;
-        cursor = if node.lock_to_root {
+        matrix = clm_transform_matrix(&node.properties.transform) * matrix;
+        cursor = if node.properties.lock_to_root {
             None
         } else {
             node.parent()
@@ -115,7 +115,7 @@ pub(crate) fn spine_fit(
             "node {part} is the model's root, so a spine has nowhere to go above it"
         ))
     })?;
-    let part_name = node.name.to_string();
+    let part_name = node.properties.name.to_string();
     let existing = fitted_spine(&s.model, node).cloned();
     let part_local = rest_to_frame(&s.model, part, Some(existing.as_ref().unwrap_or(&parent)))?;
     let root_offset = part_local.transform_point3(Vec3::new(

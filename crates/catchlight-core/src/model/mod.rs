@@ -221,7 +221,7 @@ impl Model {
         for (id, node) in &self.nodes {
             bytes = bytes
                 .saturating_add(id.as_str().len())
-                .saturating_add(node.name.as_str().len())
+                .saturating_add(node.properties.name.as_str().len())
                 .saturating_add(node.children.capacity().saturating_mul(size_of::<NodeId>()));
             if let Some(mesh) = node.mesh() {
                 bytes = bytes.saturating_add(mesh_size(mesh));

@@ -142,13 +142,13 @@ fn a_value_that_is_not_a_number_is_refused_by_every_mutator_that_writes_one() {
         "{got:?}"
     );
     let node = r.model.node(&part).unwrap();
-    assert_eq!(node.name.as_str(), "part");
-    assert!(node.enabled);
-    assert_eq!(node.z_order, 0.0);
-    assert_eq!(node.transform, ClmTransform::default());
+    assert_eq!(node.properties.name.as_str(), "part");
+    assert!(node.properties.enabled);
+    assert_eq!(node.properties.z_order, 0.0);
+    assert_eq!(node.properties.transform, ClmTransform::default());
 
     let mut adrift = ModelNode::new("adrift", ModelNodeKind::Group);
-    adrift.transform.translation[1] = f32::NAN;
+    adrift.properties.transform.translation[1] = f32::NAN;
     let got = r.model.add_node(&root, adrift, &mut r.hex);
     assert!(
         matches!(got, Err(ModelError::NonFinite("a node's transform"))),

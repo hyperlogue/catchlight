@@ -734,6 +734,7 @@ fn a_deform_binding_on_a_node_with_no_mesh_is_dropped() {
         model
             .node(&NodeId::new("node-1").unwrap())
             .expect("the group survives the binding that named it")
+            .properties
             .name
             .as_str(),
         "group"

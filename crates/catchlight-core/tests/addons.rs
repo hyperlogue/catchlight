@@ -90,9 +90,9 @@ fn random_model(rng: &mut Rng) -> Model {
         };
         let is_part = matches!(kind, ModelNodeKind::Part(_));
         let mut node = ModelNode::new(format!("N{i}"), kind);
-        node.z_order = rng.below(5) as f32;
-        node.enabled = !rng.one_in(6);
-        node.transform.translation = [rng.unit(), rng.unit(), 0.0];
+        node.properties.z_order = rng.below(5) as f32;
+        node.properties.enabled = !rng.one_in(6);
+        node.properties.transform.translation = [rng.unit(), rng.unit(), 0.0];
         let id = m.add_node(&parent, node, &mut hex).unwrap();
         if is_part {
             parts.push(id.clone());
@@ -489,7 +489,11 @@ fn an_addon_installed_between_two_ticks_keeps_the_pose() {
     let hat_id = model
         .nodes_in_order()
         .into_iter()
-        .find(|id| model.node(id).is_some_and(|n| n.name.as_str() == "Hat"))
+        .find(|id| {
+            model
+                .node(id)
+                .is_some_and(|n| n.properties.name.as_str() == "Hat")
+        })
         .expect("the hat is in the model");
     let hat_idx = puppet.node_idx(&hat_id).expect("and in the rebaked arena");
     assert!(

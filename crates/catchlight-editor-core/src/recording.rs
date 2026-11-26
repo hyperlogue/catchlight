@@ -159,10 +159,10 @@ impl Recording {
             return Err(RecordingError::OneRow);
         }
         let mut base_values = RecordProperties {
-            translate: Some(base.transform.translation),
-            rotate: Some(base.transform.rotation),
-            scale: Some(base.transform.scale),
-            z_order: Some(base.z_order),
+            translate: Some(base.properties.transform.translation),
+            rotate: Some(base.properties.transform.rotation),
+            scale: Some(base.properties.transform.scale),
+            z_order: Some(base.properties.z_order),
             ..Default::default()
         };
         let mut posed_values = RecordProperties {

@@ -252,7 +252,7 @@ impl BoundsOutput {
             let mut included = color_retained(request, &id);
             let mut node = model.node(&id);
             while let Some(n) = node {
-                included &= n.enabled;
+                included &= n.properties.enabled;
                 node = n.parent().and_then(|id| model.node(id));
             }
             if included && let Some(b) = bounds {

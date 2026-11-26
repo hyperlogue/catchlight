@@ -41,8 +41,8 @@ fn coordinates_preserve_authored_order_origin_and_full_world_transform() {
     let mut ids = SeededHex::new(71);
     let root = model.root().unwrap().clone();
     let mut ancestor = ModelNode::new("turned", ModelNodeKind::Group);
-    ancestor.transform.translation = [10.0, 20.0, 3.0];
-    ancestor.transform.rotation[2] = std::f32::consts::FRAC_PI_2;
+    ancestor.properties.transform.translation = [10.0, 20.0, 3.0];
+    ancestor.properties.transform.rotation[2] = std::f32::consts::FRAC_PI_2;
     let parent = model.add_node(&root, ancestor, &mut ids).unwrap();
     let mesh = ClmMesh {
         verts: vec![2.0, 3.0, 6.0, 3.0, 2.0, 7.0, 10000.0, 10000.0],

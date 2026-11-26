@@ -283,7 +283,7 @@ impl Built {
                     format!("strand {i}"),
                     ModelNodeKind::Part(ModelPart::new(mesh.clone())),
                 );
-                node.transform.translation = [i as f32 * SPACING, 0.0, 0.0];
+                node.properties.transform.translation = [i as f32 * SPACING, 0.0, 0.0];
                 let part = model.add_node(&head, node, &mut hex).unwrap();
                 first_part.get_or_insert_with(|| part.clone());
                 for (l, param) in strand.iter().enumerate() {
@@ -350,7 +350,7 @@ impl Built {
                         .collect(),
                 );
                 let mut node = ModelNode::new(format!("spine {i}"), ModelNodeKind::Spine(spine));
-                node.transform.translation = [i as f32 * SPACING, TOP, 0.0];
+                node.properties.transform.translation = [i as f32 * SPACING, TOP, 0.0];
                 let id = model.add_node(&head, node, &mut hex).unwrap();
                 model
                     .set_spine_targets(&id, strand.iter().cloned().map(Some).collect())
@@ -359,7 +359,7 @@ impl Built {
                     format!("strand {i}"),
                     ModelNodeKind::Part(ModelPart::new(mesh.clone())),
                 );
-                art.transform.translation = [0.0, -TOP, 0.0];
+                art.properties.transform.translation = [0.0, -TOP, 0.0];
                 let part = model.add_node(&id, art, &mut hex).unwrap();
                 first_part.get_or_insert(part);
             }

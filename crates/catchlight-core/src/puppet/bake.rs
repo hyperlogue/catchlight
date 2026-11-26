@@ -287,9 +287,9 @@ fn bake_binding(
 
 fn build_node(model: &Model, node: &crate::model::ModelNode) -> Node {
     let transform = Transform {
-        translation: Vec3::from_array(node.transform.translation),
-        rotation: Vec3::from_array(node.transform.rotation),
-        scale: Vec2::from_array(node.transform.scale),
+        translation: Vec3::from_array(node.properties.transform.translation),
+        rotation: Vec3::from_array(node.properties.transform.rotation),
+        scale: Vec2::from_array(node.properties.transform.scale),
     };
     let kind = match &node.kind {
         ModelNodeKind::MotionResponse(_) => NodeKind::MotionResponse,
@@ -352,13 +352,13 @@ fn build_node(model: &Model, node: &crate::model::ModelNode) -> Node {
         }
     };
     Node {
-        name: node.name.as_str().to_string(),
-        enabled: node.enabled,
+        name: node.properties.name.as_str().to_string(),
+        enabled: node.properties.enabled,
         base_transform: transform,
-        base_z_order: node.z_order,
+        base_z_order: node.properties.z_order,
         transform,
-        z_order: node.z_order,
-        lock_to_root: node.lock_to_root,
+        z_order: node.properties.z_order,
+        lock_to_root: node.properties.lock_to_root,
         kind,
     }
 }

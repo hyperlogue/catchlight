@@ -40,7 +40,11 @@ fn one_field_changes_and_the_file_still_loads() {
     );
     let model = Model::from_clm_bytes(&read(&file)).unwrap();
     assert_eq!(
-        model.node(&NodeId::new("node-1").unwrap()).unwrap().z_order,
+        model
+            .node(&NodeId::new("node-1").unwrap())
+            .unwrap()
+            .properties
+            .z_order,
         2.5
     );
 }
@@ -340,6 +344,7 @@ fn a_name_past_the_cap_is_refused() {
         model
             .node(&NodeId::new("node-1").unwrap())
             .unwrap()
+            .properties
             .name
             .as_str(),
         at_cap
