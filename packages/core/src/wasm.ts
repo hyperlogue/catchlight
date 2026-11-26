@@ -54,6 +54,13 @@ export interface ExtensionRequest {
   hash: string;
 }
 
+/** What a structure names that the replica does not hold. */
+export interface Needs {
+  textures: TextureRequest[];
+  /** JSON extensions are never listed: they ride inline in the structure. */
+  extensions: ExtensionRequest[];
+}
+
 export interface WasmReplica extends WasmOwned {
   meshDraft(node: NodeId): WasmMeshDraft;
   recordingPairs(node: NodeId, param: ParamId): string;
@@ -71,10 +78,9 @@ export interface WasmReplica extends WasmOwned {
   textureImage(texture: string): ReturnType<WasmReplica["textureThumbnail"]>;
   rev(): number;
 
-  texturesNeeded(structure: Uint8Array): string;
+  /** JSON `Needs`. */
+  needs(structure: Uint8Array): string;
   putTexture(id: TexId, bytes: Uint8Array): void;
-  /** JSON extensions are never listed: they ride inline in the structure. */
-  extensionsNeeded(structure: Uint8Array): string;
   putExtension(key: string, bytes: Uint8Array): void;
   /**
    * Forward only: a `rev` at or below the current one returns false. Throws a
@@ -103,19 +109,17 @@ export interface WasmReplica extends WasmOwned {
   /** Packed `[dx0, dy0, dx1, dy1, ...]`. */
   scratchDeform(node: NodeId, offsets: Float32Array): boolean;
   clearScratchDeform(node: NodeId): boolean;
-  /** Absolute values; `NaN` leaves what the fold produced for that field. */
+  /**
+   * Absolute values; an absent field keeps what the fold produced. Throws on a
+   * vector of the wrong length or a value that is not finite.
+   */
   scratchTransform(
     node: NodeId,
-    tx: number,
-    ty: number,
-    tz: number,
-    rx: number,
-    ry: number,
-    rz: number,
-    sx: number,
-    sy: number,
-    zOrder: number,
-    opacity: number,
+    translate: Float32Array | undefined,
+    rotate: Float32Array | undefined,
+    scale: Float32Array | undefined,
+    zOrder: number | undefined,
+    opacity: number | undefined,
   ): boolean;
   clearScratchTransform(node: NodeId): boolean;
   clearAllScratch(): void;

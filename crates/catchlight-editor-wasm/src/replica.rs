@@ -9,13 +9,12 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use catchlight_core::formats::clm::structure_texture_ids;
 use catchlight_core::formats::clm::{
     ClmError, ClmTextureRef, TextureAlpha, TextureEncoding, decode_structure, extension_hash,
 };
 use catchlight_core::{
-    BlendMode, ExtensionKey, LoadBudget, Mat4, Model, ModelError, ModelTexture, NodeId, NodeKind,
-    ParamId, Puppet, ScratchTransform, TexId, Vec2, Vec3,
+    BlendMode, ExtensionKey, Mat4, Model, ModelError, ModelTexture, NodeId, NodeKind, ParamId,
+    Puppet, ScratchTransform, TexId, Vec2, Vec3,
 };
 use catchlight_editor_protocol::{ErrorCode, Reply, Request, RequestId, SessionId};
 use catchlight_editor_server::{Editor, replica_reply};
@@ -23,6 +22,16 @@ use catchlight_extension_animations::{AnimationPlayer, Animations, LiveInputs, R
 use catchlight_extension_expressions::Expressions;
 use catchlight_extension_humanoid::Humanoid;
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+/// What a structure names that the replica has yet to fetch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Needs {
+    /// In model order.
+    pub textures: Vec<ClmTextureRef>,
+    /// By hash: a stale value under the same key must still be fetched.
+    pub extensions: Vec<ExtensionNeed>,
+}
 
 /// One byte extension a structure names and the replica has yet to fetch.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -130,20 +139,15 @@ impl ReplicaState {
         (&self.model, &self.puppet)
     }
 
-    /// The textures `structure` names that are not held, in model order.
-    pub fn textures_needed(&self, structure: &[u8]) -> Result<Vec<ClmTextureRef>, ClmError> {
-        let named = structure_texture_ids(structure, &mut LoadBudget::default())?;
-        Ok(named
+    /// The textures and byte extensions `structure` names that are not held.
+    pub fn needs(&self, structure: &[u8]) -> Result<Needs, ClmError> {
+        let structure = decode_structure(structure)?;
+        let textures = structure
+            .textures
             .into_iter()
             .filter(|t| !self.textures.contains_key(&t.id))
-            .collect())
-    }
-
-    /// The byte extensions `structure` names whose bytes are not held, by hash:
-    /// a stale value under the same key must still be fetched.
-    pub fn extensions_needed(&self, structure: &[u8]) -> Result<Vec<ExtensionNeed>, ClmError> {
-        let structure = decode_structure(structure)?;
-        Ok(structure
+            .collect();
+        let extensions = structure
             .doc
             .extensions
             .iter()
@@ -157,7 +161,11 @@ impl ReplicaState {
                 key: key.clone(),
                 hash: marker.hash.clone(),
             })
-            .collect())
+            .collect();
+        Ok(Needs {
+            textures,
+            extensions,
+        })
     }
 
     /// Hold `bytes` under `key`; an invalid key is dropped.
@@ -399,39 +407,23 @@ impl ReplicaState {
         true
     }
 
-    /// Every field is absolute; NaN means "leave what the fold produced", and a
-    /// vector field with any NaN component is dropped whole.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "a wasm-bindgen export takes each field as its own scalar"
-    )]
+    /// Every given field is absolute; an absent one keeps what the fold
+    /// produced. `Ok(false)` for a node the replica lacks; on `Err` the node
+    /// is left as it was.
     pub fn set_scratch_transform(
         &mut self,
         node: &str,
-        tx: f32,
-        ty: f32,
-        tz: f32,
-        rx: f32,
-        ry: f32,
-        rz: f32,
-        sx: f32,
-        sy: f32,
-        z_order: f32,
-        opacity: f32,
-    ) -> bool {
+        translate: Option<&[f32]>,
+        rotate: Option<&[f32]>,
+        scale: Option<&[f32]>,
+        z_order: Option<f32>,
+        opacity: Option<f32>,
+    ) -> Result<bool, ScratchFieldError> {
+        let scratch = scratch_transform(translate, rotate, scale, z_order, opacity)?;
         let Some(idx) = self.node_idx(node) else {
-            return false;
+            return Ok(false);
         };
-        self.puppet.set_scratch_transform(
-            idx,
-            ScratchTransform {
-                translation: vec3(tx, ty, tz),
-                rotation: vec3(rx, ry, rz),
-                scale: vec2(sx, sy),
-                z_order: scalar(z_order),
-                opacity: scalar(opacity),
-            },
-        )
+        Ok(self.puppet.set_scratch_transform(idx, scratch))
     }
 
     pub fn clear_scratch_transform(&mut self, node: &str) -> bool {
@@ -741,17 +733,52 @@ impl ReplicaState {
     }
 }
 
-/// NaN is the wire's "leave this field alone".
-fn scalar(v: f32) -> Option<f32> {
-    (!v.is_nan()).then_some(v)
+/// A scratch-transform field from the page that is not a usable value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum ScratchFieldError {
+    #[error("scratch {field} needs {expected} numbers, not {got}")]
+    Length {
+        field: &'static str,
+        expected: usize,
+        got: usize,
+    },
+    #[error("scratch {field} holds a number that is not finite")]
+    NotFinite { field: &'static str },
 }
 
-fn vec2(x: f32, y: f32) -> Option<Vec2> {
-    (!x.is_nan() && !y.is_nan()).then(|| Vec2::new(x, y))
-}
-
-fn vec3(x: f32, y: f32, z: f32) -> Option<Vec3> {
-    (!x.is_nan() && !y.is_nan() && !z.is_nan()).then(|| Vec3::new(x, y, z))
+fn scratch_transform(
+    translate: Option<&[f32]>,
+    rotate: Option<&[f32]>,
+    scale: Option<&[f32]>,
+    z_order: Option<f32>,
+    opacity: Option<f32>,
+) -> Result<ScratchTransform, ScratchFieldError> {
+    fn values<const N: usize>(
+        field: &'static str,
+        v: Option<&[f32]>,
+    ) -> Result<Option<[f32; N]>, ScratchFieldError> {
+        let Some(v) = v else { return Ok(None) };
+        let v: [f32; N] = v.try_into().map_err(|_| ScratchFieldError::Length {
+            field,
+            expected: N,
+            got: v.len(),
+        })?;
+        if v.iter().all(|x| x.is_finite()) {
+            Ok(Some(v))
+        } else {
+            Err(ScratchFieldError::NotFinite { field })
+        }
+    }
+    let scalar = |field, v: Option<f32>| {
+        values::<1>(field, v.as_ref().map(std::slice::from_ref)).map(|v| v.map(|[x]| x))
+    };
+    Ok(ScratchTransform {
+        translation: values::<3>("translate", translate)?.map(Vec3::from_array),
+        rotation: values::<3>("rotate", rotate)?.map(Vec3::from_array),
+        scale: values::<2>("scale", scale)?.map(Vec2::from_array),
+        z_order: scalar("z_order", z_order)?,
+        opacity: scalar("opacity", opacity)?,
+    })
 }
 
 /// [`ReplicaState`] with the GPU half attached: what JavaScript holds.
@@ -921,33 +948,20 @@ pub(crate) mod browser {
             self.inner.borrow().state.rev() as f64
         }
 
-        /// As JSON `[{ id, encoding, alpha }]`.
-        #[wasm_bindgen(js_name = texturesNeeded)]
-        pub fn textures_needed(&self, structure: &[u8]) -> Result<String, JsValue> {
-            let needed = self
+        /// As JSON `{ textures: [{ id, encoding, alpha }], extensions: [{ key, hash }] }`.
+        pub fn needs(&self, structure: &[u8]) -> Result<String, JsValue> {
+            let needs = self
                 .inner
                 .borrow()
                 .state
-                .textures_needed(structure)
+                .needs(structure)
                 .map_err(|e| JsValue::from_str(&e.to_string()))?;
-            serde_json::to_string(&needed).map_err(|e| JsValue::from_str(&e.to_string()))
+            serde_json::to_string(&needs).map_err(|e| JsValue::from_str(&e.to_string()))
         }
 
         #[wasm_bindgen(js_name = putTexture)]
         pub fn put_texture(&self, id: &str, bytes: Vec<u8>) {
             self.inner.borrow_mut().state.put_texture(id, bytes);
-        }
-
-        /// As JSON `[{ key, hash }]`.
-        #[wasm_bindgen(js_name = extensionsNeeded)]
-        pub fn extensions_needed(&self, structure: &[u8]) -> Result<String, JsValue> {
-            let needed = self
-                .inner
-                .borrow()
-                .state
-                .extensions_needed(structure)
-                .map_err(|e| JsValue::from_str(&e.to_string()))?;
-            serde_json::to_string(&needed).map_err(|e| JsValue::from_str(&e.to_string()))
         }
 
         #[wasm_bindgen(js_name = putExtension)]
@@ -1059,29 +1073,30 @@ pub(crate) mod browser {
 
         /// Absolute values, the ones a `node_set` patch will commit. NaN means
         /// "leave what the fold produced" for that field.
+        /// Each field is absolute or `undefined`; throws on a vector of the
+        /// wrong length or a value that is not finite, leaving the node as it was.
         #[wasm_bindgen(js_name = scratchTransform)]
-        #[expect(
-            clippy::too_many_arguments,
-            reason = "a wasm-bindgen export takes each field as its own scalar"
-        )]
         pub fn scratch_transform(
             &self,
             node: &str,
-            tx: f32,
-            ty: f32,
-            tz: f32,
-            rx: f32,
-            ry: f32,
-            rz: f32,
-            sx: f32,
-            sy: f32,
-            z_order: f32,
-            opacity: f32,
-        ) -> bool {
+            translate: Option<Vec<f32>>,
+            rotate: Option<Vec<f32>>,
+            scale: Option<Vec<f32>>,
+            z_order: Option<f32>,
+            opacity: Option<f32>,
+        ) -> Result<bool, JsValue> {
             self.inner
                 .borrow_mut()
                 .state
-                .set_scratch_transform(node, tx, ty, tz, rx, ry, rz, sx, sy, z_order, opacity)
+                .set_scratch_transform(
+                    node,
+                    translate.as_deref(),
+                    rotate.as_deref(),
+                    scale.as_deref(),
+                    z_order,
+                    opacity,
+                )
+                .map_err(|e| JsValue::from_str(&e.to_string()))
         }
 
         #[wasm_bindgen(js_name = clearScratchTransform)]
@@ -1353,15 +1368,15 @@ mod tests {
         let structure = structure_of(&editor, session);
 
         let mut replica = ReplicaState::new();
-        let needed = replica.extensions_needed(&structure).unwrap();
+        let needed = replica.needs(&structure).unwrap().extensions;
         assert_eq!(needed.len(), 1, "needed {needed:?}");
         assert_eq!(needed[0].key.as_str(), "acme.thumb");
         assert_eq!(needed[0].hash, extension_hash(b"first"));
 
         replica.put_extension("acme.thumb", b"first".to_vec());
-        assert!(replica.extensions_needed(&structure).unwrap().is_empty());
+        assert!(replica.needs(&structure).unwrap().extensions.is_empty());
         assert!(replica.apply_structure(&structure, 1).unwrap());
-        assert!(replica.extensions_needed(&structure).unwrap().is_empty());
+        assert!(replica.needs(&structure).unwrap().extensions.is_empty());
         assert_eq!(
             replica
                 .model()
@@ -1374,7 +1389,7 @@ mod tests {
 
         set_extension(&editor, session, "acme.thumb", b"second");
         let moved = structure_of(&editor, session);
-        let needed = replica.extensions_needed(&moved).unwrap();
+        let needed = replica.needs(&moved).unwrap().extensions;
         assert_eq!(needed.len(), 1, "needed {needed:?}");
         assert_eq!(needed[0].hash, extension_hash(b"second"));
 
@@ -1399,7 +1414,7 @@ mod tests {
 
         add_node(&editor, session, ROOT, "group", "head");
         let after = structure_of(&editor, session);
-        assert!(replica.extensions_needed(&after).unwrap().is_empty());
+        assert!(replica.needs(&after).unwrap().extensions.is_empty());
         assert!(replica.apply_structure(&after, 2).unwrap());
     }
 
@@ -1433,15 +1448,15 @@ mod tests {
         let structure = structure_of(&editor, session);
 
         let mut replica = ReplicaState::new();
-        let needed = replica.textures_needed(&structure).unwrap();
+        let needed = replica.needs(&structure).unwrap().textures;
         assert_eq!(needed.len(), 1, "needed {needed:?}");
         assert_eq!(needed[0].id.as_str(), texture);
 
         replica.put_texture(&texture, one_pixel_png());
-        assert!(replica.textures_needed(&structure).unwrap().is_empty());
+        assert!(replica.needs(&structure).unwrap().textures.is_empty());
         assert!(replica.apply_structure(&structure, 1).unwrap());
         assert!(
-            replica.textures_needed(&structure).unwrap().is_empty(),
+            replica.needs(&structure).unwrap().textures.is_empty(),
             "an applied structure's payloads are still held",
         );
     }
@@ -1555,7 +1570,7 @@ mod tests {
     }
 
     #[test]
-    fn a_scratch_transform_drops_the_fields_that_are_not_numbers() {
+    fn a_scratch_transform_sets_only_the_fields_it_is_given() {
         let editor = CatchlightEditor::new();
         let session = new_session(&editor);
         let node = add_node(&editor, session, ROOT, "group", "head");
@@ -1563,9 +1578,10 @@ mod tests {
         let mut replica = ReplicaState::new();
         replica.sync_from_editor(editor.editor(), session);
 
-        let nan = f32::NAN;
         assert!(
-            replica.set_scratch_transform(&node, 1.0, 2.0, 3.0, nan, nan, nan, nan, nan, nan, 0.5,)
+            replica
+                .set_scratch_transform(&node, Some(&[1.0, 2.0, 3.0]), None, None, None, Some(0.5))
+                .unwrap()
         );
         let idx = replica.node_idx(&node).unwrap();
         let scratch = *replica.puppet.scratch_transform(idx).unwrap();
@@ -1578,20 +1594,46 @@ mod tests {
         assert!(replica.clear_scratch_transform(&node));
         assert!(!replica.clear_scratch_transform(&node));
         assert!(
-            !replica.set_scratch_transform(
-                "root/part-deadbeef",
-                0.0,
-                0.0,
-                0.0,
-                nan,
-                nan,
-                nan,
-                nan,
-                nan,
-                nan,
-                nan,
-            ),
+            !replica
+                .set_scratch_transform("root/part-deadbeef", None, None, None, None, None)
+                .unwrap(),
             "an unknown node is false, not a panic",
+        );
+
+        assert_eq!(
+            replica.set_scratch_transform(
+                &node,
+                Some(&[9.0, 9.0, 9.0]),
+                None,
+                None,
+                Some(f32::NAN),
+                None
+            ),
+            Err(ScratchFieldError::NotFinite { field: "z_order" })
+        );
+        assert!(
+            replica.puppet.scratch_transform(idx).is_none(),
+            "a refused field sets nothing"
+        );
+    }
+
+    #[test]
+    fn a_scratch_field_that_is_not_a_number_is_refused_rather_than_skipped() {
+        assert_eq!(
+            scratch_transform(None, Some(&[0.0, f32::NAN, 0.0]), None, None, None),
+            Err(ScratchFieldError::NotFinite { field: "rotate" })
+        );
+        assert_eq!(
+            scratch_transform(None, None, None, Some(f32::INFINITY), None),
+            Err(ScratchFieldError::NotFinite { field: "z_order" })
+        );
+        assert_eq!(
+            scratch_transform(None, None, Some(&[1.0]), None, None),
+            Err(ScratchFieldError::Length {
+                field: "scale",
+                expected: 2,
+                got: 1
+            })
         );
     }
 

@@ -38,14 +38,22 @@ import { FeedQueue, ProtocolError } from "./backend.js";
 import type { FetchInit, HttpResponse, SocketLike } from "./connected.js";
 import type { Playing, LiveInputs } from "./session.js";
 import type {
-  ExtensionRequest,
-  TextureRequest,
+  Needs,
   WasmEditor,
   WasmGpu,
   WasmModule,
   WasmReplica,
   WasmViewport,
 } from "./wasm.js";
+
+/** What a fake replica's `scratchTransform` was last given, as plain arrays. */
+export interface ScratchFields {
+  translate: number[] | undefined;
+  rotate: number[] | undefined;
+  scale: number[] | undefined;
+  zOrder: number | undefined;
+  opacity: number | undefined;
+}
 
 export interface FakeDoc {
   rev: number;
@@ -946,7 +954,7 @@ export class FakeReplica implements WasmReplica {
   heldExtensions = new Map<string, string>();
   pose = new Map<string, number>();
   scratchDeforms = new Map<string, Float32Array>();
-  scratchTransforms = new Map<string, number[]>();
+  scratchTransforms = new Map<string, ScratchFields>();
   translations = new Map<string, [number, number, number]>();
   box: [number, number, number, number] | undefined;
   freed = false;
@@ -960,30 +968,27 @@ export class FakeReplica implements WasmReplica {
     return this.#rev;
   }
 
-  texturesNeeded(structure: Uint8Array): string {
+  needs(structure: Uint8Array): string {
     const doc = readStructure(structure);
-    const needed: TextureRequest[] = doc.textures
-      .filter((texture) => !this.held.has(texture.id))
-      .map((texture) => ({
-        id: texture.id,
-        encoding: "png",
-        alpha: "straight",
-      }));
-    return JSON.stringify(needed);
+    const needs: Needs = {
+      textures: doc.textures
+        .filter((texture) => !this.held.has(texture.id))
+        .map((texture) => ({
+          id: texture.id,
+          encoding: "png",
+          alpha: "straight",
+        })),
+      extensions: doc.extensions
+        .filter(
+          (e) => e.kind === "bytes" && this.heldExtensions.get(e.key) !== e.hash,
+        )
+        .map((e) => ({ key: e.key, hash: e.kind === "bytes" ? e.hash : "" })),
+    };
+    return JSON.stringify(needs);
   }
 
   putTexture(id: string): void {
     this.held.add(id);
-  }
-
-  extensionsNeeded(structure: Uint8Array): string {
-    const doc = readStructure(structure);
-    const needed: ExtensionRequest[] = doc.extensions
-      .filter(
-        (e) => e.kind === "bytes" && this.heldExtensions.get(e.key) !== e.hash,
-      )
-      .map((e) => ({ key: e.key, hash: e.kind === "bytes" ? e.hash : "" }));
-    return JSON.stringify(needed);
   }
 
   putExtension(key: string, bytes: Uint8Array): void {
@@ -1222,8 +1227,22 @@ export class FakeReplica implements WasmReplica {
     return this.scratchDeforms.delete(node);
   }
 
-  scratchTransform(node: string, ...values: number[]): boolean {
-    this.scratchTransforms.set(node, values);
+  scratchTransform(
+    node: string,
+    translate: Float32Array | undefined,
+    rotate: Float32Array | undefined,
+    scale: Float32Array | undefined,
+    zOrder: number | undefined,
+    opacity: number | undefined,
+  ): boolean {
+    const list = (v: Float32Array | undefined) => (v ? [...v] : undefined);
+    this.scratchTransforms.set(node, {
+      translate: list(translate),
+      rotate: list(rotate),
+      scale: list(scale),
+      zOrder,
+      opacity,
+    });
     return true;
   }
 
@@ -1690,14 +1709,9 @@ export class GuardedReplica extends FakeReplica {
     return super.rev();
   }
 
-  override texturesNeeded(structure: Uint8Array): string {
-    this.#live("texturesNeeded");
-    return super.texturesNeeded(structure);
-  }
-
-  override extensionsNeeded(structure: Uint8Array): string {
-    this.#live("extensionsNeeded");
-    return super.extensionsNeeded(structure);
+  override needs(structure: Uint8Array): string {
+    this.#live("needs");
+    return super.needs(structure);
   }
 
   override putExtension(key: string, bytes: Uint8Array): void {

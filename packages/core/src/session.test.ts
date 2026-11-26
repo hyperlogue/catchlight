@@ -251,13 +251,17 @@ describe("the quiet paths", () => {
     expect(revisions).toBe(0);
   });
 
-  test("an absent scratch field is NaN, which leaves what the fold produced", () => {
+  test("an absent scratch field is left out, which keeps what the fold produced", () => {
     const { replica, session } = open();
     session.scratchTransform("root/part-1", { scale: [2, 2] });
 
-    const values = replica.scratchTransforms.get("root/part-1") ?? [];
-    expect(values.slice(6, 8)).toEqual([2, 2]);
-    expect(values.filter((value) => Number.isNaN(value))).toHaveLength(8);
+    expect(replica.scratchTransforms.get("root/part-1")).toEqual({
+      translate: undefined,
+      rotate: undefined,
+      scale: [2, 2],
+      zOrder: undefined,
+      opacity: undefined,
+    });
   });
 });
 

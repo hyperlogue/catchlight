@@ -497,21 +497,15 @@ export class Session {
 
   /** Absolute `node_set` values; an absent field keeps what the fold produced. */
   scratchTransform(node: NodeId, patch: ScratchTransform): boolean {
-    const [tx, ty, tz] = patch.translate ?? NO_VEC3;
-    const [rx, ry, rz] = patch.rotate ?? NO_VEC3;
-    const [sx, sy] = patch.scale ?? NO_VEC2;
+    const vector = (v: readonly number[] | undefined) =>
+      v ? new Float32Array(v) : undefined;
     const shown = this.replica.scratchTransform(
       node,
-      tx,
-      ty,
-      tz,
-      rx,
-      ry,
-      rz,
-      sx,
-      sy,
-      patch.zOrder ?? NaN,
-      patch.opacity ?? NaN,
+      vector(patch.translate),
+      vector(patch.rotate),
+      vector(patch.scale),
+      patch.zOrder,
+      patch.opacity,
     );
     this.invalidate();
     return shown;
@@ -815,5 +809,3 @@ export class Session {
 
 const NO_INPUTS: LiveInputs = { controls: {}, expressions: {}, visemes: {} };
 
-const NO_VEC3: [number, number, number] = [NaN, NaN, NaN];
-const NO_VEC2: [number, number] = [NaN, NaN];

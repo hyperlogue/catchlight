@@ -50,6 +50,8 @@ export { MemoryStorage, NotFoundError, OpfsStorage } from "./storage.js";
 export type { Storage } from "./storage.js";
 export { READBACK, Viewport, devicePixelSize } from "./viewport.js";
 export type {
+  ExtensionRequest,
+  Needs,
   TextureRequest,
   WasmEditor,
   WasmFrame,

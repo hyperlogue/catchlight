@@ -20,7 +20,7 @@ import {
   refuseIfItCarriesBytes,
   takeReply,
 } from "./backend.js";
-import type { ExtensionRequest, TextureRequest, WasmReplica } from "./wasm.js";
+import type { Needs, WasmReplica } from "./wasm.js";
 
 export type FetchLike = (url: string, init?: FetchInit) => Promise<HttpResponse>;
 
@@ -220,13 +220,13 @@ export class ConnectedBackend implements Backend {
     }
     const structure = new Uint8Array(await response.arrayBuffer());
 
-    let needed: TextureRequest[];
+    let needs: Needs;
     try {
-      needed = JSON.parse(replica.texturesNeeded(structure)) as TextureRequest[];
+      needs = JSON.parse(replica.needs(structure)) as Needs;
     } catch (cause) {
       throw asProtocolError(cause);
     }
-    for (const texture of needed) {
+    for (const texture of needs.textures) {
       const payload = await this.#http(
         `/sessions/${session}/textures/${encodeURIComponent(texture.id)}`,
         "feed",
@@ -235,13 +235,7 @@ export class ConnectedBackend implements Backend {
     }
 
     // A texture is immutable under its Id; an extension's bytes change under its key.
-    let extensions: ExtensionRequest[];
-    try {
-      extensions = JSON.parse(replica.extensionsNeeded(structure)) as ExtensionRequest[];
-    } catch (cause) {
-      throw asProtocolError(cause);
-    }
-    for (const extension of extensions) {
+    for (const extension of needs.extensions) {
       const payload = await this.#http(
         `/sessions/${session}/extensions/${encodeURIComponent(extension.key)}`,
         "feed",

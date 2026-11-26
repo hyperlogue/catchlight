@@ -52,7 +52,7 @@ describe("dragging a node", () => {
     // The replica answers in f32, so the delta is rounded.
     await fire(canvas, pointer("pointermove", { clientX: 430, clientY: 300 }));
 
-    const scratch = replica.scratchTransforms.get(node) ?? [];
+    const scratch = replica.scratchTransforms.get(node)?.translate ?? [];
     expect(scratch[0]).toBeCloseTo(0.1, 6);
     expect(scratch[1]).toBeCloseTo(0, 6);
     expect(wasm.requests.length).toBe(commands);
