@@ -16,7 +16,11 @@ impl Pose {
         Self::default()
     }
 
+    /// A non-finite `value` is ignored: the param keeps what it had.
     pub fn set(&mut self, param: ParamId, value: f32) {
+        if !value.is_finite() {
+            return;
+        }
         self.0.insert(param, value);
     }
 
@@ -47,7 +51,7 @@ impl Pose {
 
 impl FromIterator<(ParamId, f32)> for Pose {
     fn from_iter<T: IntoIterator<Item = (ParamId, f32)>>(iter: T) -> Self {
-        Self(iter.into_iter().collect())
+        Self(iter.into_iter().filter(|(_, v)| v.is_finite()).collect())
     }
 }
 

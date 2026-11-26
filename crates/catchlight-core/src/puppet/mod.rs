@@ -524,7 +524,11 @@ impl Puppet {
         ))
     }
 
+    /// A non-finite `value` is ignored: the param keeps what it had.
     pub fn set_param_value(&mut self, param: &ParamId, value: f32) {
+        if !value.is_finite() {
+            return;
+        }
         match self.slot_of_param.get(param).copied() {
             Some(slot) => self.set_slot_value(slot, value),
             None => {
@@ -1305,6 +1309,31 @@ mod tests {
         let a = puppet.node_idx(&nodes[0]).expect("a baked");
         let b = puppet.node_idx(&nodes[1]).expect("b baked");
         (model, puppet, param, a, b)
+    }
+
+    #[test]
+    fn a_value_that_is_not_a_number_is_ignored() {
+        let (_model, mut puppet, param, _a, _b) = two_claimants();
+        let unbaked = ParamId::new("unbaked").expect("an id");
+        puppet.set_param_value(&param, 0.25);
+        puppet.set_param_value(&unbaked, 0.75);
+        let generation = puppet.param_generation;
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            puppet.set_param_value(&param, bad);
+            puppet.set_param_value(&unbaked, bad);
+        }
+        assert_eq!(puppet.param_value(&param), Some(0.25));
+        assert_eq!(puppet.param_value(&unbaked), Some(0.75));
+        assert_eq!(puppet.param_generation, generation, "nothing to refold");
+
+        let mut pose = Pose::new();
+        pose.set(param.clone(), 0.5);
+        pose.set(param.clone(), f32::NAN);
+        pose.set(unbaked.clone(), f32::INFINITY);
+        assert_eq!(pose.get(&param), Some(0.5));
+        assert_eq!(pose.get(&unbaked), None);
+        let collected: Pose = std::iter::once((param.clone(), f32::NAN)).collect();
+        assert_eq!(collected, Pose::new());
     }
 
     #[test]

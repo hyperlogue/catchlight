@@ -463,7 +463,8 @@ mod tests {
             appearance(&ModelNodeKind::Composite(ModelComposite::new())),
             Ok(())
         );
-        let poisons: [(fn(&mut ModelComposite), AppearanceFault); 4] = [
+        type Poison = fn(&mut ModelComposite);
+        let poisons: [(Poison, AppearanceFault); 4] = [
             (|c| c.opacity = f32::NAN, AppearanceFault::Opacity),
             (|c| c.tint[1] = f32::INFINITY, AppearanceFault::Tint),
             (
