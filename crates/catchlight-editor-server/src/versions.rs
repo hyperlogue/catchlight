@@ -56,7 +56,7 @@ fn chunk_name(hash: &str) -> String {
 /// top 16 bits clear, so about every 64 KiB past the minimum.
 mod chunking {
     const MIN: usize = 16 * 1024;
-    const MAX: usize = 256 * 1024;
+    pub(super) const MAX: usize = 256 * 1024;
 
     const GEAR: [u64; 256] = {
         // splitmix64, so the table is fixed without a 2 KiB literal.
@@ -188,6 +188,33 @@ pub(crate) struct Draft {
     pub key: Option<String>,
 }
 
+/// What a record read from a store must hold before its chunk names reach a
+/// path or its length reaches an allocation: names that are sha256 digests,
+/// lengths a save could have cut, and a length that is their sum.
+fn check_record(record: &Record) -> Result<(), String> {
+    let mut total = 0u64;
+    for (hash, len) in &record.chunks {
+        let digest = hash.len() == 64
+            && hash
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+        if !digest {
+            return Err(format!("chunk {hash:?} is not named by its sha256"));
+        }
+        if *len as usize > chunking::MAX {
+            return Err(format!("chunk {hash} claims {len} bytes"));
+        }
+        total += u64::from(*len);
+    }
+    if total != record.info.byte_length {
+        return Err(format!(
+            "its chunks hold {total} bytes, not {}",
+            record.info.byte_length
+        ));
+    }
+    Ok(())
+}
+
 impl Versions {
     /// The versions `key` was left with. Versions that cannot be read never
     /// block opening their model.
@@ -209,6 +236,8 @@ impl Versions {
                                 store.place(key, &name)
                             )));
                         }
+                        check_record(&record)
+                            .map_err(|why| bad(format!("{}: {why}", store.place(key, &name))))?;
                         Ok(record)
                     })
                     .transpose()
@@ -455,7 +484,7 @@ impl Versions {
         version: u64,
     ) -> Result<(VersionInfo, Vec<u8>), EditorError> {
         let record = self.record(version)?;
-        let mut bytes = Vec::with_capacity(record.info.byte_length as usize);
+        let mut bytes = Vec::new();
         for (hash, _) in &record.chunks {
             if let Some(held) = self.held.get(hash) {
                 bytes.extend_from_slice(held);
@@ -1331,6 +1360,48 @@ mod tests {
         }
         g.saved(None);
         assert_eq!(std::fs::read(&record).unwrap(), b"torn");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_record_that_names_chunks_it_cannot_have_is_unreadable() {
+        let dir = temp("versions-forged");
+        let store = Arc::new(SidecarKeptStore::new(&dir));
+        let editor = || {
+            Editor::with_storage(Arc::new(FileStorage::new(&dir))).with_kept_store(store.clone())
+        };
+        let mut f = Fixture::new(editor());
+        let session = f.session;
+        f.ok(Command::Save {
+            session,
+            path: Some("m.clm".into()),
+        });
+        f.saved(None);
+        let record = dir.join("m.clm.kept/versions/1.json");
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&record).unwrap()).unwrap();
+        let hash = saved["chunks"][0][0].as_str().unwrap().to_owned();
+        let len = saved["chunks"][0][1].as_u64().unwrap();
+        let forgeries = [
+            ("chunks", serde_json::json!([["../../../escape", len]])),
+            ("chunks", serde_json::json!([[hash.to_uppercase(), len]])),
+            ("chunks", serde_json::json!([[hash, 1u64 << 31]])),
+            ("byte_length", serde_json::json!(1e18 as u64)),
+        ];
+        for (field, value) in forgeries {
+            let mut forged = saved.clone();
+            forged[field] = value;
+            std::fs::write(&record, serde_json::to_vec(&forged).unwrap()).unwrap();
+            let mut g = Fixture::on(
+                editor(),
+                Command::SessionOpen {
+                    path: "m.clm".into(),
+                },
+            );
+            let (versions, kept) = g.list();
+            assert!(versions.is_empty(), "{forged}");
+            assert_eq!(kept, Kept::Unreadable, "{forged}");
+        }
         std::fs::remove_dir_all(&dir).ok();
     }
 
