@@ -4,10 +4,50 @@
 //! cell; raw writes retain exact caller data.
 
 use catchlight_core::{
-    BindingKey, BindingParams, BindingTarget, Model, ModelNodeKind, NodeId, NodeKind, Pose, Puppet,
-    ScalarTarget,
+    BindingKey, BindingParams, BindingTarget, Model, ModelError, ModelNodeKind, NodeId, NodeKind,
+    Pose, Puppet, ScalarTarget,
 };
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+/// Each message is the sentence the editor shows the person recording.
+#[derive(Debug, Error)]
+pub enum RecordingError {
+    #[error("The selected node no longer exists.")]
+    NodeGone,
+    #[error("The selected node has no pose.")]
+    NoPose,
+    #[error("The selected param no longer exists.")]
+    ParamGone,
+    #[error("Choose a normalized recording position within 0..1.")]
+    PositionOutOfRange,
+    #[error("The pose moved away from the recording keypoint.")]
+    PoseMoved,
+    #[error("A one-param binding has one row.")]
+    OneRow,
+    #[error("Depth translation cannot be recorded. Use draw order instead.")]
+    DepthTranslation,
+    #[error("This property cannot be recorded on this node.")]
+    NotRecordable(ScalarTarget),
+    #[error("Enter a finite value.")]
+    NotFinite,
+    #[error(
+        "This property is zero in the starting pose. Restore a nonzero value before recording it."
+    )]
+    ZeroBase,
+    #[error("The recorded value is outside the supported range.")]
+    OutOfRange,
+    #[error("The mesh changed during this gesture. Start the gesture again.")]
+    MeshChanged,
+    #[error("Missing recording binding.")]
+    BindingMissing,
+    #[error("Missing recording param.")]
+    ParamMissing,
+    #[error("Missing recording position.")]
+    PositionMissing,
+    #[error(transparent)]
+    Model(#[from] ModelError),
+}
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -96,31 +136,27 @@ impl Recording {
         node: &NodeId,
         params: BindingParams,
         position: [f32; 2],
-    ) -> Result<Self, String> {
-        let base = model
-            .node(node)
-            .ok_or("The selected node no longer exists.")?;
+    ) -> Result<Self, RecordingError> {
+        let base = model.node(node).ok_or(RecordingError::NodeGone)?;
         let posed = puppet
             .node_idx(node)
             .and_then(|i| puppet.get(i))
-            .ok_or("The selected node has no pose.")?;
+            .ok_or(RecordingError::NoPose)?;
         for (axis, id) in params.iter().enumerate() {
-            let p = model
-                .param(id)
-                .ok_or("The selected param no longer exists.")?;
+            let p = model.param(id).ok_or(RecordingError::ParamGone)?;
             let at = position[axis];
             if !at.is_finite() || !(0.0..=1.0).contains(&at) {
-                return Err("Choose a normalized recording position within 0..1.".into());
+                return Err(RecordingError::PositionOutOfRange);
             }
             let wanted = p.min + at * (p.max - p.min);
             if (puppet.param_value(id).unwrap_or(p.default) - wanted).abs()
                 > (p.max - p.min).abs().max(1.0) * 1e-5
             {
-                return Err("The pose moved away from the recording keypoint.".into());
+                return Err(RecordingError::PoseMoved);
             }
         }
         if params.y().is_none() && position[1] != 0.0 {
-            return Err("A one-param binding has one row.".into());
+            return Err(RecordingError::OneRow);
         }
         let mut base_values = RecordProperties {
             translate: Some(base.transform.translation),
@@ -207,7 +243,7 @@ impl Recording {
         &self,
         patch: &RecordProperties,
         authored_basis: bool,
-    ) -> Result<Vec<(ScalarTarget, f32)>, String> {
+    ) -> Result<Vec<(ScalarTarget, f32)>, RecordingError> {
         let basis = if authored_basis {
             &self.base
         } else {
@@ -224,17 +260,17 @@ impl Recording {
             .translate
             .unwrap_or_default();
             if v[2] != before[2] {
-                return Err("Depth translation cannot be recorded. Use draw order instead.".into());
+                return Err(RecordingError::DepthTranslation);
             }
         }
         for (target, after) in patch.scalars() {
             let before = basis
                 .iter()
                 .find(|(t, _)| *t == target)
-                .ok_or("This property cannot be recorded on this node.")?
+                .ok_or(RecordingError::NotRecordable(target))?
                 .1;
             if !after.is_finite() {
-                return Err("Enter a finite value.".into());
+                return Err(RecordingError::NotFinite);
             }
             if (after - before).abs() <= 1e-6 {
                 continue;
@@ -255,7 +291,7 @@ impl Recording {
         &self,
         patch: &RecordProperties,
         authored_basis: bool,
-    ) -> Result<Vec<RecordingWrite>, String> {
+    ) -> Result<Vec<RecordingWrite>, RecordingError> {
         self.patch(patch, authored_basis)?
             .into_iter()
             .map(|(target, value)| {
@@ -264,7 +300,7 @@ impl Recording {
             .collect()
     }
 
-    pub fn deform_write(&self, deltas: &[f32]) -> Result<RecordingWrite, String> {
+    pub fn deform_write(&self, deltas: &[f32]) -> Result<RecordingWrite, RecordingError> {
         let offsets = self.deform(deltas)?.as_chunks::<2>().0.to_vec();
         self.write(BindingTarget::Deform, RecordingValue::Offsets(offsets))
     }
@@ -273,7 +309,7 @@ impl Recording {
         &self,
         target: BindingTarget,
         value: RecordingValue,
-    ) -> Result<RecordingWrite, String> {
+    ) -> Result<RecordingWrite, RecordingError> {
         let key = BindingKey {
             params: self.params.clone(),
             node: self.node.clone(),
@@ -290,16 +326,16 @@ impl Recording {
             )
         });
         let mut model = self.model.clone();
-        model.add_binding(&key).map_err(|e| e.to_string())?;
+        model.add_binding(&key)?;
         let key_positions = model
             .binding(&key)
-            .ok_or("Missing recording binding.")?
+            .ok_or(RecordingError::BindingMissing)?
             .key_positions()
             .to_vec();
         let mut inserts = Vec::new();
         let mut rest = [0.0; 2];
         for (axis, param) in self.params.iter().enumerate() {
-            let p = model.param(param).ok_or("Missing recording param.")?;
+            let p = model.param(param).ok_or(RecordingError::ParamMissing)?;
             rest[axis] = if p.max > p.min {
                 ((p.default - p.min) / (p.max - p.min)).clamp(0.0, 1.0)
             } else {
@@ -314,15 +350,13 @@ impl Recording {
                 if recording_key_index(
                     &model
                         .binding(&key)
-                        .ok_or("Missing recording binding.")?
+                        .ok_or(RecordingError::BindingMissing)?
                         .key_positions()[axis],
                     value,
                 )
                 .is_none()
                 {
-                    model
-                        .key_insert(&key, param, value)
-                        .map_err(|e| e.to_string())?;
+                    model.key_insert(&key, param, value)?;
                     inserts.push(RecordingKeyInsert {
                         axis: param.clone(),
                         value,
@@ -330,15 +364,15 @@ impl Recording {
                 }
             }
         }
-        let locate = |position: [f32; 2]| -> Result<[u32; 2], String> {
+        let locate = |position: [f32; 2]| -> Result<[u32; 2], RecordingError> {
             let axes = model
                 .binding(&key)
-                .ok_or("Missing recording binding.")?
+                .ok_or(RecordingError::BindingMissing)?
                 .key_positions();
             let mut cell = [0; 2];
             for (axis, values) in axes.iter().enumerate() {
                 cell[axis] = recording_key_index(values, position[axis])
-                    .ok_or("Missing recording position.")? as u32;
+                    .ok_or(RecordingError::PositionMissing)? as u32;
             }
             Ok(cell)
         };
@@ -371,9 +405,9 @@ impl Recording {
         })
     }
 
-    pub fn deform(&self, deltas: &[f32]) -> Result<Vec<f32>, String> {
+    pub fn deform(&self, deltas: &[f32]) -> Result<Vec<f32>, RecordingError> {
         if deltas.len() != self.deform.len() || deltas.iter().any(|v| !v.is_finite()) {
-            return Err("The mesh changed during this gesture. Start the gesture again.".into());
+            return Err(RecordingError::MeshChanged);
         }
         Ok(self
             .deform
@@ -396,10 +430,15 @@ fn recording_key_index(positions: &[f32], at: f32) -> Option<usize> {
         .map(|(index, _)| index)
 }
 
-fn record_value(target: ScalarTarget, key: f32, before: f32, after: f32) -> Result<f32, String> {
+fn record_value(
+    target: ScalarTarget,
+    key: f32,
+    before: f32,
+    after: f32,
+) -> Result<f32, RecordingError> {
     let value = if target.identity() == 1.0 {
         if before.abs() < 1e-8 {
-            return Err("This property is zero in the starting pose. Restore a nonzero value before recording it.".into());
+            return Err(RecordingError::ZeroBase);
         }
         key * (after / before)
     } else {
@@ -408,7 +447,7 @@ fn record_value(target: ScalarTarget, key: f32, before: f32, after: f32) -> Resu
     if value.is_finite() {
         Ok(value)
     } else {
-        Err("The recorded value is outside the supported range.".into())
+        Err(RecordingError::OutOfRange)
     }
 }
 
@@ -755,6 +794,9 @@ mod tests {
     }
     #[test]
     fn zero_multiplicative_pose_refuses_instead_of_authoring_a_false_key() {
-        assert!(record_value(ScalarTarget::Opacity, 1., 0., 0.5).is_err());
+        assert!(matches!(
+            record_value(ScalarTarget::Opacity, 1., 0., 0.5),
+            Err(RecordingError::ZeroBase)
+        ));
     }
 }

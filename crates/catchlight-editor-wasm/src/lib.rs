@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::io;
 use std::sync::{Arc, Mutex};
 
-use catchlight_editor_core::Manifest;
+use catchlight_editor_core::{Manifest, ManifestError};
 use catchlight_editor_protocol::{ErrorCode, Reply, Request, RequestId};
 use catchlight_editor_server::{Attachments, Editor, Storage};
 
@@ -36,15 +36,15 @@ use wasm_bindgen::prelude::*;
 
 /// Every texture a manifest names, verbatim, since the import matches
 /// attachments against those strings.
-pub fn manifest_requirements(json: &str) -> Result<Vec<String>, String> {
-    let manifest = Manifest::from_json(json).map_err(|e| e.to_string())?;
+pub fn manifest_requirements(json: &str) -> Result<Vec<String>, ManifestError> {
+    let manifest = Manifest::from_json(json)?;
     Ok(manifest.textures.into_iter().map(|t| t.path).collect())
 }
 
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen(js_name = manifestRequirements)]
 pub fn manifest_requirements_js(json: &str) -> Result<Vec<String>, JsValue> {
-    manifest_requirements(json).map_err(|e| JsValue::from_str(&e))
+    manifest_requirements(json).map_err(|e| JsValue::from_str(&e.to_string()))
 }
 
 /// Where a `save` or `export_manifest` leaves its bytes until TypeScript

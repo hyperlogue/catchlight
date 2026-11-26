@@ -11,11 +11,11 @@ use std::sync::Arc;
 
 use catchlight_core::formats::clm::structure_texture_ids;
 use catchlight_core::formats::clm::{
-    ClmTextureRef, TextureAlpha, TextureEncoding, decode_structure, extension_hash,
+    ClmError, ClmTextureRef, TextureAlpha, TextureEncoding, decode_structure, extension_hash,
 };
 use catchlight_core::{
-    BlendMode, ExtensionKey, LoadBudget, Mat4, Model, ModelTexture, NodeId, NodeKind, ParamId,
-    Puppet, ScratchTransform, TexId, Vec2, Vec3,
+    BlendMode, ExtensionKey, LoadBudget, Mat4, Model, ModelError, ModelTexture, NodeId, NodeKind,
+    ParamId, Puppet, ScratchTransform, TexId, Vec2, Vec3,
 };
 use catchlight_editor_protocol::{ErrorCode, Reply, Request, RequestId, SessionId};
 use catchlight_editor_server::{Editor, replica_reply};
@@ -131,9 +131,8 @@ impl ReplicaState {
     }
 
     /// The textures `structure` names that are not held, in model order.
-    pub fn textures_needed(&self, structure: &[u8]) -> Result<Vec<ClmTextureRef>, String> {
-        let named = structure_texture_ids(structure, &mut LoadBudget::default())
-            .map_err(|e| e.to_string())?;
+    pub fn textures_needed(&self, structure: &[u8]) -> Result<Vec<ClmTextureRef>, ClmError> {
+        let named = structure_texture_ids(structure, &mut LoadBudget::default())?;
         Ok(named
             .into_iter()
             .filter(|t| !self.textures.contains_key(&t.id))
@@ -142,8 +141,8 @@ impl ReplicaState {
 
     /// The byte extensions `structure` names whose bytes are not held, by hash:
     /// a stale value under the same key must still be fetched.
-    pub fn extensions_needed(&self, structure: &[u8]) -> Result<Vec<ExtensionNeed>, String> {
-        let structure = decode_structure(structure).map_err(|e| e.to_string())?;
+    pub fn extensions_needed(&self, structure: &[u8]) -> Result<Vec<ExtensionNeed>, ClmError> {
+        let structure = decode_structure(structure)?;
         Ok(structure
             .doc
             .extensions
@@ -181,28 +180,26 @@ impl ReplicaState {
     /// Rebuild the model from a structure-only container at `rev`, over the held
     /// payloads. `Ok(false)` when `rev` is not newer; on either refusal nothing is
     /// touched.
-    pub fn apply_structure(&mut self, structure: &[u8], rev: u64) -> Result<bool, String> {
+    pub fn apply_structure(&mut self, structure: &[u8], rev: u64) -> Result<bool, ModelError> {
         if !self.accepts(rev) {
             return Ok(false);
         }
         let textures = &self.textures;
         let extension_bytes = &self.extension_bytes;
-        self.model
-            .replace_structure_with_extensions(
-                structure,
-                |id| {
-                    textures.get(id).map(|data| ModelTexture {
-                        // `replace_structure` reads the structure's own manifest for these; any
-                        // value does.
-                        encoding: TextureEncoding::Png,
-                        alpha: TextureAlpha::Straight,
-                        data: data.clone(),
-                    })
-                },
-                // A marker whose bytes were never put is an error naming the key.
-                |key| extension_bytes.get(key).map(|(_, data)| data.clone()),
-            )
-            .map_err(|e| e.to_string())?;
+        self.model.replace_structure_with_extensions(
+            structure,
+            |id| {
+                textures.get(id).map(|data| ModelTexture {
+                    // `replace_structure` reads the structure's own manifest for these; any
+                    // value does.
+                    encoding: TextureEncoding::Png,
+                    alpha: TextureAlpha::Straight,
+                    data: data.clone(),
+                })
+            },
+            // A marker whose bytes were never put is an error naming the key.
+            |key| extension_bytes.get(key).map(|(_, data)| data.clone()),
+        )?;
         self.accept(rev);
         Ok(true)
     }
@@ -560,7 +557,10 @@ impl ReplicaState {
         self.tick(0.0);
     }
 
-    pub fn mesh_draft(&self, node: &str) -> Result<crate::authoring::MeshDraftState, String> {
+    pub fn mesh_draft(
+        &self,
+        node: &str,
+    ) -> Result<crate::authoring::MeshDraftState, crate::authoring::AuthoringError> {
         crate::authoring::MeshDraftState::new(&self.model, node)
     }
 
@@ -592,7 +592,7 @@ impl ReplicaState {
         param: &str,
         param_y: Option<&str>,
         position: [f32; 2],
-    ) -> Result<catchlight_editor_core::Recording, String> {
+    ) -> Result<catchlight_editor_core::Recording, crate::authoring::AuthoringError> {
         self.tick(0.0);
         crate::authoring::capture(&self.model, &self.puppet, node, param, param_y, position)
     }
@@ -929,7 +929,7 @@ pub(crate) mod browser {
                 .borrow()
                 .state
                 .textures_needed(structure)
-                .map_err(|e| JsValue::from_str(&e))?;
+                .map_err(|e| JsValue::from_str(&e.to_string()))?;
             serde_json::to_string(&needed).map_err(|e| JsValue::from_str(&e.to_string()))
         }
 
@@ -946,7 +946,7 @@ pub(crate) mod browser {
                 .borrow()
                 .state
                 .extensions_needed(structure)
-                .map_err(|e| JsValue::from_str(&e))?;
+                .map_err(|e| JsValue::from_str(&e.to_string()))?;
             serde_json::to_string(&needed).map_err(|e| JsValue::from_str(&e.to_string()))
         }
 
@@ -964,7 +964,7 @@ pub(crate) mod browser {
                 .borrow_mut()
                 .state
                 .apply_structure(structure, rev)
-                .map_err(|e| JsValue::from_str(&e))
+                .map_err(|e| JsValue::from_str(&e.to_string()))
         }
 
         #[wasm_bindgen(js_name = syncFromEditor)]
@@ -1114,7 +1114,7 @@ pub(crate) mod browser {
                 .state
                 .mesh_draft(node)
                 .map(|state| crate::authoring::browser::MeshEditDraft { state })
-                .map_err(|e| JsValue::from_str(&e))
+                .map_err(|e| JsValue::from_str(&e.to_string()))
         }
 
         #[wasm_bindgen(js_name = recordingPairs)]
@@ -1136,7 +1136,7 @@ pub(crate) mod browser {
                 .state
                 .recording(node, param, param_y.as_deref(), [x, y])
                 .map(|state| crate::authoring::browser::RecordingGesture { state })
-                .map_err(|e| JsValue::from_str(&e))
+                .map_err(|e| JsValue::from_str(&e.to_string()))
         }
 
         #[wasm_bindgen(js_name = setEditing)]
@@ -1335,7 +1335,7 @@ mod tests {
         let err = replica
             .apply_structure(&with_texture, 2)
             .expect_err("a texture that was never put must fail");
-        assert!(err.contains("texture"), "message was {err}");
+        assert!(err.to_string().contains("texture"), "message was {err}");
         assert_eq!(
             replica.rev(),
             1,

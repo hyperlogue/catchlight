@@ -1,10 +1,38 @@
 //! Browser-owned drafts over Rust authoring tools. A draft owns geometry or
 //! a captured keypoint, never a mutable reference to the replica's model.
 
+use catchlight_core::id::IdError;
 use catchlight_core::{BindingParams, Model, ModelNodeKind, NodeId, ParamId, Puppet};
-use catchlight_editor_core::{AlphaMask, MeshDraft, RecordProperties, Recording};
+use catchlight_editor_core::{
+    AlphaMask, MeshDraft, MeshError, RecordProperties, Recording, RecordingError,
+};
 use catchlight_editor_protocol::MeshInfo;
 use serde::Serialize;
+use thiserror::Error;
+
+/// Why a draft or gesture could not start or step; each message is what the
+/// editor shows.
+#[derive(Debug, Error)]
+pub enum AuthoringError {
+    #[error(transparent)]
+    Id(#[from] IdError),
+    #[error("The part no longer exists.")]
+    PartGone,
+    #[error("Select a textured part to edit its mesh.")]
+    NotAPart,
+    #[error("Import artwork before editing this mesh.")]
+    NoArtwork,
+    #[error("The artwork is unavailable.")]
+    ArtworkGone,
+    #[error("The artwork could not be decoded.")]
+    ArtworkUndecodable,
+    #[error(transparent)]
+    Mesh(#[from] MeshError),
+    #[error(transparent)]
+    Recording(#[from] RecordingError),
+    #[error(transparent)]
+    Json(#[from] serde_json::Error),
+}
 
 pub struct MeshDraftState {
     pub draft: MeshDraft,
@@ -25,27 +53,23 @@ pub struct MeshDraftView {
 }
 
 impl MeshDraftState {
-    pub fn new(model: &Model, node: &str) -> Result<Self, String> {
-        let id = NodeId::new(node).map_err(|e| e.to_string())?;
-        let part = model.node(&id).ok_or("The part no longer exists.")?;
+    pub fn new(model: &Model, node: &str) -> Result<Self, AuthoringError> {
+        let id = NodeId::new(node)?;
+        let part = model.node(&id).ok_or(AuthoringError::PartGone)?;
         let ModelNodeKind::Part(part) = &part.kind else {
-            return Err("Select a textured part to edit its mesh.".into());
+            return Err(AuthoringError::NotAPart);
         };
-        let texture = part
-            .albedo()
-            .ok_or("Import artwork before editing this mesh.")?;
-        let image = model
-            .texture(texture)
-            .ok_or("The artwork is unavailable.")?;
+        let texture = part.albedo().ok_or(AuthoringError::NoArtwork)?;
+        let image = model.texture(texture).ok_or(AuthoringError::ArtworkGone)?;
         let alpha = AlphaMask::decode_as(&image.data, image.encoding)
-            .ok_or("The artwork could not be decoded.")?;
+            .ok_or(AuthoringError::ArtworkUndecodable)?;
         Ok(Self {
-            draft: MeshDraft::new(part.mesh(), alpha).map_err(|e| e.to_string())?,
+            draft: MeshDraft::new(part.mesh(), alpha)?,
             texture: texture.to_string(),
         })
     }
 
-    pub fn view(&self) -> Result<MeshDraftView, String> {
+    pub fn view(&self) -> Result<MeshDraftView, MeshError> {
         let d = &self.draft;
         let mesh = d.working();
         let uv = d.uv_map();
@@ -56,7 +80,7 @@ impl MeshDraftState {
             mesh: MeshInfo {
                 uvs: verts.iter().map(|v| uv.uv(*v)).collect(),
                 verts,
-                indices: mesh.triangulate().map_err(|e| e.to_string())?,
+                indices: mesh.triangulate()?,
                 origin: mesh.origin,
             },
             constraints: mesh.constraints.clone(),
@@ -68,8 +92,8 @@ impl MeshDraftState {
         })
     }
 
-    pub fn finish(&self) -> Result<MeshInfo, String> {
-        let mesh = self.draft.finish().map_err(|e| e.to_string())?;
+    pub fn finish(&self) -> Result<MeshInfo, MeshError> {
+        let mesh = self.draft.finish()?;
         let flat: Vec<u32> = match mesh.indices {
             catchlight_core::formats::clm::ClmIndices::U16(v) => {
                 v.into_iter().map(u32::from).collect()
@@ -92,24 +116,24 @@ pub fn capture(
     param: &str,
     param_y: Option<&str>,
     position: [f32; 2],
-) -> Result<Recording, String> {
-    let id = NodeId::new(node).map_err(|e| e.to_string())?;
-    let x = ParamId::new(param).map_err(|e| e.to_string())?;
+) -> Result<Recording, AuthoringError> {
+    let id = NodeId::new(node)?;
+    let x = ParamId::new(param)?;
     let params = match param_y {
-        Some(y) => BindingParams::Two(x, ParamId::new(y).map_err(|e| e.to_string())?),
+        Some(y) => BindingParams::Two(x, ParamId::new(y)?),
         None => BindingParams::One(x),
     };
-    Recording::capture(model, puppet, &id, params, position)
+    Ok(Recording::capture(model, puppet, &id, params, position)?)
 }
 
 pub fn recording_patch(
     recording: &Recording,
     json: &str,
     authored_basis: bool,
-) -> Result<String, String> {
-    let patch: RecordProperties = serde_json::from_str(json).map_err(|e| e.to_string())?;
+) -> Result<String, AuthoringError> {
+    let patch: RecordProperties = serde_json::from_str(json)?;
     let writes = recording.writes(&patch, authored_basis)?;
-    serde_json::to_string(&writes).map_err(|e| e.to_string())
+    Ok(serde_json::to_string(&writes)?)
 }
 
 #[cfg(target_arch = "wasm32")]

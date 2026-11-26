@@ -2784,19 +2784,22 @@ impl From<&IdRef> for ExtensionRef {
     }
 }
 
-impl TryFrom<ExtensionRef> for IdRef {
-    type Error = String;
+/// A [`ExtensionRef::Removed`] that wraps another removed reference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("a removed reference cannot itself be removed")]
+pub struct NestedRemoved;
 
-    fn try_from(r: ExtensionRef) -> Result<Self, String> {
+impl TryFrom<ExtensionRef> for IdRef {
+    type Error = NestedRemoved;
+
+    fn try_from(r: ExtensionRef) -> Result<Self, NestedRemoved> {
         Ok(match r {
             ExtensionRef::Node(id) => Self::Node(id),
             ExtensionRef::Param(id) => Self::Param(id),
             ExtensionRef::Texture(id) => Self::Texture(id),
             ExtensionRef::Slot((node, slot)) => Self::Slot(node, slot),
             ExtensionRef::Removed(inner) => match Self::try_from(*inner)? {
-                Self::Removed(_) => {
-                    return Err("a removed reference cannot itself be removed".into());
-                }
+                Self::Removed(_) => return Err(NestedRemoved),
                 live => live.removed(),
             },
         })

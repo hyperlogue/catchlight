@@ -1725,7 +1725,7 @@ impl Editor {
                             .into_iter()
                             .map(IdRef::try_from)
                             .collect::<Result<_, _>>()
-                            .map_err(EditorError::BadRequest)?;
+                            .map_err(|e| EditorError::BadRequest(e.to_string()))?;
                         ExtensionValue::Maintained(RawExtension {
                             version,
                             refs,
@@ -2450,7 +2450,8 @@ fn encoding_from_path(path: &str) -> CoreTextureEncoding {
 }
 
 fn image_dims(bytes: &[u8], encoding: CoreTextureEncoding) -> Result<(u32, u32), EditorError> {
-    catchlight_editor_core::image_dims_as(bytes, encoding).map_err(EditorError::Image)
+    catchlight_editor_core::image_dims_as(bytes, encoding)
+        .map_err(|e| EditorError::Image(e.to_string()))
 }
 
 #[cfg(test)]

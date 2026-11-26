@@ -37,8 +37,12 @@ pub enum ManifestError {
     MissingTextureData(String),
     #[error("part {0:?} needs a texture to auto-generate its mesh")]
     MeshNeedsTexture(String),
-    #[error("decoding texture {0:?}: {1}")]
-    Decode(String, String),
+    #[error("decoding texture {id:?}: {source}")]
+    Decode {
+        id: String,
+        #[source]
+        source: image::ImageError,
+    },
     #[error(transparent)]
     LoadLimit(#[from] LoadLimitError),
     #[error("building the model: {0}")]
@@ -197,8 +201,11 @@ impl ModelManifestExt for Model {
                 .get(&t.id)
                 .ok_or_else(|| ManifestError::MissingTextureData(t.id.clone()))?;
             budget.charge(LoadResource::EncodedBytes, d.bytes.len() as u64)?;
-            let (w, h) = image_dims_as(&d.bytes, d.encoding)
-                .map_err(|e| ManifestError::Decode(t.id.clone(), e))?;
+            let (w, h) =
+                image_dims_as(&d.bytes, d.encoding).map_err(|source| ManifestError::Decode {
+                    id: t.id.clone(),
+                    source,
+                })?;
             budget.check_texture_dimensions(w, h)?;
             tex_data.insert(t.id.as_str(), d);
             tex_dims.insert(t.id.as_str(), (w as f32, h as f32));
@@ -519,23 +526,22 @@ fn grid_mesh(
     })
 }
 
-pub fn image_dims(bytes: &[u8]) -> Result<(u32, u32), String> {
+pub fn image_dims(bytes: &[u8]) -> Result<(u32, u32), image::ImageError> {
     image::ImageReader::new(Cursor::new(bytes))
-        .with_guessed_format()
-        .map_err(|e| e.to_string())?
+        .with_guessed_format()?
         .into_dimensions()
-        .map_err(|e| e.to_string())
 }
 
 /// The encoded format is authoritative; TGA cannot be identified by magic.
-pub fn image_dims_as(bytes: &[u8], encoding: TextureEncoding) -> Result<(u32, u32), String> {
+pub fn image_dims_as(
+    bytes: &[u8],
+    encoding: TextureEncoding,
+) -> Result<(u32, u32), image::ImageError> {
     let format = match encoding {
         TextureEncoding::Png => image::ImageFormat::Png,
         TextureEncoding::Tga => image::ImageFormat::Tga,
     };
-    image::ImageReader::with_format(Cursor::new(bytes), format)
-        .into_dimensions()
-        .map_err(|e| e.to_string())
+    image::ImageReader::with_format(Cursor::new(bytes), format).into_dimensions()
 }
 
 #[cfg(test)]

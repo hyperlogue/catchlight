@@ -23,6 +23,7 @@ catchlight-extension-expressions.workspace = true
 catchlight-extension-humanoid.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
 # Only to author a one-pixel PNG for the texture tests; nothing in the crate

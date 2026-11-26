@@ -13,6 +13,7 @@ serde_json.workspace = true
 # The Id types, so the wire and the model file share one definition.
 catchlight-core.workspace = true
 serde.workspace = true
+thiserror.workspace = true
 ts-rs = { workspace = true, optional = true }
 
 [features]
