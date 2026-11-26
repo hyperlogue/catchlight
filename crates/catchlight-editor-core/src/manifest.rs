@@ -31,8 +31,6 @@ pub enum ManifestError {
     DuplicateNode(String),
     #[error("node {0:?} references unknown parent {1:?}")]
     UnknownParent(String, String),
-    #[error("node {0:?} has unknown kind {1:?}")]
-    UnknownKind(String, String),
     #[error("node {0:?} references unknown texture {1:?}")]
     UnknownTexture(String, String),
     #[error("texture {0:?} was not provided to the importer")]
@@ -54,6 +52,7 @@ pub struct TextureData {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Manifest {
     #[serde(default)]
     pub name: String,
@@ -66,20 +65,22 @@ pub struct Manifest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ManifestTexture {
     pub id: String,
     pub path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ManifestNode {
     pub id: String,
     #[serde(default)]
     pub parent: Option<String>,
     #[serde(default)]
     pub name: Option<String>,
-    #[serde(default = "group_kind")]
-    pub kind: String,
+    #[serde(default)]
+    pub kind: ManifestNodeKind,
     #[serde(default)]
     pub translate: Option<[f32; 3]>,
     #[serde(default)]
@@ -94,12 +95,16 @@ pub struct ManifestNode {
     pub mesh: Option<MeshSpec>,
 }
 
-fn group_kind() -> String {
-    "group".into()
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ManifestNodeKind {
+    #[default]
+    Group,
+    Part,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(tag = "auto", rename_all = "lowercase")]
+#[serde(tag = "auto", rename_all = "lowercase", deny_unknown_fields)]
 pub enum MeshSpec {
     Quad,
     Grid {
@@ -115,6 +120,7 @@ fn one() -> u32 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ManifestParam {
     pub name: String,
     #[serde(default)]
@@ -328,16 +334,17 @@ impl ModelManifestExt for Model {
                 None => None,
             };
             let (kind, texture) = match &n.kind {
-                ModelNodeKind::Part(p) => {
-                    ("part", p.albedo().and_then(|t| tex_name.get(t).cloned()))
-                }
-                _ => ("group", None),
+                ModelNodeKind::Part(p) => (
+                    ManifestNodeKind::Part,
+                    p.albedo().and_then(|t| tex_name.get(t).cloned()),
+                ),
+                _ => (ManifestNodeKind::Group, None),
             };
             nodes.push(ManifestNode {
                 id: node_name.get(id).cloned().unwrap_or_default(),
                 parent,
                 name: Some(n.name.to_string()),
-                kind: kind.to_string(),
+                kind,
                 translate: Some(n.transform.translation),
                 rotate: Some(n.transform.rotation),
                 scale: Some(n.transform.scale),
@@ -376,9 +383,9 @@ fn build_kind<'a>(
     tex_dims: &HashMap<&str, (f32, f32)>,
     budget: &mut LoadBudget,
 ) -> Result<(ModelNodeKind, Option<&'a str>), ManifestError> {
-    match mn.kind.as_str() {
-        "group" => Ok((ModelNodeKind::Group, None)),
-        "part" => {
+    match mn.kind {
+        ManifestNodeKind::Group => Ok((ModelNodeKind::Group, None)),
+        ManifestNodeKind::Part => {
             let albedo = match &mn.texture {
                 Some(t) if !tex_dims.contains_key(t.as_str()) => {
                     return Err(ManifestError::UnknownTexture(mn.id.clone(), t.clone()));
@@ -400,7 +407,6 @@ fn build_kind<'a>(
             };
             Ok((ModelNodeKind::Part(ModelPart::new(mesh)), albedo))
         }
-        other => Err(ManifestError::UnknownKind(mn.id.clone(), other.to_string())),
     }
 }
 
@@ -596,7 +602,7 @@ mod tests {
                     id: "left".into(),
                     parent: None,
                     name: None,
-                    kind: "part".into(),
+                    kind: ManifestNodeKind::Part,
                     translate: None,
                     rotate: None,
                     scale: None,
@@ -608,7 +614,7 @@ mod tests {
                     id: "right".into(),
                     parent: None,
                     name: None,
-                    kind: "part".into(),
+                    kind: ManifestNodeKind::Part,
                     translate: None,
                     rotate: None,
                     scale: None,
@@ -643,7 +649,7 @@ mod tests {
                 id: "g".into(),
                 parent: None,
                 name: None,
-                kind: "group".into(),
+                kind: ManifestNodeKind::Group,
                 translate: None,
                 rotate: None,
                 scale: None,
@@ -668,7 +674,7 @@ mod tests {
                 id: "face".into(),
                 parent: None,
                 name: None,
-                kind: "part".into(),
+                kind: ManifestNodeKind::Part,
                 translate: None,
                 rotate: None,
                 scale: None,
@@ -714,6 +720,28 @@ mod tests {
         assert_eq!(m.node_count(), m2.node_count());
         assert_eq!(m.texture_ids().len(), m2.texture_ids().len());
         assert_eq!(m.param_ids().len(), m2.param_ids().len());
+    }
+
+    #[test]
+    fn a_misspelt_manifest_key_is_refused() {
+        for json in [
+            r#"{"nodes": [{"id": "face", "kind": "part", "textrue": "face"}]}"#,
+            r#"{"nodes": [], "parms": []}"#,
+            r#"{"textures": [{"id": "t", "path": "t.png", "alpha": "straight"}]}"#,
+            r#"{"params": [{"name": "p", "default": [0, 0]}]}"#,
+            r#"{"nodes": [{"id": "f", "kind": "part", "mesh": {"auto": "grid", "colls": 2}}]}"#,
+        ] {
+            let err = Manifest::from_json(json).unwrap_err();
+            assert!(err.to_string().contains("unknown field"), "{json}: {err}");
+        }
+    }
+
+    #[test]
+    fn a_node_kind_outside_group_and_part_does_not_parse() {
+        let err = Manifest::from_json(r#"{"nodes": [{"id": "g", "kind": "folder"}]}"#).unwrap_err();
+        assert!(err.to_string().contains("unknown variant"), "{err}");
+        let manifest = Manifest::from_json(r#"{"nodes": [{"id": "g"}]}"#).unwrap();
+        assert_eq!(manifest.nodes[0].kind, ManifestNodeKind::Group);
     }
 
     #[test]
