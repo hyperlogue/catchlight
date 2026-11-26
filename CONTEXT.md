@@ -10,7 +10,7 @@ suggest 3D movement.
 
 **Model**:
 A complete character — its node tree, params and their bindings, textures,
-welds, animations and extensions — as authored, plus what
+welds and extensions — as authored, plus what
 is derived from them without any pose. The one form everything else comes
 from: the file stores it, the editor changes it, puppets animate it, render
 caches are built from it.
@@ -37,8 +37,9 @@ _Avoid_: ref, index, name
 
 **Name**:
 The label a human sees on a node or param. Free to change and free to
-repeat; no part of a model refers to a node or param by name. Animations are
-the exception: an animation is played by its name.
+repeat; no part of a model refers to a node or param by name. Animations,
+expressions and visemes are named differently: each is addressed by its
+name, which no other of its kind in the model shares.
 _Avoid_: id
 
 **Node**:
@@ -372,8 +373,9 @@ The model an addon is authored against and installed into.
 _Avoid_: base (alone — say base value or base model), host
 
 **Addon**:
-A fragment — a subtree with its bindings, welds, textures and extensions,
-its animations among them — authored against a base model and installed into
+A fragment — a subtree with its bindings, welds, textures and maintained
+extensions, its animations among them — authored against a base model and
+installed into
 it. It names what it needs from the base by Id, carries no params, and never
 changes the base's params. Each extension it carries is merged into the base
 by its module, which may refuse; one the program has not registered refuses
@@ -413,9 +415,11 @@ draws. Extensions stay behind.
 Data on a whole model, filed under a key that is its owner first, then a dot
 — `acme.camera` — with a JSON or byte value. An **official extension** is one
 under `catchlight.`, the format's own; any other is a **vendor extension**.
-A program that has an extension's module reads it as typed data, and the
-module keeps it consistent with the model. An extension the program has no
-module for, at a newer version, or that fails to decode is carried unchanged.
+A **plain** extension is only carried. A **maintained** one also has a
+version and a reference table: a program that has its module reads it as
+typed data, and the module keeps it consistent with the model. One the
+program has no module for, at a newer version, or that fails to decode is
+carried unchanged.
 _Avoid_: metadata, custom data, plugin
 
 **Extension module**:
@@ -443,7 +447,8 @@ _Avoid_: avatar, character config
 
 **Control**:
 One input of the humanoid standard — head yaw, left eye open, mouth open and
-the rest of a fixed list. A control always runs -1..1, with 0 as its neutral.
+the rest of a fixed list. A control runs -1..1 with 0 as its neutral; a
+**one-sided** control, such as mouth open, uses only 0..1.
 _Avoid_: param (that's the model's own), control parameter
 
 **Control mapping**:
