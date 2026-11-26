@@ -1501,7 +1501,7 @@ mod tests {
         let b = base();
         let addon = hat_addon(&b);
         let bytes = addon.to_clm_bytes().unwrap();
-        let reopened = Model::from_clm_bytes_fragment(&bytes).unwrap();
+        let reopened = Model::from_clm_bytes_with(&bytes, ReadOptions::fragment()).unwrap();
         assert_eq!(reopened.to_clm_bytes().unwrap(), bytes);
         assert_eq!(
             listed(&reopened.requirements()),
@@ -1553,14 +1553,15 @@ mod tests {
         assert_eq!(cut.node_count(), 0, "the root is not there to cut");
         assert!(cut.roots().is_empty());
         assert_eq!(cut.bindings().count(), 0);
-        let reopened = Model::from_clm_bytes_fragment(&cut.to_clm_bytes().unwrap())
-            .expect("what is left is an empty fragment, which reads back");
+        let reopened =
+            Model::from_clm_bytes_with(&cut.to_clm_bytes().unwrap(), ReadOptions::fragment())
+                .expect("what is left is an empty fragment, which reads back");
         assert_eq!(reopened.node_count(), 0);
 
         let cut = b.m.extract(&[b.root.clone(), b.body.clone()]);
         assert_eq!(cut.roots(), std::slice::from_ref(&b.body));
         assert_eq!(cut.bindings().count(), 1);
-        Model::from_clm_bytes_fragment(&cut.to_clm_bytes().unwrap()).unwrap();
+        Model::from_clm_bytes_with(&cut.to_clm_bytes().unwrap(), ReadOptions::fragment()).unwrap();
     }
 
     #[test]

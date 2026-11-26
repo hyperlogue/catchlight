@@ -12,7 +12,7 @@ use catchlight_cli::{Error, fragment};
 use catchlight_core::extension::{IdRef, Payload, RawExtension};
 use catchlight_core::id::{ExtensionKey, NodeId, ParamId, SlotId, TexId};
 use catchlight_core::{
-    ExtensionValue, InstallError, Model, Required, Requirement, RequirementOwner,
+    ExtensionValue, InstallError, Model, ReadOptions, Required, Requirement, RequirementOwner,
 };
 
 use common::{decode, read, tmp};
@@ -46,7 +46,7 @@ fn an_extracted_subtree_is_an_addon_and_not_a_complete_model() {
     assert_eq!(extracted.requirements, 2);
 
     let bytes = read(&addon);
-    let fragment = Model::from_clm_bytes_fragment(&bytes).unwrap();
+    let fragment = Model::from_clm_bytes_with(&bytes, ReadOptions::fragment()).unwrap();
     assert!(fragment.is_fragment());
     assert_eq!(fragment.node_count(), 2);
     assert_eq!(
@@ -163,12 +163,13 @@ fn the_file_level_scan_agrees_with_the_model() {
 
         let clm = decode(&addon);
         let by_file = fragment::scan(&clm);
-        let by_model: Vec<Requirement> = Model::from_clm_bytes_fragment(&read(&addon))
-            .unwrap()
-            .requirements()
-            .iter()
-            .cloned()
-            .collect();
+        let by_model: Vec<Requirement> =
+            Model::from_clm_bytes_with(&read(&addon), ReadOptions::fragment())
+                .unwrap()
+                .requirements()
+                .iter()
+                .cloned()
+                .collect();
         assert_eq!(by_file, by_model, "{fixture} {ids:?}");
         assert!(!by_file.is_empty(), "{fixture} {ids:?} required nothing");
     }
@@ -184,7 +185,7 @@ fn the_file_level_scan_reads_extension_reference_tables_as_the_model_does() {
         &addon,
     )
     .unwrap();
-    let mut model = Model::from_clm_bytes_fragment(&read(&addon)).unwrap();
+    let mut model = Model::from_clm_bytes_with(&read(&addon), ReadOptions::fragment()).unwrap();
     model
         .set_extension(
             ExtensionKey::new("test.pins").unwrap(),
@@ -294,7 +295,7 @@ fn a_shared_texture_is_copied_into_the_addon_and_never_required() {
         "the albedo is carried, not required"
     );
     assert_eq!(
-        Model::from_clm_bytes_fragment(&read(&addon))
+        Model::from_clm_bytes_with(&read(&addon), ReadOptions::fragment())
             .unwrap()
             .texture_ids(),
         &[keep.clone()][..]
@@ -403,12 +404,13 @@ fn a_weld_with_no_pairs_still_requires_the_part() {
         }),
         "{requirements:?}"
     );
-    let by_model: Vec<Requirement> = Model::from_clm_bytes_fragment(&read(&addon))
-        .unwrap()
-        .requirements()
-        .iter()
-        .cloned()
-        .collect();
+    let by_model: Vec<Requirement> =
+        Model::from_clm_bytes_with(&read(&addon), ReadOptions::fragment())
+            .unwrap()
+            .requirements()
+            .iter()
+            .cloned()
+            .collect();
     assert_eq!(requirements, by_model);
 }
 
@@ -536,7 +538,7 @@ fn requirements_reads_a_file_no_model_reader_would_take() {
 
     let file = common::write_clm(&dir, "no-root-no-textures", &clm);
     assert!(Model::from_clm_bytes(&read(&file)).is_err());
-    assert!(Model::from_clm_bytes_fragment(&read(&file)).is_err());
+    assert!(Model::from_clm_bytes_with(&read(&file), ReadOptions::fragment()).is_err());
 
     let requirements = fragment::requirements(&file).unwrap();
     assert_eq!(

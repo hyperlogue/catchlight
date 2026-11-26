@@ -747,7 +747,8 @@ fn the_shared_aggregate_budget_applies() {
         ..crate::LoadLimits::default()
     });
 
-    let err = Model::from_clm_file_with_budget(&file, &mut budget).unwrap_err();
+    let err =
+        Model::from_clm_file_with(&file, ReadOptions::default().budget(&mut budget)).unwrap_err();
 
     assert!(matches!(
         err,

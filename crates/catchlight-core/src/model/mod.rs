@@ -30,7 +30,7 @@ pub use correspondence::{DeformMapping, MAX_MAPPING_ENTRIES, MeshMappingError, V
 pub use error::ModelError;
 pub use eval::Pose;
 pub use extensions::ExtensionValue;
-pub use file::{ClmLoadError, LoadError};
+pub use file::{ClmLoadError, LoadError, ReadOptions, Shape};
 pub use node::{
     ModelComposite, ModelMask, ModelMesh, ModelMeshGroup, ModelNode, ModelNodeKind, ModelPart,
     ModelSpine, NodeProperties,

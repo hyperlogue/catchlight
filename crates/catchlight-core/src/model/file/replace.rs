@@ -4,9 +4,10 @@ use super::read::{Shape, bytes_missing, duplicate, extensions_of};
 use super::*;
 
 impl Model {
-    /// Rebuild from a structure-only container, taking payloads from
-    /// `textures`. Returning an `Arc` the client already holds lets a render
-    /// cache keep its GPU texture.
+    /// Rebuild from a structure-only container, taking texture payloads from
+    /// `textures` and byte extension payloads from `extension_bytes`.
+    /// Returning an `Arc` the client already holds lets a render cache keep its
+    /// GPU texture. `budget` defaults to [`LoadBudget::default`].
     ///
     /// Keeps [`Self::identity`] and bumps [`Self::generation`]. On error the
     /// model is untouched: the new state is built whole before the swap.
@@ -14,42 +15,11 @@ impl Model {
         &mut self,
         structure: &[u8],
         textures: impl Fn(&TexId) -> Option<ModelTexture>,
-    ) -> Result<(), LoadError> {
-        self.replace_structure_with_budget(structure, textures, &mut LoadBudget::default())
-    }
-
-    /// [`Self::replace_structure`] with `extension_bytes` supplying byte
-    /// extension payloads.
-    pub fn replace_structure_with_extensions(
-        &mut self,
-        structure: &[u8],
-        textures: impl Fn(&TexId) -> Option<ModelTexture>,
         extension_bytes: impl Fn(&ExtensionKey) -> Option<Arc<[u8]>>,
+        budget: Option<&mut LoadBudget>,
     ) -> Result<(), LoadError> {
-        self.replace_structure_with_budget_and_extensions(
-            structure,
-            textures,
-            extension_bytes,
-            &mut LoadBudget::default(),
-        )
-    }
-
-    pub fn replace_structure_with_budget(
-        &mut self,
-        structure: &[u8],
-        textures: impl Fn(&TexId) -> Option<ModelTexture>,
-        budget: &mut LoadBudget,
-    ) -> Result<(), LoadError> {
-        self.replace_structure_with_budget_and_extensions(structure, textures, |_| None, budget)
-    }
-
-    pub fn replace_structure_with_budget_and_extensions(
-        &mut self,
-        structure: &[u8],
-        textures: impl Fn(&TexId) -> Option<ModelTexture>,
-        extension_bytes: impl Fn(&ExtensionKey) -> Option<Arc<[u8]>>,
-        budget: &mut LoadBudget,
-    ) -> Result<(), LoadError> {
+        let mut default = LoadBudget::default();
+        let budget = budget.unwrap_or(&mut default);
         let structure = clm::decode_structure_with_budget(structure, budget)?;
 
         let mut table = HashMap::with_capacity(structure.textures.len());
@@ -82,7 +52,7 @@ impl Model {
             Ok(data)
         };
         let extensions = extensions_of(&structure.doc, checked, Some(&self.extensions))?;
-        let mut next = Self::build(&structure.doc, table, order, extensions, Shape::Base)?;
+        let mut next = Self::build(&structure.doc, table, order, extensions, Shape::Complete)?;
         next.unknown_sections = std::mem::take(&mut self.unknown_sections);
         self.become_model(next);
         Ok(())
@@ -142,9 +112,12 @@ mod tests {
         let held = store(&replica);
 
         replica
-            .replace_structure(&server.to_structure_bytes().unwrap(), |id| {
-                held.get(id).cloned()
-            })
+            .replace_structure(
+                &server.to_structure_bytes().unwrap(),
+                |id| held.get(id).cloned(),
+                |_| None,
+                None,
+            )
             .unwrap();
 
         assert_eq!(
@@ -179,7 +152,7 @@ mod tests {
         let mut replica = m.clone();
         let held = store(&m);
         let err = replica
-            .replace_structure(&bytes, |id| held.get(id).cloned())
+            .replace_structure(&bytes, |id| held.get(id).cloned(), |_| None, None)
             .unwrap_err();
 
         assert!(matches!(
@@ -195,7 +168,12 @@ mod tests {
         let (was, generation) = (replica.to_clm_bytes().unwrap(), replica.generation());
 
         let err = replica
-            .replace_structure(&server.to_structure_bytes().unwrap(), |_| None)
+            .replace_structure(
+                &server.to_structure_bytes().unwrap(),
+                |_| None,
+                |_| None,
+                None,
+            )
             .unwrap_err();
 
         let wanted = server.texture_ids()[0].clone();
@@ -219,9 +197,12 @@ mod tests {
         let held = store(&replica);
 
         replica
-            .replace_structure(&server.to_structure_bytes().unwrap(), |id| {
-                held.get(id).cloned()
-            })
+            .replace_structure(
+                &server.to_structure_bytes().unwrap(),
+                |id| held.get(id).cloned(),
+                |_| None,
+                None,
+            )
             .unwrap();
         assert_eq!(replica.identity(), identity);
         assert!(replica.generation() > generation);
@@ -273,9 +254,12 @@ mod tests {
             )
             .unwrap();
         replica
-            .replace_structure(&server.to_structure_bytes().unwrap(), |id| {
-                held.get(id).cloned()
-            })
+            .replace_structure(
+                &server.to_structure_bytes().unwrap(),
+                |id| held.get(id).cloned(),
+                |_| None,
+                None,
+            )
             .unwrap();
 
         puppet.sync(&replica);

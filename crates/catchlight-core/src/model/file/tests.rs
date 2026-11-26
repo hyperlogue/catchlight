@@ -159,7 +159,7 @@ pub(super) fn load_err(file: &ClmFile) -> ClmLoadError {
 }
 
 pub(super) fn fragment_err(file: &ClmFile) -> ClmLoadError {
-    match Model::from_clm_file_fragment(file) {
+    match Model::from_clm_file_with(file, ReadOptions::fragment()) {
         Err(LoadError::Invalid(e)) => e,
         other => panic!("expected a structured load error, got {other:?}"),
     }
@@ -195,7 +195,7 @@ pub(super) fn part_mask_source<'a>(m: &'a Model, id: &NodeId) -> &'a NodeId {
 fn a_fragment_round_trips_with_its_dangling_references() {
     let file = sample_fragment_file();
     let bytes = clm::encode(&file.doc, &file.textures, &file.extensions).unwrap();
-    let f = Model::from_clm_bytes_fragment(&bytes).unwrap();
+    let f = Model::from_clm_bytes_with(&bytes, ReadOptions::fragment()).unwrap();
 
     assert!(f.is_fragment());
     assert_eq!(f.root(), None);
@@ -215,7 +215,8 @@ fn a_fragment_round_trips_with_its_dangling_references() {
     assert!(binding.params().iter().all(|p| f.param(p).is_none()));
 
     assert_eq!(f.to_clm_bytes().unwrap(), bytes);
-    let again = Model::from_clm_bytes_fragment(&f.to_clm_bytes().unwrap()).unwrap();
+    let again =
+        Model::from_clm_bytes_with(&f.to_clm_bytes().unwrap(), ReadOptions::fragment()).unwrap();
     assert_eq!(again.to_clm_bytes().unwrap(), bytes);
 }
 

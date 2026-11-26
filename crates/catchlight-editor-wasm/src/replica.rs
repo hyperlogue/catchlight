@@ -194,7 +194,7 @@ impl ReplicaState {
         }
         let textures = &self.textures;
         let extension_bytes = &self.extension_bytes;
-        self.model.replace_structure_with_extensions(
+        self.model.replace_structure(
             structure,
             |id| {
                 textures.get(id).map(|data| ModelTexture {
@@ -207,6 +207,7 @@ impl ReplicaState {
             },
             // A marker whose bytes were never put is an error naming the key.
             |key| extension_bytes.get(key).map(|(_, data)| data.clone()),
+            None,
         )?;
         self.accept(rev);
         Ok(true)

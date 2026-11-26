@@ -9,7 +9,7 @@ use catchlight_core::formats::clm::{
 use catchlight_core::id::Name;
 use catchlight_core::{
     BindingKey, BindingTarget as CoreBindingTarget, Mat4, Model, ModelComposite, ModelMeshGroup,
-    ModelNode, ModelNodeKind, ModelParam, ModelPart, ModelSpine, ModelWeld, Vec3,
+    ModelNode, ModelNodeKind, ModelParam, ModelPart, ModelSpine, ModelWeld, ReadOptions, Vec3,
 };
 use catchlight_editor_core::{
     AlphaMask, ContourKnobs, GridKnobs, MeshError, StrandError, UvMap, contour_automesh,
@@ -529,7 +529,7 @@ pub(crate) fn fragment_under(
     for at in roots {
         file.doc.nodes[at].parent = Some(parent.clone());
     }
-    Ok(Model::from_clm_file_fragment(&file)?)
+    Ok(Model::from_clm_file_with(&file, ReadOptions::fragment())?)
 }
 
 pub(crate) fn encoding_from_path(path: &str) -> CoreTextureEncoding {

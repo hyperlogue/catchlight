@@ -11,7 +11,9 @@ use catchlight_core::formats::clm::{self, ClmError, ClmExtension, ClmStructure};
 use catchlight_core::formats::container::{self, Section};
 use catchlight_core::id::ExtensionKey;
 use catchlight_core::load_budget::charge_clm_structure;
-use catchlight_core::{LoadBudget, LoadError, LoadLimitError, LoadLimits, LoadResource, Model};
+use catchlight_core::{
+    LoadBudget, LoadError, LoadLimitError, LoadLimits, LoadResource, Model, ReadOptions,
+};
 
 fn fixture(name: &str) -> Vec<u8> {
     let path: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -41,16 +43,21 @@ fn a_file_exactly_at_the_encoded_byte_limit_loads() {
     let bytes = fixture("quad_over_bg.clm");
     let size = bytes.len() as u64;
 
-    let model = Model::from_clm_bytes_with_budget(&bytes, &mut budget(|l| l.encoded_bytes = size))
-        .expect("a file exactly at the limit");
+    let model = Model::from_clm_bytes_with(
+        &bytes,
+        ReadOptions::default().budget(&mut budget(|l| l.encoded_bytes = size)),
+    )
+    .expect("a file exactly at the limit");
     assert!(
         !model.texture_ids().is_empty(),
         "the fixture has to carry payload bytes for this to mean anything"
     );
 
-    let err =
-        Model::from_clm_bytes_with_budget(&bytes, &mut budget(|l| l.encoded_bytes = size - 1))
-            .unwrap_err();
+    let err = Model::from_clm_bytes_with(
+        &bytes,
+        ReadOptions::default().budget(&mut budget(|l| l.encoded_bytes = size - 1)),
+    )
+    .unwrap_err();
     assert_eq!(
         limit_error(err),
         LoadLimitError {
@@ -67,11 +74,16 @@ fn a_hand_built_file_still_has_its_payloads_charged() {
     let payloads: u64 = file.textures.iter().map(|t| t.data.len() as u64).sum();
     assert!(payloads > 0);
 
-    Model::from_clm_file_with_budget(&file, &mut budget(|l| l.encoded_bytes = payloads))
-        .expect("exactly the payloads");
-    let err =
-        Model::from_clm_file_with_budget(&file, &mut budget(|l| l.encoded_bytes = payloads - 1))
-            .unwrap_err();
+    Model::from_clm_file_with(
+        &file,
+        ReadOptions::default().budget(&mut budget(|l| l.encoded_bytes = payloads)),
+    )
+    .expect("exactly the payloads");
+    let err = Model::from_clm_file_with(
+        &file,
+        ReadOptions::default().budget(&mut budget(|l| l.encoded_bytes = payloads - 1)),
+    )
+    .unwrap_err();
     assert_eq!(limit_error(err).resource, LoadResource::EncodedBytes);
 }
 
@@ -206,17 +218,19 @@ fn a_structure_push_charges_each_texture_once() {
 
     let mut replica = model.clone();
     replica
-        .replace_structure_with_budget(
+        .replace_structure(
             &structure,
             |id| model.texture(id).cloned(),
-            &mut budget(|l| l.textures = count),
+            |_| None,
+            Some(&mut budget(|l| l.textures = count)),
         )
         .expect("exactly the model's textures");
     let err = replica
-        .replace_structure_with_budget(
+        .replace_structure(
             &structure,
             |id| model.texture(id).cloned(),
-            &mut budget(|l| l.textures = count - 1),
+            |_| None,
+            Some(&mut budget(|l| l.textures = count - 1)),
         )
         .unwrap_err();
     assert_eq!(limit_error(err).resource, LoadResource::Textures);

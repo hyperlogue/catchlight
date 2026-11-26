@@ -4,9 +4,14 @@ use super::*;
 
 type SlotTable = HashSet<SlotId>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Shape {
-    Base,
+/// What a `.clm` holds. The two are disjoint on the wire: a fragment never
+/// has a parentless node.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Shape {
+    /// One root, and every reference resolved within the file.
+    #[default]
+    Complete,
+    /// An addon: its roots and some references name a base it is installed into.
     Fragment,
 }
 
@@ -64,49 +69,55 @@ pub(super) fn extensions_of(
     Ok(out)
 }
 
+/// How [`Model::from_clm_bytes_with`] and [`Model::from_clm_file_with`] read:
+/// the shape expected and the budget charged. The default reads a complete
+/// model under [`LoadBudget::default`].
+#[derive(Debug, Default)]
+pub struct ReadOptions<'a> {
+    pub shape: Shape,
+    /// Shared across reads, so several files can draw on one budget.
+    pub budget: Option<&'a mut LoadBudget>,
+}
+
+impl<'a> ReadOptions<'a> {
+    pub fn fragment() -> Self {
+        Self {
+            shape: Shape::Fragment,
+            budget: None,
+        }
+    }
+
+    #[must_use]
+    pub fn budget(self, budget: &'a mut LoadBudget) -> Self {
+        Self {
+            budget: Some(budget),
+            ..self
+        }
+    }
+
+    fn run<T>(self, read: impl FnOnce(&mut LoadBudget, Shape) -> T) -> T {
+        let mut default = LoadBudget::default();
+        read(self.budget.unwrap_or(&mut default), self.shape)
+    }
+}
+
 impl Model {
+    /// A complete model under the default limits.
     pub fn from_clm_file(file: &ClmFile) -> Result<Self, LoadError> {
-        Self::from_clm_file_with_budget(file, &mut LoadBudget::default())
+        Self::from_clm_file_with(file, ReadOptions::default())
     }
 
-    pub fn from_clm_file_with_budget(
-        file: &ClmFile,
-        budget: &mut LoadBudget,
-    ) -> Result<Self, LoadError> {
-        Self::read(file, budget, Shape::Base)
+    pub fn from_clm_file_with(file: &ClmFile, options: ReadOptions<'_>) -> Result<Self, LoadError> {
+        options.run(|budget, shape| Self::read(file, budget, shape))
     }
 
-    pub fn from_clm_file_fragment(file: &ClmFile) -> Result<Self, LoadError> {
-        Self::from_clm_file_fragment_with_budget(file, &mut LoadBudget::default())
-    }
-
-    pub fn from_clm_file_fragment_with_budget(
-        file: &ClmFile,
-        budget: &mut LoadBudget,
-    ) -> Result<Self, LoadError> {
-        Self::read(file, budget, Shape::Fragment)
-    }
-
+    /// A complete model under the default limits.
     pub fn from_clm_bytes(bytes: &[u8]) -> Result<Self, LoadError> {
-        Self::from_clm_bytes_with_budget(bytes, &mut LoadBudget::default())
+        Self::from_clm_bytes_with(bytes, ReadOptions::default())
     }
 
-    pub fn from_clm_bytes_with_budget(
-        bytes: &[u8],
-        budget: &mut LoadBudget,
-    ) -> Result<Self, LoadError> {
-        Self::read_bytes(bytes, budget, Shape::Base)
-    }
-
-    pub fn from_clm_bytes_fragment(bytes: &[u8]) -> Result<Self, LoadError> {
-        Self::from_clm_bytes_fragment_with_budget(bytes, &mut LoadBudget::default())
-    }
-
-    pub fn from_clm_bytes_fragment_with_budget(
-        bytes: &[u8],
-        budget: &mut LoadBudget,
-    ) -> Result<Self, LoadError> {
-        Self::read_bytes(bytes, budget, Shape::Fragment)
+    pub fn from_clm_bytes_with(bytes: &[u8], options: ReadOptions<'_>) -> Result<Self, LoadError> {
+        options.run(|budget, shape| Self::read_bytes(bytes, budget, shape))
     }
 
     fn read(file: &ClmFile, budget: &mut LoadBudget, shape: Shape) -> Result<Self, LoadError> {

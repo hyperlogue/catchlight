@@ -11,7 +11,7 @@ use catchlight_core::id::{Name, NodeId, ParamId, SeededHex, SlotId, TexId};
 use catchlight_core::{
     BindingKey, BindingTarget, HexSource, InstallError, MaskMode, Model, ModelComposite,
     ModelMeshGroup, ModelNode, ModelNodeKind, ModelParam, ModelPart, ModelTexture, ModelWeld,
-    Puppet, ScalarTarget, SlotPair,
+    Puppet, ReadOptions, ScalarTarget, SlotPair,
 };
 
 /// `SeededHex` is deterministic, so a failing seed is a failing test forever.
@@ -520,7 +520,7 @@ fn a_file_is_one_shape_or_the_other() {
     ] {
         let read = Model::from_clm_bytes(&bytes)
             .ok()
-            .or_else(|| Model::from_clm_bytes_fragment(&bytes).ok())
+            .or_else(|| Model::from_clm_bytes_with(&bytes, ReadOptions::fragment()).ok())
             .expect("one of the two readers takes it");
         assert_eq!(read.is_fragment(), is_fragment);
         assert_eq!(

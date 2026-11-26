@@ -38,8 +38,8 @@ pub use model::{
     ExtensionWarning, InstallError, Installed, LoadError, Model, ModelBinding, ModelBindingValues,
     ModelComposite, ModelError, ModelMask, ModelMesh, ModelMeshGroup, ModelNode, ModelNodeKind,
     ModelParam, ModelPart, ModelSpine, ModelTexture, ModelWeld, ModelWeldPair, NodeProperties,
-    Pose, Required, Requirement, RequirementOwner, Requirements, ScalarTarget, Slot, SlotPair,
-    SpineJointError, param_range_is_valid,
+    Pose, ReadOptions, Required, Requirement, RequirementOwner, Requirements, ScalarTarget, Slot,
+    SlotPair, SpineJointError, param_range_is_valid,
 };
 pub use motion_response::{MotionResponse, ResponseInput, ResponseSource};
 pub use node::{NodeTree, NodeTreeError};

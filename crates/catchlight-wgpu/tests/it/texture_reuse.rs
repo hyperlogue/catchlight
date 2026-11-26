@@ -96,9 +96,12 @@ async fn replica_sync(options: PrepareOptions) {
         )
         .expect("add node");
     replica
-        .replace_structure(&server.to_structure_bytes().unwrap(), |id| {
-            held.get(id).cloned()
-        })
+        .replace_structure(
+            &server.to_structure_bytes().unwrap(),
+            |id| held.get(id).cloned(),
+            |_| None,
+            None,
+        )
         .expect("apply the structure");
 
     let before = cache.stats();
@@ -141,7 +144,7 @@ async fn replica_sync(options: PrepareOptions) {
     assert_eq!(missing.len(), 1, "one payload to fetch: {missing:?}");
     held.insert(missing[0].clone(), green);
     replica
-        .replace_structure(&structure, |id| held.get(id).cloned())
+        .replace_structure(&structure, |id| held.get(id).cloned(), |_| None, None)
         .expect("apply the structure");
     assert_eq!(
         replica.texture_ids().len(),

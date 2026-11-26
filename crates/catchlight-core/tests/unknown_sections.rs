@@ -12,7 +12,9 @@ use std::sync::Arc;
 use catchlight_core::formats::clm::{self, ClmError, ClmUnknownSection};
 use catchlight_core::formats::container::{self, Section};
 use catchlight_core::id::SeededHex;
-use catchlight_core::{LoadBudget, LoadError, LoadLimits, Model, ModelNode, ModelNodeKind};
+use catchlight_core::{
+    LoadBudget, LoadError, LoadLimits, Model, ModelNode, ModelNodeKind, ReadOptions,
+};
 
 const FUTURE: u32 = 77;
 const FURTHER: u32 = 1000;
@@ -205,11 +207,16 @@ fn a_structure_push_neither_carries_nor_clears_them() {
         .map(|id| (id.clone(), replica.texture(id).unwrap().clone()))
         .collect();
     replica
-        .replace_structure(&push, |id| {
-            held.iter()
-                .find(|(have, _)| have == id)
-                .map(|(_, t)| t.clone())
-        })
+        .replace_structure(
+            &push,
+            |id| {
+                held.iter()
+                    .find(|(have, _)| have == id)
+                    .map(|(_, t)| t.clone())
+            },
+            |_| None,
+            None,
+        )
         .unwrap();
 
     assert_eq!(replica.unknown_sections(), carried());
@@ -305,8 +312,16 @@ fn unknown_sections_are_charged_as_encoded_bytes() {
         limits.encoded_bytes = encoded_bytes;
         LoadBudget::new(limits)
     };
-    Model::from_clm_file_with_budget(&file, &mut budget(payloads + 100)).unwrap();
-    let err = Model::from_clm_file_with_budget(&file, &mut budget(payloads + 99)).unwrap_err();
+    Model::from_clm_file_with(
+        &file,
+        ReadOptions::default().budget(&mut budget(payloads + 100)),
+    )
+    .unwrap();
+    let err = Model::from_clm_file_with(
+        &file,
+        ReadOptions::default().budget(&mut budget(payloads + 99)),
+    )
+    .unwrap_err();
     assert!(
         matches!(&err, LoadError::Limit(e) if e.resource == catchlight_core::LoadResource::EncodedBytes),
         "{err}"

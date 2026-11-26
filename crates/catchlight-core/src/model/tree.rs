@@ -489,7 +489,7 @@ mod tests {
 
         let mut addon = model.extract(&[id("side")]).to_clm_file().unwrap();
         addon.doc.nodes[0].parent = Some(id("n255"));
-        let addon = Model::from_clm_file_fragment(&addon).unwrap();
+        let addon = Model::from_clm_file_with(&addon, ReadOptions::fragment()).unwrap();
         let before = model.generation();
         match model.install(&addon) {
             Err(InstallError::Model(error)) => assert!(too_deep(&error), "{error}"),

@@ -14,6 +14,7 @@ mod tests;
 mod write;
 
 pub use error::{ClmLoadError, LoadError};
+pub use read::{ReadOptions, Shape};
 
 use std::collections::{HashMap, HashSet};
 

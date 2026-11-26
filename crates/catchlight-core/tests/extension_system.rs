@@ -18,7 +18,7 @@ use catchlight_core::extension::{
 use catchlight_core::formats::clm::{ClmIndices, ClmMesh, TextureAlpha, TextureEncoding};
 use catchlight_core::{
     ExtensionKey, ExtensionValue, InstallError, Model, ModelNode, ModelNodeKind, ModelParam,
-    ModelPart, ModelTexture, Name, NodeId, ParamId, Required, SlotId, TexId,
+    ModelPart, ModelTexture, Name, NodeId, ParamId, ReadOptions, Required, SlotId, TexId,
 };
 use serde_json::json;
 
@@ -724,7 +724,8 @@ fn install_refuses_an_unregistered_extension_by_key() {
         .0
         .add(IdRef::Node(r.part), "hat");
     // Through a file, so the addon holds raw data rather than a decoded copy.
-    let addon = Model::from_clm_bytes_fragment(&addon.to_clm_bytes().unwrap()).unwrap();
+    let addon = Model::from_clm_bytes_with(&addon.to_clm_bytes().unwrap(), ReadOptions::fragment())
+        .unwrap();
     match base.install(&addon) {
         Err(InstallError::ExtensionNotRegistered { key }) => {
             assert_eq!(key.as_str(), AddonUnregistered::KEY);
@@ -880,10 +881,11 @@ fn replacing_the_structure_decodes_only_extensions_that_changed() {
     let push = |replica: &mut Model, server: &Model| {
         let held = bytes(server);
         replica
-            .replace_structure_with_extensions(
+            .replace_structure(
                 &server.to_structure_bytes().unwrap(),
                 |id| server.texture(id).cloned(),
                 |_| held.clone(),
+                None,
             )
             .unwrap();
     };

@@ -270,7 +270,11 @@ mod tests {
         let mut budget = catchlight_core::LoadBudget::new(limits);
         let bytes = catchlight_core::Model::new().to_clm_bytes().unwrap();
         let error = EditorError::from(
-            catchlight_core::Model::from_clm_bytes_with_budget(&bytes, &mut budget).unwrap_err(),
+            catchlight_core::Model::from_clm_bytes_with(
+                &bytes,
+                catchlight_core::ReadOptions::default().budget(&mut budget),
+            )
+            .unwrap_err(),
         );
         assert_eq!(error.code(), ErrorCode::LimitExceeded);
         let info = error.limit_info().unwrap();

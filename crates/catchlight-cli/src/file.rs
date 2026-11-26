@@ -5,7 +5,7 @@ use std::path::Path;
 
 use catchlight_core::formats::clm::{self, ClmError, ClmFile, ClmStructure};
 use catchlight_core::formats::container::ContainerError;
-use catchlight_core::{LoadError, Model, ModelError, ModelFormat};
+use catchlight_core::{LoadError, Model, ModelError, ModelFormat, ReadOptions};
 
 use crate::Error;
 
@@ -178,7 +178,7 @@ pub fn load(file: &ClmFile, path: &Path) -> Result<(Model, Shape), Error> {
                 path: path.to_path_buf(),
                 source,
             }),
-        Some(Shape::Fragment) => Model::from_clm_file_fragment(file)
+        Some(Shape::Fragment) => Model::from_clm_file_with(file, ReadOptions::fragment())
             .map(|m| (m, Shape::Fragment))
             .map_err(|source| Error::NotAFragment {
                 path: path.to_path_buf(),
@@ -190,7 +190,7 @@ pub fn load(file: &ClmFile, path: &Path) -> Result<(Model, Shape), Error> {
 /// Reads as a fragment regardless of wire shape, so a complete model reports
 /// `FragmentHasNoParent` rather than failing later at install.
 pub fn load_fragment(file: &ClmFile, path: &Path) -> Result<Model, Error> {
-    Model::from_clm_file_fragment(file).map_err(|source| Error::NotAFragment {
+    Model::from_clm_file_with(file, ReadOptions::fragment()).map_err(|source| Error::NotAFragment {
         path: path.to_path_buf(),
         source,
     })
