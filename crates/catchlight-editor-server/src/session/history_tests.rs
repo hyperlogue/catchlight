@@ -8,7 +8,10 @@ use std::{
 };
 
 use super::*;
-use catchlight_core::Vec2;
+use crate::Storage;
+use catchlight_core::formats::clm::{ClmIndices, ClmMesh};
+use catchlight_core::id::Name;
+use catchlight_core::{ModelNodeKind, ModelPart, Vec2, Vec3};
 
 fn new_session(editor: &Editor) -> SessionId {
     let id = editor.alloc_id();

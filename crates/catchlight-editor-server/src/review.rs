@@ -13,7 +13,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::kept_store::KeptStore;
-use crate::{Attachments, Captured, Editor, EditorError, Payload, Session};
+use crate::session::{Captured, Session};
+use crate::{Attachments, Editor, EditorError, Payload};
 
 /// A `review watch` polls about once a second; a few missed beats is a gone
 /// agent, not a slow one.

@@ -19,7 +19,8 @@ use sha2::{Digest, Sha256};
 
 use crate::kept_store::KeptStore;
 use crate::lifecycle::sha256;
-use crate::{Captured, Editor, EditorError, Payload};
+use crate::session::Captured;
+use crate::{Editor, EditorError, Payload};
 
 const RECORD_FORMAT: u32 = 1;
 const MAX_LABEL_BYTES: usize = 80;

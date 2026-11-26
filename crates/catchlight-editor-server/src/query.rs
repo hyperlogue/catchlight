@@ -13,7 +13,8 @@ use catchlight_core::{
 };
 use catchlight_editor_protocol::*;
 
-use crate::{EditorError, image_dims};
+use crate::EditorError;
+use crate::ops::{binding_key, fitted_spine, image_dims};
 
 /// The one conversion, so a listing and a get agree and the hash matches what
 /// the structure feed carries.
@@ -255,7 +256,7 @@ fn binding_cells(model: &Model, command: &Command) -> Result<ResponseBody, Edito
     else {
         unreachable!()
     };
-    let key = crate::binding_key(params.clone(), node.clone(), *target)?;
+    let key = binding_key(params.clone(), node.clone(), *target)?;
     let binding = model.binding(&key).ok_or(ModelError::UnknownBinding)?;
     crate::edit::validate_cells(model, &key, cells.iter().copied(), cells.len())?;
     let (width, height) = model.binding_grid(&key)?;
@@ -452,7 +453,7 @@ fn node_info(model: &Model, id: &NodeId, node: &ModelNode) -> NodeInfo {
         id: id.clone(),
         kind: NodeKind::of(&node.kind),
         parent: node.parent().cloned(),
-        fitted_spine: super::fitted_spine(model, node).cloned(),
+        fitted_spine: fitted_spine(model, node).cloned(),
         name: node.name.to_string(),
         translate: node.transform.translation,
         rotate: node.transform.rotation,

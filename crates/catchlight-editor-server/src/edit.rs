@@ -12,9 +12,10 @@ use catchlight_core::{
 use catchlight_editor_core::ModelMeshExt as _;
 use catchlight_editor_protocol::*;
 
-use super::{
-    EditorError, apply_patch, binding_key, build_mesh, build_weld, default_name, emptied_reply,
-    joins, make_kind, pairs_the_same_parts,
+use crate::EditorError;
+use crate::ops::{
+    apply_patch, binding_key, build_mesh, build_weld, default_name, emptied_reply, joins,
+    make_kind, pairs_the_same_parts,
 };
 
 pub const MAX_EDIT_OPS: usize = 1024;
