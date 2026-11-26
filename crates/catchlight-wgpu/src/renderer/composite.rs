@@ -5,22 +5,22 @@ impl WgpuRenderer {
     /// into one pass (`blit_composite_with_masks`).
     fn blit_composite_masked(
         &self,
-        ctx: &mut PassCtx<'_>,
+        encoder: &mut wgpu::CommandEncoder,
         blit: Blit<'_>,
-        target_view: &wgpu::TextureView,
+        target: Dest<'_>,
         blend_mode: BlendMode,
     ) {
         // `FrameTargets::prepare` builds the target to match the pipelines.
-        let Some(mask) = ctx.stencil.sampled.as_ref() else {
+        let Some(mask) = target.mask.sampled.as_ref() else {
             return;
         };
         let mut render_pass = self.counted_begin_pass(
-            ctx.encoder,
+            encoder,
             &wgpu::RenderPassDescriptor {
                 label: Some("Masked Blit Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     depth_slice: None,
-                    view: target_view,
+                    view: target.view,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Load,
@@ -42,9 +42,7 @@ impl WgpuRenderer {
             &[blit.part_uniform_offset],
         );
         render_pass.set_bind_group(2, mask, &[]);
-        if let Some(r) = blit.scissor {
-            render_pass.set_scissor_rect(r.x, r.y, r.width, r.height);
-        }
+        target.confine(&mut render_pass, blit.scissor);
         self.frame_draw_calls.fetch_add(1, Ordering::Relaxed);
         render_pass.draw(0..3, 0..1);
     }
@@ -53,7 +51,7 @@ impl WgpuRenderer {
         &self,
         encoder: &mut wgpu::CommandEncoder,
         blit: Blit<'_>,
-        target_view: &wgpu::TextureView,
+        target: Dest<'_>,
         blend_mode: BlendMode,
     ) {
         let mut render_pass = self.counted_begin_pass(
@@ -62,7 +60,7 @@ impl WgpuRenderer {
                 label: Some("Blit Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     depth_slice: None,
-                    view: target_view,
+                    view: target.view,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Load,
@@ -83,9 +81,7 @@ impl WgpuRenderer {
             &self.part_uniform_bind_group,
             &[blit.part_uniform_offset],
         );
-        if let Some(r) = blit.scissor {
-            render_pass.set_scissor_rect(r.x, r.y, r.width, r.height);
-        }
+        target.confine(&mut render_pass, blit.scissor);
         self.frame_draw_calls.fetch_add(1, Ordering::Relaxed);
         render_pass.draw(0..3, 0..1);
     }
@@ -106,40 +102,38 @@ impl WgpuRenderer {
         let snapshot = snapshots.acquire(&self.shared, &self.device);
         // The copy runs in encoder order (unlike write_buffer), so it sees every
         // prior pass. A scissored copy suffices: the snapshot is sampled 1:1 and
-        // dst-in-shader modes return dst where src alpha is 0.
-        let (copy_origin, copy_extent) = match blit.scissor {
-            Some(r) => (
-                wgpu::Origin3d {
-                    x: r.x,
-                    y: r.y,
-                    z: 0,
-                },
-                wgpu::Extent3d {
-                    width: r.width,
-                    height: r.height,
-                    depth_or_array_layers: 1,
-                },
-            ),
-            None => (
-                wgpu::Origin3d::ZERO,
-                wgpu::Extent3d {
-                    width: ctx.target.width.max(1),
-                    height: ctx.target.height.max(1),
-                    depth_or_array_layers: 1,
-                },
-            ),
+        // dst-in-shader modes return dst where src alpha is 0. The snapshot is
+        // viewport-sized, so it holds the viewport at its origin.
+        let viewport = ctx.target.viewport;
+        let copy = blit.scissor.unwrap_or(ScreenRect {
+            x: 0,
+            y: 0,
+            ..viewport
+        });
+        let copy_extent = wgpu::Extent3d {
+            width: copy.width,
+            height: copy.height,
+            depth_or_array_layers: 1,
         };
         ctx.encoder.copy_texture_to_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: target_texture,
                 mip_level: 0,
-                origin: copy_origin,
+                origin: wgpu::Origin3d {
+                    x: viewport.x + copy.x,
+                    y: viewport.y + copy.y,
+                    z: 0,
+                },
                 aspect: wgpu::TextureAspect::All,
             },
             wgpu::TexelCopyTextureInfo {
                 texture: &snapshot.texture,
                 mip_level: 0,
-                origin: copy_origin,
+                origin: wgpu::Origin3d {
+                    x: copy.x,
+                    y: copy.y,
+                    z: 0,
+                },
                 aspect: wgpu::TextureAspect::All,
             },
             copy_extent,
@@ -174,9 +168,7 @@ impl WgpuRenderer {
             &[blit.part_uniform_offset],
         );
         render_pass.set_bind_group(2, &snapshot.bind_group, &[]);
-        if let Some(r) = blit.scissor {
-            render_pass.set_scissor_rect(r.x, r.y, r.width, r.height);
-        }
+        ctx.target.confine(&mut render_pass, blit.scissor);
         self.frame_draw_calls.fetch_add(1, Ordering::Relaxed);
         render_pass.draw(0..3, 0..1);
     }
@@ -198,13 +190,8 @@ impl WgpuRenderer {
         };
 
         if self.shared.has_stencil() {
-            let mut state = StencilPassState::new(
-                ctx.target.view,
-                &ctx.stencil.view,
-                Some(transparent),
-                ctx.labels.draw,
-                scissor,
-            );
+            let mut state =
+                StencilPassState::new(ctx.target, Some(transparent), ctx.labels.draw, scissor);
             let mut sink = PartSink::Stencil(&mut state);
             if mask_sources.is_empty() {
                 self.flush_pending_parts(ctx, &mut sink, std::slice::from_ref(&draw));
@@ -247,12 +234,12 @@ impl WgpuRenderer {
         &mut self,
         ctx: &mut PassCtx<'_>,
         blit: Blit<'_>,
-        target_view: &wgpu::TextureView,
+        target: Dest<'_>,
         blend_mode: BlendMode,
         mask_sources: &[crate::collect::MaskSourceData],
     ) {
         if mask_sources.is_empty() {
-            self.blit_composite(ctx.encoder, blit, target_view, blend_mode);
+            self.blit_composite(ctx.encoder, blit, target, blend_mode);
             return;
         }
 
@@ -275,12 +262,13 @@ impl WgpuRenderer {
 
         if !self.shared.has_stencil() {
             self.write_mask_sources(
-                ctx,
+                ctx.encoder,
+                target,
                 "Composite Blit Mask Write Pass",
                 mask_sources,
                 base_offset,
             );
-            self.blit_composite_masked(ctx, blit, target_view, blend_mode);
+            self.blit_composite_masked(ctx.encoder, blit, target, blend_mode);
             return;
         }
 
@@ -290,7 +278,7 @@ impl WgpuRenderer {
                 label: Some("Masked Blit Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     depth_slice: None,
-                    view: target_view,
+                    view: target.view,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Load,
@@ -298,7 +286,7 @@ impl WgpuRenderer {
                     },
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &ctx.stencil.view,
+                    view: &target.mask.view,
                     depth_ops: None,
                     stencil_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Clear(0),
@@ -314,9 +302,7 @@ impl WgpuRenderer {
         render_pass.set_bind_group(0, &self.camera_bind_group, &[self.camera_offset]);
         // Outside the children union the composite is a transparent clear and the
         // stencil is never tested.
-        if let Some(r) = blit.scissor {
-            render_pass.set_scissor_rect(r.x, r.y, r.width, r.height);
-        }
+        target.confine(&mut render_pass, blit.scissor);
         self.record_mask_sources_stencil(&mut render_pass, mask_sources, base_offset, 1, &mut None);
 
         render_pass.set_pipeline(self.shared.masks.masked_blit().get(blend_mode));
@@ -340,7 +326,7 @@ impl WgpuRenderer {
     ) -> bool {
         use crate::collect::DrawableInfo;
 
-        let (width, height) = (ctx.target.width, ctx.target.height);
+        let (width, height) = (ctx.target.width(), ctx.target.height());
         let DrawableInfo::Composite {
             node_id,
             blend_mode,
@@ -379,16 +365,9 @@ impl WgpuRenderer {
         let slot = ctx.composites.acquire(&self.shared, &self.device);
         // The slot's clear folds into its first drawing pass, or lands on its
         // own, so the blit never samples stale pool contents.
+        let slot_target = ctx.slot(&slot);
         self.render_to_target(
-            &mut ctx.with_target(
-                RenderTarget {
-                    view: &slot.view,
-                    texture: Some(&slot.texture),
-                    width,
-                    height,
-                },
-                &COMPOSITE_PASSES,
-            ),
+            &mut ctx.with_target(slot_target, &COMPOSITE_PASSES),
             Some(wgpu::Color::TRANSPARENT),
             children,
         );
@@ -411,10 +390,11 @@ impl WgpuRenderer {
                     wgpu::Color::TRANSPARENT,
                     "Masked Composite Source Clear",
                 );
+                let masked_target = ctx.slot(&masked);
                 self.blit_composite_with_masks(
                     ctx,
                     blit,
-                    &masked.view,
+                    masked_target,
                     BlendMode::Normal,
                     mask_sources,
                 );
@@ -436,11 +416,11 @@ impl WgpuRenderer {
                 } else {
                     None
                 };
-                let target_view = ctx.target.view;
+                let target = ctx.target;
                 self.blit_composite_with_masks(
                     ctx,
                     Blit { scissor, ..blit },
-                    target_view,
+                    target,
                     *blend_mode,
                     mask_sources,
                 );
@@ -465,13 +445,7 @@ impl WgpuRenderer {
         drawables: &[crate::collect::DrawableInfo],
     ) {
         if self.shared.has_stencil() {
-            let mut state = StencilPassState::new(
-                ctx.target.view,
-                &ctx.stencil.view,
-                clear_color,
-                ctx.labels.draw,
-                None,
-            );
+            let mut state = StencilPassState::new(ctx.target, clear_color, ctx.labels.draw, None);
             let mut sink = PartSink::Stencil(&mut state);
             self.render_drawables(ctx, &mut sink, drawables);
             self.end_sink_pass(ctx, &mut sink);
@@ -505,7 +479,7 @@ impl WgpuRenderer {
     ) {
         use crate::collect::DrawableInfo;
 
-        let (width, height) = (ctx.target.width, ctx.target.height);
+        let (width, height) = (ctx.target.width(), ctx.target.height());
         // Without a snapshot pool and a copyable target, dst-in-shader parts
         // draw OVER inside the part runs.
         let shader_blends = ctx.shader_blends();
@@ -565,16 +539,9 @@ impl WgpuRenderer {
                     let composite_mark = ctx.composites.mark();
                     let snapshot_mark = ctx.snapshots.as_ref().map(|s| s.mark());
                     let scratch = ctx.composites.acquire(&self.shared, &self.device);
+                    let scratch_target = ctx.slot(&scratch);
                     self.render_part_to_composite_slot(
-                        &mut ctx.with_target(
-                            RenderTarget {
-                                view: &scratch.view,
-                                texture: Some(&scratch.texture),
-                                width,
-                                height,
-                            },
-                            &SLOT_PASSES,
-                        ),
+                        &mut ctx.with_target(scratch_target, &SLOT_PASSES),
                         PreparedPartDraw {
                             draw: PartDraw {
                                 mesh_id: *mesh_id,

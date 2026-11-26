@@ -457,12 +457,7 @@ impl ApplicationHandler for App {
                     let (device, queue) = (renderer.device.clone(), renderer.queue.clone());
                     let mut done = renderer.frame().render(
                         &[&self.render_list],
-                        catchlight_wgpu::RenderTarget {
-                            view: &view,
-                            texture: Some(&frame.texture),
-                            width: w,
-                            height: h,
-                        },
+                        catchlight_wgpu::RenderTarget::copyable(&view),
                         &mut self.targets,
                         clear_color,
                     );

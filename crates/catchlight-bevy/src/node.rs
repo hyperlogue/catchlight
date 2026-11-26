@@ -61,10 +61,9 @@ pub(crate) fn catchlight_2d_pass(
     *size = (w, h);
 
     let encoder = render_context.command_encoder();
-    let color_view = target.main_texture_view();
     // bevy's default main-texture usages include COPY_SRC, which the
     // dst-in-shader blend modes need for framebuffer snapshots.
-    let color_texture: &wgpu::Texture = target.main_texture();
+    let color_target = catchlight_wgpu::RenderTarget::copyable(target.main_texture_view());
 
     // Entity tie-break: `puppets` is a HashMap, so equal z would flicker.
     let mut order: Vec<(ModelKey, f32, Entity)> = puppets
@@ -114,19 +113,9 @@ pub(crate) fn catchlight_2d_pass(
             submission,
             ..
         } = gpu;
-        if let Err(e) = renderer.render_into(
-            submission,
-            &lists,
-            encoder,
-            catchlight_wgpu::RenderTarget {
-                view: color_view,
-                texture: Some(color_texture),
-                width: w,
-                height: h,
-            },
-            targets,
-            None,
-        ) {
+        if let Err(e) =
+            renderer.render_into(submission, &lists, encoder, color_target, targets, None)
+        {
             tracing::error!("catchlight render error: {e}");
         }
     }

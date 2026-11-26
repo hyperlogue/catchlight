@@ -34,17 +34,7 @@ fn empty_render_list_still_clears_the_target() {
         let mut paint = |renderer: &mut WgpuRenderer, list: &RenderList, color: wgpu::Color| {
             renderer
                 .frame()
-                .render(
-                    &[list],
-                    RenderTarget {
-                        view: &view,
-                        texture: None,
-                        width: W,
-                        height: H,
-                    },
-                    &mut targets,
-                    Some(color),
-                )
+                .render(&[list], RenderTarget::new(&view), &mut targets, Some(color))
                 .submit();
         };
         let empty = RenderList::default();

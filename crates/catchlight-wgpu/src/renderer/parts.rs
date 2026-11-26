@@ -24,8 +24,7 @@ pub(super) struct PreparedMaskedPartDraw<'a> {
 /// punch 0) and its content tests Equal k; earlier batches' values are all
 /// < k, so no clear between batches is needed.
 pub(super) struct StencilPassState<'v> {
-    pub(super) view: &'v wgpu::TextureView,
-    pub(super) stencil_view: &'v wgpu::TextureView,
+    pub(super) target: Dest<'v>,
     pub(super) label: &'static str,
     pub(super) next_load: wgpu::LoadOp<wgpu::Color>,
     // Must be dropped before the encoder records anything else (wgpu
@@ -42,15 +41,13 @@ pub(super) struct StencilPassState<'v> {
 
 impl<'v> StencilPassState<'v> {
     pub(super) fn new(
-        view: &'v wgpu::TextureView,
-        stencil_view: &'v wgpu::TextureView,
+        target: Dest<'v>,
         clear_color: Option<wgpu::Color>,
         label: &'static str,
         scissor: Option<ScreenRect>,
     ) -> Self {
         Self {
-            view,
-            stencil_view,
+            target,
             label,
             next_load: match clear_color {
                 Some(color) => wgpu::LoadOp::Clear(color),
@@ -210,8 +207,9 @@ impl WgpuRenderer {
         clear: Option<wgpu::Color>,
         scissor: Option<ScreenRect>,
     ) -> bool {
+        let target = ctx.target;
         // `FrameTargets::prepare` builds the target to match the pipelines.
-        let Some(mask) = ctx.stencil.sampled.as_ref() else {
+        let Some(mask) = target.mask.sampled.as_ref() else {
             return false;
         };
         let Some((valid, base_offset, parts_base)) = self.prepare_masked_part_draws(draws) else {
@@ -219,8 +217,13 @@ impl WgpuRenderer {
         };
         let mask_sources = draws[0].mask_sources;
 
-        let label = ctx.labels.mask_write;
-        self.write_mask_sources(ctx, label, mask_sources, base_offset);
+        self.write_mask_sources(
+            ctx.encoder,
+            target,
+            ctx.labels.mask_write,
+            mask_sources,
+            base_offset,
+        );
 
         let load_op = clear.map_or(wgpu::LoadOp::Load, wgpu::LoadOp::Clear);
 
@@ -248,9 +251,7 @@ impl WgpuRenderer {
         render_pass.set_bind_group(3, mask, &[]);
         // Only the content draw is scissored; it samples the mask only inside the
         // rect.
-        if let Some(r) = scissor {
-            render_pass.set_scissor_rect(r.x, r.y, r.width, r.height);
-        }
+        target.confine(&mut render_pass, scissor);
         self.record_masked_part_draws(&mut render_pass, draws, &valid, parts_base, &mut None);
         drop(render_pass);
 
@@ -399,9 +400,7 @@ impl WgpuRenderer {
         );
 
         render_pass.set_bind_group(0, &self.camera_bind_group, &[self.camera_offset]);
-        if let Some(r) = scissor {
-            render_pass.set_scissor_rect(r.x, r.y, r.width, r.height);
-        }
+        ctx.target.confine(&mut render_pass, scissor);
         self.record_unmasked_part_draws(
             &mut render_pass,
             drawables,
@@ -432,7 +431,7 @@ impl WgpuRenderer {
                     label: Some(s.label),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                         depth_slice: None,
-                        view: s.view,
+                        view: s.target.view,
                         resolve_target: None,
                         ops: wgpu::Operations {
                             load: s.next_load,
@@ -440,7 +439,7 @@ impl WgpuRenderer {
                         },
                     })],
                     depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                        view: s.stencil_view,
+                        view: &s.target.mask.view,
                         depth_ops: None,
                         stencil_ops: Some(wgpu::Operations {
                             load: wgpu::LoadOp::Clear(0),
@@ -454,9 +453,7 @@ impl WgpuRenderer {
             )
             .forget_lifetime();
         pass.set_bind_group(0, &self.camera_bind_group, &[self.camera_offset]);
-        if let Some(r) = s.scissor {
-            pass.set_scissor_rect(r.x, r.y, r.width, r.height);
-        }
+        s.target.confine(&mut pass, s.scissor);
         s.next_load = wgpu::LoadOp::Load;
         s.next_ref = 1;
         s.bound_texture = None;
@@ -469,7 +466,12 @@ impl WgpuRenderer {
         let PartSink::Stencil(s) = sink else { return };
         s.pass = None;
         if let wgpu::LoadOp::Clear(color) = s.next_load {
-            self.explicit_clear_pass(ctx.encoder, s.view, color, "render_list deferred clear");
+            self.explicit_clear_pass(
+                ctx.encoder,
+                s.target.view,
+                color,
+                "render_list deferred clear",
+            );
             s.next_load = wgpu::LoadOp::Load;
         }
     }
@@ -577,7 +579,7 @@ impl WgpuRenderer {
     ) {
         use crate::collect::DrawableInfo;
 
-        let (width, height) = (ctx.target.width, ctx.target.height);
+        let (width, height) = (ctx.target.width(), ctx.target.height());
         let mut pending_parts = std::mem::take(&mut self.pending_parts_scratch);
         pending_parts.clear();
         let mut pending_masked: Vec<PreparedMaskedPartDraw> = Vec::new();

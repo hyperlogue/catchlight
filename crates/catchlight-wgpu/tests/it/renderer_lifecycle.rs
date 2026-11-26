@@ -70,12 +70,7 @@ impl Stage {
     }
 
     fn target(&self) -> RenderTarget<'_> {
-        RenderTarget {
-            view: &self.view,
-            texture: Some(&self.target),
-            width: W,
-            height: H,
-        }
+        RenderTarget::copyable(&self.view)
     }
 
     fn renderer(&self) -> WgpuRenderer {
@@ -640,12 +635,7 @@ fn two_views_in_one_submission_keep_their_own_draw_data() {
                     &mut submission,
                     &[&list],
                     &mut encoder,
-                    RenderTarget {
-                        view: &other_view,
-                        texture: Some(&other),
-                        width: W,
-                        height: H,
-                    },
+                    RenderTarget::copyable(&other_view),
                     &mut pool,
                     Some(CLEAR),
                 )

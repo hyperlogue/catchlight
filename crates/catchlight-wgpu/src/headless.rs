@@ -113,16 +113,12 @@ impl RenderContext {
         render_lists: &[&RenderList],
         clear: Option<wgpu::Color>,
     ) -> RenderStats {
-        let target = RenderTarget {
-            view: &self.view,
-            texture: Some(&self.target),
-            width: self.target.width(),
-            height: self.target.height(),
-        };
-        let done = self
-            .renderer
-            .frame()
-            .render(render_lists, target, &mut self.targets, clear);
+        let done = self.renderer.frame().render(
+            render_lists,
+            RenderTarget::copyable(&self.view),
+            &mut self.targets,
+            clear,
+        );
         let stats = done.stats();
         done.submit();
         stats

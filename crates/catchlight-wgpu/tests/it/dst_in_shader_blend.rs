@@ -8,7 +8,9 @@
 use crate::common;
 
 use catchlight_core::{BlendMode, Model, ModelComposite, ModelNodeKind};
-use catchlight_wgpu::{PrepareOptions, RenderCache, WgpuRenderer, collect};
+use catchlight_wgpu::{
+    PrepareOptions, RenderCache, RenderStats, RenderTarget, WgpuRenderer, collect,
+};
 
 const W: u32 = 8;
 const H: u32 = 8;
@@ -48,20 +50,33 @@ async fn render_blend(blend: BlendMode, bg_rgba_u8: [u8; 4], src_rgba_u8: [u8; 4
 /// What the frame is told about the texture behind its view.
 #[derive(Clone, Copy)]
 enum Snapshot {
-    /// The target itself, so dst-in-shader modes can copy it.
+    /// A copyable target, so dst-in-shader modes can copy it.
     Target,
     None,
-    /// A texture without `COPY_SRC`, which cannot be copied.
+    /// A copyable target whose texture lacks `COPY_SRC`; it cannot be read
+    /// back either.
     Uncopyable,
 }
 
 async fn render_model(model: Model, bg_rgba_u8: [u8; 4]) -> Vec<u8> {
-    render_model_with(model, bg_rgba_u8, Snapshot::Target).await
+    let (_, pixels) = render_model_with(model, bg_rgba_u8, Snapshot::Target).await;
+    pixels.expect("a copyable target reads back")
 }
 
-async fn render_model_with(model: Model, bg_rgba_u8: [u8; 4], snapshot: Snapshot) -> Vec<u8> {
+/// The frame's stats, and its pixels where the target can be read back.
+async fn render_model_with(
+    model: Model,
+    bg_rgba_u8: [u8; 4],
+    snapshot: Snapshot,
+) -> (RenderStats, Option<Vec<u8>>) {
     let (device, queue) = common::shared_context();
     let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+    let usage = match snapshot {
+        Snapshot::Target | Snapshot::None => {
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC
+        }
+        Snapshot::Uncopyable => wgpu::TextureUsages::RENDER_ATTACHMENT,
+    };
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("dst-in-shader-test target"),
         size: wgpu::Extent3d {
@@ -73,20 +88,10 @@ async fn render_model_with(model: Model, bg_rgba_u8: [u8; 4], snapshot: Snapshot
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        usage,
         view_formats: &[],
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    let uncopyable = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("dst-in-shader-test uncopyable"),
-        size: texture.size(),
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-        view_formats: &[],
-    });
 
     let mut renderer = WgpuRenderer::new(device, queue, format);
     let mut scene = common::Scene::new(&mut renderer, model);
@@ -104,28 +109,25 @@ async fn render_model_with(model: Model, bg_rgba_u8: [u8; 4], snapshot: Snapshot
         b: f64::from(srgb_to_linear(f32::from(bg_rgba_u8[2]) / 255.0)),
         a: f64::from(bg_rgba_u8[3]) / 255.0,
     };
-    renderer
+    let target = match snapshot {
+        Snapshot::Target | Snapshot::Uncopyable => RenderTarget::copyable(&view),
+        Snapshot::None => RenderTarget::new(&view),
+    };
+    let done = renderer
         .frame()
-        .render(
-            &[&render_list],
-            catchlight_wgpu::RenderTarget {
-                view: &view,
-                texture: match snapshot {
-                    Snapshot::Target => Some(&texture),
-                    Snapshot::None => None,
-                    Snapshot::Uncopyable => Some(&uncopyable),
-                },
-                width: W,
-                height: H,
-            },
-            &mut targets,
-            Some(clear),
-        )
-        .submit();
+        .render(&[&render_list], target, &mut targets, Some(clear));
+    let stats = done.stats();
+    done.submit();
 
-    catchlight_wgpu::read_texture_to_rgba(&renderer.device, &renderer.queue, &texture)
-        .await
-        .expect("readback")
+    let pixels = match snapshot {
+        Snapshot::Uncopyable => None,
+        Snapshot::Target | Snapshot::None => Some(
+            catchlight_wgpu::read_texture_to_rgba(&renderer.device, &renderer.queue, &texture)
+                .await
+                .expect("readback"),
+        ),
+    };
+    (stats, pixels)
 }
 
 fn make_nested_burn_model(pad_rgba: [u8; 4], src_rgba: [u8; 4]) -> Model {
@@ -348,12 +350,7 @@ fn overlay_with_normal_fallback_differs_from_overlay_with_snapshot() {
             .frame()
             .render(
                 &[&render_list],
-                catchlight_wgpu::RenderTarget {
-                    view: &view,
-                    texture: None,
-                    width: W,
-                    height: H,
-                },
+                RenderTarget::new(&view),
                 &mut targets,
                 Some(wgpu::Color {
                     r: f64::from(bg[0]) / 255.0,
@@ -391,11 +388,13 @@ fn an_uncopyable_target_texture_takes_the_normal_fallback() {
             snapshot,
         ))
     };
-    let uncopyable = render(Snapshot::Uncopyable);
-    assert_eq!(uncopyable, render(Snapshot::None));
-    assert_ne!(
-        uncopyable,
-        render(Snapshot::Target),
-        "the fallback is not the shader blend"
+    let (uncopyable, _) = render(Snapshot::Uncopyable);
+    let (fallback, fallback_pixels) = render(Snapshot::None);
+    let (shader, shader_pixels) = render(Snapshot::Target);
+    assert_eq!(
+        uncopyable, fallback,
+        "the frame records the Normal-OVER fallback"
     );
+    assert_ne!(uncopyable, shader, "the fallback is not the shader blend");
+    assert_ne!(fallback_pixels, shader_pixels);
 }

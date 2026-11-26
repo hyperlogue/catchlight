@@ -14,3 +14,4 @@ mod render_cache_gates;
 mod renderer_lifecycle;
 mod shared_cache_puppets;
 mod texture_reuse;
+mod viewport;

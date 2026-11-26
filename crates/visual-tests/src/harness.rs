@@ -195,12 +195,7 @@ impl HarnessInner {
                 .frame()
                 .render(
                     &[&render_list],
-                    RenderTarget {
-                        view: &view,
-                        texture: Some(&target),
-                        width,
-                        height,
-                    },
+                    RenderTarget::copyable(&view),
                     &mut targets,
                     (i == 0).then_some(CLEAR_COLOR),
                 )

@@ -56,7 +56,7 @@ impl WgpuRenderer {
     pub(super) fn prepare_composite_mask_textures(&mut self, ctx: &mut PassCtx<'_>) {
         use crate::collect::{DrawableInfo, MaskSourceData};
         let render_list = ctx.list;
-        let (width, height) = (ctx.target.width, ctx.target.height);
+        let (width, height) = (ctx.target.width(), ctx.target.height());
         self.composite_mask_textures.clear();
         if render_list
             .composite_mask_sources
@@ -190,9 +190,11 @@ impl WgpuRenderer {
 
     /// Sampled-mask path. Each source's instance must already be at
     /// `base_offset + i * size_of::<InstanceRaw>()`.
+    /// Into `target`'s mask, over the same viewport the masked draw covers.
     pub(super) fn write_mask_sources(
         &mut self,
-        ctx: &mut PassCtx<'_>,
+        encoder: &mut wgpu::CommandEncoder,
+        target: Dest<'_>,
         label: &str,
         mask_sources: &[crate::collect::MaskSourceData],
         base_offset: u64,
@@ -247,12 +249,12 @@ impl WgpuRenderer {
         };
 
         let mut render_pass = self.counted_begin_pass(
-            ctx.encoder,
+            encoder,
             &wgpu::RenderPassDescriptor {
                 label: Some(label),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     depth_slice: None,
-                    view: &ctx.stencil.view,
+                    view: &target.mask.view,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(alpha_clear),
@@ -266,6 +268,7 @@ impl WgpuRenderer {
             },
         );
 
+        target.confine(&mut render_pass, None);
         self.bind_pass_instances(&mut render_pass);
 
         let Some(masks) = self.shared.masks.sampled() else {

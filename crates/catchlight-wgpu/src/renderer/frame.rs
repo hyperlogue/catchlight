@@ -180,9 +180,26 @@ impl WgpuRenderer {
     ) -> RenderStats {
         use crate::collect::DrawableInfo;
 
-        let target = target.with_copyable_texture(self.shared.surface_format);
-        let (stencil, composites, snapshots) =
-            targets.prepare(&self.shared, &self.device, target.width, target.height);
+        let viewport = target.viewport();
+        let size = target.size();
+        let FrameScratch {
+            target_mask,
+            slot_mask,
+            composites,
+            snapshots,
+        } = targets.prepare(
+            &self.shared,
+            &self.device,
+            size,
+            (viewport.width, viewport.height),
+        );
+        let target = Dest {
+            view: target.view(),
+            texture: target.copy_source(self.shared.surface_format),
+            viewport,
+            partial: (viewport.width, viewport.height) != size,
+            mask: target_mask,
+        };
 
         let span = tracing::trace_span!(
             "render_lists",
@@ -254,7 +271,7 @@ impl WgpuRenderer {
             let mut ctx = PassCtx {
                 encoder: &mut *encoder,
                 list,
-                stencil,
+                slot_mask,
                 composites: &mut *composites,
                 snapshots: dst_in_shader_active.then_some(&mut *snapshots),
                 target,
@@ -343,7 +360,7 @@ impl WgpuRenderer {
             return None;
         }
         let shader_blends = ctx.shader_blends();
-        let (width, height) = (ctx.target.width, ctx.target.height);
+        let (width, height) = (ctx.target.width(), ctx.target.height());
         for c in children {
             let blocks_flattening = match c {
                 DrawableInfo::Composite { .. } => true,

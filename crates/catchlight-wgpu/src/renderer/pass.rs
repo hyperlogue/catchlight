@@ -30,34 +30,98 @@ pub(super) const SLOT_PASSES: PassLabels = PassLabels {
     fallback_clear: "Composite Slot Fallback Clear (dst-in-shader)",
 };
 
+/// A view a pass draws into, and the rectangle of it the frame covers.
+#[derive(Clone, Copy)]
+pub(super) struct Dest<'a> {
+    pub(super) view: &'a wgpu::TextureView,
+    /// Present when dst-in-shader blends may copy from the view.
+    pub(super) texture: Option<&'a wgpu::Texture>,
+    /// In the view's pixels. Composite slots are its size, and every bound
+    /// and scissor rect is in its pixels.
+    pub(super) viewport: ScreenRect,
+    /// Whether `viewport` leaves part of the view uncovered.
+    pub(super) partial: bool,
+    /// Sized to the view.
+    pub(super) mask: &'a StencilTarget,
+}
+
+impl Dest<'_> {
+    pub(super) fn width(&self) -> u32 {
+        self.viewport.width
+    }
+
+    pub(super) fn height(&self) -> u32 {
+        self.viewport.height
+    }
+
+    /// Confines `pass` to the viewport and, when given, to `scissor`.
+    pub(super) fn confine(&self, pass: &mut wgpu::RenderPass<'_>, scissor: Option<ScreenRect>) {
+        let v = self.viewport;
+        if self.partial {
+            pass.set_viewport(
+                v.x as f32,
+                v.y as f32,
+                v.width as f32,
+                v.height as f32,
+                0.0,
+                1.0,
+            );
+        }
+        match scissor {
+            Some(r) => pass.set_scissor_rect(v.x + r.x, v.y + r.y, r.width, r.height),
+            None if self.partial => pass.set_scissor_rect(v.x, v.y, v.width, v.height),
+            None => {}
+        }
+    }
+}
+
 /// One list's recording: the encoder, the frame's scratch targets and the
 /// target being drawn into. A composite draws its children through
 /// [`Self::with_target`] on its slot.
 pub(super) struct PassCtx<'a> {
     pub(super) encoder: &'a mut wgpu::CommandEncoder,
     pub(super) list: &'a crate::collect::RenderList,
-    pub(super) stencil: &'a StencilTarget,
+    /// The mask target composite slots draw with.
+    pub(super) slot_mask: &'a StencilTarget,
     pub(super) composites: &'a mut CompositePool,
     /// `None` when no dst-in-shader blend will read the target.
     pub(super) snapshots: Option<&'a mut FramebufferSnapshotPool>,
-    pub(super) target: RenderTarget<'a>,
+    pub(super) target: Dest<'a>,
     pub(super) labels: &'static PassLabels,
 }
 
 impl PassCtx<'_> {
     pub(super) fn with_target<'b>(
         &'b mut self,
-        target: RenderTarget<'b>,
+        target: Dest<'b>,
         labels: &'static PassLabels,
     ) -> PassCtx<'b> {
         PassCtx {
             encoder: &mut *self.encoder,
             list: self.list,
-            stencil: self.stencil,
+            slot_mask: self.slot_mask,
             composites: &mut *self.composites,
             snapshots: self.snapshots.as_deref_mut(),
             target,
             labels,
+        }
+    }
+
+    /// `slot` as a target: the viewport's size, at its origin.
+    pub(super) fn slot<'s>(&self, slot: &'s CompositeTexture) -> Dest<'s>
+    where
+        Self: 's,
+    {
+        Dest {
+            view: &slot.view,
+            texture: Some(&slot.texture),
+            viewport: ScreenRect {
+                x: 0,
+                y: 0,
+                ..self.target.viewport
+            },
+            partial: false,
+            mask: self.slot_mask,
         }
     }
 

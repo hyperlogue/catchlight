@@ -597,12 +597,7 @@ impl Inner {
         render.renderer.update_camera(view_proj);
         let mut done = render.renderer.frame().render(
             &[&self.list],
-            RenderTarget {
-                view: target_view,
-                texture: None,
-                width: rendered.0,
-                height: rendered.1,
-            },
+            RenderTarget::new(target_view),
             &mut self.targets,
             Some(CLEAR),
         );

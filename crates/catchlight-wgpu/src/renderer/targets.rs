@@ -320,52 +320,126 @@ impl StencilTarget {
             && self.texture.height() == height
             && self.sampled.is_some() != pipelines.has_stencil()
     }
+
+    fn ensure<'s>(
+        slot: &'s mut Option<Self>,
+        pipelines: &Pipelines,
+        device: &wgpu::Device,
+        (width, height): (u32, u32),
+    ) -> &'s Self {
+        if !slot
+            .as_ref()
+            .is_some_and(|mask| mask.fits(pipelines, width, height))
+        {
+            *slot = None;
+        }
+        slot.get_or_insert_with(|| Self::new(pipelines, device, width, height))
+    }
 }
 
-/// What a frame draws into.
+/// [`FrameTargets::prepare`]'s hand-out for one frame.
+pub(super) struct FrameScratch<'a> {
+    pub(super) target_mask: &'a StencilTarget,
+    pub(super) slot_mask: &'a StencilTarget,
+    pub(super) composites: &'a mut CompositePool,
+    pub(super) snapshots: &'a mut FramebufferSnapshotPool,
+}
+
+/// What a frame draws into: a view of a texture's first mip level, sized by
+/// that texture, and the rectangle of it the frame covers.
 #[derive(Clone, Copy)]
 pub struct RenderTarget<'a> {
-    pub view: &'a wgpu::TextureView,
-    /// The texture behind `view`; it must carry `COPY_SRC`. `Overlay`,
-    /// `ColorBurn` and `LinearBurn` read the destination through a copy of it
-    /// and fall back to Normal-OVER without it.
-    pub texture: Option<&'a wgpu::Texture>,
-    pub width: u32,
-    pub height: u32,
+    view: &'a wgpu::TextureView,
+    copyable: bool,
+    viewport: ScreenRect,
 }
 
-impl RenderTarget<'_> {
-    /// Drops a `texture` the snapshot copy cannot use, warning once, so a
-    /// host's mistake takes the documented fallback instead of failing
-    /// validation mid-frame. The format may differ in sRGB-ness only: a
-    /// surface renders through an sRGB view of its native format.
-    pub(super) fn with_copyable_texture(mut self, format: wgpu::TextureFormat) -> Self {
-        let Some(texture) = self.texture else {
-            return self;
+impl<'a> RenderTarget<'a> {
+    /// `Overlay`, `ColorBurn` and `LinearBurn` draw as Normal-OVER: nothing
+    /// reads the destination back.
+    pub fn new(view: &'a wgpu::TextureView) -> Self {
+        let texture = view.texture();
+        Self {
+            view,
+            copyable: false,
+            viewport: ScreenRect {
+                x: 0,
+                y: 0,
+                width: texture.width(),
+                height: texture.height(),
+            },
+        }
+    }
+
+    /// `Overlay`, `ColorBurn` and `LinearBurn` read the destination through a
+    /// copy of the view's texture, which must carry `COPY_SRC`.
+    pub fn copyable(view: &'a wgpu::TextureView) -> Self {
+        Self {
+            copyable: true,
+            ..Self::new(view)
+        }
+    }
+
+    /// Draws only inside the rectangle, given in the texture's pixels from its
+    /// top-left corner and clamped into it. A frame's clear still covers the
+    /// whole texture.
+    #[must_use]
+    pub fn with_viewport(mut self, x: u32, y: u32, width: u32, height: u32) -> Self {
+        let (target_width, target_height) = self.size();
+        let x = x.min(target_width - 1);
+        let y = y.min(target_height - 1);
+        self.viewport = ScreenRect {
+            x,
+            y,
+            width: width.clamp(1, target_width - x),
+            height: height.clamp(1, target_height - y),
         };
-        let copyable = texture.usage().contains(wgpu::TextureUsages::COPY_SRC)
-            && texture.format().remove_srgb_suffix() == format.remove_srgb_suffix()
-            && texture.width() == self.width
-            && texture.height() == self.height;
-        if !copyable {
+        self
+    }
+
+    pub(super) fn view(&self) -> &'a wgpu::TextureView {
+        self.view
+    }
+
+    pub(super) fn viewport(&self) -> ScreenRect {
+        self.viewport
+    }
+
+    pub(super) fn size(&self) -> (u32, u32) {
+        let texture = self.view.texture();
+        (texture.width(), texture.height())
+    }
+
+    /// The texture dst-in-shader blends copy from, if any. Drops one the
+    /// snapshot copy cannot use, warning once, so a host's mistake takes the
+    /// Normal-OVER fallback instead of failing validation mid-frame. The format
+    /// may differ in sRGB-ness only: a surface renders through an sRGB view of
+    /// its native format.
+    pub(super) fn copy_source(&self, format: wgpu::TextureFormat) -> Option<&'a wgpu::Texture> {
+        if !self.copyable {
+            return None;
+        }
+        let texture = self.view.texture();
+        let usable = texture.usage().contains(wgpu::TextureUsages::COPY_SRC)
+            && texture.format().remove_srgb_suffix() == format.remove_srgb_suffix();
+        if !usable {
             static UNUSABLE_WARNED: std::sync::Once = std::sync::Once::new();
             UNUSABLE_WARNED.call_once(|| {
                 tracing::warn!(
                     usage = ?texture.usage(),
                     format = ?texture.format(),
-                    size = ?(texture.width(), texture.height()),
-                    target = ?(format, self.width, self.height),
+                    pipelines = ?format,
                     "the render target's texture lacks COPY_SRC or does not match the \
-                     pipelines' format or the target size; treating it as absent",
+                     pipelines' format; Overlay, ColorBurn and LinearBurn draw as Normal-OVER",
                 );
             });
-            self.texture = None;
+            return None;
         }
-        self
+        Some(texture)
     }
 }
 
-/// The viewport-sized scratch one view draws through: its mask target,
+/// The viewport-sized scratch one view draws through: its mask targets,
 /// composite slots and framebuffer snapshots.
 ///
 /// Keep one per view and hand it to every frame of that view. It allocates on
@@ -374,7 +448,11 @@ impl RenderTarget<'_> {
 /// submit at different sizes.
 #[derive(Default)]
 pub struct FrameTargets {
+    /// Viewport-sized, for composite slots.
     mask: Option<StencilTarget>,
+    /// Target-sized, for a viewport smaller than its target; a mask attaches
+    /// beside a texture of its own size.
+    target_mask: Option<StencilTarget>,
     composites: CompositePool,
     snapshots: FramebufferSnapshotPool,
     /// Composite slots and snapshots are textures of this format.
@@ -386,37 +464,36 @@ impl FrameTargets {
         Self::default()
     }
 
+    /// The masks for the target and for composite slots, which are one and
+    /// the same unless the viewport is smaller than the target.
     pub(super) fn prepare(
         &mut self,
         pipelines: &Pipelines,
         device: &wgpu::Device,
-        width: u32,
-        height: u32,
-    ) -> (
-        &StencilTarget,
-        &mut CompositePool,
-        &mut FramebufferSnapshotPool,
-    ) {
-        let (width, height) = (width.max(1), height.max(1));
+        target: (u32, u32),
+        viewport: (u32, u32),
+    ) -> FrameScratch<'_> {
         if self.format != Some(pipelines.surface_format) {
             *self = Self {
                 format: Some(pipelines.surface_format),
                 ..Self::default()
             };
         }
-        self.composites.ensure_size(width, height);
-        self.snapshots.ensure_size(width, height);
-        if !self
-            .mask
-            .as_ref()
-            .is_some_and(|mask| mask.fits(pipelines, width, height))
-        {
-            self.mask = None;
+        self.composites.ensure_size(viewport.0, viewport.1);
+        self.snapshots.ensure_size(viewport.0, viewport.1);
+        let slot_mask = StencilTarget::ensure(&mut self.mask, pipelines, device, viewport);
+        let target_mask = if target == viewport {
+            self.target_mask = None;
+            slot_mask
+        } else {
+            StencilTarget::ensure(&mut self.target_mask, pipelines, device, target)
+        };
+        FrameScratch {
+            target_mask,
+            slot_mask,
+            composites: &mut self.composites,
+            snapshots: &mut self.snapshots,
         }
-        let mask = self
-            .mask
-            .get_or_insert_with(|| StencilTarget::new(pipelines, device, width, height));
-        (mask, &mut self.composites, &mut self.snapshots)
     }
 
     /// Composite slots allocated so far; they are reused across frames.
