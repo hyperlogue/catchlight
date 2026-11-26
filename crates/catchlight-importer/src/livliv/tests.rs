@@ -107,9 +107,33 @@ fn watermark_is_a_blocker_even_with_lossy_opt_in() {
         change(&mut files, |m| m["meta"]["watermark"] = mark);
         let package = Package::from_files(files).unwrap().validate().unwrap();
         assert!(package.report().blockers[0].contains("watermark"));
-        assert!(package.convert(Options { allow_lossy: true }).is_err());
+        assert!(matches!(
+            package.convert(Options { allow_lossy: true }),
+            Err(Error::Blocked(blockers)) if blockers[0].contains("watermark")
+        ));
     }
-    assert!(validated().convert(Options::default()).is_err());
+}
+
+#[test]
+fn every_conversion_requires_the_lossy_opt_in() {
+    let package = validated();
+    assert!(!package.report().losses.is_empty());
+    assert!(matches!(
+        package.convert(Options::default()),
+        Err(Error::LossyNotAllowed)
+    ));
+}
+
+#[test]
+fn missing_and_unsafe_resources_are_told_apart() {
+    let mut without = files();
+    without.remove("textures/c.png");
+    let missing = Package::from_files(without).unwrap().validate();
+    assert!(matches!(missing, Err(Error::MissingResource(name)) if name == "textures/c.png"));
+    let mut escaping = files();
+    escaping.insert("../a.png".into(), Vec::new());
+    let unsafe_path = Package::from_files(escaping);
+    assert!(matches!(unsafe_path, Err(Error::UnsafePath(name)) if name == "../a.png"));
 }
 
 #[test]

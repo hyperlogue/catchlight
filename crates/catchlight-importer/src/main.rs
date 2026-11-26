@@ -4,7 +4,7 @@
 //! only select a validator when no signature is recognized; they never bypass
 //! that format's validation. ZIP inputs must still contain a `LivLiv` package.
 use anyhow::{Context, Result, bail};
-use catchlight_importer::livliv::{Options, Package};
+use catchlight_importer::livliv::{self, Options, Package};
 use std::ffi::OsString;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -194,7 +194,12 @@ fn livliv(args: &Args, format: Format) -> Result<()> {
         Ok(converted) => converted,
         Err(error) => {
             write_report(&report, args.report.as_deref())?;
-            return Err(error.into());
+            return Err(match error {
+                livliv::Error::LossyNotAllowed => anyhow::anyhow!(
+                    "{error}; rerun with --allow-lossy to accept the losses the report lists"
+                ),
+                error => error.into(),
+            });
         }
     };
     write_report(&converted.report, args.report.as_deref())?;
@@ -212,7 +217,7 @@ fn write_model(args: &Args, model: &catchlight_core::Model) -> Result<()> {
     Ok(())
 }
 
-fn write_report(report: &catchlight_importer::livliv::Report, path: Option<&Path>) -> Result<()> {
+fn write_report(report: &livliv::Report, path: Option<&Path>) -> Result<()> {
     let json = serde_json::to_string_pretty(report)?;
     eprintln!("{json}");
     if let Some(path) = path {

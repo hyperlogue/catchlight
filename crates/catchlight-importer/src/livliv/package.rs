@@ -164,7 +164,7 @@ impl Package {
         self.files
             .get(name)
             .map(Vec::as_slice)
-            .ok_or_else(|| Error::Invalid(format!("missing resource: {name}")))
+            .ok_or_else(|| Error::MissingResource(name.to_owned()))
     }
 }
 
@@ -204,7 +204,7 @@ pub(super) fn safe_path(name: &str) -> Result<()> {
             .split('/')
             .any(|s| s.is_empty() || s == "." || s == "..")
     {
-        return Err(Error::Invalid(format!("unsafe package path: {name:?}")));
+        return Err(Error::UnsafePath(name.to_owned()));
     }
     Ok(())
 }

@@ -26,7 +26,8 @@ pub struct Report {
     pub baking: Option<bake::BakeSummary>,
 }
 
-/// Explicit acknowledgement is required for an approximate conversion.
+/// Explicit acknowledgement is required for an approximate conversion. Every
+/// conversion is approximate, so `allow_lossy` must always be set to convert.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Options {
     pub allow_lossy: bool,
@@ -101,16 +102,15 @@ impl ValidatedPackage {
     }
 
     /// Convert the supported subset. Refuse required rendering behavior rather
-    /// than issue a file that loses it. Other approximations require opt-in.
+    /// than issue a file that loses it. Pose tables always approximate the
+    /// `LivLiv` runtime, so every conversion requires the lossy opt-in.
     pub fn convert(&self, options: Options) -> Result<Conversion> {
         let mut report = self.report();
         if !report.blockers.is_empty() {
-            return Err(Error::Invalid(report.blockers.join("; ")));
+            return Err(Error::Blocked(report.blockers));
         }
-        if !options.allow_lossy && !report.losses.is_empty() {
-            return Err(Error::Invalid(
-                "conversion is lossy; inspect report() and explicitly set allow_lossy".into(),
-            ));
+        if !options.allow_lossy {
+            return Err(Error::LossyNotAllowed);
         }
         let mut file = ClmFile {
             doc: ClmStructure::default(),
@@ -176,7 +176,12 @@ impl ValidatedPackage {
                     } else {
                         let image = decode_image(bytes, path, (layer.w, layer.h))?;
                         let mut png = Cursor::new(Vec::new());
-                        image.write_to(&mut png, image::ImageFormat::Png)?;
+                        image
+                            .write_to(&mut png, image::ImageFormat::Png)
+                            .map_err(|source| Error::Image {
+                                name: (*path).to_owned(),
+                                source,
+                            })?;
                         png.into_inner()
                     };
                     file.textures.push(ClmTexture {

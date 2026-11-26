@@ -114,7 +114,9 @@ fn livliv_binary_inspects_and_exports_the_final_baking_report() {
     assert!(String::from_utf8_lossy(&result.stderr).contains("model.json"));
 
     assert!(!dir.0.join("source.clm").exists());
-    assert!(!dir.run(&["source"]).status.success());
+    let refused = dir.run(&["source"]);
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("rerun with --allow-lossy"));
     succeeded(&dir.run(&[
         "source",
         "--allow-lossy",

@@ -29,6 +29,18 @@ pub enum Error {
     Model(#[from] catchlight_core::model::ModelError),
     #[error("invalid converted id: {0}")]
     Id(#[from] catchlight_core::id::IdError),
+    /// The package needs behaviour Catchlight cannot reproduce; each entry is
+    /// one of [`Report::blockers`].
+    #[error("LivLiv conversion is blocked: {}", .0.join("; "))]
+    Blocked(Vec<String>),
+    /// Every conversion approximates the `LivLiv` runtime, so this is returned
+    /// whenever [`Options::allow_lossy`] is unset.
+    #[error("LivLiv conversion is always approximate and needs the lossy opt-in")]
+    LossyNotAllowed,
+    #[error("invalid LivLiv package: missing resource: {0}")]
+    MissingResource(String),
+    #[error("invalid LivLiv package: unsafe package path: {0:?}")]
+    UnsafePath(String),
     #[error("invalid LivLiv package: {0}")]
     Invalid(String),
     #[error("LivLiv IO on {}: {source}", path.display())]
@@ -41,8 +53,12 @@ pub enum Error {
     Zip(#[from] zip::result::ZipError),
     #[error("LivLiv JSON: {0}")]
     Json(#[from] serde_json::Error),
-    #[error("LivLiv image: {0}")]
-    Image(#[from] image::ImageError),
+    #[error("LivLiv image {name}: {source}")]
+    Image {
+        name: String,
+        #[source]
+        source: image::ImageError,
+    },
 }
 
 /// Validated manifest and encoded resources. Accessors do not permit mutation
@@ -268,7 +284,11 @@ fn reference(ids: &BTreeSet<&str>, id: &str, kind: &str) -> Result<()> {
 }
 
 fn decode_image(bytes: &[u8], name: &str, dims: (u32, u32)) -> Result<image::DynamicImage> {
-    let format = image::guess_format(bytes)?;
+    let image_error = |source| Error::Image {
+        name: name.to_owned(),
+        source,
+    };
+    let format = image::guess_format(bytes).map_err(image_error)?;
     let expected = if name.ends_with(".png") {
         image::ImageFormat::Png
     } else if name.ends_with(".webp") {
@@ -287,9 +307,7 @@ fn decode_image(bytes: &[u8], name: &str, dims: (u32, u32)) -> Result<image::Dyn
     limits.max_image_height = Some(dims.1);
     limits.max_alloc = Some(512 * 1024 * 1024);
     reader.limits(limits);
-    let image = reader
-        .decode()
-        .map_err(|e| Error::Invalid(format!("{name}: {e}")))?;
+    let image = reader.decode().map_err(image_error)?;
     if image.width() != dims.0 || image.height() != dims.1 {
         return Err(Error::Invalid(format!(
             "image dimensions disagree with layer: {name}"
