@@ -224,13 +224,18 @@ impl ReplicaState {
             .iter()
             .filter_map(|id| Some((id.clone(), self.model.texture(id)?.data.clone())))
             .collect();
+        let held = std::mem::take(&mut self.extension_bytes);
         self.extension_bytes = self
             .model
             .extensions()
             .iter()
             .filter_map(|(key, value)| {
                 let data = value.bytes()?;
-                Some((key.clone(), (extension_hash(data), data.clone())))
+                let hash = match held.get(key) {
+                    Some((hash, before)) if Arc::ptr_eq(before, data) => hash.clone(),
+                    _ => extension_hash(data),
+                };
+                Some((key.clone(), (hash, data.clone())))
             })
             .collect();
         // Eagerly: `node_idx` answers off the bake, and a caller may pose a node the
