@@ -1,7 +1,6 @@
 //! The editor's error and the wire code and limit each one answers with.
 
-use catchlight_core::formats::clm;
-use catchlight_core::{InstallError, LoadLimitError, ModelError, Required};
+use catchlight_core::{InstallError, LoadError, LoadLimitError, ModelError, Required};
 use catchlight_editor_core::{HistoryError, ManifestError, MeshError};
 use catchlight_editor_protocol::*;
 
@@ -55,6 +54,8 @@ pub enum EditorError {
     Mesh(#[from] MeshError),
     #[error("edit: {0}")]
     Edit(#[from] ModelError),
+    #[error("load: {0}")]
+    Load(#[from] LoadError),
     #[error("manifest: {0}")]
     Manifest(#[from] ManifestError),
     #[error("io: {0}")]
@@ -111,7 +112,8 @@ impl EditorError {
                 requested: *requested,
             }),
             Self::Mesh(MeshError::Limit(limit))
-            | Self::Manifest(ManifestError::LoadLimit(limit)) => Some(load_limit_info(limit)),
+            | Self::Manifest(ManifestError::LoadLimit(limit))
+            | Self::Load(LoadError::Limit(limit)) => Some(load_limit_info(limit)),
             Self::Edit(e) | Self::Manifest(ManifestError::Model(e)) => {
                 model_load_limit(e).map(load_limit_info)
             }
@@ -186,15 +188,14 @@ impl EditorError {
                 _ => ErrorCode::Edit,
             },
             Self::Edit(e) => model_error_code(e),
+            Self::Load(_) => ErrorCode::Edit,
         }
     }
 }
 
 fn model_load_limit(e: &ModelError) -> Option<&LoadLimitError> {
     match e {
-        ModelError::LoadLimit(limit) | ModelError::Clm(clm::ClmError::LoadLimit(limit)) => {
-            Some(limit)
-        }
+        ModelError::LoadLimit(limit) => Some(limit),
         _ => None,
     }
 }
@@ -260,5 +261,25 @@ mod tests {
         let info = error.limit_info().unwrap();
         assert_eq!(info.resource, limit.resource.name());
         assert_eq!((info.limit, info.requested), (4, 5));
+    }
+
+    #[test]
+    fn a_file_that_does_not_load_answers_as_an_edit_or_a_limit() {
+        let mut limits = catchlight_core::LoadLimits::default();
+        limits.nodes = 0;
+        let mut budget = catchlight_core::LoadBudget::new(limits);
+        let bytes = catchlight_core::Model::new().to_clm_bytes().unwrap();
+        let error = EditorError::from(
+            catchlight_core::Model::from_clm_bytes_with_budget(&bytes, &mut budget).unwrap_err(),
+        );
+        assert_eq!(error.code(), ErrorCode::LimitExceeded);
+        let info = error.limit_info().unwrap();
+        assert_eq!(info.resource, catchlight_core::LoadResource::Nodes.name());
+        assert_eq!((info.limit, info.requested), (0, 1));
+
+        let error =
+            EditorError::from(catchlight_core::Model::from_clm_bytes(b"not a model").unwrap_err());
+        assert_eq!(error.code(), ErrorCode::Edit);
+        assert!(error.limit_info().is_none());
     }
 }

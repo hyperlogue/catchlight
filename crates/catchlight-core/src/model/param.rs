@@ -57,7 +57,7 @@ impl Model {
             && let Err(error) = self.validate_responses()
         {
             self.params.remove(&id);
-            return Err(error);
+            return Err(error.into());
         }
         self.param_order.push(id);
         self.bump();

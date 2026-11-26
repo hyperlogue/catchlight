@@ -14,7 +14,7 @@ impl Model {
         &mut self,
         structure: &[u8],
         textures: impl Fn(&TexId) -> Option<ModelTexture>,
-    ) -> Result<(), ModelError> {
+    ) -> Result<(), LoadError> {
         self.replace_structure_with_budget(structure, textures, &mut LoadBudget::default())
     }
 
@@ -25,7 +25,7 @@ impl Model {
         structure: &[u8],
         textures: impl Fn(&TexId) -> Option<ModelTexture>,
         extension_bytes: impl Fn(&ExtensionKey) -> Option<Arc<[u8]>>,
-    ) -> Result<(), ModelError> {
+    ) -> Result<(), LoadError> {
         self.replace_structure_with_budget_and_extensions(
             structure,
             textures,
@@ -39,7 +39,7 @@ impl Model {
         structure: &[u8],
         textures: impl Fn(&TexId) -> Option<ModelTexture>,
         budget: &mut LoadBudget,
-    ) -> Result<(), ModelError> {
+    ) -> Result<(), LoadError> {
         self.replace_structure_with_budget_and_extensions(structure, textures, |_| None, budget)
     }
 
@@ -49,7 +49,7 @@ impl Model {
         textures: impl Fn(&TexId) -> Option<ModelTexture>,
         extension_bytes: impl Fn(&ExtensionKey) -> Option<Arc<[u8]>>,
         budget: &mut LoadBudget,
-    ) -> Result<(), ModelError> {
+    ) -> Result<(), LoadError> {
         let structure = clm::decode_structure_with_budget(structure, budget)?;
 
         let mut table = HashMap::with_capacity(structure.textures.len());
@@ -184,7 +184,7 @@ mod tests {
 
         assert!(matches!(
             err,
-            ModelError::InvalidClm(ClmLoadError::DanglingParent { .. })
+            LoadError::Invalid(ClmLoadError::DanglingParent { .. })
         ));
     }
 
@@ -200,7 +200,7 @@ mod tests {
 
         let wanted = server.texture_ids()[0].to_string();
         assert!(
-            matches!(&err, ModelError::InvalidClm(ClmLoadError::MissingTexture { id }) if *id == wanted),
+            matches!(&err, LoadError::Invalid(ClmLoadError::MissingTexture { id }) if *id == wanted),
             "got {err:?}",
         );
         assert_eq!(replica.to_clm_bytes().unwrap(), was);

@@ -35,7 +35,7 @@ pub use load_budget::{
 };
 pub use model::{
     BindingKey, BindingParams, BindingTarget, CheckWarning, DEFAULT_SLOT_WEIGHT, ExtensionValue,
-    ExtensionWarning, InstallError, Installed, Model, ModelBinding, ModelBindingValues,
+    ExtensionWarning, InstallError, Installed, LoadError, Model, ModelBinding, ModelBindingValues,
     ModelComposite, ModelError, ModelMask, ModelMesh, ModelMeshGroup, ModelNode, ModelNodeKind,
     ModelParam, ModelPart, ModelSpine, ModelTexture, ModelWeld, ModelWeldPair, NodeProperties,
     Pose, Required, Requirement, Requirements, ScalarTarget, Slot, SlotPair, SpineJointError,

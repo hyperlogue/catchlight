@@ -407,12 +407,12 @@ impl Model {
         key: &BindingKey,
         axes: &[Vec<f32>],
         zero_for: impl Fn(&ParamId) -> Option<f32>,
-    ) -> Result<[Option<usize>; 2], ModelError> {
+    ) -> Result<[Option<usize>; 2], ResponseFault> {
         let mut result = [None, None];
         for (axis, p) in key.params.iter().enumerate() {
             if let Some(z) = zero_for(p) {
                 result[axis] = Some(crate::interpolate::neutral_key(&axes[axis], z).ok_or_else(
-                    || ModelError::InvalidResponseBinding {
+                    || ResponseFault::Binding {
                         node: key.node.clone(),
                         target: key.target.name(),
                         reason: format!("output {p} needs a zero key at normalized position {z}"),
@@ -459,14 +459,14 @@ impl Model {
         Ok(())
     }
 
-    pub(super) fn validate_response_binding(&self, b: &ModelBinding) -> Result<(), ModelError> {
+    pub(super) fn validate_response_binding(&self, b: &ModelBinding) -> Result<(), ResponseFault> {
         Self::validate_response_binding_with(b, |p| self.response_zero(p))
     }
 
     pub(super) fn validate_response_binding_with(
         b: &ModelBinding,
         zero_for: impl Fn(&ParamId) -> Option<f32>,
-    ) -> Result<(), ModelError> {
+    ) -> Result<(), ResponseFault> {
         let zero = Self::zero_indices(&b.key, &b.key_positions, zero_for)?;
         // Fragment outputs may name base params; installation validates the
         // protected slice on the combined model.
@@ -496,7 +496,7 @@ impl Model {
                 .any(|c| !missing.remove(&[c.x, c.y]) || c.value != t.identity()),
         };
         if invalid || !missing.is_empty() {
-            return Err(ModelError::InvalidResponseBinding {
+            return Err(ResponseFault::Binding {
                 node: b.key.node.clone(),
                 target: b.key.target.name(),
                 reason: "every zero-lag cell must have an authored identity value".into(),

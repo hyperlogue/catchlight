@@ -6,7 +6,7 @@ use std::sync::Arc;
 use bevy::asset::io::Reader;
 use bevy::asset::{AssetLoader, LoadContext};
 use bevy::prelude::*;
-use catchlight_core::{Model, ModelError, ModelFormat};
+use catchlight_core::{LoadError, Model, ModelFormat};
 
 /// A loaded [`Model`], shared by every puppet animating it.
 #[derive(Asset, TypePath, Clone)]
@@ -96,5 +96,5 @@ pub enum ModelAssetError {
     #[error("not a catchlight model: the extension and the leading bytes name no known format")]
     UnknownFormat,
     #[error("could not parse the model: {0}")]
-    Parse(ModelError),
+    Parse(LoadError),
 }

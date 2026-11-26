@@ -13,7 +13,7 @@ use catchlight_core::formats::clm::{
     ClmError, ClmTextureRef, TextureAlpha, TextureEncoding, decode_structure, extension_hash,
 };
 use catchlight_core::{
-    BlendMode, ExtensionKey, Mat4, Model, ModelError, ModelTexture, NodeId, NodeKind, ParamId,
+    BlendMode, ExtensionKey, LoadError, Mat4, Model, ModelTexture, NodeId, NodeKind, ParamId,
     Puppet, ScratchTransform, TexId, Vec2, Vec3,
 };
 use catchlight_editor_protocol::{ErrorCode, Reply, Request, RequestId, SessionId};
@@ -188,7 +188,7 @@ impl ReplicaState {
     /// Rebuild the model from a structure-only container at `rev`, over the held
     /// payloads. `Ok(false)` when `rev` is not newer; on either refusal nothing is
     /// touched.
-    pub fn apply_structure(&mut self, structure: &[u8], rev: u64) -> Result<bool, ModelError> {
+    pub fn apply_structure(&mut self, structure: &[u8], rev: u64) -> Result<bool, LoadError> {
         if !self.accepts(rev) {
             return Ok(false);
         }

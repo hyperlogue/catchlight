@@ -26,7 +26,7 @@ type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("invalid converted model: {0}")]
-    Model(#[from] catchlight_core::model::ModelError),
+    Model(#[from] catchlight_core::model::LoadError),
     #[error("invalid converted id: {0}")]
     Id(#[from] catchlight_core::id::IdError),
     /// The package needs behaviour Catchlight cannot reproduce; each entry is

@@ -5,7 +5,7 @@ use std::path::Path;
 
 use catchlight_core::formats::clm::{self, ClmError, ClmFile, ClmStructure};
 use catchlight_core::formats::container::ContainerError;
-use catchlight_core::{Model, ModelError, ModelFormat};
+use catchlight_core::{LoadError, Model, ModelError, ModelFormat};
 
 use crate::Error;
 
@@ -28,9 +28,9 @@ fn is_bad_magic(error: &ClmError) -> bool {
     matches!(error, ClmError::Container(ContainerError::BadMagic))
 }
 
-pub(crate) fn not_a_model(path: &Path, bytes: &[u8], source: ModelError) -> Error {
+pub(crate) fn not_a_model(path: &Path, bytes: &[u8], source: LoadError) -> Error {
     match &source {
-        ModelError::Clm(clm) if is_bad_magic(clm) && is_git_lfs_pointer(bytes) => {
+        LoadError::Codec(clm) if is_bad_magic(clm) && is_git_lfs_pointer(bytes) => {
             Error::GitLfsPointer {
                 path: path.to_path_buf(),
             }
@@ -80,7 +80,7 @@ pub fn read(path: &Path) -> Result<ClmFile, Error> {
 pub fn encode(file: &ClmFile, path: &Path) -> Result<Vec<u8>, Error> {
     file.encode().map_err(|source| Error::Encode {
         path: path.to_path_buf(),
-        source: ModelError::from(source),
+        source: ModelError::Encode(source),
     })
 }
 

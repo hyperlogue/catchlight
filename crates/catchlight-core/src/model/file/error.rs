@@ -1,5 +1,62 @@
 //! Why a `.clm` file was refused.
 
+use crate::formats::clm::ClmError;
+use crate::id::NodeId;
+use crate::load_budget::LoadLimitError;
+use crate::model::ResponseFault;
+
+/// Why reading a model, a fragment or a structure push failed.
+#[derive(Debug, thiserror::Error)]
+pub enum LoadError {
+    #[error(".clm codec: {0}")]
+    Codec(#[source] ClmError),
+    #[error("invalid .clm: {0}")]
+    Invalid(#[source] ClmLoadError),
+    #[error(transparent)]
+    Limit(LoadLimitError),
+}
+
+impl From<ClmError> for LoadError {
+    /// A limit the codec trips is the same limit the reader trips.
+    fn from(error: ClmError) -> Self {
+        match error {
+            ClmError::LoadLimit(limit) => Self::Limit(limit),
+            other => Self::Codec(other),
+        }
+    }
+}
+
+impl From<ClmLoadError> for LoadError {
+    fn from(error: ClmLoadError) -> Self {
+        Self::Invalid(error)
+    }
+}
+
+impl From<LoadLimitError> for LoadError {
+    fn from(error: LoadLimitError) -> Self {
+        Self::Limit(error)
+    }
+}
+
+impl From<ResponseFault> for LoadError {
+    fn from(fault: ResponseFault) -> Self {
+        Self::Invalid(match fault {
+            ResponseFault::Response { node, reason } => {
+                ClmLoadError::InvalidResponse { node, reason }
+            }
+            ResponseFault::Binding {
+                node,
+                target,
+                reason,
+            } => ClmLoadError::InvalidResponseBinding {
+                node,
+                target,
+                reason,
+            },
+        })
+    }
+}
+
 /// Every variant names the Id that broke and the field that named it.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
@@ -146,4 +203,12 @@ pub enum ClmLoadError {
          applying the structure"
     )]
     MissingTexture { id: String },
+    #[error("invalid motion response {node}: {reason}")]
+    InvalidResponse { node: NodeId, reason: String },
+    #[error("{target} binding on {node}: {reason}")]
+    InvalidResponseBinding {
+        node: NodeId,
+        target: &'static str,
+        reason: String,
+    },
 }

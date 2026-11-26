@@ -351,9 +351,12 @@ fn invalid_file_reports_the_same_response_first_on_every_load() {
     }
     for _ in 0..32 {
         let err = Model::from_clm_file(&file).unwrap_err();
-        assert!(
-            matches!(err, catchlight_core::ModelError::InvalidResponse { node, .. } if node == nid("tip"))
-        );
+        assert!(matches!(
+            err,
+            catchlight_core::LoadError::Invalid(
+                catchlight_core::model::ClmLoadError::InvalidResponse { node, .. }
+            ) if node == nid("tip")
+        ));
     }
 }
 

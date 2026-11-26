@@ -13,7 +13,7 @@ mod replace;
 mod tests;
 mod write;
 
-pub use error::ClmLoadError;
+pub use error::{ClmLoadError, LoadError};
 
 use std::collections::{HashMap, HashSet};
 
@@ -31,24 +31,12 @@ use crate::load_budget::{
 
 use super::*;
 
-fn check_deform_cells(
-    node: &NodeId,
-    expected: usize,
-    values: &ClmBindingValues,
-) -> Result<(), ModelError> {
-    let Some(cells) = values.deform_cells() else {
-        return Ok(());
-    };
-    for cell in cells {
-        if cell.value.len() != expected {
-            return Err(ClmLoadError::DeformCellShape {
-                node: node.to_string(),
-                cell: [cell.x, cell.y],
-                got: cell.value.len(),
-                expected,
-            }
-            .into());
-        }
-    }
-    Ok(())
+/// The first deform cell, and its length, whose offsets do not fit a mesh of
+/// `expected` offsets.
+fn misfit_deform_cell(expected: usize, values: &ClmBindingValues) -> Option<([u32; 2], usize)> {
+    values
+        .deform_cells()?
+        .iter()
+        .find(|cell| cell.value.len() != expected)
+        .map(|cell| ([cell.x, cell.y], cell.value.len()))
 }

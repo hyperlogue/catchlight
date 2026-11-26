@@ -153,14 +153,14 @@ pub(super) fn part_named<'a>(file: &'a mut ClmFile, name: &str) -> &'a mut ClmPa
 
 pub(super) fn load_err(file: &ClmFile) -> ClmLoadError {
     match Model::from_clm_file(file) {
-        Err(ModelError::InvalidClm(e)) => e,
+        Err(LoadError::Invalid(e)) => e,
         other => panic!("expected a structured load error, got {other:?}"),
     }
 }
 
 pub(super) fn fragment_err(file: &ClmFile) -> ClmLoadError {
     match Model::from_clm_file_fragment(file) {
-        Err(ModelError::InvalidClm(e)) => e,
+        Err(LoadError::Invalid(e)) => e,
         other => panic!("expected a structured load error, got {other:?}"),
     }
 }

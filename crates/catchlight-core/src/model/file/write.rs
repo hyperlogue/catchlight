@@ -39,7 +39,10 @@ impl Model {
             }
         }
         for b in &self.bindings {
-            check_deform_cells(&b.key.node, self.deform_len(&b.key.node), &b.values)?;
+            let expected = self.deform_len(&b.key.node);
+            if let Some((_, got)) = misfit_deform_cell(expected, &b.values) {
+                return Err(ModelError::DeformLength { expected, got });
+            }
         }
         Ok(())
     }
@@ -162,12 +165,13 @@ impl Model {
                 data: &t.data,
             });
         }
-        Ok(clm::encode_borrowed(
+        clm::encode_borrowed(
             &doc,
             &textures,
             &self.extension_blobs(),
             &self.unknown_sections,
-        )?)
+        )
+        .map_err(ModelError::Encode)
     }
 
     /// A structure-only container: never touches a texture payload.
@@ -182,7 +186,7 @@ impl Model {
                 alpha: t.alpha,
             });
         }
-        Ok(clm::encode_structure(&doc, &textures)?)
+        clm::encode_structure(&doc, &textures).map_err(ModelError::Encode)
     }
 }
 
@@ -283,11 +287,10 @@ mod tests {
 
         assert!(matches!(
             m.to_clm_file(),
-            Err(ModelError::InvalidClm(ClmLoadError::DeformCellShape {
-                got: 2,
+            Err(ModelError::DeformLength {
                 expected: 8,
-                ..
-            }))
+                got: 2
+            })
         ));
     }
 

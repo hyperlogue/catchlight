@@ -48,7 +48,8 @@ pub fn generate(name: &str) -> Result<PathBuf> {
         extensions: Vec::new(),
         unknown_sections: Vec::new(),
     })
-    .and_then(|m| m.to_clm_bytes())
+    .context("reading the built fixture")?
+    .to_clm_bytes()
     .context("encoding .clm")?;
 
     let relative = Path::new("tests")

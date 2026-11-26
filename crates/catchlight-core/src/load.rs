@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use crate::formats::clm;
-use crate::model::{Model, ModelError};
+use crate::model::{LoadError, Model};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelFormat {
@@ -25,7 +25,7 @@ impl ModelFormat {
 }
 
 /// Textures stay source-encoded; a render cache decodes and downsamples them.
-pub fn load_model(bytes: &[u8], format: ModelFormat) -> Result<Model, ModelError> {
+pub fn load_model(bytes: &[u8], format: ModelFormat) -> Result<Model, LoadError> {
     match format {
         ModelFormat::Clm => Model::from_clm_bytes(bytes),
     }

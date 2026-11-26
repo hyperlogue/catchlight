@@ -11,7 +11,7 @@ use catchlight_core::formats::clm::{self, ClmError, ClmExtension, ClmStructure};
 use catchlight_core::formats::container::{self, Section};
 use catchlight_core::id::ExtensionKey;
 use catchlight_core::load_budget::charge_clm_structure;
-use catchlight_core::{LoadBudget, LoadLimitError, LoadLimits, LoadResource, Model, ModelError};
+use catchlight_core::{LoadBudget, LoadError, LoadLimitError, LoadLimits, LoadResource, Model};
 
 fn fixture(name: &str) -> Vec<u8> {
     let path: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -29,9 +29,9 @@ fn budget(set: impl FnOnce(&mut LoadLimits)) -> LoadBudget {
     LoadBudget::new(limits)
 }
 
-fn limit_error(err: ModelError) -> LoadLimitError {
+fn limit_error(err: LoadError) -> LoadLimitError {
     match err {
-        ModelError::LoadLimit(e) | ModelError::Clm(ClmError::LoadLimit(e)) => e,
+        LoadError::Limit(e) => e,
         other => panic!("expected a load limit, got {other:?}"),
     }
 }

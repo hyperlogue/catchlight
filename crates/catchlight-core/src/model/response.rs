@@ -14,6 +14,38 @@ pub(super) struct ResponseIndex {
     owners: HashMap<ParamId, NodeId>,
 }
 
+/// A motion response the rest of the model contradicts. An edit reports it as
+/// a [`ModelError`], a file as a [`super::ClmLoadError`].
+#[derive(Debug)]
+pub(super) enum ResponseFault {
+    Response {
+        node: NodeId,
+        reason: String,
+    },
+    Binding {
+        node: NodeId,
+        target: &'static str,
+        reason: String,
+    },
+}
+
+impl From<ResponseFault> for ModelError {
+    fn from(fault: ResponseFault) -> Self {
+        match fault {
+            ResponseFault::Response { node, reason } => Self::InvalidResponse { node, reason },
+            ResponseFault::Binding {
+                node,
+                target,
+                reason,
+            } => Self::InvalidResponseBinding {
+                node,
+                target,
+                reason,
+            },
+        }
+    }
+}
+
 /// Before committing a rename, both IDs resolve to the old declaration.
 fn declaration_id<'a, I: Eq>(id: &'a I, rename: Option<(&'a I, &I)>) -> &'a I {
     match rename {
@@ -107,7 +139,7 @@ impl Model {
         Ok(())
     }
 
-    pub(super) fn validate_responses(&self) -> Result<(), ModelError> {
+    pub(super) fn validate_responses(&self) -> Result<(), ResponseFault> {
         self.validate_response_rename(None, None)
     }
 
@@ -116,7 +148,7 @@ impl Model {
         &self,
         node_rename: Option<(&NodeId, &NodeId)>,
         param_rename: Option<(&ParamId, &ParamId)>,
-    ) -> Result<(), ModelError> {
+    ) -> Result<(), ResponseFault> {
         if self.response_count == 0 {
             return Ok(());
         }
@@ -139,7 +171,7 @@ impl Model {
             let ModelNodeKind::MotionResponse(r) = &node.kind else {
                 continue;
             };
-            let invalid = |reason: String| ModelError::InvalidResponse {
+            let invalid = |reason: String| ResponseFault::Response {
                 node: id.clone(),
                 reason,
             };
@@ -212,9 +244,9 @@ impl Model {
                 }
             }
         }
-        let check = |p: &ParamId, reason: &str| -> Result<(), ModelError> {
+        let check = |p: &ParamId, reason: &str| -> Result<(), ResponseFault> {
             if let Some(id) = owner(p) {
-                return Err(ModelError::InvalidResponse {
+                return Err(ResponseFault::Response {
                     node: id.clone(),
                     reason: format!("{p} {reason}"),
                 });

@@ -97,9 +97,8 @@ pub enum ModelError {
     #[error("mesh is malformed: {0}")]
     MalformedMesh(&'static str),
     #[error(".clm codec: {0}")]
-    Clm(#[from] clm::ClmError),
-    #[error("invalid .clm: {0}")]
-    InvalidClm(#[from] ClmLoadError),
+    Encode(#[source] clm::ClmError),
+    /// An edit that would make the model one no reader accepts.
     #[error(transparent)]
     LoadLimit(#[from] crate::LoadLimitError),
 }

@@ -373,38 +373,32 @@ pub(crate) fn albedo_of(node: &ModelNode) -> Option<&TexId> {
 
 /// Vertices come in pairs, uvs match them, every coordinate is finite, and
 /// the indices are whole triangles over existing vertices.
-pub(super) fn validate_mesh(mesh: &ClmMesh) -> Result<(), ModelError> {
+pub(super) fn validate_mesh(mesh: &ClmMesh) -> Result<(), &'static str> {
     if !mesh.verts.len().is_multiple_of(2) {
-        return Err(ModelError::MalformedMesh(
-            "vertex array is not [x, y] pairs",
-        ));
+        return Err("vertex array is not [x, y] pairs");
     }
     if !mesh.uvs.is_empty() && mesh.uvs.len() != mesh.verts.len() {
-        return Err(ModelError::MalformedMesh(
-            "uv count does not match vertices",
-        ));
+        return Err("uv count does not match vertices");
     }
     if mesh.verts.iter().any(|v| !v.is_finite()) {
-        return Err(ModelError::MalformedMesh("a vertex is not finite"));
+        return Err("a vertex is not finite");
     }
     if mesh.uvs.iter().any(|v| !v.is_finite()) {
-        return Err(ModelError::MalformedMesh("a uv is not finite"));
+        return Err("a uv is not finite");
     }
     if mesh.origin.iter().any(|v| !v.is_finite()) {
-        return Err(ModelError::MalformedMesh("the origin is not finite"));
+        return Err("the origin is not finite");
     }
     let (count, max_index) = match &mesh.indices {
         clm::ClmIndices::U16(v) => (v.len(), v.iter().map(|&i| i as usize).max()),
         clm::ClmIndices::U32(v) => (v.len(), v.iter().map(|&i| i as usize).max()),
     };
     if !count.is_multiple_of(3) {
-        return Err(ModelError::MalformedMesh(
-            "index count is not whole triangles",
-        ));
+        return Err("index count is not whole triangles");
     }
     let vcount = mesh.verts.len() / 2;
     if max_index.is_some_and(|m| m >= vcount) {
-        return Err(ModelError::MalformedMesh("index names a missing vertex"));
+        return Err("index names a missing vertex");
     }
     Ok(())
 }
@@ -457,7 +451,7 @@ impl Model {
             if let Err(error) = self.validate_responses() {
                 self.nodes.get_mut(id).ok_or(ModelError::UnknownNode)?.kind = previous;
                 self.response_index.take();
-                return Err(error);
+                return Err(error.into());
             }
         }
         self.bump();
@@ -521,7 +515,7 @@ impl Model {
         mesh: ClmMesh,
         mut refit: impl FnMut(&ClmMesh, &ClmMesh, &[f32]) -> Vec<f32>,
     ) -> Result<Vec<SlotId>, ModelError> {
-        validate_mesh(&mesh)?;
+        validate_mesh(&mesh).map_err(ModelError::MalformedMesh)?;
         let old = match self.nodes.get(id).and_then(ModelNode::mesh) {
             Some(m) => m.clone(),
             None => {

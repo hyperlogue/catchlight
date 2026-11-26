@@ -128,7 +128,7 @@ impl Model {
         mesh: ClmMesh,
         rows: &[Vec<VertexWeight>],
     ) -> Result<Vec<SlotId>, MeshMappingError> {
-        super::validate_mesh(&mesh)?;
+        super::validate_mesh(&mesh).map_err(ModelError::MalformedMesh)?;
         let old = self.node_mesh(node).ok_or_else(|| {
             if self.node(node).is_some() {
                 ModelError::NotMeshed

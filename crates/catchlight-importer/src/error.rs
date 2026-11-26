@@ -6,7 +6,7 @@ pub enum ImportError {
     InxContainer(#[from] InxParseError),
 
     #[error("invalid .clm file: {0}")]
-    Model(#[from] catchlight_core::model::ModelError),
+    Model(#[from] catchlight_core::model::LoadError),
 
     /// Unreachable today; carried rather than unwrapped because the minting
     /// rule and the Id charset live in different crates.

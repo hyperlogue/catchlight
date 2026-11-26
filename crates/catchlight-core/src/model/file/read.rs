@@ -26,7 +26,7 @@ pub(super) fn extensions_of(
     doc: &ClmStructure,
     bytes: impl Fn(&ExtensionKey, &ClmExtensionMarker) -> Result<Arc<[u8]>, clm::ClmError>,
     previous: Option<&Extensions>,
-) -> Result<Extensions, ModelError> {
+) -> Result<Extensions, LoadError> {
     let mut out = Extensions::default();
     for (key, value) in &doc.extensions {
         let value = match value {
@@ -65,51 +65,51 @@ pub(super) fn extensions_of(
 }
 
 impl Model {
-    pub fn from_clm_file(file: &ClmFile) -> Result<Self, ModelError> {
+    pub fn from_clm_file(file: &ClmFile) -> Result<Self, LoadError> {
         Self::from_clm_file_with_budget(file, &mut LoadBudget::default())
     }
 
     pub fn from_clm_file_with_budget(
         file: &ClmFile,
         budget: &mut LoadBudget,
-    ) -> Result<Self, ModelError> {
+    ) -> Result<Self, LoadError> {
         Self::read(file, budget, Shape::Base)
     }
 
-    pub fn from_clm_file_fragment(file: &ClmFile) -> Result<Self, ModelError> {
+    pub fn from_clm_file_fragment(file: &ClmFile) -> Result<Self, LoadError> {
         Self::from_clm_file_fragment_with_budget(file, &mut LoadBudget::default())
     }
 
     pub fn from_clm_file_fragment_with_budget(
         file: &ClmFile,
         budget: &mut LoadBudget,
-    ) -> Result<Self, ModelError> {
+    ) -> Result<Self, LoadError> {
         Self::read(file, budget, Shape::Fragment)
     }
 
-    pub fn from_clm_bytes(bytes: &[u8]) -> Result<Self, ModelError> {
+    pub fn from_clm_bytes(bytes: &[u8]) -> Result<Self, LoadError> {
         Self::from_clm_bytes_with_budget(bytes, &mut LoadBudget::default())
     }
 
     pub fn from_clm_bytes_with_budget(
         bytes: &[u8],
         budget: &mut LoadBudget,
-    ) -> Result<Self, ModelError> {
+    ) -> Result<Self, LoadError> {
         Self::read_bytes(bytes, budget, Shape::Base)
     }
 
-    pub fn from_clm_bytes_fragment(bytes: &[u8]) -> Result<Self, ModelError> {
+    pub fn from_clm_bytes_fragment(bytes: &[u8]) -> Result<Self, LoadError> {
         Self::from_clm_bytes_fragment_with_budget(bytes, &mut LoadBudget::default())
     }
 
     pub fn from_clm_bytes_fragment_with_budget(
         bytes: &[u8],
         budget: &mut LoadBudget,
-    ) -> Result<Self, ModelError> {
+    ) -> Result<Self, LoadError> {
         Self::read_bytes(bytes, budget, Shape::Fragment)
     }
 
-    fn read(file: &ClmFile, budget: &mut LoadBudget, shape: Shape) -> Result<Self, ModelError> {
+    fn read(file: &ClmFile, budget: &mut LoadBudget, shape: Shape) -> Result<Self, LoadError> {
         charge_clm_file(file, budget)?;
         let textures = file.textures.iter().map(|t| {
             let texture = ModelTexture {
@@ -128,7 +128,7 @@ impl Model {
 
     /// Decoding already charged the payloads, so only the texture count and
     /// the structure are charged here; charging again counts every byte twice.
-    fn read_bytes(bytes: &[u8], budget: &mut LoadBudget, shape: Shape) -> Result<Self, ModelError> {
+    fn read_bytes(bytes: &[u8], budget: &mut LoadBudget, shape: Shape) -> Result<Self, LoadError> {
         let file = clm::decode_borrowed(bytes, budget)?;
         charge_decoded_clm(&file.doc, file.textures.len(), budget)?;
         let textures = file.textures.into_iter().map(|t| {
@@ -150,7 +150,7 @@ impl Model {
         table: impl ExactSizeIterator<Item = (TexId, ModelTexture)>,
         blobs: &CheckedExtensions<B>,
         shape: Shape,
-    ) -> Result<Self, ModelError> {
+    ) -> Result<Self, LoadError> {
         let mut textures = HashMap::with_capacity(table.len());
         let mut texture_order = Vec::with_capacity(table.len());
         for (id, texture) in table {
@@ -183,7 +183,7 @@ impl Model {
         texture_order: Vec<TexId>,
         extensions: Extensions,
         shape: Shape,
-    ) -> Result<Self, ModelError> {
+    ) -> Result<Self, LoadError> {
         let mut params = HashMap::with_capacity(doc.params.len());
         let mut param_order = Vec::with_capacity(doc.params.len());
         for p in &doc.params {
@@ -399,7 +399,15 @@ impl Model {
                 }
             }
             let vertices = bound.mesh().map_or(0, |m| m.verts.len());
-            check_deform_cells(&b.node, vertices, &b.values)?;
+            if let Some((cell, got)) = misfit_deform_cell(vertices, &b.values) {
+                return Err(ClmLoadError::DeformCellShape {
+                    node: b.node.to_string(),
+                    cell,
+                    got,
+                    expected: vertices,
+                }
+                .into());
+            }
 
             let key_params = match b.params.as_slice() {
                 [x] => BindingParams::One(x.clone()),
@@ -421,7 +429,7 @@ impl Model {
             let width = b.key_positions[0].len();
             let height = b.key_positions.get(1).map_or(1, Vec::len);
             let mut occupied = HashSet::new();
-            let mut check = |x: u32, y: u32, finite: bool| -> Result<(), ModelError> {
+            let mut check = |x: u32, y: u32, finite: bool| -> Result<(), LoadError> {
                 let reason = if x as usize >= width || y as usize >= height {
                     Some("outside the binding grid")
                 } else if !occupied.insert((x, y)) {
@@ -517,15 +525,11 @@ fn clm_masks_of(kind: &ClmNodeKind) -> &[ClmMask] {
     }
 }
 
-fn check_mesh(id: &NodeId, mesh: &ClmMesh) -> Result<(), ModelError> {
-    match validate_mesh(mesh) {
-        Err(ModelError::MalformedMesh(reason)) => Err(ClmLoadError::MalformedMesh {
-            node: id.to_string(),
-            reason,
-        }
-        .into()),
-        other => other,
-    }
+fn check_mesh(id: &NodeId, mesh: &ClmMesh) -> Result<(), ClmLoadError> {
+    validate_mesh(mesh).map_err(|reason| ClmLoadError::MalformedMesh {
+        node: id.to_string(),
+        reason,
+    })
 }
 
 pub(super) fn bytes_missing(key: &ExtensionKey) -> clm::ClmError {
@@ -534,7 +538,7 @@ pub(super) fn bytes_missing(key: &ExtensionKey) -> clm::ClmError {
     }
 }
 
-pub(super) fn duplicate(kind: &'static str, id: &impl std::fmt::Display) -> ModelError {
+pub(super) fn duplicate(kind: &'static str, id: &impl std::fmt::Display) -> LoadError {
     ClmLoadError::DuplicateId {
         kind,
         id: id.to_string(),
@@ -550,7 +554,7 @@ fn model_kind(
     textures: &HashMap<TexId, ModelTexture>,
     params: &HashMap<ParamId, ModelParam>,
     shape: Shape,
-) -> Result<ModelNodeKind, ModelError> {
+) -> Result<ModelNodeKind, LoadError> {
     Ok(match kind {
         ClmNodeKind::Group => ModelNodeKind::Group,
         ClmNodeKind::Part(p) => {
@@ -604,7 +608,7 @@ fn model_spine(
     sp: &ClmSpine,
     params: &HashMap<ParamId, ModelParam>,
     shape: Shape,
-) -> Result<ModelSpine, ModelError> {
+) -> Result<ModelSpine, LoadError> {
     validate::spine_joints(&sp.joints).map_err(|fault| {
         let node = id.to_string();
         match fault {
@@ -645,7 +649,7 @@ fn model_masks(
     masks: &[ClmMask],
     declared: &HashSet<&NodeId>,
     shape: Shape,
-) -> Result<Vec<ModelMask>, ModelError> {
+) -> Result<Vec<ModelMask>, LoadError> {
     masks
         .iter()
         .map(|m| {
@@ -665,7 +669,7 @@ fn model_masks(
         .collect()
 }
 
-fn read_slots(id: &NodeId, part: &ClmPart) -> Result<(Vec<Slot>, SlotTable), ModelError> {
+fn read_slots(id: &NodeId, part: &ClmPart) -> Result<(Vec<Slot>, SlotTable), LoadError> {
     let vertices = part.mesh.vertex_count();
     let mut out: Vec<Slot> = Vec::with_capacity(part.slots.len());
     let mut seen = SlotTable::with_capacity(part.slots.len());
@@ -703,7 +707,7 @@ fn read_weld<'a>(
     nodes: &HashMap<NodeId, ModelNode>,
     welded: &mut validate::Welded<'a>,
     shape: Shape,
-) -> Result<ModelWeld, ModelError> {
+) -> Result<ModelWeld, LoadError> {
     validate::weld(
         &weld.a,
         &weld.b,

@@ -405,7 +405,7 @@ impl Model {
             }
             self.response_count -= addon.response_count;
             self.response_index.take();
-            return Err(e.into());
+            return Err(ModelError::from(e).into());
         }
         for r in &addon.roots {
             if let Some(parent) = addon.nodes.get(r).and_then(|n| n.parent.clone()) {

@@ -30,7 +30,7 @@ pub use correspondence::{DeformMapping, MAX_MAPPING_ENTRIES, MeshMappingError, V
 pub use error::ModelError;
 pub use eval::Pose;
 pub use extensions::ExtensionValue;
-pub use file::ClmLoadError;
+pub use file::{ClmLoadError, LoadError};
 pub use node::{
     ModelComposite, ModelMask, ModelMesh, ModelMeshGroup, ModelNode, ModelNodeKind, ModelPart,
     ModelSpine, NodeProperties,
@@ -42,6 +42,7 @@ pub use texture::ModelTexture;
 pub use validate::SpineJointError;
 
 use node::validate_mesh;
+use response::ResponseFault;
 
 use std::collections::{HashMap, HashSet};
 use std::ops::Deref;

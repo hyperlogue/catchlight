@@ -23,7 +23,7 @@ use std::path::PathBuf;
 
 use catchlight_core::formats::clm::ClmError;
 use catchlight_core::id::IdError;
-use catchlight_core::{InstallError, ModelError};
+use catchlight_core::{InstallError, LoadError, ModelError};
 
 /// `diff` uses 1 for "the two files differ", so every error is 2.
 pub const EXIT_ERROR: u8 = 2;
@@ -122,13 +122,13 @@ pub enum Error {
     NotAModel {
         path: PathBuf,
         #[source]
-        source: ModelError,
+        source: LoadError,
     },
     #[error("{} is an addon fragment that does not load: {source}", .path.display())]
     NotAFragment {
         path: PathBuf,
         #[source]
-        source: ModelError,
+        source: LoadError,
     },
     #[error("{} has no nodes at all, so it is neither a model nor an addon", .path.display())]
     Empty { path: PathBuf },
@@ -165,13 +165,13 @@ pub enum Error {
     PatchBreaksFile {
         path: PathBuf,
         #[source]
-        source: ModelError,
+        source: LoadError,
     },
     #[error("{} did not load before the patch either: {source}", .path.display())]
     AlreadyBroken {
         path: PathBuf,
         #[source]
-        source: ModelError,
+        source: LoadError,
     },
     #[error(
         "{} is not an image this format stores: its bytes carry no PNG or TGA signature and its \

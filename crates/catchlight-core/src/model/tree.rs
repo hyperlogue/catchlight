@@ -82,7 +82,7 @@ impl Model {
         validate::node_placement(node.z_order, &node.transform)?;
         validate::appearance(&node.kind)?;
         if let Some(mesh) = node.mesh() {
-            validate_mesh(mesh)?;
+            validate_mesh(mesh).map_err(ModelError::MalformedMesh)?;
         }
         if let ModelNodeKind::Spine(spine) = &node.kind {
             validate::spine_joints(spine.joints())?;
@@ -103,7 +103,7 @@ impl Model {
             self.response_count -= added;
             self.response_index.take();
             self.nodes.remove(&id);
-            return Err(error);
+            return Err(error.into());
         }
         self.attach_child(parent, id);
         self.bump();
@@ -423,15 +423,14 @@ mod tests {
     use crate::id::SeededHex;
     use crate::model::tests::*;
 
+    const TOO_DEEP: crate::LoadLimitError = crate::LoadLimitError {
+        resource: crate::LoadResource::TreeDepth,
+        limit: 256,
+        got: 257,
+    };
+
     fn too_deep(error: &ModelError) -> bool {
-        matches!(
-            error,
-            ModelError::LoadLimit(crate::LoadLimitError {
-                resource: crate::LoadResource::TreeDepth,
-                limit: 256,
-                got: 257,
-            })
-        )
+        matches!(error, ModelError::LoadLimit(limit) if *limit == TOO_DEEP)
     }
 
     /// The root and a chain `n2`..=`n{levels}` under it.
@@ -477,7 +476,11 @@ mod tests {
         over.parent = Some(id("n256"));
         file.doc.nodes.push(over);
         let got = Model::from_clm_file(&file);
-        assert!(got.as_ref().is_err_and(too_deep), "{:?}", got.err());
+        assert!(
+            matches!(&got, Err(LoadError::Limit(limit)) if *limit == TOO_DEEP),
+            "{:?}",
+            got.err()
+        );
 
         let mut addon = model.extract(&[id("side")]).to_clm_file().unwrap();
         addon.doc.nodes[0].parent = Some(id("n255"));

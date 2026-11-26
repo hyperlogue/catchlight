@@ -765,7 +765,7 @@ fn the_shared_aggregate_budget_applies() {
 
     assert!(matches!(
         err,
-        ModelError::LoadLimit(crate::LoadLimitError {
+        LoadError::Limit(crate::LoadLimitError {
             resource: LoadResource::Nodes,
             ..
         })

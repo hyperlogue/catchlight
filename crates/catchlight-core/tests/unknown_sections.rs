@@ -12,7 +12,7 @@ use std::sync::Arc;
 use catchlight_core::formats::clm::{self, ClmError, ClmUnknownSection};
 use catchlight_core::formats::container::{self, Section};
 use catchlight_core::id::SeededHex;
-use catchlight_core::{LoadBudget, LoadLimits, Model, ModelError, ModelNode, ModelNodeKind};
+use catchlight_core::{LoadBudget, LoadError, LoadLimits, Model, ModelNode, ModelNodeKind};
 
 const FUTURE: u32 = 77;
 const FURTHER: u32 = 1000;
@@ -271,7 +271,7 @@ fn a_known_section_kind_appears_once() {
         assert!(
             matches!(
                 Model::from_clm_bytes(&doubled),
-                Err(ModelError::Clm(ClmError::DuplicateSection(k))) if k == kind
+                Err(LoadError::Codec(ClmError::DuplicateSection(k))) if k == kind
             ),
             "kind {kind}"
         );
@@ -308,7 +308,7 @@ fn unknown_sections_are_charged_as_encoded_bytes() {
     Model::from_clm_file_with_budget(&file, &mut budget(payloads + 100)).unwrap();
     let err = Model::from_clm_file_with_budget(&file, &mut budget(payloads + 99)).unwrap_err();
     assert!(
-        matches!(&err, ModelError::LoadLimit(e) if e.resource == catchlight_core::LoadResource::EncodedBytes),
+        matches!(&err, LoadError::Limit(e) if e.resource == catchlight_core::LoadResource::EncodedBytes),
         "{err}"
     );
 }
