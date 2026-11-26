@@ -30,15 +30,10 @@ pub fn baseline_path(baselines_root: &Path, model_stem: &str, config_name: &str)
         .join(format!("{config_name}.png"))
 }
 
+/// Fixed at build time, so the binary finds the checkout from any working
+/// directory; the crate is never published.
 pub fn repo_root() -> PathBuf {
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").ok();
-    if let Some(m) = manifest {
-        let p = PathBuf::from(m);
-        if let Some(parent) = p.parent().and_then(|p| p.parent()) {
-            return parent.to_path_buf();
-        }
-    }
-    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
 pub fn baselines_root(repo_root: &Path) -> PathBuf {
