@@ -44,7 +44,11 @@ impl DecodedTexture {
     }
 }
 
+/// An empty image comes back unchanged.
 pub fn downsample_box_filter(src: &[u8], w: u32, h: u32) -> (u32, u32, Vec<u8>) {
+    if w == 0 || h == 0 {
+        return (w, h, src.to_vec());
+    }
     // Average in LINEAR space: averaging gamma-encoded bytes biases minified
     // texels dark. Alpha is stored linear, so it averages directly.
     let dw = (w / 2).max(1);
@@ -506,6 +510,13 @@ pub struct Mask {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn downsample_leaves_an_empty_image_empty() {
+        for (w, h) in [(0, 4), (4, 0), (0, 0)] {
+            assert_eq!(downsample_box_filter(&[], w, h), (w, h, Vec::new()));
+        }
+    }
 
     #[test]
     fn downsample_uniform_4x4_to_2x2_preserves_color() {
