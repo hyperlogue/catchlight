@@ -31,8 +31,10 @@ pub const EXIT_DIFFERS: u8 = 1;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("storage: {0}")]
-    Storage(String),
+    /// The per-element sizes are measured from the same encoding as the
+    /// whole structure, so this is a bug.
+    #[error("storage: element sizes exceed the structure")]
+    StorageOverattributed,
     #[error(
         "poses budget {budget}: requested {requested}, maximum {limit}; reduce key positions or model complexity"
     )]
@@ -41,8 +43,27 @@ pub enum Error {
         limit: u64,
         requested: u64,
     },
+    /// A render spec, flag or request this program refuses; the message says why.
     #[error("render: {0}")]
     Render(String),
+    #[error("render: {what}: {source}")]
+    RenderSpec {
+        what: &'static str,
+        #[source]
+        source: serde_json::Error,
+    },
+    #[error("render animation {name}: {source}")]
+    RenderAnimation {
+        name: String,
+        #[source]
+        source: Box<Self>,
+    },
+    #[error("render cancelled")]
+    Cancelled,
+    #[error("installing the Ctrl-C handler: {0}")]
+    CancellationHandler(#[source] ctrlc::Error),
+    #[error("evaluated geometry: {0}")]
+    Geometry(#[from] catchlight_core::geometry::GeometryError),
     #[error("render request {request}: {source}")]
     RenderRequest {
         request: String,
@@ -64,6 +85,12 @@ pub enum Error {
     },
     #[error("{} could not be started: {source}", .program.to_string_lossy())]
     Spawn {
+        program: std::ffi::OsString,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("waiting for {}: {source}", .program.to_string_lossy())]
+    Wait {
         program: std::ffi::OsString,
         #[source]
         source: std::io::Error,
@@ -169,12 +196,8 @@ pub enum Error {
         stage: &'static str,
         message: String,
     },
-    #[error("{} could not be written as a png: {source}", .path.display())]
-    Png {
-        path: PathBuf,
-        #[source]
-        source: image::ImageError,
-    },
+    #[error("PNG encoding: {0}")]
+    Png(#[source] image::ImageError),
     #[error("{} could not be encoded as cbor: {source}", .path.display())]
     Cbor {
         path: PathBuf,
@@ -198,6 +221,14 @@ pub enum Error {
         key: String,
         why: catchlight_core::extension::Unread,
     },
+    #[error("extension {key:?} cannot be read: {source}")]
+    Extension {
+        key: String,
+        #[source]
+        source: catchlight_core::extension::ExtensionError,
+    },
+    #[error("extension {key:?} {holds}, which this command does not write")]
+    Unwritable { key: String, holds: &'static str },
     #[error(
         "{} holds a plain value under {key:?} where this build expects the extension's \
          maintained data, so it cannot be edited here",

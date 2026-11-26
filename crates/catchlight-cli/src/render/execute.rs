@@ -46,11 +46,11 @@ impl Cancellation {
             }
             token.cancel();
         })
-        .map_err(|e| bad(format!("cancellation handler: {e}")))
+        .map_err(Error::CancellationHandler)
     }
     fn check(&self) -> Result<(), Error> {
         if self.is_cancelled() {
-            Err(bad("render cancelled"))
+            Err(Error::Cancelled)
         } else {
             Ok(())
         }
@@ -229,10 +229,9 @@ pub fn run(
                     if let Some(trace) = &mut trace {
                         let record = TraceFrame::observe(name, request, &model, &runtime)?;
                         serde_json::to_writer(trace.as_file_mut(), &record)
-                            .map_err(|e| bad(format!("trace encoding: {e}")))?;
-                        trace
-                            .write_all(b"\n")
-                            .map_err(|e| bad(format!("trace write: {e}")))?;
+                            .map_err(std::io::Error::from)
+                            .and_then(|()| trace.write_all(b"\n"))
+                            .map_err(|e| Error::io(trace.path(), e))?;
                     }
                     if request
                         .animation
@@ -272,7 +271,7 @@ pub fn run(
                         Destination::Terminal => {
                             if terminal::supported() {
                                 terminal::present(&png(&pixels, framing.size)?, std::io::stdout())
-                                    .map_err(|e| bad(format!("terminal image: {e}")))?;
+                                    .map_err(Error::Stdout)?;
                             } else {
                                 eprintln!(
                                     "Use --out image.png or --out-dir directory to save this render."

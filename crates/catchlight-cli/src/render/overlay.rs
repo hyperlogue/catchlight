@@ -23,9 +23,9 @@ pub fn draw(
             &neutral
         }
     };
-    let geometry = EvaluatedGeometry::new(model, observed).map_err(|e| bad(e.to_string()))?;
+    let geometry = EvaluatedGeometry::new(model, observed)?;
     for id in &overlay.parts {
-        let mesh = geometry.mesh(id).map_err(|e| bad(e.to_string()))?;
+        let mesh = geometry.mesh(id)?;
         let points = mesh
             .vertices()
             .map(|v| {

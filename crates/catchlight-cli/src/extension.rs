@@ -357,14 +357,16 @@ pub fn store<T: Extension>(file: &mut ClmFile, model: &Model) -> Result<(), Erro
         return Ok(());
     };
     let ExtensionValue::Maintained(raw) = value else {
-        return Err(Error::Storage(format!(
-            "extension {key:?} holds a plain value, which this command does not write"
-        )));
+        return Err(Error::Unwritable {
+            key: key.to_string(),
+            holds: "holds a plain value",
+        });
     };
     let Payload::Json(payload) = &raw.payload else {
-        return Err(Error::Storage(format!(
-            "extension {key:?} encodes a byte payload, which this command does not write"
-        )));
+        return Err(Error::Unwritable {
+            key: key.to_string(),
+            holds: "encodes a byte payload",
+        });
     };
     file.doc.extensions.insert(
         key,
@@ -388,7 +390,10 @@ pub fn unreadable<T: Extension>(error: ExtensionError, path: &Path) -> Error {
             path: path.to_path_buf(),
             key: T::KEY.to_string(),
         },
-        other => Error::Storage(format!("extension {:?}: {other}", T::KEY)),
+        source => Error::Extension {
+            key: T::KEY.to_string(),
+            source,
+        },
     }
 }
 

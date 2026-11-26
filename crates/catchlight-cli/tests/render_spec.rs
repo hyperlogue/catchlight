@@ -769,6 +769,39 @@ fn camera_and_video_validate_before_rendering() {
 }
 
 #[test]
+fn spec_errors_keep_their_sources() {
+    use std::error::Error as _;
+    let parse = |value: Value| {
+        Document::parse(&serde_json::to_vec(&value).unwrap())
+            .and_then(|d| d.resolve(&model()))
+            .unwrap_err()
+    };
+    let error = parse(json!({"schema":1,"requests":{"a":{"video":{"format":"avi"}}}}));
+    assert!(matches!(
+        error,
+        catchlight_cli::Error::RenderSpec {
+            what: "invalid render spec",
+            ..
+        }
+    ));
+    assert!(error.source().is_some_and(|s| s.is::<serde_json::Error>()));
+    let error = parse(json!({"schema":1,
+        "animations":{"a":{"timestep":0.1,"length":2,
+            "lanes":[{"param":"missing","interpolation":"Linear","keyframes":[{"frame":0,"value":1}]}]}},
+        "requests":{"r":{"animation":{"source":"spec","name":"a"}}}}));
+    assert!(matches!(&error, catchlight_cli::Error::RenderAnimation { name, .. } if name == "a"));
+    assert!(
+        error
+            .source()
+            .is_some_and(|s| s.to_string().contains("missing"))
+    );
+    assert!(matches!(
+        parse_set("not an id=1"),
+        Err(catchlight_cli::Error::BadId { .. })
+    ));
+}
+
+#[test]
 fn video_replaces_clean_frames_unless_kept() {
     let r = resolve(animated(
         json!({"frames":{"count":2},"video":{"format":"webm"},"geometry":["panel-a"]}),

@@ -1,6 +1,6 @@
 //! Bounded parsing that preserves duplicate-key errors at every nesting level.
 
-use super::{MAX_JSON_BYTES, bad, check_limit};
+use super::{MAX_JSON_BYTES, check_limit};
 use crate::Error;
 use serde::Deserialize;
 use std::io::Read;
@@ -28,9 +28,14 @@ pub fn decode_json<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, Er
         MAX_JSON_BYTES,
         "split the spec",
     )?;
-    let value: Unique =
-        serde_json::from_slice(bytes).map_err(|e| bad(format!("invalid JSON: {e}")))?;
-    serde_json::from_value(value.0).map_err(|e| bad(format!("invalid render spec: {e}")))
+    let value: Unique = serde_json::from_slice(bytes).map_err(|source| Error::RenderSpec {
+        what: "invalid JSON",
+        source,
+    })?;
+    serde_json::from_value(value.0).map_err(|source| Error::RenderSpec {
+        what: "invalid render spec",
+        source,
+    })
 }
 struct Unique(serde_json::Value);
 impl<'de> Deserialize<'de> for Unique {

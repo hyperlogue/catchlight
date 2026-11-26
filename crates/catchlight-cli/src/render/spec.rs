@@ -696,8 +696,10 @@ impl Document {
                 "split the spec",
             )?;
         }
-        let doc: Self =
-            serde_json::from_value(value).map_err(|e| bad(format!("invalid render spec: {e}")))?;
+        let doc: Self = serde_json::from_value(value).map_err(|source| Error::RenderSpec {
+            what: "invalid render spec",
+            source,
+        })?;
         if doc.schema != 1 {
             return Err(bad("unsupported render schema; expected 1"));
         }
@@ -768,8 +770,10 @@ impl Document {
         }
         for (name, clip) in &self.animations {
             validate_name(name)?;
-            animation::validate(model, &clip.0)
-                .map_err(|e| bad(format!("animation {name}: {e}")))?;
+            animation::validate(model, &clip.0).map_err(|source| Error::RenderAnimation {
+                name: name.clone(),
+                source: Box::new(source),
+            })?;
         }
         let inherited = self.resolve_inheritance()?;
         let mut out = ResolvedSpec {
@@ -1287,7 +1291,12 @@ pub fn validate_weights(
                 Expressions::KEY
             )));
         }
-        Err(e) => return Err(bad(format!("the model's {noun}s cannot be read: {e}"))),
+        Err(source) => {
+            return Err(Error::Extension {
+                key: Expressions::KEY.to_string(),
+                source,
+            });
+        }
     };
     for (name, weight) in weights {
         if !available.contains(group, name) {
@@ -1320,7 +1329,10 @@ pub fn parse_set(text: &str) -> Result<(ParamId, f32), Error> {
     let (id, value) = text
         .rsplit_once('=')
         .ok_or_else(|| bad("--set takes param=value"))?;
-    let id = ParamId::new(id).map_err(|e| bad(e.to_string()))?;
+    let id = ParamId::new(id).map_err(|source| Error::BadId {
+        value: id.to_string(),
+        source,
+    })?;
     let value = value
         .parse::<f32>()
         .map_err(|_| bad("--set takes a numeric value"))?;
@@ -1349,7 +1361,7 @@ fn encoded_len(value: &impl Serialize) -> Result<u64, Error> {
         }
     }
     let mut counter = Counter(0);
-    serde_json::to_writer(&mut counter, value).map_err(|e| bad(e.to_string()))?;
+    serde_json::to_writer(&mut counter, value)?;
     Ok(counter.0)
 }
 fn unit(v: f32) -> bool {
@@ -1364,7 +1376,12 @@ pub fn model_clip(model: &Model, name: &str) -> Result<Clip, Error> {
     let animations = match model.extension::<Animations>() {
         Ok(animations) => Some(animations),
         Err(ExtensionError::Missing) => None,
-        Err(e) => return Err(bad(format!("the model's animations cannot be read: {e}"))),
+        Err(source) => {
+            return Err(Error::Extension {
+                key: Animations::KEY.to_string(),
+                source,
+            });
+        }
     };
     animations
         .and_then(|a| a.clip(name))
@@ -1404,8 +1421,7 @@ pub fn schema(resolved: bool) -> Result<serde_json::Value, Error> {
     } else {
         let example = serde_json::from_str::<serde_json::Value>(include_str!(
             "../../tests/fixtures/render-spec.json"
-        ))
-        .map_err(|e| bad(format!("schema example: {e}")))?;
+        ))?;
         value["examples"] = serde_json::json!([example]);
     }
     Ok(value)

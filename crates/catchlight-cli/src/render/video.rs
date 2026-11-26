@@ -124,7 +124,10 @@ impl VideoSink {
 
     pub fn finish(mut self) -> Result<(), Error> {
         self.stdin = None;
-        let status = self.child.wait().map_err(|e| bad(format!("ffmpeg: {e}")))?;
+        let status = self.child.wait().map_err(|source| Error::Wait {
+            program: program(),
+            source,
+        })?;
         if !status.success() {
             return Err(self.failure());
         }

@@ -124,7 +124,12 @@ impl ImageArgs {
             .map(|names| {
                 names
                     .iter()
-                    .map(|id| NodeId::new(id).map_err(|e| spec::bad(e.to_string())))
+                    .map(|id| {
+                        NodeId::new(id).map_err(|source| Error::BadId {
+                            value: id.clone(),
+                            source,
+                        })
+                    })
                     .collect::<Result<Vec<_>, _>>()
             })
             .transpose()?;
@@ -137,7 +142,10 @@ impl ImageArgs {
             .strip_masks
             .iter()
             .map(|s| {
-                let id = NodeId::new(s).map_err(|e| spec::bad(e.to_string()))?;
+                let id = NodeId::new(s).map_err(|source| Error::BadId {
+                    value: s.clone(),
+                    source,
+                })?;
                 if !matches!(
                     model.node(&id).map(|n| &n.kind),
                     Some(ModelNodeKind::Part(_) | ModelNodeKind::Composite(_))
@@ -417,7 +425,7 @@ impl BoundsArgs {
         let mut runtime = super::frame::FrameRuntime::new(&loaded.model, &request)?;
         for _ in 0..frame {
             if cancel.is_cancelled() {
-                return Err(spec::bad("bounds cancelled"));
+                return Err(Error::Cancelled);
             }
             runtime.advance(&loaded.model);
         }

@@ -48,11 +48,10 @@ impl GeometryOutput {
         model: &Model,
         runtime: &FrameRuntime,
     ) -> Result<Self, Error> {
-        let geometry =
-            EvaluatedGeometry::new(model, &runtime.puppet).map_err(|e| bad(e.to_string()))?;
+        let geometry = EvaluatedGeometry::new(model, &runtime.puppet)?;
         let mut nodes = BTreeMap::new();
         for id in &request.geometry {
-            let mesh = geometry.mesh(id).map_err(|e| bad(e.to_string()))?;
+            let mesh = geometry.mesh(id)?;
             let mut output = MeshGeometry {
                 rest: Vec::new(),
                 local: Vec::new(),
@@ -239,8 +238,7 @@ impl BoundsOutput {
         model: &Model,
         runtime: &FrameRuntime,
     ) -> Result<Self, Error> {
-        let view =
-            EvaluatedGeometry::new(model, &runtime.puppet).map_err(|e| bad(e.to_string()))?;
+        let view = EvaluatedGeometry::new(model, &runtime.puppet)?;
         let mut parts = BTreeMap::new();
         let mut overall: Option<catchlight_core::geometry::Bounds2> = None;
         for id in model.nodes_in_order() {
@@ -250,11 +248,7 @@ impl BoundsOutput {
             ) {
                 continue;
             }
-            let bounds = view
-                .mesh(&id)
-                .map_err(|e| bad(e.to_string()))?
-                .world_bounds()
-                .map_err(|e| bad(e.to_string()))?;
+            let bounds = view.mesh(&id)?.world_bounds()?;
             let mut included = color_retained(request, &id);
             let mut node = model.node(&id);
             while let Some(n) = node {
@@ -424,35 +418,34 @@ pub(super) fn schema_example(kind: &str) -> Result<serde_json::Value, Error> {
         BindingKey, BindingTarget, ModelNode, ModelParam, ModelPart, Name, NodeId, ParamId,
         ScalarTarget,
     };
-    let fail = |e: &dyn std::fmt::Display| bad(format!("schema example: {e}"));
+    let bad_id = |value: &str, source| Error::BadId {
+        value: value.to_owned(),
+        source,
+    };
     let mut model = Model::new();
     let root = model
         .root()
         .cloned()
         .ok_or_else(|| bad("schema example has no root"))?;
-    let node = NodeId::new("panel-a").map_err(|e| fail(&e))?;
-    let param = ParamId::new("drive").map_err(|e| fail(&e))?;
-    model
-        .add_node_with_id(
-            node.clone(),
-            &root,
-            ModelNode::new(
-                "Panel",
-                ModelNodeKind::Part(ModelPart::new(ClmMesh {
-                    verts: vec![0.0, 0.0, 100.0, 0.0, 0.0, 100.0],
-                    uvs: vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0],
-                    indices: ClmIndices::U16(vec![0, 1, 2]),
-                    origin: [0.0, 0.0],
-                })),
-            ),
-        )
-        .map_err(|e| fail(&e))?;
-    model
-        .add_param_with_id(
-            param.clone(),
-            ModelParam::new(Name::truncated("Drive"), 0.0, 1.0, 0.0),
-        )
-        .map_err(|e| fail(&e))?;
+    let node = NodeId::new("panel-a").map_err(|e| bad_id("panel-a", e))?;
+    let param = ParamId::new("drive").map_err(|e| bad_id("drive", e))?;
+    model.add_node_with_id(
+        node.clone(),
+        &root,
+        ModelNode::new(
+            "Panel",
+            ModelNodeKind::Part(ModelPart::new(ClmMesh {
+                verts: vec![0.0, 0.0, 100.0, 0.0, 0.0, 100.0],
+                uvs: vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0],
+                indices: ClmIndices::U16(vec![0, 1, 2]),
+                origin: [0.0, 0.0],
+            })),
+        ),
+    )?;
+    model.add_param_with_id(
+        param.clone(),
+        ModelParam::new(Name::truncated("Drive"), 0.0, 1.0, 0.0),
+    )?;
     let sensor = catchlight_core::MotionResponse {
         inputs: vec![catchlight_core::ResponseInput {
             source: catchlight_core::ResponseSource::PoseParam {
@@ -462,20 +455,14 @@ pub(super) fn schema_example(kind: &str) -> Result<serde_json::Value, Error> {
         }],
         ..Default::default()
     };
-    model
-        .add_node_with_id(
-            NodeId::new("sensor").map_err(|e| fail(&e))?,
-            &root,
-            ModelNode::new("Sensor", ModelNodeKind::MotionResponse(sensor)),
-        )
-        .map_err(|e| fail(&e))?;
+    model.add_node_with_id(
+        NodeId::new("sensor").map_err(|e| bad_id("sensor", e))?,
+        &root,
+        ModelNode::new("Sensor", ModelNodeKind::MotionResponse(sensor)),
+    )?;
     let key = BindingKey::new(param, node, BindingTarget::Scalar(ScalarTarget::Tx));
-    model
-        .set_binding_key(&key, [0, 0], 0.0)
-        .map_err(|e| fail(&e))?;
-    model
-        .set_binding_key(&key, [1, 0], 12.0)
-        .map_err(|e| fail(&e))?;
+    model.set_binding_key(&key, [0, 0], 0.0)?;
+    model.set_binding_key(&key, [1, 0], 12.0)?;
     let authored = serde_json::json!({
         "schema":1,
         "requests":{
@@ -488,10 +475,10 @@ pub(super) fn schema_example(kind: &str) -> Result<serde_json::Value, Error> {
             "lanes":[{"param":"drive","interpolation":"Linear",
                 "keyframes":[{"frame":0,"value":0},{"frame":1,"value":1}]}]}}
     });
-    let spec_bytes = serde_json::to_vec(&authored).map_err(|e| fail(&e))?;
+    let spec_bytes = serde_json::to_vec(&authored)?;
     let plan = super::spec::Document::parse(&spec_bytes)?.resolve(&model)?;
     if kind == "resolved" {
-        return serde_json::to_value(plan).map_err(|e| fail(&e));
+        return Ok(serde_json::to_value(plan)?);
     }
     let detail = &plan.requests["detail"];
     let runtime = FrameRuntime::new(&model, detail)?;
@@ -510,9 +497,7 @@ pub(super) fn schema_example(kind: &str) -> Result<serde_json::Value, Error> {
             let mut manifest = RunManifest::new(
                 plan,
                 InputIdentity {
-                    model_sha256: super::execute::hash(
-                        &model.to_clm_bytes().map_err(|e| fail(&e))?,
-                    ),
+                    model_sha256: super::execute::hash(&model.to_clm_bytes()?),
                     spec_sha256: Some(super::execute::hash(&spec_bytes)),
                 },
             );
@@ -566,7 +551,7 @@ pub(super) fn schema_example(kind: &str) -> Result<serde_json::Value, Error> {
         }
         _ => return Err(bad("unknown output schema example")),
     }
-    .map_err(|e| fail(&e))
+    .map_err(Error::from)
 }
 
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), Error> {
@@ -584,6 +569,6 @@ pub fn png(pixels: &[u8], size: [u32; 2]) -> Result<Vec<u8>, Error> {
     let mut bytes = Vec::new();
     image::codecs::png::PngEncoder::new(&mut bytes)
         .write_image(pixels, size[0], size[1], image::ExtendedColorType::Rgba8)
-        .map_err(|e| bad(format!("PNG encoding: {e}")))?;
+        .map_err(Error::Png)?;
     Ok(bytes)
 }

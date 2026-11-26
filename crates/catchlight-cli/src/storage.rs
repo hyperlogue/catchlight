@@ -199,7 +199,7 @@ pub fn inspect(bytes: &[u8], path: &Path) -> Result<Report, Error> {
         "structure_overhead".into(),
         structure
             .checked_sub(attributed)
-            .ok_or_else(|| Error::Storage("element sizes exceed the structure".into()))?,
+            .ok_or(Error::StorageOverattributed)?,
     );
     let mut textures: Vec<_> = model
         .textures
