@@ -5,7 +5,7 @@ use catchlight_core::{
     Model, ModelNode, ModelNodeKind, ModelParam, MotionResponse, Name, NodeId, ParamId, Puppet,
     ResponseInput, ResponseSource,
 };
-use catchlight_extension_expressions::{Expression, Expressions, Setting, Weights};
+use catchlight_extension_expressions::{BlendScratch, Expression, Expressions, Setting, Weights};
 use catchlight_extension_humanoid::ControlValues;
 
 fn pid(s: &str) -> ParamId {
@@ -22,7 +22,12 @@ fn none() -> Weights {
 
 fn controls(expressions: &Expressions, w: &[(&str, f32)], start: &[(&str, f32)]) -> ControlValues {
     let mut controls: ControlValues = start.iter().copied().collect();
-    expressions.blend_controls(&weights(w), &none(), &mut controls);
+    expressions.blend_controls(
+        &weights(w),
+        &none(),
+        &mut controls,
+        &mut BlendScratch::default(),
+    );
     controls
 }
 
@@ -82,7 +87,7 @@ fn weights_clamp_to_zero_through_one_and_a_zero_weight_changes_nothing() {
     assert_eq!(w.get("aa"), Some(1.0));
     assert_eq!(w.get("uw"), Some(0.0));
     let mut c: ControlValues = std::iter::once(("mouth_open", 0.3)).collect();
-    visemes().blend_controls(&w, &none(), &mut c);
+    visemes().blend_controls(&w, &none(), &mut c, &mut BlendScratch::default());
     assert_eq!(c.get("mouth_open"), Some(1.0));
     assert_eq!(c.get("mouth_width"), Some(0.5));
 }
@@ -154,7 +159,12 @@ fn weepy() -> Expressions {
 fn param_settings_blend_from_the_posed_value_or_the_default() {
     let model = rig();
     let mut puppet = Puppet::new(&model);
-    weepy().blend_params(&weights(&[("sad", 0.5)]), &none(), &mut puppet);
+    weepy().blend_params(
+        &weights(&[("sad", 0.5)]),
+        &none(),
+        &mut puppet,
+        &mut BlendScratch::default(),
+    );
     assert_eq!(puppet.param_value_posed(&pid("tears")), Some(0.625));
 
     puppet.set_param_value(&pid("tears"), 0.5);
@@ -162,6 +172,7 @@ fn param_settings_blend_from_the_posed_value_or_the_default() {
         &weights(&[("sad", 0.25), ("dry", 0.75)]),
         &none(),
         &mut puppet,
+        &mut BlendScratch::default(),
     );
     assert_eq!(puppet.param_value_posed(&pid("tears")), Some(0.25));
 }
@@ -171,7 +182,12 @@ fn param_settings_skip_a_driven_param_and_leave_controls_alone() {
     let model = rig();
     let mut puppet = Puppet::new(&model);
     assert!(puppet.is_driven(&pid("sway")));
-    weepy().blend_params(&weights(&[("sad", 1.0)]), &none(), &mut puppet);
+    weepy().blend_params(
+        &weights(&[("sad", 1.0)]),
+        &none(),
+        &mut puppet,
+        &mut BlendScratch::default(),
+    );
     assert_eq!(puppet.param_value_posed(&pid("tears")), Some(1.0));
     assert_eq!(puppet.param_value_posed(&pid("sway")), None);
 
@@ -221,7 +237,12 @@ fn speaking() -> Expressions {
 fn visemes_blend_over_expressions_on_controls() {
     let blend = |aa: f32| {
         let mut c = ControlValues::new();
-        speaking().blend_controls(&weights(&[("happy", 1.0)]), &weights(&[("aa", aa)]), &mut c);
+        speaking().blend_controls(
+            &weights(&[("happy", 1.0)]),
+            &weights(&[("aa", aa)]),
+            &mut c,
+            &mut BlendScratch::default(),
+        );
         c
     };
     let full = blend(1.0);
@@ -246,6 +267,7 @@ fn visemes_blend_over_expressions_on_params() {
             &weights(&[("happy", 1.0)]),
             &weights(&[("aa", aa)]),
             &mut puppet,
+            &mut BlendScratch::default(),
         );
         puppet.param_value_posed(&pid("tears")).unwrap()
     };
@@ -255,18 +277,34 @@ fn visemes_blend_over_expressions_on_params() {
 
     // The viseme alone fades from the posed value.
     let mut puppet = Puppet::new(&model);
-    speaking().blend_params(&none(), &weights(&[("aa", 0.5)]), &mut puppet);
+    speaking().blend_params(
+        &none(),
+        &weights(&[("aa", 0.5)]),
+        &mut puppet,
+        &mut BlendScratch::default(),
+    );
     assert_eq!(puppet.param_value_posed(&pid("tears")), Some(0.625));
 }
 
 #[test]
 fn param_values_blend_from_the_base_given_and_leave_out_what_it_withholds() {
+    let mut scratch = BlendScratch::default();
     let values = speaking().param_values(
         &weights(&[("happy", 0.5)]),
         &weights(&[("aa", 0.5)]),
+        &mut scratch,
         |_| Some(0.0),
     );
     assert_eq!(values, [(pid("tears"), 0.25 + (1.0 - 0.25) * 0.5)]);
-    let values = speaking().param_values(&weights(&[("happy", 1.0)]), &none(), |_| None);
+    let values =
+        speaking().param_values(&weights(&[("happy", 1.0)]), &none(), &mut scratch, |_| None);
     assert!(values.is_empty());
+}
+
+#[test]
+fn copying_weights_over_others_leaves_exactly_the_source() {
+    let source = weights(&[("happy", 0.5), ("sad", 0.25)]);
+    let mut copy = weights(&[("happy", 1.0), ("angry", 0.75)]);
+    copy.clone_from(&source);
+    assert_eq!(copy, source);
 }

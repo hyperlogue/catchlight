@@ -10,21 +10,22 @@
 //!
 //! ```no_run
 //! # use catchlight_core::{Model, Puppet};
-//! # use catchlight_extension_expressions::{Expressions, Weights};
+//! # use catchlight_extension_expressions::{BlendScratch, Expressions, Weights};
 //! # use catchlight_extension_humanoid::{controls_from_arkit, Humanoid};
 //! # fn frame(model: &Model, puppet: &mut Puppet, tracking: impl Fn(&str) -> f32, dt: f32) {
 //! let mut controls = controls_from_arkit(tracking);
 //! let expressions: Weights = [("happy", 0.6)].into_iter().collect();
 //! let visemes: Weights = [("aa", 1.0)].into_iter().collect();
 //! let data = model.extension::<Expressions>().ok();
+//! let mut scratch = BlendScratch::default();
 //! if let Some(data) = data {
-//!     data.blend_controls(&expressions, &visemes, &mut controls);
+//!     data.blend_controls(&expressions, &visemes, &mut controls, &mut scratch);
 //! }
 //! if let Ok(humanoid) = model.extension::<Humanoid>() {
 //!     humanoid.pose(&controls, puppet);
 //! }
 //! if let Some(data) = data {
-//!     data.blend_params(&expressions, &visemes, puppet);
+//!     data.blend_params(&expressions, &visemes, puppet, &mut scratch);
 //! }
 //! puppet.tick(model, dt);
 //! # }
@@ -128,9 +129,32 @@ impl Expression {
 
 /// How strongly each member of one group plays, by name; a sparse map onto
 /// 0..1.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Default, PartialEq)]
 pub struct Weights {
     weights: BTreeMap<String, f32>,
+}
+
+impl Clone for Weights {
+    fn clone(&self) -> Self {
+        Self {
+            weights: self.weights.clone(),
+        }
+    }
+
+    /// Keeps the entries both hold, so copying the same names every frame
+    /// does not allocate.
+    fn clone_from(&mut self, source: &Self) {
+        self.weights
+            .retain(|name, _| source.weights.contains_key(name));
+        for (name, &weight) in &source.weights {
+            match self.weights.get_mut(name) {
+                Some(slot) => *slot = weight,
+                None => {
+                    self.weights.insert(name.clone(), weight);
+                }
+            }
+        }
+    }
 }
 
 impl Weights {
@@ -214,6 +238,21 @@ mod stored {
     pub(crate) struct Expression {
         pub(crate) name: String,
         pub(crate) settings: Vec<Setting>,
+        /// Whether each setting takes part in blending: its value is finite,
+        /// and no later setting has the same target.
+        #[serde(skip)]
+        pub(crate) playable: Vec<bool>,
+    }
+
+    impl Expression {
+        pub(crate) fn mark_playable(&mut self) {
+            let settings = &self.settings;
+            self.playable.clear();
+            self.playable
+                .extend(settings.iter().enumerate().map(|(i, s)| {
+                    s.value().is_finite() && !settings[i + 1..].iter().any(|t| t.same_target(s))
+                }));
+        }
     }
 
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -267,7 +306,7 @@ mod stored {
 /// Folds weighted values onto one target:
 /// `current + (sum(w * v) / W - current) * min(W, 1)` with `W = sum(w)`, so
 /// weights summing to 1 give exactly the weighted mix.
-#[derive(Default, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy)]
 struct Mix {
     weight: f32,
     sum: f32,
@@ -287,6 +326,19 @@ impl Mix {
             current + (target - current) * self.weight
         }
     }
+}
+
+/// Working space that blending reuses, so blending every frame allocates
+/// nothing once it has grown to fit the model.
+#[derive(Debug, Clone, Default)]
+pub struct BlendScratch {
+    /// Keyed by the member and setting index that first reached a control.
+    controls: Vec<((usize, usize), Mix)>,
+    params: Vec<(u32, Mix)>,
+    /// Each param's ref index and its value as blended so far, `None` when
+    /// the base withheld one.
+    blended: Vec<(u32, Option<f32>)>,
+    values: Vec<(ParamId, f32)>,
 }
 
 /// What [`Expressions::merge_addon`] added to each group.
@@ -361,6 +413,7 @@ impl Expressions {
                     }),
                 })
                 .collect(),
+            playable: Vec::new(),
         };
         let previous = match self.position(group, &stored.name) {
             Some(i) => {
@@ -392,13 +445,21 @@ impl Expressions {
         expressions: &Weights,
         visemes: &Weights,
         controls: &mut ControlValues,
+        scratch: &mut BlendScratch,
     ) {
         for (group, weights) in Group::ALL.into_iter().zip([expressions, visemes]) {
-            let mixes = self.mixes(group, weights, |s| match s {
-                stored::Setting::Control(s) => Some(s.control.as_str()),
-                stored::Setting::Param(_) => None,
-            });
-            for (name, mix) in mixes {
+            let name = |at| self.control_at(group, at);
+            self.mix(
+                group,
+                weights,
+                |at, s| matches!(s, stored::Setting::Control(_)).then_some(at),
+                |a, b| name(a) == name(b),
+                &mut scratch.controls,
+            );
+            for &(at, mix) in &scratch.controls {
+                let Some(name) = name(at) else {
+                    continue;
+                };
                 let current = controls.get(name).unwrap_or(0.0);
                 controls.set(name, mix.onto(current));
             }
@@ -408,8 +469,14 @@ impl Expressions {
     /// Blends the weighted param settings onto `puppet`, from each param's
     /// posed value or else its default: expressions, then visemes over them.
     /// A param a motion response drives is skipped.
-    pub fn blend_params(&self, expressions: &Weights, visemes: &Weights, puppet: &mut Puppet) {
-        let values = self.param_values(expressions, visemes, |param| {
+    pub fn blend_params(
+        &self,
+        expressions: &Weights,
+        visemes: &Weights,
+        puppet: &mut Puppet,
+        scratch: &mut BlendScratch,
+    ) {
+        let values = self.param_values(expressions, visemes, scratch, |param| {
             if puppet.is_driven(param) {
                 return None;
             }
@@ -421,26 +488,34 @@ impl Expressions {
             )
         });
         for (param, value) in values {
-            puppet.set_param_value(&param, value);
+            puppet.set_param_value(param, *value);
         }
     }
 
     /// The value each param the weighted param settings reach blends to, from
     /// the value `base` gives it, in two layers as [`Self::blend_params`]
     /// does. A param `base` gives no value for is left out.
-    pub fn param_values(
+    pub fn param_values<'s>(
         &self,
         expressions: &Weights,
         visemes: &Weights,
+        scratch: &'s mut BlendScratch,
         mut base: impl FnMut(&ParamId) -> Option<f32>,
-    ) -> Vec<(ParamId, f32)> {
-        let mut out: Vec<(u32, Option<f32>)> = Vec::new();
+    ) -> &'s [(ParamId, f32)] {
+        let out = &mut scratch.blended;
+        out.clear();
         for (group, weights) in Group::ALL.into_iter().zip([expressions, visemes]) {
-            let mixes = self.mixes(group, weights, |s| match s {
-                stored::Setting::Param(s) => Some(s.param),
-                stored::Setting::Control(_) => None,
-            });
-            for (index, mix) in mixes {
+            self.mix(
+                group,
+                weights,
+                |_, s| match s {
+                    stored::Setting::Param(s) => Some(s.param),
+                    stored::Setting::Control(_) => None,
+                },
+                |a, b| a == b,
+                &mut scratch.params,
+            );
+            for &(index, mix) in &scratch.params {
                 let at = match out.iter().position(|(i, _)| *i == index) {
                     Some(at) => at,
                     None => {
@@ -457,36 +532,44 @@ impl Expressions {
                 }
             }
         }
-        out.into_iter()
-            .filter_map(|(index, value)| match (&self.refs[index as usize], value) {
-                (IdRef::Param(param), Some(value)) => Some((param.clone(), value)),
-                _ => None,
-            })
-            .collect()
+        scratch.values.clear();
+        scratch
+            .values
+            .extend(out.iter().filter_map(|&(index, value)| {
+                match (&self.refs[index as usize], value) {
+                    (IdRef::Param(param), Some(value)) => Some((param.clone(), value)),
+                    _ => None,
+                }
+            }));
+        &scratch.values
     }
 
-    /// One mix per target the weighted members of `group` reach, in first-use
-    /// order. `key` names a setting's target, or `None` to skip it.
-    fn mixes<'a, K: PartialEq + 'a>(
-        &'a self,
+    /// Fills `mixes` with one mix per target the weighted members of `group`
+    /// reach, in first-use order. `key` names the target of the setting at a
+    /// member and setting index, or `None` to skip it, and `same` tells
+    /// whether two keys name one target.
+    fn mix<K: Copy>(
+        &self,
         group: Group,
-        weights: &'a Weights,
-        key: impl Fn(&'a stored::Setting) -> Option<K>,
-    ) -> Vec<(K, Mix)> {
-        let mut mixes: Vec<(K, Mix)> = Vec::new();
+        weights: &Weights,
+        key: impl Fn((usize, usize), &stored::Setting) -> Option<K>,
+        same: impl Fn(K, K) -> bool,
+        mixes: &mut Vec<(K, Mix)>,
+    ) {
+        mixes.clear();
         for (name, weight) in weights.iter().filter(|(_, w)| *w > 0.0) {
-            let Some(i) = self.position(group, name) else {
+            let Some(member) = self.position(group, name) else {
                 continue;
             };
-            let settings = &self.group(group)[i].settings;
-            for (i, setting) in settings.iter().enumerate() {
-                let Some(k) = key(setting) else {
-                    continue;
-                };
-                if !playable(settings, i) {
+            let expression = &self.group(group)[member];
+            for (i, setting) in expression.settings.iter().enumerate() {
+                if !expression.playable[i] {
                     continue;
                 }
-                let at = match mixes.iter().position(|(m, _)| *m == k) {
+                let Some(k) = key((member, i), setting) else {
+                    continue;
+                };
+                let at = match mixes.iter().position(|&(m, _)| same(m, k)) {
                     Some(at) => at,
                     None => {
                         mixes.push((k, Mix::default()));
@@ -496,7 +579,15 @@ impl Expressions {
                 mixes[at].1.add(weight, setting.value());
             }
         }
-        mixes
+    }
+
+    /// The control that the setting at a member and setting index of `group`
+    /// sets.
+    fn control_at(&self, group: Group, (member, setting): (usize, usize)) -> Option<&str> {
+        match &self.group(group)[member].settings[setting] {
+            stored::Setting::Control(s) => Some(&s.control),
+            stored::Setting::Param(_) => None,
+        }
     }
 
     fn group(&self, group: Group) -> &[stored::Expression] {
@@ -533,7 +624,7 @@ impl Expressions {
     }
 
     /// Keeps exactly the references some setting uses, in first-use order:
-    /// expressions first, then visemes.
+    /// expressions first, then visemes, and marks which settings play.
     fn compact(&mut self) {
         let old = std::mem::take(&mut self.refs);
         let mut at = HashMap::new();
@@ -546,6 +637,9 @@ impl Expressions {
             if let stored::Setting::Param(s) = setting {
                 s.param = renumber(&mut self.refs, &mut at, &old[s.param as usize]);
             }
+        }
+        for expression in self.groups.iter_mut().flatten() {
+            expression.mark_playable();
         }
     }
 
@@ -682,15 +776,6 @@ impl Expressions {
     }
 }
 
-/// Whether the setting at `i` takes part in blending: its value is finite,
-/// and no later setting in the expression has the same target.
-fn playable(settings: &[stored::Setting], i: usize) -> bool {
-    settings[i].value().is_finite()
-        && !settings[i + 1..]
-            .iter()
-            .any(|s| s.same_target(&settings[i]))
-}
-
 /// `r`'s index in `refs`, appending it on first use; `at` indexes `refs`.
 fn renumber(refs: &mut Vec<IdRef>, at: &mut HashMap<IdRef, u32>, r: &IdRef) -> u32 {
     *at.entry(r.clone()).or_insert_with(|| {
@@ -709,7 +794,7 @@ impl Extension for Expressions {
         };
         let stored: stored::Expressions =
             serde_json::from_value(value).map_err(DecodeError::new)?;
-        let groups = [stored.expressions, stored.visemes];
+        let mut groups = [stored.expressions, stored.visemes];
         for (group, members) in Group::ALL.into_iter().zip(&groups) {
             let noun = group.noun();
             for (i, expression) in members.iter().enumerate() {
@@ -735,6 +820,9 @@ impl Extension for Expressions {
                     }
                 }
             }
+        }
+        for expression in groups.iter_mut().flatten() {
+            expression.mark_playable();
         }
         Ok(Self {
             refs: raw.refs,

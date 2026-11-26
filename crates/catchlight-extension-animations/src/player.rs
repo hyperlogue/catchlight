@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use catchlight_core::{Model, ParamId, Puppet};
-use catchlight_extension_expressions::{Expressions, Weights};
+use catchlight_extension_expressions::{BlendScratch, Expressions, Weights};
 use catchlight_extension_humanoid::{ControlValues, Humanoid};
 
 use crate::sample::same_sample;
@@ -70,6 +70,30 @@ struct Blended {
     written: f32,
 }
 
+/// Working space an advance reuses, so playback allocates nothing once it
+/// has grown to fit the model.
+#[derive(Debug, Clone, Default)]
+struct Scratch {
+    /// The live inputs with the clip's lanes over them, when the clip or the
+    /// rig changes them.
+    controls: ControlValues,
+    expressions: Weights,
+    visemes: Weights,
+    pose: PoseScratch,
+}
+
+#[derive(Debug, Clone, Default)]
+struct PoseScratch {
+    /// Each param the mappings or param settings may write, with its value
+    /// before this frame wrote it.
+    before: Vec<(ParamId, Option<f32>)>,
+    /// Each param this frame blends, with the base it blends from.
+    bases: Vec<(ParamId, f32)>,
+    /// Last frame's [`AnimationPlayer::blended`].
+    previous: Vec<Blended>,
+    blend: BlendScratch,
+}
+
 /// Plays one clip at a time on a puppet, together with the live inputs.
 /// Cloning shares the clips.
 ///
@@ -95,6 +119,7 @@ pub struct AnimationPlayer {
     /// does not compound from frame to frame and a param returns to its base
     /// once nothing sets it.
     blended: Vec<Blended>,
+    scratch: Scratch,
 }
 
 impl AnimationPlayer {
@@ -240,30 +265,70 @@ impl AnimationPlayer {
         }
         let clips = Arc::clone(&self.clips);
         let (sample, cut) = self.step(&clips, puppet, dt);
+        let Self {
+            scratch, blended, ..
+        } = self;
 
-        let mut controls = inputs.controls.clone();
-        let mut expressions = inputs.expressions.clone();
-        let mut visemes = inputs.visemes.clone();
+        // The live inputs are copied only when something writes over them.
+        let lanes = sample.map_or(&[][..], |(clip, _)| clip.lanes.as_slice());
+        let mut own_controls = rig.expressions.is_some();
+        let (mut own_expressions, mut own_visemes) = (false, false);
+        for lane in lanes {
+            match lane.target {
+                LaneTarget::Param(_) => {}
+                LaneTarget::Control(_) => own_controls = true,
+                LaneTarget::Expression(_) => own_expressions = true,
+                LaneTarget::Viseme(_) => own_visemes = true,
+            }
+        }
+        if own_controls {
+            scratch.controls.clone_from(&inputs.controls);
+        }
+        if own_expressions {
+            scratch.expressions.clone_from(&inputs.expressions);
+        }
+        if own_visemes {
+            scratch.visemes.clone_from(&inputs.visemes);
+        }
         if let Some((clip, frame)) = sample {
             for lane in &clip.lanes {
-                let value = lane.value_at(frame);
                 match &lane.target {
                     LaneTarget::Param(_) => {}
-                    LaneTarget::Control(name) => controls.set(name, value),
-                    LaneTarget::Expression(name) => expressions.set(name, value),
-                    LaneTarget::Viseme(name) => visemes.set(name, value),
+                    LaneTarget::Control(name) => scratch.controls.set(name, lane.value_at(frame)),
+                    LaneTarget::Expression(name) => {
+                        scratch.expressions.set(name, lane.value_at(frame));
+                    }
+                    LaneTarget::Viseme(name) => scratch.visemes.set(name, lane.value_at(frame)),
                 }
             }
         }
-        // Each param the mappings or param settings may write, with its value
-        // before this frame wrote it.
-        let mut before: Vec<(ParamId, Option<f32>)> = Vec::new();
+        let expressions = if own_expressions {
+            &scratch.expressions
+        } else {
+            &inputs.expressions
+        };
+        let visemes = if own_visemes {
+            &scratch.visemes
+        } else {
+            &inputs.visemes
+        };
         if let Some(data) = rig.expressions {
-            data.blend_controls(&expressions, &visemes, &mut controls);
+            data.blend_controls(
+                expressions,
+                visemes,
+                &mut scratch.controls,
+                &mut scratch.pose.blend,
+            );
         }
-        self.pose(puppet, rig, &controls, &expressions, &visemes, &mut before);
+        let controls = if own_controls {
+            &scratch.controls
+        } else {
+            &inputs.controls
+        };
+        let pose = &mut scratch.pose;
+        Self::pose(blended, pose, puppet, rig, controls, expressions, visemes);
         let mut changed = false;
-        for (param, value) in &before {
+        for (param, value) in &pose.before {
             let now = puppet.param_value_posed(param);
             if now == *value {
                 continue;
@@ -386,17 +451,27 @@ impl AnimationPlayer {
     /// last frame left blends from last frame's base, and one that something
     /// else moved since blends from its new value. A param that a control
     /// maps onto blends from what the mapping wrote. A param neither sets any
-    /// more returns to its base. Adds each param written to `before`.
+    /// more returns to its base. Fills the scratch's `before` with each param
+    /// written.
     fn pose(
-        &mut self,
+        blended: &mut Vec<Blended>,
+        scratch: &mut PoseScratch,
         puppet: &mut Puppet,
         rig: Rig<'_>,
         controls: &ControlValues,
         expressions: &Weights,
         visemes: &Weights,
-        before: &mut Vec<(ParamId, Option<f32>)>,
     ) {
-        let previous = std::mem::take(&mut self.blended);
+        let PoseScratch {
+            before,
+            bases,
+            previous,
+            blend,
+        } = scratch;
+        std::mem::swap(blended, previous);
+        blended.clear();
+        before.clear();
+        bases.clear();
         let posed = |puppet: &Puppet, param: &ParamId| {
             puppet
                 .param_value_posed(param)
@@ -409,7 +484,6 @@ impl AnimationPlayer {
                 _ => current,
             })
         };
-        let mut bases: Vec<(ParamId, f32)> = Vec::new();
         if let Some(humanoid) = rig.humanoid {
             for (name, mapping) in humanoid.mappings() {
                 if controls.get(name).is_none()
@@ -430,7 +504,7 @@ impl AnimationPlayer {
         }
         let mapped = bases.len();
         let values = match rig.expressions {
-            Some(data) => data.param_values(expressions, visemes, |param| {
+            Some(data) => data.param_values(expressions, visemes, blend, |param| {
                 if puppet.is_driven(param) {
                     return None;
                 }
@@ -441,14 +515,14 @@ impl AnimationPlayer {
                 bases.push((param.clone(), base));
                 Some(base)
             }),
-            None => Vec::new(),
+            None => &[],
         };
         let note = |before: &mut Vec<(ParamId, Option<f32>)>, puppet: &Puppet, param: &ParamId| {
             if !before.iter().any(|(p, _)| p == param) {
                 before.push((param.clone(), puppet.param_value_posed(param)));
             }
         };
-        for b in &previous {
+        for b in previous.iter() {
             if bases.iter().any(|(p, _)| *p == b.param) || puppet.is_driven(&b.param) {
                 continue;
             }
@@ -458,12 +532,12 @@ impl AnimationPlayer {
             }
         }
         for (param, value) in values {
-            note(before, puppet, &param);
-            puppet.set_param_value(&param, value);
+            note(before, puppet, param);
+            puppet.set_param_value(param, *value);
         }
-        for (param, base) in bases {
+        for (param, base) in bases.drain(..) {
             if let Some(written) = posed(puppet, &param) {
-                self.blended.push(Blended {
+                blended.push(Blended {
                     param,
                     base,
                     written,

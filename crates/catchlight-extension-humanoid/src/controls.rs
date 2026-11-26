@@ -93,9 +93,32 @@ pub fn clamp_control(name: &str, value: f32) -> f32 {
 
 /// A sparse set of control values by name. A control without a value leaves
 /// its mapped param alone.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Default, PartialEq)]
 pub struct ControlValues {
     values: BTreeMap<Cow<'static, str>, f32>,
+}
+
+impl Clone for ControlValues {
+    fn clone(&self) -> Self {
+        Self {
+            values: self.values.clone(),
+        }
+    }
+
+    /// Keeps the entries both hold, so copying the same names every frame
+    /// does not allocate.
+    fn clone_from(&mut self, source: &Self) {
+        self.values
+            .retain(|name, _| source.values.contains_key(name));
+        for (name, &value) in &source.values {
+            match self.values.get_mut(name) {
+                Some(slot) => *slot = value,
+                None => {
+                    self.values.insert(name.clone(), value);
+                }
+            }
+        }
+    }
 }
 
 impl ControlValues {

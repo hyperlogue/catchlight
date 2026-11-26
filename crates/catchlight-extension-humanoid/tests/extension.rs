@@ -294,3 +294,15 @@ fn check_leaves_removed_params_to_the_core() {
     assert!(humanoid.mapping("mouth_open").is_none());
     assert!(humanoid.check(&rig()).is_empty());
 }
+
+#[test]
+fn copying_values_over_others_leaves_exactly_the_source() {
+    let source: ControlValues = [("mouth_open", 0.5), ("tail_wag", -0.25)]
+        .into_iter()
+        .collect();
+    let mut copy: ControlValues = [("mouth_open", 1.0), ("head_yaw", 0.75)]
+        .into_iter()
+        .collect();
+    copy.clone_from(&source);
+    assert_eq!(copy, source);
+}
