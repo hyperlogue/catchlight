@@ -474,6 +474,13 @@ speech takes the mouth while a sound plays and the expression returns
 between sounds.
 _Avoid_: mouth shape, phoneme (that's the sound, not its look)
 
+**Live input**:
+A value a program gives a puppet for a frame without storing it in the
+model: a control's value, or the weight of an expression or a viseme. Stage
+takes them from tracking and Studio from its sliders. While an animation
+plays, its lane on the same control, expression or viseme wins.
+_Avoid_: preview (that's a rendered image), tracking (that's one source)
+
 ### Editing
 
 **Studio**:

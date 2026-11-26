@@ -19,7 +19,7 @@ use catchlight_core::{
 };
 use catchlight_editor_protocol::{ErrorCode, Reply, Request, RequestId, SessionId};
 use catchlight_editor_server::{replica_reply, Editor};
-use catchlight_extension_animations::{AnimationPlayer, Animations, FrameInputs, Rig};
+use catchlight_extension_animations::{AnimationPlayer, Animations, LiveInputs, Rig};
 use catchlight_extension_expressions::Expressions;
 use catchlight_extension_humanoid::Humanoid;
 use serde::{Deserialize, Serialize};
@@ -41,9 +41,9 @@ pub struct Playing {
     pub frame: f32,
 }
 
-/// The preview inputs a replica poses its puppet with, by name.
+/// The live inputs a replica poses its puppet with, by name.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct PreviewInputs {
+pub struct LiveInputsJson {
     pub controls: BTreeMap<String, f32>,
     pub expressions: BTreeMap<String, f32>,
     pub visemes: BTreeMap<String, f32>,
@@ -51,7 +51,7 @@ pub struct PreviewInputs {
 
 /// One session's model and pose, in the tab. No GPU, so it tests natively.
 ///
-/// Preview inputs and the playing clip are the tab's own, like its pose:
+/// Live inputs and the playing clip are the tab's own, like its pose:
 /// never written to the model.
 pub struct ReplicaState {
     model: Model,
@@ -68,7 +68,7 @@ pub struct ReplicaState {
     /// caller framing at the same timestamp.
     moving: bool,
     player: AnimationPlayer,
-    inputs: FrameInputs,
+    inputs: LiveInputs,
 }
 
 impl Default for ReplicaState {
@@ -96,7 +96,7 @@ impl ReplicaState {
             last_frame_ms: None,
             moving: false,
             player: AnimationPlayer::default(),
-            inputs: FrameInputs::default(),
+            inputs: LiveInputs::default(),
         }
     }
 
@@ -269,7 +269,7 @@ impl ReplicaState {
             return false;
         }
         self.puppet.set_param_value(&id, value);
-        // The slider wins over a control previewed onto the same param.
+        // The slider wins over a live control mapped onto the same param.
         if let Ok(humanoid) = self.model.extension::<Humanoid>() {
             for control in humanoid.controls_for(&id) {
                 self.inputs.controls.remove(control);
@@ -278,7 +278,7 @@ impl ReplicaState {
         true
     }
 
-    /// Sets or, with `None`, clears one control's preview value, clamped to
+    /// Sets or, with `None`, clears one control's live value, clamped to
     /// the control's range. Applied at once, so reads that follow see it.
     pub fn set_control(&mut self, name: &str, value: Option<f32>) {
         match value {
@@ -290,7 +290,7 @@ impl ReplicaState {
         self.tick(0.0);
     }
 
-    /// Sets or clears one expression's preview weight, clamped to 0..1.
+    /// Sets or clears one expression's live weight, clamped to 0..1.
     pub fn set_expression_weight(&mut self, name: &str, weight: Option<f32>) {
         match weight {
             Some(weight) => self.inputs.expressions.set(name, weight),
@@ -301,7 +301,7 @@ impl ReplicaState {
         self.tick(0.0);
     }
 
-    /// Sets or clears one viseme's preview weight, clamped to 0..1.
+    /// Sets or clears one viseme's live weight, clamped to 0..1.
     pub fn set_viseme_weight(&mut self, name: &str, weight: Option<f32>) {
         match weight {
             Some(weight) => self.inputs.visemes.set(name, weight),
@@ -313,13 +313,13 @@ impl ReplicaState {
     }
 
     pub fn clear_inputs(&mut self) {
-        self.inputs = FrameInputs::default();
+        self.inputs = LiveInputs::default();
         self.tick(0.0);
     }
 
-    pub fn inputs(&self) -> PreviewInputs {
+    pub fn inputs(&self) -> LiveInputsJson {
         let inputs = &self.inputs;
-        PreviewInputs {
+        LiveInputsJson {
             controls: inputs.controls.iter().map(|(n, v)| (n.into(), v)).collect(),
             expressions: inputs
                 .expressions
@@ -515,7 +515,7 @@ impl ReplicaState {
     }
 
     /// Editing pauses motion responses in this tab and stops the playing
-    /// clip. Preview inputs stay.
+    /// clip. Live inputs stay.
     pub fn set_editing(&mut self, editing: bool) {
         self.puppet.set_motion_responses_enabled(!editing);
         if editing {
@@ -615,7 +615,7 @@ impl ReplicaState {
         Some([authored[0] + local.x, authored[1] + local.y, authored[2]])
     }
 
-    /// Evaluate one step of `dt` seconds: the preview inputs and the playing
+    /// Evaluate one step of `dt` seconds: the live inputs and the playing
     /// clip, then the puppet. Returns whether the puppet is still moving: a
     /// clip plays or a motion response has not settled. Viewports use
     /// [`Self::frame`] so two canvases do not step the puppet twice.
@@ -937,7 +937,7 @@ pub(crate) mod browser {
             self.inner.borrow().state.param_value(id)
         }
 
-        /// `undefined` clears the control's preview value.
+        /// `undefined` clears the control's live value.
         #[wasm_bindgen(js_name = setControl)]
         pub fn set_control(&self, name: &str, value: Option<f32>) {
             self.inner.borrow_mut().state.set_control(name, value);

@@ -21,7 +21,7 @@ import {
   useExtensionWarnings,
   useHumanoid,
   useOfficialCommand,
-  usePreviewInputs,
+  useLiveInputs,
   warningsOn,
 } from "./official.js";
 import { useParams } from "./replica.js";
@@ -39,14 +39,14 @@ interface Draft {
 type ControlRanges = ReadonlyMap<string, readonly [number, number]>;
 
 /**
- * The model's expressions and visemes: preview each at a weight, and author
- * them as lists of settings. Previewing is per tab and authors nothing.
+ * The model's expressions and visemes: try each at a live weight, and author
+ * them as lists of settings. A live weight is per tab and authors nothing.
  */
 export function ExpressionsPanel({ session, onError }: { session: Session; onError: ErrorHandler }) {
   const read = useExpressions(session);
   const humanoid = useHumanoid(session);
   const { warnings, params: warned } = useExtensionWarnings(session, EXPRESSIONS);
-  const inputs = usePreviewInputs(session);
+  const inputs = useLiveInputs(session);
   const command = useOfficialCommand(session, onError);
   const [naming, setNaming] = useState<ExpressionGroup>();
   const [draft, setDraft] = useState<Draft>();
@@ -224,7 +224,7 @@ function ExpressionList({
             data-catchlight-expression-row=""
             data-group={group}
             data-name={member.name}
-            data-previewing={weight !== undefined ? "" : undefined}
+            data-live={weight !== undefined ? "" : undefined}
             data-warned={warnings.length ? "" : undefined}
           >
             <span data-catchlight-expression-name="" title={member.name}>

@@ -87,9 +87,9 @@ next release is 0.3.0.
 - **Controls, Expressions and Animations tabs in the editor's dock.**
   Controls lists the 35 humanoid controls under Head, Body, Eyes, Brows,
   Cheeks and Mouth: pick a param to map one, edit its three stops, and
-  preview it with a slider that clears back to no value; a filter shows only
+  try it live with a slider that clears back to no value; a filter shows only
   the mapped ones. Expressions lists a model's expressions and visemes, each
-  previewed at a weight, added under a standard name or one of your own, and
+  tried at a live weight, added under a standard name or one of your own, and
   authored as rows of settings on controls or params; **Add standard
   visemes** asks whether to keep or replace the ones already there and says
   what it added, replaced and skipped. Animations plays one clip at a time
@@ -98,7 +98,7 @@ next release is 0.3.0.
   asks before keeping a control name outside the standard, and leaves data
   from a newer build alone. `@catchlight/react` exports the panels and the
   hooks under them, among them `useHumanoid`, `useExpressions`, `useClips`,
-  `usePreviewInputs`, `usePlayingClip` and `usePlayhead`.
+  `useLiveInputs`, `usePlayingClip` and `usePlayhead`.
 - **Rig controls and expressions in the editor.** The editor takes typed
   commands for the official extensions, each one undo step that refuses what
   the file CLI refuses: `humanoid_map`, `humanoid_unmap`, `expression_set`
@@ -114,14 +114,14 @@ next release is 0.3.0.
   Two error codes are new: `nonstandard_control`, answered by resending with
   `nonstandard`, and `extension_unread`, for official data written by a newer
   build or failing to decode.
-- **Preview controls, expressions, visemes and clips in the viewport.** A
-  `Session` poses its tab's puppet with preview inputs that are never written
+- **Live inputs and clips in the viewport.** A
+  `Session` poses its tab's puppet with live inputs that are never written
   to the model or shared through presence: `setControl`,
   `setExpressionWeight` and `setVisemeWeight` set or, given `undefined`,
   clear one value, `clearInputs` clears them all and `inputs()` reads them
   back. `play(clip)`, `stop()` and `playing()` play one of the model's clips
   and report its name, time and frame; the viewport keeps drawing while it
-  plays. Moving a param's slider drops the controls previewed onto it,
+  plays. Moving a param's slider drops the live controls mapped onto it,
   mesh and record modes stop the clip, and `useResetPose` clears the inputs
   too. The `clip_list` read, answered by a tab as well, lists each clip's
   timestep, length, lead-in, lead-out and what each lane drives with its
@@ -136,7 +136,7 @@ next release is 0.3.0.
   `extension_get` report the reference table itself rather than its length.
   `catchlight-editor extension list|get|set|delete` mirrors the file CLI's
   group, with the JSON value as `--value`; Python's `Client.extension_set`
-  and `extension_get` take and return a `Maintained`. The Metadata panel
+  and `extension_get` take and return a `Maintained`. The Extensions panel
   shows a maintained extension's version, references and payload, edits a
   vendor's payload keeping the rest, and only views an official one.
 - **Humanoid controls.** The official `catchlight.humanoid` extension

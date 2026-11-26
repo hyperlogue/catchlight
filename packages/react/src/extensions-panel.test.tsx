@@ -67,7 +67,7 @@ describe("the extensions panel", () => {
     expect(row(view.container, "acme.framing").querySelector("small")?.textContent).toBe(
       "Version 2, 2 references",
     );
-    expect(row(view.container, "acme.notes").querySelector("small")?.textContent).toBe("JSON metadata");
+    expect(row(view.container, "acme.notes").querySelector("small")?.textContent).toBe("JSON");
     await view.unmount();
   });
 
@@ -82,7 +82,7 @@ describe("the extensions panel", () => {
     await run(() => button(official, "View")!.click());
     const dialog = view.container.querySelector("dialog") as HTMLElement;
     expect(dialog.querySelector("textarea")?.readOnly).toBe(true);
-    expect(button(dialog, "Save metadata")).toBeUndefined();
+    expect(button(dialog, "Save extension")).toBeUndefined();
     expect(dialog.querySelector("ul[aria-label='References']")?.textContent).toBe("Param jaw");
     await view.unmount();
   });

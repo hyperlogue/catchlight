@@ -301,7 +301,7 @@ export function BindingsPanel({
   );
 }
 
-/** A preview sweep, never authored. Stopping restores the pre-playback value. */
+/** A sweep through the range, never authored. Stopping restores the pre-playback value. */
 export function usePoseSweep(session: Session | undefined, param: ParamId | undefined) {
   const [playing, setPlaying] = useState(false);
   useEffect(() => {

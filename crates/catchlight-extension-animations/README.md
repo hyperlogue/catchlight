@@ -13,14 +13,14 @@ cargo add catchlight-extension-animations
 
 ```rust,no_run
 use catchlight_core::{load_model, ModelFormat, Puppet};
-use catchlight_extension_animations::{AnimationPlayer, Animations, FrameInputs, Rig};
+use catchlight_extension_animations::{AnimationPlayer, Animations, LiveInputs, Rig};
 
 # fn main() -> Result<(), Box<dyn std::error::Error>> {
 let model = load_model(&std::fs::read("character.clm")?, ModelFormat::Clm)?;
 let mut puppet = Puppet::new(&model);
 let mut player = AnimationPlayer::new(model.extension::<Animations>()?.clips());
 player.play("Idle");
-let mut inputs = FrameInputs::default();
+let mut inputs = LiveInputs::default();
 inputs.expressions.set("happy", 0.5);
 player.advance_with(&mut puppet, 1.0 / 60.0, Rig::of(&model), &inputs);
 puppet.tick(&model, 1.0 / 60.0);

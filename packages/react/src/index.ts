@@ -173,7 +173,7 @@ export {
   useExpressions,
   useClips,
   useExtensionWarnings,
-  usePreviewInputs,
+  useLiveInputs,
   usePlayingClip,
   usePlayhead,
   ExtensionWarnings,

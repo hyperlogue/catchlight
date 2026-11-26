@@ -202,7 +202,7 @@ export async function studio(
       .press("Enter");
     assert.equal((await read()).revision, before);
     await page
-      .getByRole("button", { name: "Preview sweep", exact: true })
+      .getByRole("button", { name: "Play sweep", exact: true })
       .click();
     await page.waitForTimeout(180);
     await page.getByRole("button", { name: "Stop sweep", exact: true }).click();
@@ -358,9 +358,9 @@ export async function studio(
     await change(rev);
     assert((await read((await read("neck")).info!.parent!)).info!.spine!.joints.length);
     await right.getByRole("button", { name: "Model", exact: true }).click();
-    await disclosure("Metadata");
+    await disclosure("Extensions");
     await page
-      .getByRole("button", { name: "Add metadata", exact: true })
+      .getByRole("button", { name: "Add extension", exact: true })
       .click();
     await page
       .getByRole("textbox", { name: "Key", exact: true })
@@ -370,7 +370,7 @@ export async function studio(
       .fill('{"note":"A little explorer"}');
     rev = (await read()).revision;
     await page
-      .getByRole("button", { name: "Save metadata", exact: true })
+      .getByRole("button", { name: "Save extension", exact: true })
       .click();
     await page.getByRole("dialog").getByRole("alert").waitFor();
     assert.equal((await read()).revision, rev);
@@ -381,7 +381,7 @@ export async function studio(
       .getByRole("textbox", { name: "Key", exact: true })
       .fill("studio.notes");
     await page
-      .getByRole("button", { name: "Save metadata", exact: true })
+      .getByRole("button", { name: "Save extension", exact: true })
       .click();
     await change(rev);
     await right

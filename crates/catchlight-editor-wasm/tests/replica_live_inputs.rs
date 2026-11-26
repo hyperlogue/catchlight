@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! Previewing controls, expressions, visemes and clips on a replica's puppet.
+//! Live inputs and clips on a replica's puppet.
 
 use catchlight_core::formats::clm::{ClmIndices, ClmMesh};
 use catchlight_core::{

@@ -1,5 +1,5 @@
 /**
- * Reads, preview state and edits shared by the panels over the official
+ * Reads, live inputs and edits shared by the panels over the official
  * extensions: humanoid controls, expressions and visemes, and animations.
  */
 import { ProtocolError } from "@catchlight/core";
@@ -8,7 +8,7 @@ import type {
   ExtensionWarningInfo,
   ParamId,
   Playing,
-  PreviewInputs,
+  LiveInputs,
   ResponseBody,
   Session,
   SessionEditCommand,
@@ -93,7 +93,7 @@ export function warningsOn(warned: Map<ParamId, string[]>, params: Iterable<Para
   return [...out];
 }
 
-export function usePreviewInputs(session: Session): PreviewInputs {
+export function useLiveInputs(session: Session): LiveInputs {
   const read = useCallback(() => session.inputs(), [session]);
   return useSyncExternalStore(session.onInvalidate, read, read);
 }

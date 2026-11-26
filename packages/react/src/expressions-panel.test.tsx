@@ -68,7 +68,7 @@ describe("the expressions panel", () => {
     await view.unmount();
   });
 
-  test("lists each member with its settings count, and its slider previews a weight cleared at 0", async () => {
+  test("lists each member with its settings count, and its slider gives a live weight cleared at 0", async () => {
     const { session, view } = await seeded((doc) => {
       doc.expressions = [happy];
       doc.visemes = [{ name: "aa", settings: [{ control: "mouth_open", value: 1 }] }];
@@ -78,16 +78,16 @@ describe("the expressions panel", () => {
 
     await slide(row(view.container, "happy").querySelector<HTMLInputElement>("[aria-label='happy weight']")!, 0.6);
     await slide(row(view.container, "aa").querySelector<HTMLInputElement>("[aria-label='aa weight']")!, 1);
-    expect(fakeReplica(session).preview).toEqual({ controls: {}, expressions: { happy: 0.6 }, visemes: { aa: 1 } });
-    expect(row(view.container, "happy").hasAttribute("data-previewing")).toBe(true);
+    expect(fakeReplica(session).live).toEqual({ controls: {}, expressions: { happy: 0.6 }, visemes: { aa: 1 } });
+    expect(row(view.container, "happy").hasAttribute("data-live")).toBe(true);
 
     await slide(row(view.container, "happy").querySelector<HTMLInputElement>("[aria-label='happy weight']")!, 0);
-    expect(fakeReplica(session).preview.expressions).toEqual({});
-    expect(row(view.container, "happy").hasAttribute("data-previewing")).toBe(false);
+    expect(fakeReplica(session).live.expressions).toEqual({});
+    expect(row(view.container, "happy").hasAttribute("data-live")).toBe(false);
     await view.unmount();
   });
 
-  test("delete removes the member and its preview weight", async () => {
+  test("delete removes the member and its live weight", async () => {
     const { session, wasm, view } = await seeded((doc) => {
       doc.expressions = [happy];
     });
@@ -95,7 +95,7 @@ describe("the expressions panel", () => {
     await run(() => row(view.container, "happy").querySelector<HTMLButtonElement>("[aria-label='Delete happy']")!.click());
     expect(wasm.requests.at(-1)).toMatchObject({ cmd: "expression_delete", group: "expression", name: "happy" });
     expect(view.container.querySelector("[data-catchlight-expression-row]")).toBeNull();
-    expect(fakeReplica(session).preview.expressions).toEqual({});
+    expect(fakeReplica(session).live.expressions).toEqual({});
     await view.unmount();
   });
 

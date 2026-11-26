@@ -5,7 +5,7 @@
 //!
 //! ```no_run
 //! # use catchlight_core::{Model, Puppet};
-//! # use catchlight_extension_animations::{AnimationPlayer, FrameInputs, Rig};
+//! # use catchlight_extension_animations::{AnimationPlayer, LiveInputs, Rig};
 //! # use catchlight_extension_humanoid::controls_from_arkit;
 //! # fn frame(
 //! #     model: &Model,
@@ -14,9 +14,9 @@
 //! #     tracking: impl Fn(&str) -> f32,
 //! #     dt: f32,
 //! # ) {
-//! let mut inputs = FrameInputs {
+//! let mut inputs = LiveInputs {
 //!     controls: controls_from_arkit(tracking),
-//!     ..FrameInputs::default()
+//!     ..LiveInputs::default()
 //! };
 //! inputs.expressions.set("happy", 0.6);
 //! inputs.visemes.set("aa", 1.0);
@@ -28,7 +28,7 @@
 mod player;
 mod sample;
 
-pub use player::{AnimationPlayer, AnimationSample, FrameInputs, Rig};
+pub use player::{AnimationPlayer, AnimationSample, LiveInputs, Rig};
 
 use catchlight_core::extension::{
     DecodeError, Extension, ExtensionError, IdRef, MergeRefused, Payload, RawExtension, Receipt,

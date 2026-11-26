@@ -36,7 +36,7 @@ import type {
 } from "./backend.js";
 import { FeedQueue, ProtocolError } from "./backend.js";
 import type { FetchInit, HttpResponse, SocketLike } from "./connected.js";
-import type { Playing, PreviewInputs } from "./session.js";
+import type { Playing, LiveInputs } from "./session.js";
 import type {
   ExtensionRequest,
   TextureRequest,
@@ -109,7 +109,7 @@ export interface FakeBinding {
   cells: { x: number; y: number; value: number | null }[];
 }
 
-function preview(values: Record<string, number>, name: string, value: number | undefined): void {
+function setLive(values: Record<string, number>, name: string, value: number | undefined): void {
   if (value === undefined) delete values[name];
   else values[name] = value;
 }
@@ -938,7 +938,7 @@ export class FakeReplica implements WasmReplica {
   translations = new Map<string, [number, number, number]>();
   box: [number, number, number, number] | undefined;
   freed = false;
-  preview: PreviewInputs = { controls: {}, expressions: {}, visemes: {} };
+  live: LiveInputs = { controls: {}, expressions: {}, visemes: {} };
   /** Stands still: the fake never advances a clip. */
   clip: Playing | undefined;
 
@@ -1158,29 +1158,29 @@ export class FakeReplica implements WasmReplica {
   setParam(id: string, value: number): boolean {
     this.pose.set(id, value);
     for (const mapping of this.doc?.humanoid ?? []) {
-      if (mapping.param === id) delete this.preview.controls[mapping.control];
+      if (mapping.param === id) delete this.live.controls[mapping.control];
     }
     return true;
   }
 
   setControl(name: string, value: number | undefined): void {
-    preview(this.preview.controls, name, value);
+    setLive(this.live.controls, name, value);
   }
 
   setExpressionWeight(name: string, weight: number | undefined): void {
-    preview(this.preview.expressions, name, weight);
+    setLive(this.live.expressions, name, weight);
   }
 
   setVisemeWeight(name: string, weight: number | undefined): void {
-    preview(this.preview.visemes, name, weight);
+    setLive(this.live.visemes, name, weight);
   }
 
   clearInputs(): void {
-    this.preview = { controls: {}, expressions: {}, visemes: {} };
+    this.live = { controls: {}, expressions: {}, visemes: {} };
   }
 
   inputs(): string {
-    return JSON.stringify(this.preview);
+    return JSON.stringify(this.live);
   }
 
   play(clip: string): boolean {

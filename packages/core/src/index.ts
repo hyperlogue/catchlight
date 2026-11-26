@@ -13,7 +13,7 @@ export type {
 } from "./authoring.js";
 export type {
   Playing,
-  PreviewInputs,
+  LiveInputs,
   ScratchTransform,
   SessionCommand,
   SessionEditCommand,

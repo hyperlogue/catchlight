@@ -408,7 +408,7 @@ export function ModelHealth({ session }: { session: Session }) {
 function describeExtension(value: ExtensionValueInfo): string {
   switch (value.kind) {
     case "json":
-      return "JSON metadata";
+      return "JSON";
     case "bytes":
       return `${value.size.toLocaleString()} bytes`;
     case "maintained": {
@@ -452,7 +452,7 @@ export function ExtensionsPanel({ session, onError }: { session: Session; onErro
   return (
     <>
       <p data-catchlight-hint="">
-        Optional metadata for your tools and pipeline. Stored with the model.
+        Optional data for your tools and pipeline. Stored with the model.
       </p>
       {extensions.map((ext) => {
         const official = isOfficial(ext.key);
@@ -505,10 +505,10 @@ export function ExtensionsPanel({ session, onError }: { session: Session; onErro
         }}
       >
         <Icon name="plus" />
-        Add metadata
+        Add extension
       </button>
       {editing && (
-        <Modal title="Model metadata" onClose={() => setEditing(null)}>
+        <Modal title="Extension" onClose={() => setEditing(null)}>
           <form
             onSubmit={(e) => {
               e.preventDefault();
@@ -582,7 +582,7 @@ export function ExtensionsPanel({ session, onError }: { session: Session; onErro
               </button>
               {!editing.readOnly && (
                 <button type="submit" data-primary="" disabled={busy}>
-                  Save metadata
+                  Save extension
                 </button>
               )}
             </div>

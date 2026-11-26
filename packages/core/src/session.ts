@@ -79,10 +79,10 @@ export interface ScratchTransform {
 export const REVIEW_LISTENING_POLL_MS = 4000;
 
 /**
- * A tab's own preview values by name: humanoid controls, and expression and
+ * A tab's own live inputs by name: humanoid controls, and expression and
  * viseme weights. Never written to the model or published through presence.
  */
-export interface PreviewInputs {
+export interface LiveInputs {
   controls: Record<string, number>;
   expressions: Record<string, number>;
   visemes: Record<string, number>;
@@ -130,7 +130,7 @@ export class Session {
   #feeding = 0;
   #failure: ProtocolError | undefined;
   #offEvents: Unsubscribe;
-  #inputs: PreviewInputs | undefined;
+  #inputs: LiveInputs | undefined;
   #nextQueryId = 1;
   #review: Review = NO_REVIEW;
   #reviewListeners = new Set<() => void>();
@@ -394,7 +394,7 @@ export class Session {
     }
   }
 
-  /** Repaints; authors nothing. Clears the controls previewed onto `param`. */
+  /** Repaints; authors nothing. Clears the live controls mapped onto `param`. */
   setParam(param: ParamId, value: number): boolean {
     const moved = this.replica.setParam(param, value);
     this.#inputs = undefined;
@@ -402,21 +402,21 @@ export class Session {
     return moved;
   }
 
-  /** Previews a humanoid control; `undefined` clears it. Authors nothing. */
+  /** Gives a humanoid control a live value; `undefined` clears it. Authors nothing. */
   setControl(control: string, value: number | undefined): void {
     if (this.#closed) return;
     this.replica.setControl(control, value);
     this.#inputsChanged();
   }
 
-  /** Previews an expression at `weight` (0..1); `undefined` clears it. */
+  /** Gives an expression a live `weight` (0..1); `undefined` clears it. */
   setExpressionWeight(expression: string, weight: number | undefined): void {
     if (this.#closed) return;
     this.replica.setExpressionWeight(expression, weight);
     this.#inputsChanged();
   }
 
-  /** Previews a viseme at `weight` (0..1); `undefined` clears it. */
+  /** Gives a viseme a live `weight` (0..1); `undefined` clears it. */
   setVisemeWeight(viseme: string, weight: number | undefined): void {
     if (this.#closed) return;
     this.replica.setVisemeWeight(viseme, weight);
@@ -429,10 +429,10 @@ export class Session {
     this.#inputsChanged();
   }
 
-  /** This tab's preview inputs; the same object until they change. */
-  inputs(): PreviewInputs {
+  /** This tab's live inputs; the same object until they change. */
+  inputs(): LiveInputs {
     if (this.#closed) return NO_INPUTS;
-    this.#inputs ??= JSON.parse(this.replica.inputs()) as PreviewInputs;
+    this.#inputs ??= JSON.parse(this.replica.inputs()) as LiveInputs;
     return this.#inputs;
   }
 
@@ -797,7 +797,7 @@ export class Session {
   }
 }
 
-const NO_INPUTS: PreviewInputs = { controls: {}, expressions: {}, visemes: {} };
+const NO_INPUTS: LiveInputs = { controls: {}, expressions: {}, visemes: {} };
 
 const NO_VEC3: [number, number, number] = [NaN, NaN, NaN];
 const NO_VEC2: [number, number] = [NaN, NaN];

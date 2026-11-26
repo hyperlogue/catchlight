@@ -123,32 +123,32 @@ describe("the controls panel", () => {
     await view.unmount();
   });
 
-  test("the slider previews a control, and clearing it removes the value instead of setting 0", async () => {
+  test("the slider gives a control a live value, and clearing it removes the value instead of setting 0", async () => {
     const { session, view } = await seeded((doc) => {
       doc.humanoid = [{ control: "head_yaw", param: doc.params[1]!.id, stops: [-30, 0, 30] }];
     });
     const yaw = card(view.container, "head_yaw");
-    const clear = yaw.querySelector<HTMLButtonElement>("[aria-label='Clear head_yaw preview']")!;
+    const clear = yaw.querySelector<HTMLButtonElement>("[aria-label='Clear head_yaw live value']")!;
     expect(clear.disabled).toBe(true);
     await slide(yaw.querySelector<HTMLInputElement>("[data-catchlight-control-slider]")!, 0.5);
-    expect(fakeReplica(session).preview.controls).toEqual({ head_yaw: 0.5 });
-    expect(yaw.hasAttribute("data-previewing")).toBe(true);
+    expect(fakeReplica(session).live.controls).toEqual({ head_yaw: 0.5 });
+    expect(yaw.hasAttribute("data-live")).toBe(true);
     expect(yaw.querySelector("output")?.textContent).toBe("0.50");
 
     await run(() => clear.click());
-    expect(fakeReplica(session).preview.controls).toEqual({});
-    expect(yaw.hasAttribute("data-previewing")).toBe(false);
+    expect(fakeReplica(session).live.controls).toEqual({});
+    expect(yaw.hasAttribute("data-live")).toBe(false);
     expect(yaw.querySelector("output")?.textContent).toBe("–");
     await view.unmount();
   });
 
-  test("moving the mapped param's slider clears the control's preview", async () => {
+  test("moving the mapped param's slider clears the control's live value", async () => {
     const { session, view } = await seeded((doc) => {
       doc.humanoid = [{ control: "head_yaw", param: doc.params[1]!.id, stops: [-30, 0, 30] }];
     });
     await slide(card(view.container, "head_yaw").querySelector<HTMLInputElement>("[data-catchlight-control-slider]")!, -1);
     await run(() => session.setParam(paramId(session, "Turn"), 4));
-    expect(card(view.container, "head_yaw").hasAttribute("data-previewing")).toBe(false);
+    expect(card(view.container, "head_yaw").hasAttribute("data-live")).toBe(false);
     await view.unmount();
   });
 

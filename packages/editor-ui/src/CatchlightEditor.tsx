@@ -1405,7 +1405,7 @@ function Workspace({
                   width="13"
                   height="13"
                 />
-                {sweep.playing ? "Stop sweep" : "Preview sweep"}
+                {sweep.playing ? "Stop sweep" : "Play sweep"}
               </button>
               {playingClip !== undefined && (
                 <button
@@ -1554,7 +1554,7 @@ function Workspace({
                 <Disclosure title="Connections">
                   <WeldsPanel session={session} onError={onError} />
                 </Disclosure>
-                <Disclosure title="Metadata" defaultOpen={false}>
+                <Disclosure title="Extensions" defaultOpen={false}>
                   <ExtensionsPanel session={session} onError={onError} />
                 </Disclosure>
               </>

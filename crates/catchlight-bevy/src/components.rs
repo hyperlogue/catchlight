@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use catchlight_core::{Mat4, Model, Pose, Puppet};
-use catchlight_extension_animations::{AnimationPlayer, Animations, FrameInputs, Rig};
+use catchlight_extension_animations::{AnimationPlayer, Animations, LiveInputs, Rig};
 
 use crate::asset::CatchlightModel;
 
@@ -114,7 +114,7 @@ impl CatchlightPuppet {
     pub(crate) fn tick(&mut self, model: &Model, root: Mat4, dt: f32) {
         if let Some(puppet) = &mut self.puppet {
             self.player
-                .advance_with(puppet, dt, Rig::of(model), &FrameInputs::default());
+                .advance_with(puppet, dt, Rig::of(model), &LiveInputs::default());
             puppet.tick_with_root(model, root, dt);
         }
     }

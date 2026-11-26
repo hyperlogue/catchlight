@@ -9,7 +9,7 @@ use catchlight_core::{
     NodeId, ParamId, Puppet, ResponseInput, ResponseSource, ScalarTarget,
 };
 use catchlight_extension_animations::{
-    AnimationPlayer, Clip, FrameInputs, Keyframe, Lane, LaneTarget, Rig,
+    AnimationPlayer, Clip, Keyframe, Lane, LaneTarget, LiveInputs, Rig,
 };
 use catchlight_extension_humanoid::{ControlMapping, Humanoid};
 
@@ -29,12 +29,8 @@ impl Played {
     }
 
     fn tick(&mut self, model: &Model, dt: f32) {
-        self.player.advance_with(
-            &mut self.puppet,
-            dt,
-            Rig::of(model),
-            &FrameInputs::default(),
-        );
+        self.player
+            .advance_with(&mut self.puppet, dt, Rig::of(model), &LiveInputs::default());
         self.puppet.tick(model, dt);
     }
 }
@@ -240,7 +236,7 @@ fn a_control_lanes_loop_cut_and_restart_initialize_at_the_new_sample() {
     assert_eq!(p.response_trace(&nid("tip")).unwrap().lag, 0.);
     p.tick(&m, dt);
     p.player
-        .advance_with(&mut p.puppet, -dt, Rig::of(&m), &FrameInputs::default());
+        .advance_with(&mut p.puppet, -dt, Rig::of(&m), &LiveInputs::default());
     p.tick(&m, 0.);
     assert_eq!(p.response_trace(&nid("upper")).unwrap().lag, 0.);
 }

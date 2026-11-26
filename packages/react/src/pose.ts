@@ -29,7 +29,7 @@ export function readPose(session: Session, params: ParamInfo[] = session.params(
 }
 
 /**
- * Poses only; the publisher hears the repaints. Clears the preview inputs too,
+ * Poses only; the publisher hears the repaints. Clears the live inputs too,
  * and leaves a playing clip playing.
  */
 export function useResetPose(session: Session): () => void {

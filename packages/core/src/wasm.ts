@@ -86,12 +86,12 @@ export interface WasmReplica extends WasmOwned {
 
   setParam(id: ParamId, value: number): boolean;
   paramValue(id: ParamId): number | undefined;
-  /** `undefined` clears the control's preview value. */
+  /** `undefined` clears the control's live value. */
   setControl(name: string, value: number | undefined): void;
   setExpressionWeight(name: string, weight: number | undefined): void;
   setVisemeWeight(name: string, weight: number | undefined): void;
   clearInputs(): void;
-  /** JSON `PreviewInputs`. */
+  /** JSON `LiveInputs`. */
   inputs(): string;
   play(clip: string): boolean;
   stop(): void;

@@ -233,7 +233,7 @@ describe("the quiet paths", () => {
   });
 });
 
-describe("preview inputs and playback", () => {
+describe("live inputs and playback", () => {
   function rigged() {
     const opened = open();
     const doc = emptyDoc("rigged");
@@ -260,12 +260,12 @@ describe("preview inputs and playback", () => {
     session.setExpressionWeight("happy", 0.25);
     session.setVisemeWeight("aa", 1);
     expect(repaints()).toBe(3);
-    expect(replica.preview).toEqual({
+    expect(replica.live).toEqual({
       controls: { mouth_open: 0.5 },
       expressions: { happy: 0.25 },
       visemes: { aa: 1 },
     });
-    expect(session.inputs()).toEqual(replica.preview);
+    expect(session.inputs()).toEqual(replica.live);
     expect(session.inputs()).toBe(session.inputs());
 
     session.setExpressionWeight("happy", undefined);
@@ -276,7 +276,7 @@ describe("preview inputs and playback", () => {
     expect(revisions()).toBe(0);
   });
 
-  test("setting a param drops the controls previewed onto it", () => {
+  test("setting a param drops the live controls mapped onto it", () => {
     const { session } = rigged();
     session.setControl("mouth_open", 0.5);
     session.setControl("mouth_smile", 0.5);
@@ -298,12 +298,12 @@ describe("preview inputs and playback", () => {
     expect(revisions()).toBe(0);
   });
 
-  test("a closed session previews nothing", () => {
+  test("a closed session takes no live input", () => {
     const { replica, session } = rigged();
     session.close();
     session.setControl("mouth_open", 0.5);
     expect(session.play("wave")).toBe(false);
-    expect(replica.preview.controls).toEqual({});
+    expect(replica.live.controls).toEqual({});
     expect(session.inputs()).toEqual({ controls: {}, expressions: {}, visemes: {} });
   });
 });

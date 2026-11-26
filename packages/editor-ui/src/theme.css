@@ -3671,7 +3671,7 @@
   .catchlight [data-catchlight-control-card]:hover {
     background: #ffffff05;
   }
-  .catchlight [data-catchlight-control-card][data-previewing] {
+  .catchlight [data-catchlight-control-card][data-live] {
     background: var(--cl-accent-soft);
   }
   .catchlight [data-catchlight-control-card][data-warned] {
@@ -3789,7 +3789,7 @@
   .catchlight [data-catchlight-expression-row]:hover {
     background: #ffffff05;
   }
-  .catchlight [data-catchlight-expression-row][data-previewing] {
+  .catchlight [data-catchlight-expression-row][data-live] {
     background: var(--cl-accent-soft);
   }
   .catchlight [data-catchlight-expression-row][data-warned] {

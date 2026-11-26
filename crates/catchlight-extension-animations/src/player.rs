@@ -31,11 +31,11 @@ pub struct AnimationSample<'a> {
     pub looping: bool,
 }
 
-/// The host's own inputs for one frame: control values, such as tracking,
+/// A program's live inputs for one frame: control values, such as tracking,
 /// and the weights of expressions and visemes. Any may be empty. A playing
 /// clip's lane on the same control, expression or viseme wins.
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct FrameInputs {
+pub struct LiveInputs {
     pub controls: ControlValues,
     pub expressions: Weights,
     pub visemes: Weights,
@@ -69,14 +69,14 @@ struct Blended {
     written: f32,
 }
 
-/// Plays one clip at a time on a puppet, together with the host's inputs.
+/// Plays one clip at a time on a puppet, together with the live inputs.
 /// Cloning shares the clips.
 ///
 /// ```no_run
 /// # use catchlight_core::{Model, Puppet};
-/// # use catchlight_extension_animations::{AnimationPlayer, FrameInputs, Rig};
+/// # use catchlight_extension_animations::{AnimationPlayer, LiveInputs, Rig};
 /// # fn frame(model: &Model, puppet: &mut Puppet, player: &mut AnimationPlayer, dt: f32) {
-/// player.advance_with(puppet, dt, Rig::of(model), &FrameInputs::default());
+/// player.advance_with(puppet, dt, Rig::of(model), &LiveInputs::default());
 /// puppet.tick(model, dt);
 /// # }
 /// ```
@@ -203,16 +203,16 @@ impl AnimationPlayer {
     }
 
     /// [`Self::advance_with`] with no humanoid or expressions data and no
-    /// host inputs: only the playing clip's param lanes act.
+    /// live inputs: only the playing clip's param lanes act.
     pub fn advance(&mut self, puppet: &mut Puppet, dt: f32) -> bool {
-        self.advance_with(puppet, dt, Rig::default(), &FrameInputs::default())
+        self.advance_with(puppet, dt, Rig::default(), &LiveInputs::default())
     }
 
     /// Steps the playing clip by `dt` seconds and poses `puppet` for this
     /// frame. Call it every frame, playing or not, before the puppet's tick.
     ///
-    /// In order: the host's `inputs`, with the clip's control, expression
-    /// and viseme lanes replacing the host's value for the same name; the
+    /// In order: the live `inputs`, with the clip's control, expression
+    /// and viseme lanes replacing the live value for the same name; the
     /// control settings of expressions, then of visemes; the control
     /// mappings; the param settings of expressions, then of visemes; the
     /// clip's param lanes. Params a motion response drives are left alone.
@@ -222,7 +222,7 @@ impl AnimationPlayer {
         puppet: &mut Puppet,
         dt: f32,
         rig: Rig<'_>,
-        inputs: &FrameInputs,
+        inputs: &LiveInputs,
     ) -> bool {
         let _span = tracing::trace_span!("advance_animation").entered();
         if !dt.is_finite() {

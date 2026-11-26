@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! Lanes on controls, expressions and visemes: their storage, their check,
-//! and one frame applied in the shared order with the host's inputs.
+//! and one frame applied in the shared order with the live inputs.
 
 use catchlight_core::extension::{register, Extension, IdRef, Payload, RawExtension};
 use catchlight_core::formats::clm::{ClmIndices, ClmMesh};
@@ -9,7 +9,7 @@ use catchlight_core::{
     Puppet,
 };
 use catchlight_extension_animations::{
-    AnimationPlayer, Animations, Clip, FrameInputs, Keyframe, Lane, LaneTarget, Rig,
+    AnimationPlayer, Animations, Clip, Keyframe, Lane, LaneTarget, LiveInputs, Rig,
 };
 use catchlight_extension_expressions::{Expression, Expressions, Setting};
 use catchlight_extension_humanoid::{ControlMapping, Humanoid};
@@ -117,7 +117,7 @@ struct Host<'m> {
     model: &'m Model,
     puppet: Puppet,
     player: AnimationPlayer,
-    inputs: FrameInputs,
+    inputs: LiveInputs,
 }
 
 impl<'m> Host<'m> {
@@ -126,7 +126,7 @@ impl<'m> Host<'m> {
             model,
             puppet: Puppet::new(model),
             player: AnimationPlayer::new(vec![talk()]),
-            inputs: FrameInputs::default(),
+            inputs: LiveInputs::default(),
         }
     }
 

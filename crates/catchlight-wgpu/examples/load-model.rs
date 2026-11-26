@@ -5,7 +5,7 @@
 
 use catchlight_core::{load_model, Model, ModelFormat, ParamId, Puppet};
 use catchlight_extension_animations::{
-    AnimationPlayer, Animations, Clip, FrameInputs, Keyframe, Lane, LaneTarget, Rig,
+    AnimationPlayer, Animations, Clip, Keyframe, Lane, LaneTarget, LiveInputs, Rig,
 };
 use catchlight_wgpu::{
     collect, create_orthographic_camera_at, create_surface_context, PrepareOptions, RenderCache,
@@ -417,7 +417,7 @@ impl ApplicationHandler for App {
                         &mut self.puppet,
                         dt,
                         Rig::of(&self.model),
-                        &FrameInputs::default(),
+                        &LiveInputs::default(),
                     );
                     self.puppet.tick(&self.model, dt);
                     if let Err(e) = cache.refresh(renderer, &self.model, &self.puppet) {

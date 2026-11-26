@@ -12,7 +12,7 @@ import {
   useExtensionWarnings,
   useHumanoid,
   useOfficialCommand,
-  usePreviewInputs,
+  useLiveInputs,
   warningsOn,
 } from "./official.js";
 import { useParams } from "./replica.js";
@@ -66,14 +66,14 @@ export function groupControls(
 }
 
 /**
- * The humanoid controls: map each onto a param and preview it. Previewing is
+ * The humanoid controls: map each onto a param and try it live. A live value is
  * per tab and authors nothing; mapping is an edit.
  */
 export function ControlsPanel({ session, onError }: { session: Session; onError: ErrorHandler }) {
   const read = useHumanoid(session);
   const { warnings, params: warned } = useExtensionWarnings(session, HUMANOID);
   const params = useParams(session);
-  const inputs = usePreviewInputs(session);
+  const inputs = useLiveInputs(session);
   const command = useOfficialCommand(session, onError);
   const [mappedOnly, setMappedOnly] = useState(false);
   // Names outside the standard the person chose to keep, sent as such from then on.
@@ -181,7 +181,7 @@ function ControlCard({
       data-catchlight-control-card=""
       data-control={name}
       data-mapped={mapping ? "" : undefined}
-      data-previewing={value !== undefined ? "" : undefined}
+      data-live={value !== undefined ? "" : undefined}
       data-nonstandard={entry.standard ? undefined : ""}
       data-warned={warnings.length ? "" : undefined}
     >
@@ -212,7 +212,7 @@ function ControlCard({
         <input
           type="range"
           data-catchlight-control-slider=""
-          aria-label={`Preview ${name}`}
+          aria-label={`${name} live input`}
           min={oneSided ? 0 : -1}
           max={1}
           step={0.01}
@@ -221,12 +221,12 @@ function ControlCard({
           onInput={(e) => session.setControl(name, Number(e.currentTarget.value))}
           onChange={noop}
         />
-        <output data-catchlight-control-value="" aria-label={`${name} preview value`}>
+        <output data-catchlight-control-value="" aria-label={`${name} live value`}>
           {value === undefined ? "–" : round(value).toFixed(2)}
         </output>
         <IconButton
           icon="close"
-          label={`Clear ${name} preview`}
+          label={`Clear ${name} live value`}
           disabled={value === undefined}
           onClick={() => session.setControl(name, undefined)}
         />

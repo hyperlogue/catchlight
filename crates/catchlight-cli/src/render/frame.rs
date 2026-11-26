@@ -3,7 +3,7 @@
 use super::spec::{bad, MotionResponseMode, ResolvedRequest};
 use crate::Error;
 use catchlight_core::{Model, NodeId, Pose, Puppet};
-use catchlight_extension_animations::{AnimationPlayer, FrameInputs, Rig};
+use catchlight_extension_animations::{AnimationPlayer, LiveInputs, Rig};
 use catchlight_extension_expressions::Weights;
 use catchlight_extension_humanoid::ControlValues;
 use std::collections::BTreeMap;
@@ -13,7 +13,7 @@ pub struct FrameRuntime {
     pub player: AnimationPlayer,
     /// The request's controls, expressions and visemes, applied every frame
     /// under the clip's lanes. Validation already found every name.
-    inputs: FrameInputs,
+    inputs: LiveInputs,
     timestep: f32,
     pub index: u32,
 }
@@ -42,7 +42,7 @@ impl FrameRuntime {
                 .map(|(name, weight)| (name.as_str(), *weight))
                 .collect()
         };
-        let inputs = FrameInputs {
+        let inputs = LiveInputs {
             controls: request
                 .controls
                 .iter()
