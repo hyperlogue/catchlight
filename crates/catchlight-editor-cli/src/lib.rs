@@ -822,16 +822,7 @@ where
         .name(name)
         .bin_name(name)
         .get_matches_from(args);
-    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
-
-    if let Cmd::Session {
-        action: SessionCmd::Use { id },
-    } = &cli.cmd
-    {
-        write_current(SessionId(*id))?;
-        println!("using session {id}");
-        return Ok(ExitCode::SUCCESS);
-    }
+    let mut cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
 
     if let Cmd::Review(args) = &cli.cmd
         && let Some(code) = review::run_local(&cli, args)?
@@ -845,6 +836,17 @@ where
         socket: cli.socket.clone(),
         connection_first: discovery == Discovery::ConnectionFirst,
     })?;
+    if let Cmd::Session {
+        action: SessionCmd::Use { id },
+    } = &cli.cmd
+    {
+        write_current(&mut transport, &endpoint, SessionId(*id))?;
+        println!("using session {id}");
+        return Ok(ExitCode::SUCCESS);
+    }
+    if cli.session.is_none() {
+        cli.session = remembered(&mut transport, &endpoint)?.map(|session| session.0);
+    }
     if let Cmd::Review(args) = &cli.cmd {
         let reached = review::Reached {
             program: name,
@@ -927,7 +929,7 @@ where
             ..
         } = &reply
     {
-        write_current(*session)?;
+        write_current(&mut transport, &endpoint, *session)?;
     }
 
     print_reply(&cli, &reply);
@@ -1504,11 +1506,9 @@ fn read_offsets(path: &str) -> Result<Vec<[f32; 2]>> {
     serde_json::from_str(&text).with_context(|| format!("parsing {path}"))
 }
 
+/// `--session`, else the remembered session of the editor this reached.
 fn resolve_session(cli: &Cli) -> Result<SessionId> {
-    if let Some(s) = cli.session {
-        return Ok(SessionId(s));
-    }
-    read_current()?.ok_or_else(|| {
+    cli.session.map(SessionId).ok_or_else(|| {
         anyhow!(
             "no session selected; pass --session <id> or run `session use <id>` / `session new`"
         )
@@ -1617,7 +1617,7 @@ fn print_body(body: &ResponseBody) {
         ResponseBody::ExtensionWarnings { warnings } => official::print_warnings(warnings),
         ResponseBody::Empty => println!("ok"),
         ResponseBody::Session { session } => println!("session {}", session.0),
-        ResponseBody::Sessions { sessions } => {
+        ResponseBody::Sessions { sessions, .. } => {
             if sessions.is_empty() {
                 println!("(no open sessions)");
             }
@@ -1888,23 +1888,69 @@ fn current_path() -> PathBuf {
     base.join("catchlight-editor").join("current")
 }
 
-fn read_current() -> Result<Option<SessionId>> {
+/// The remembered session and the editor that numbered it. Every editor
+/// numbers its sessions from 1, so the id alone could name another editor's.
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+struct Current {
+    /// [`transport::Endpoint::describe`]: never the token.
+    endpoint: String,
+    instance: String,
+    session: u64,
+}
+
+/// A file this cannot read as a [`Current`] selects nothing.
+fn read_current() -> Result<Option<Current>> {
     let path = current_path();
-    match std::fs::read_to_string(&path) {
-        Ok(s) => Ok(s.trim().parse::<u64>().ok().map(SessionId)),
+    match std::fs::read(&path) {
+        Ok(bytes) => Ok(serde_json::from_slice(&bytes).ok()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
     }
 }
 
-fn write_current(session: SessionId) -> Result<()> {
+fn write_current(
+    transport: &mut transport::Transport,
+    endpoint: &transport::Endpoint,
+    session: SessionId,
+) -> Result<()> {
+    let current = Current {
+        endpoint: endpoint.describe(),
+        instance: instance_of(transport)?,
+        session: session.0,
+    };
     let path = current_path();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating {}", parent.display()))?;
     }
-    std::fs::write(&path, session.0.to_string())
+    std::fs::write(&path, serde_json::to_vec(&current)?)
         .with_context(|| format!("writing {}", path.display()))
+}
+
+/// The remembered session, if the editor `transport` reached numbered it.
+fn remembered(
+    transport: &mut transport::Transport,
+    endpoint: &transport::Endpoint,
+) -> Result<Option<SessionId>> {
+    let Some(current) = read_current()?.filter(|c| c.endpoint == endpoint.describe()) else {
+        return Ok(None);
+    };
+    let instance = instance_of(transport)?;
+    Ok((current.instance == instance).then_some(SessionId(current.session)))
+}
+
+fn instance_of(transport: &mut transport::Transport) -> Result<String> {
+    let request = Request {
+        id: 1,
+        command: Command::SessionList,
+    };
+    match transport.call(request, serde_json::Map::new())? {
+        Reply::Ok {
+            body: ResponseBody::Sessions { instance, .. },
+            ..
+        } => Ok(instance),
+        other => bail!("session_list answered {other:?}"),
+    }
 }
 
 #[cfg(test)]

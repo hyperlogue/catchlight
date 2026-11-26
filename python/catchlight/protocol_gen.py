@@ -4419,6 +4419,9 @@ class ResponseBodySessions:
     TAG: ClassVar[str] = "sessions"
 
     sessions: list[SessionInfo]
+    # New for every editor process. Session ids restart with the
+    # process, so a client that remembers one checks it names this.
+    instance: str
 
     def to_wire(self) -> dict[str, Any]:
         """This value, as one JSON object: its tag, then every field it set."""

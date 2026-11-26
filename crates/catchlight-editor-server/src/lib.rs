@@ -613,6 +613,8 @@ pub struct Editor {
     kept_store: Arc<dyn KeptStore>,
     /// Milliseconds since the Unix epoch, for a version's time.
     clock: fn() -> u64,
+    /// Told to clients with the session list; see [`mint_instance`].
+    instance: String,
     version_limits: versions::VersionLimits,
     #[cfg(not(target_arch = "wasm32"))]
     preview: Mutex<Option<PreviewRenderer>>,
@@ -629,6 +631,29 @@ fn system_clock() -> u64 {
 #[cfg(target_arch = "wasm32")]
 fn system_clock() -> u64 {
     0
+}
+
+static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(0);
+
+/// Unique to this editor and the process it runs in, so a session id a
+/// client remembers is never mistaken for one a later editor handed out.
+/// Nothing about it is secret.
+#[cfg(not(target_arch = "wasm32"))]
+fn mint_instance() -> String {
+    let started = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_nanos());
+    format!(
+        "{:x}-{started:x}-{:x}",
+        std::process::id(),
+        NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+/// Only the page that holds an in-tab editor reaches it.
+#[cfg(target_arch = "wasm32")]
+fn mint_instance() -> String {
+    format!("tab-{:x}", NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed))
 }
 
 impl Editor {
@@ -674,6 +699,7 @@ impl Editor {
             storage,
             kept_store: Arc::new(NoKeptStore),
             clock: system_clock,
+            instance: mint_instance(),
             version_limits: versions::VersionLimits::default(),
             #[cfg(not(target_arch = "wasm32"))]
             preview: Mutex::new(None),
@@ -1035,7 +1061,10 @@ impl Editor {
                     });
                 }
                 sessions.sort_by_key(|s| s.session.0);
-                Ok(Captured::unscoped(ResponseBody::Sessions { sessions }))
+                Ok(Captured::unscoped(ResponseBody::Sessions {
+                    sessions,
+                    instance: self.instance.clone(),
+                }))
             }
             Command::SessionClose { session } => {
                 // Never hold the registry lock while waiting for this handle.
@@ -3004,7 +3033,7 @@ mod tests {
         }
         assert!(matches!(
             body(ed.handle(req(4, Command::SessionList))),
-            ResponseBody::Sessions { sessions } if sessions.is_empty()
+            ResponseBody::Sessions { sessions, .. } if sessions.is_empty()
         ));
     }
 

@@ -1005,7 +1005,7 @@ mod tests {
             other => panic!("{other:?}"),
         }
         let sessions = match f.ok(Command::SessionList) {
-            ResponseBody::Sessions { sessions } => sessions,
+            ResponseBody::Sessions { sessions, .. } => sessions,
             other => panic!("{other:?}"),
         };
         let view = sessions.iter().find(|s| s.session == opened).unwrap();
@@ -1126,7 +1126,9 @@ mod tests {
             "{published:?}"
         );
         match f.ok(Command::SessionList) {
-            ResponseBody::Sessions { sessions } => assert!(sessions.is_empty(), "{sessions:?}"),
+            ResponseBody::Sessions { sessions, .. } => {
+                assert!(sessions.is_empty(), "{sessions:?}");
+            }
             other => panic!("{other:?}"),
         }
     }

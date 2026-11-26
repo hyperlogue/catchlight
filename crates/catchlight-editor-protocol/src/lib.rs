@@ -2325,6 +2325,9 @@ pub enum ResponseBody {
     },
     Sessions {
         sessions: Vec<SessionInfo>,
+        /// New for every editor process. Session ids restart with the
+        /// process, so a client that remembers one checks it names this.
+        instance: String,
     },
     Node {
         node: NodeId,
@@ -3461,6 +3464,7 @@ mod tests {
             rev: None,
             body: ResponseBody::Sessions {
                 sessions: Vec::new(),
+                instance: "a1".into(),
             },
         })
         .unwrap();

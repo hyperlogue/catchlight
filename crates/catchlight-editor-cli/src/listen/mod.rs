@@ -116,7 +116,7 @@ pub(crate) fn listen(how: &Listening, stream: &mut Transport) -> Result<i32> {
 
     let sessions = match call(stream, Command::SessionList)? {
         Reply::Ok {
-            body: ResponseBody::Sessions { sessions },
+            body: ResponseBody::Sessions { sessions, .. },
             ..
         } => sessions,
         other => return Ok(crate::review::refused(&other)),

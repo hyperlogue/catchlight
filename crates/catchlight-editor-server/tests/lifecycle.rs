@@ -172,7 +172,7 @@ fn json_source(model: &Model) -> (Vec<ImportTexture>, Attachments) {
 fn session_count(editor: &Editor) -> usize {
     match send(editor, Command::SessionList) {
         Reply::Ok {
-            body: ResponseBody::Sessions { sessions },
+            body: ResponseBody::Sessions { sessions, .. },
             rev: None,
             ..
         } => sessions.len(),

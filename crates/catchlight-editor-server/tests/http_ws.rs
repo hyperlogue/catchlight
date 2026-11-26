@@ -302,7 +302,7 @@ fn session_info(socket: &mut Socket, id: u64, session: SessionId) -> SessionInfo
         },
     );
     match body_of(reply_to(socket, id)) {
-        ResponseBody::Sessions { sessions } => sessions
+        ResponseBody::Sessions { sessions, .. } => sessions
             .into_iter()
             .find(|s| s.session == session)
             .expect("the session this test opened is listed"),
@@ -559,7 +559,7 @@ fn a_post_without_a_token_is_refused_before_its_body() {
             command: Command::SessionList,
         },
     ))) {
-        ResponseBody::Sessions { sessions } => assert!(sessions.is_empty()),
+        ResponseBody::Sessions { sessions, .. } => assert!(sessions.is_empty()),
         other => panic!("expected Sessions, got {other:?}"),
     }
 }

@@ -262,7 +262,7 @@ export class FakeEditor implements WasmEditor {
             ...(this.viewing.has(session) ? { viewing: this.viewing.get(session)! } : {}),
           }),
         );
-        return this.#ok(id, { result: "sessions", sessions });
+        return this.#ok(id, { result: "sessions", sessions, instance: "fake" });
       }
       case "node_add": {
         const doc = this.docs.get(request.session);

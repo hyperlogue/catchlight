@@ -368,7 +368,7 @@ fn serve(
         };
         let sessions = match reply {
             Reply::Ok {
-                body: ResponseBody::Sessions { sessions },
+                body: ResponseBody::Sessions { sessions, .. },
                 ..
             } => sessions,
             other => bail!("session_list answered {other:?}"),

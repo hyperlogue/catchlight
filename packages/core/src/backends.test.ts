@@ -190,10 +190,10 @@ describe("connected", () => {
     expect(firstId).not.toBe(secondId);
 
     socket.deliver({ reply: "ok", id: secondId, rev: 4, body: { result: "empty" } });
-    socket.deliver({ reply: "ok", id: firstId, body: { result: "sessions", sessions: [] } });
+    socket.deliver({ reply: "ok", id: firstId, body: { result: "sessions", sessions: [], instance: "a" } });
 
     expect(await second).toEqual({ body: { result: "empty" }, rev: 4 });
-    expect(await first).toEqual({ body: { result: "sessions", sessions: [] } });
+    expect(await first).toEqual({ body: { result: "sessions", sessions: [], instance: "a" } });
   });
 
   test("an err frame rejects its own request and nobody else's", async () => {

@@ -1845,6 +1845,11 @@ export type ResponseBody =
   | {
     "result": "sessions",
     sessions: Array<SessionInfo>,
+    /**
+     * New for every editor process. Session ids restart with the
+     * process, so a client that remembers one checks it names this.
+     */
+    instance: string,
   }
   | {
     "result": "node",
