@@ -1,9 +1,7 @@
-#![expect(clippy::expect_used, reason = "a test aborts on a broken fixture")]
-
 //! [`RenderContext::render_rgba`] across a size change must rebuild target,
 //! stencil and both pools together; asserted on byte counts.
 
-mod common;
+use crate::common;
 
 use catchlight_core::{Mesh, Model, Puppet};
 use catchlight_wgpu::{Framing, PrepareOptions, RenderCache, RenderContext, WgpuRenderer, collect};

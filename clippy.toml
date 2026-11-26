@@ -3,7 +3,7 @@
 # tests. Clippy scopes that to `#[test]` fns only, so a helper at the top
 # level of a `tests/` file still trips the deny. Those files open with an
 # `#![expect(...)]` naming the lints their helpers use
-# (`crates/catchlight-wgpu/tests/clear_fallback.rs:1`). A file whose unwraps
+# (`crates/catchlight-wgpu/tests/it/common.rs`). A file whose unwraps
 # all sit inside `#[test]` fns needs none
 # (`crates/visual-tests/tests/regression.rs`).
 allow-unwrap-in-tests = true

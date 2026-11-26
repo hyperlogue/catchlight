@@ -1,22 +1,17 @@
-#![expect(clippy::expect_used, reason = "a test aborts on a broken fixture")]
-
 //! With `Some(clear_color)`, `render_list` clears even when nothing draws.
 
+use crate::common;
 use catchlight_wgpu::{
     FrameTargets, RenderContext, RenderList, RenderTarget, RendererError, WgpuRenderer,
-    create_headless_context,
 };
 
 const W: u32 = 4;
 const H: u32 = 4;
 
-const NO_ADAPTER: &str =
-    "no Vulkan adapter for the headless context; see AGENTS.md, \"Native headless rendering\"";
-
 #[test]
 fn empty_render_list_still_clears_the_target() {
     let pixels = pollster::block_on(async {
-        let (device, queue) = create_headless_context().await.expect(NO_ADAPTER);
+        let (device, queue) = common::shared_context();
         let format = wgpu::TextureFormat::Rgba8Unorm;
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("clear-fallback target"),
@@ -85,7 +80,7 @@ fn empty_render_list_still_clears_the_target() {
 }
 
 fn cleared_context(format: wgpu::TextureFormat) -> RenderContext {
-    let (device, queue) = pollster::block_on(create_headless_context()).expect(NO_ADAPTER);
+    let (device, queue) = common::shared_context();
     let mut ctx = RenderContext::with_renderer(WgpuRenderer::new(device, queue, format), W, H);
     ctx.render(
         &RenderList::default(),

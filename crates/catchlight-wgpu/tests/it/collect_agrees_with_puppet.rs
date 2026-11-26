@@ -1,9 +1,7 @@
-#![expect(clippy::expect_used, reason = "a test aborts on a broken fixture")]
-
 //! The collector and `Puppet` report the same z and opacity, so
 //! `catchlight-cli poses` describes the frame the renderer draws.
 
-mod common;
+use crate::common;
 
 use catchlight_core::{Mesh, Model, ModelNodeKind, Puppet};
 use catchlight_wgpu::{DrawableInfo, WgpuRenderer, collect};

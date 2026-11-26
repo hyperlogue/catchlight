@@ -1,11 +1,9 @@
-#![expect(clippy::expect_used, reason = "a test aborts on a broken fixture")]
-
 //! One [`RenderCache`] serving several puppets: `write_buffer` batches at
 //! submit start, so one puppet's deforms must not overwrite another's.
 //! Asserts on pixels, since the failure is invisible in counters.
 
-mod common;
-use common::apply_uniform_scratch_deform;
+use crate::common;
+use crate::common::apply_uniform_scratch_deform;
 
 use catchlight_core::{Mesh, Model, Puppet, Vec2};
 use catchlight_wgpu::{

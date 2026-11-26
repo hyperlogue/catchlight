@@ -3,7 +3,7 @@
 //! A [`RenderCache`] rebuild releases GPU state the new build does not name,
 //! and keeps textures it names again.
 
-mod common;
+use crate::common;
 
 use catchlight_core::formats::clm::{ClmMesh, TextureAlpha, TextureEncoding};
 use catchlight_core::{

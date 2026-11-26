@@ -1,11 +1,7 @@
-#![expect(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "a test aborts on a broken fixture"
-)]
+#![expect(clippy::unwrap_used, reason = "a test aborts on a broken fixture")]
 
-mod common;
-use common::apply_uniform_scratch_deform;
+use crate::common;
+use crate::common::apply_uniform_scratch_deform;
 
 use catchlight_core::{Model, Puppet, Vec2};
 use catchlight_wgpu::{

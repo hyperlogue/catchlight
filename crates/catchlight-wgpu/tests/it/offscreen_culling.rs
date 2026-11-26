@@ -1,6 +1,4 @@
-#![expect(clippy::expect_used, reason = "a test aborts on a broken fixture")]
-
-mod common;
+use crate::common;
 
 #[test]
 fn each_puppets_deforms_can_bring_offscreen_geometry_into_view() {

@@ -4,12 +4,12 @@
     reason = "a test aborts on a broken fixture"
 )]
 
-mod common;
+use crate::common;
 
+use crate::common::Scene;
+use crate::common::apply_uniform_scratch_deform;
 use catchlight_core::{Model, Vec2};
 use catchlight_wgpu::{RenderContext, WgpuRenderer, collect, create_orthographic_camera};
-use common::Scene;
-use common::apply_uniform_scratch_deform;
 use std::path::{Path, PathBuf};
 
 const W: u32 = 320;

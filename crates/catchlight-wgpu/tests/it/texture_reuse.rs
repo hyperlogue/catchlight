@@ -7,7 +7,7 @@
 //! A browser replica rebuilds its `Model` on every commit; the rebuild must
 //! cost no texture work unless a texture changed.
 
-mod common;
+use crate::common;
 
 use std::collections::HashMap;
 use std::sync::Arc;

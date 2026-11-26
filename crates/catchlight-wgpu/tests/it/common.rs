@@ -1,10 +1,7 @@
 //! Shared helpers for the wgpu integration tests. Synthetic textures are PNGs
 //! and get alpha-cropped like a `.clm`'s; read exact texels away from the
 //! crop boundary.
-#![allow(
-    dead_code,
-    reason = "each test binary uses a different subset of these helpers"
-)]
+#![expect(clippy::expect_used, reason = "a test aborts on a broken fixture")]
 
 use catchlight_core::formats::clm::{ClmIndices, ClmMesh};
 use catchlight_core::formats::clm::{TextureAlpha, TextureEncoding};
@@ -156,21 +153,6 @@ impl Scene {
     pub fn new(renderer: &mut WgpuRenderer, model: Model) -> Self {
         let cache = RenderCache::prepare(renderer, &model, PrepareOptions::default())
             .expect("prepare the render cache");
-        let puppet = Puppet::new(&model);
-        Self {
-            model,
-            puppet,
-            cache,
-        }
-    }
-
-    pub fn with_options(
-        renderer: &mut WgpuRenderer,
-        model: Model,
-        options: PrepareOptions,
-    ) -> Self {
-        let cache =
-            RenderCache::prepare(renderer, &model, options).expect("prepare the render cache");
         let puppet = Puppet::new(&model);
         Self {
             model,

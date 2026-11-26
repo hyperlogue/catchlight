@@ -8,14 +8,14 @@
 //! buffer state: each breaks only once a frame grows, so no pixel baseline
 //! catches it.
 
-mod common;
+use crate::common;
 
+use crate::common::Scene;
 use catchlight_core::{Mesh, Model};
 use catchlight_wgpu::{
     CAMERA_RING_SLOTS, FrameStats, FrameTargets, Pipelines, RenderList, RenderStats, RenderTarget,
     RendererError, Submission, WgpuRenderer, create_orthographic_camera,
 };
-use common::Scene;
 use std::path::PathBuf;
 use std::sync::Arc;
 

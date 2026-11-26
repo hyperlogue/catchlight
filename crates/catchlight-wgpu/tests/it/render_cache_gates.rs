@@ -1,8 +1,6 @@
-#![expect(clippy::expect_used, reason = "a test aborts on a broken fixture")]
-
 //! The render cache's model-generation and deform-generation gates.
 
-mod common;
+use crate::common;
 
 use catchlight_core::{Model, ModelNodeKind, ModelPart, Puppet, SeededHex, Vec2};
 use catchlight_wgpu::{PrepareOptions, RenderCache, RenderContext, WgpuRenderer};

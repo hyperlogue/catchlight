@@ -5,7 +5,7 @@
 //! Assertions read the centre pixel: alpha-cropping makes the quad's edge
 //! fragments straddle the crop boundary.
 
-mod common;
+use crate::common;
 
 use catchlight_core::{BlendMode, Model, ModelComposite, ModelNodeKind};
 use catchlight_wgpu::{PrepareOptions, RenderCache, WgpuRenderer, collect};

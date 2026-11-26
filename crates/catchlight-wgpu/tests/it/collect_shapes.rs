@@ -5,8 +5,9 @@
 //! A part is named by its mesh slot and a composite by its node slot; go
 //! through `mesh_slot` / `node_slot` rather than literals.
 
-mod common;
+use crate::common;
 
+use crate::common::{Build, Scene};
 use catchlight_core::components::BlendMode;
 use catchlight_core::{
     MaskMode, Model, ModelComposite, ModelNodeKind, ModelPart, NodeId, Puppet, TexId,
@@ -14,7 +15,6 @@ use catchlight_core::{
 use catchlight_wgpu::{
     DrawableInfo, MaskSourceData, PrepareOptions, RenderCache, RenderList, WgpuRenderer, collect,
 };
-use common::{Build, Scene};
 use std::path::PathBuf;
 
 async fn renderer() -> WgpuRenderer {
