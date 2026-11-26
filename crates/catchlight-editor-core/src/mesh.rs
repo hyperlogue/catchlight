@@ -907,41 +907,48 @@ fn simplify_loop(points: &[[f32; 2]], eps: f32) -> Vec<[f32; 2]> {
         return points.to_vec();
     }
     let mid = points.len() / 2;
-    let mut out = Vec::new();
-    dp(&points[..=mid], eps, &mut out);
+    let mut out = dp(&points[..=mid], eps);
     out.pop();
-    let mut second = Vec::new();
     let mut wrapped: Vec<[f32; 2]> = points[mid..].to_vec();
     wrapped.push(points[0]);
-    dp(&wrapped, eps, &mut second);
+    let mut second = dp(&wrapped, eps);
     second.pop();
     out.extend(second);
     out
 }
 
-fn dp(points: &[[f32; 2]], eps: f32, out: &mut Vec<[f32; 2]>) {
+/// Iterative: a contour can be millions of points long, and an unbalanced
+/// split would recurse once per point.
+fn dp(points: &[[f32; 2]], eps: f32) -> Vec<[f32; 2]> {
     if points.len() < 2 {
-        out.extend_from_slice(points);
-        return;
+        return points.to_vec();
     }
-    let (a, b) = (points[0], points[points.len() - 1]);
-    let mut far = 0usize;
-    let mut far_d = -1.0f32;
-    for (i, p) in points.iter().enumerate().skip(1).take(points.len() - 2) {
-        let d = point_segment_dist(*p, a, b);
-        if d > far_d {
-            far_d = d;
-            far = i;
+    let mut keep = vec![false; points.len()];
+    keep[0] = true;
+    keep[points.len() - 1] = true;
+    let mut spans = vec![(0usize, points.len() - 1)];
+    while let Some((lo, hi)) = spans.pop() {
+        let (a, b) = (points[lo], points[hi]);
+        let mut far = lo;
+        let mut far_d = -1.0f32;
+        for (i, p) in points.iter().enumerate().take(hi).skip(lo + 1) {
+            let d = point_segment_dist(*p, a, b);
+            if d > far_d {
+                far_d = d;
+                far = i;
+            }
+        }
+        if far_d > eps {
+            keep[far] = true;
+            spans.push((lo, far));
+            spans.push((far, hi));
         }
     }
-    if far_d > eps {
-        dp(&points[..=far], eps, out);
-        out.pop();
-        dp(&points[far..], eps, out);
-    } else {
-        out.push(a);
-        out.push(b);
-    }
+    points
+        .iter()
+        .zip(keep)
+        .filter_map(|(p, k)| k.then_some(*p))
+        .collect()
 }
 
 fn point_segment_dist(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
@@ -1460,6 +1467,23 @@ mod tests {
             wm.move_vertex(0, [0.0, f32::INFINITY]),
             Err(MeshError::NotFinite)
         );
+    }
+
+    #[test]
+    fn simplifying_an_unbalanced_contour_keeps_a_small_stack() {
+        // Each split lands next to an end, so a recursive split goes one
+        // level deeper per point.
+        let n = 5_000usize;
+        let points: Vec<[f32; 2]> = (0..n)
+            .map(|i| [i as f32, if i % 2 == 1 { (n - i) as f32 } else { 0.0 }])
+            .collect();
+        let kept = std::thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(move || dp(&points, 0.5).len())
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(kept, n, "every zigzag point survives");
     }
 
     #[test]
