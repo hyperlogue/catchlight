@@ -71,6 +71,16 @@ fn carried() -> Vec<ClmUnknownSection> {
     ]
 }
 
+fn sections_of<'a>(file: &container::Container<'a>) -> Vec<Section<'a>> {
+    file.sections
+        .iter()
+        .map(|s| Section {
+            kind: s.kind,
+            data: s.data,
+        })
+        .collect()
+}
+
 fn kinds(bytes: &[u8]) -> Vec<(u32, Vec<u8>)> {
     container::read(bytes, &clm::MAGIC)
         .unwrap()
@@ -243,6 +253,42 @@ fn a_section_of_a_known_kind_cannot_be_carried_as_unknown() {
             "kind {kind}"
         );
     }
+}
+
+#[test]
+fn a_known_section_kind_appears_once() {
+    let bytes = fixture();
+    let original = container::read(&bytes, &clm::MAGIC).unwrap();
+    for kind in 0..=3 {
+        let mut sections = sections_of(&original);
+        // Twice, for a kind the fixture does not carry.
+        sections.extend([Section { kind, data: b"x" }, Section { kind, data: b"x" }]);
+        let doubled = container::write(&clm::MAGIC, clm::FORMAT_VERSION, &sections).unwrap();
+        assert!(
+            matches!(clm::decode(&doubled), Err(ClmError::DuplicateSection(k)) if k == kind),
+            "kind {kind}"
+        );
+        assert!(
+            matches!(
+                Model::from_clm_bytes(&doubled),
+                Err(ModelError::Clm(ClmError::DuplicateSection(k))) if k == kind
+            ),
+            "kind {kind}"
+        );
+    }
+    let mut repeated_unknown = sections_of(&original);
+    repeated_unknown.extend([
+        Section {
+            kind: FUTURE,
+            data: b"a",
+        },
+        Section {
+            kind: FUTURE,
+            data: b"b",
+        },
+    ]);
+    let bytes = container::write(&clm::MAGIC, clm::FORMAT_VERSION, &repeated_unknown).unwrap();
+    clm::decode(&bytes).unwrap();
 }
 
 #[test]

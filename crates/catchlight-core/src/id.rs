@@ -15,6 +15,10 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 /// Caps what a corrupt file can allocate one name at a time.
 pub const MAX_NAME_BYTES: usize = 256;
 
+/// Caps an id as [`MAX_NAME_BYTES`] caps a name; a generated [`NodeId`] stops
+/// carrying its parent's id rather than grow past it.
+pub const MAX_ID_BYTES: usize = 512;
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum IdError {
@@ -40,6 +44,8 @@ pub enum IdError {
     TrailingDot,
     #[error("a name may be at most {max} bytes, got {bytes}")]
     TooLong { bytes: usize, max: usize },
+    #[error("an id may be at most {max} bytes, got {bytes}")]
+    IdTooLong { bytes: usize, max: usize },
 }
 
 const fn is_id_byte(b: u8) -> bool {
@@ -49,6 +55,12 @@ const fn is_id_byte(b: u8) -> bool {
 pub fn validate_id(s: &str) -> Result<(), IdError> {
     if s.is_empty() {
         return Err(IdError::Empty);
+    }
+    if s.len() > MAX_ID_BYTES {
+        return Err(IdError::IdTooLong {
+            bytes: s.len(),
+            max: MAX_ID_BYTES,
+        });
     }
     match s.as_bytes()[0] {
         b'.' => return Err(IdError::LeadingDot),
@@ -149,7 +161,8 @@ macro_rules! string_id {
 string_id!(
     NodeId,
     "The identity of a node. Unique within a model; generated as \
-     `<parent id>/<kind>-<8 hex>` by [`NodeId::generate`]."
+     `<parent id>/<kind>-<8 hex>` by [`NodeId::generate`], or without the \
+     parent where that would be too long."
 );
 string_id!(
     ParamId,
@@ -234,15 +247,14 @@ impl NodeId {
         Self(generated(s))
     }
 
-    /// Generates `<parent>/<kind>-<8 hex>`. Uniqueness within the model is the
-    /// caller's to check.
+    /// Generates `<parent>/<kind>-<8 hex>`, or `<kind>-<8 hex>` where that would
+    /// pass [`MAX_ID_BYTES`]. Uniqueness within the model is the caller's to check.
     pub fn generate(parent: &Self, kind: NodeIdKind, hex: &mut impl HexSource) -> Self {
-        Self(generated(format!(
-            "{}/{}-{:08x}",
-            parent.as_str(),
-            kind.as_str(),
-            hex.next_bits()
-        )))
+        let own = format!("{}-{:08x}", kind.as_str(), hex.next_bits());
+        if parent.0.len() + 1 + own.len() > MAX_ID_BYTES {
+            return Self(generated(own));
+        }
+        Self(generated(format!("{}/{own}", parent.as_str())))
     }
 }
 
@@ -721,6 +733,33 @@ mod tests {
         assert!(name.as_str().len() <= MAX_NAME_BYTES);
         assert!(name.as_str().chars().all(|c| c == 'é'));
         assert_eq!(Name::truncated("short").as_str(), "short");
+    }
+
+    #[test]
+    fn an_id_is_capped_and_a_deep_generated_id_drops_its_parent() {
+        assert!(NodeId::new("n".repeat(MAX_ID_BYTES)).is_ok());
+        assert_eq!(
+            NodeId::new("n".repeat(MAX_ID_BYTES + 1)),
+            Err(IdError::IdTooLong {
+                bytes: MAX_ID_BYTES + 1,
+                max: MAX_ID_BYTES
+            })
+        );
+        let mut buf = Vec::new();
+        ciborium::into_writer(&"n".repeat(MAX_ID_BYTES + 1), &mut buf).unwrap();
+        assert!(ciborium::from_reader::<ParamId, _>(&buf[..]).is_err());
+
+        let mut hex = || 0xabcd_0123;
+        // `/part-abcd0123` is 14 bytes.
+        let roomy = NodeId::new("n".repeat(MAX_ID_BYTES - 14)).unwrap();
+        let child = NodeId::generate(&roomy, NodeIdKind::Part, &mut hex);
+        assert_eq!(child.as_str().len(), MAX_ID_BYTES);
+        assert!(child.as_str().starts_with(roomy.as_str()));
+        let deep = NodeId::new("n".repeat(MAX_ID_BYTES - 13)).unwrap();
+        assert_eq!(
+            NodeId::generate(&deep, NodeIdKind::Part, &mut hex).as_str(),
+            "part-abcd0123"
+        );
     }
 
     #[test]

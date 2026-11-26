@@ -264,6 +264,58 @@ pub(super) fn node_placement(z_order: f32, transform: &ClmTransform) -> Result<(
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum AppearanceFault {
+    Opacity,
+    Tint,
+    ScreenTint,
+    MaskThreshold,
+}
+
+impl AppearanceFault {
+    pub(super) fn field(self) -> &'static str {
+        match self {
+            Self::Opacity => "opacity",
+            Self::Tint => "tint",
+            Self::ScreenTint => "screen tint",
+            Self::MaskThreshold => "mask threshold",
+        }
+    }
+}
+
+impl From<AppearanceFault> for ModelError {
+    fn from(fault: AppearanceFault) -> Self {
+        Self::NonFinite(match fault {
+            AppearanceFault::Opacity => "a node's opacity",
+            AppearanceFault::Tint => "a node's tint",
+            AppearanceFault::ScreenTint => "a node's screen tint",
+            AppearanceFault::MaskThreshold => "a node's mask threshold",
+        })
+    }
+}
+
+/// Only parts and composites are drawn with a look of their own.
+pub(super) fn appearance(kind: &ModelNodeKind) -> Result<(), AppearanceFault> {
+    let (opacity, tint, screen_tint, mask_threshold) = match kind {
+        ModelNodeKind::Part(p) => (p.opacity, p.tint, p.screen_tint, p.mask_threshold),
+        ModelNodeKind::Composite(c) => (c.opacity, c.tint, c.screen_tint, c.mask_threshold),
+        _ => return Ok(()),
+    };
+    if !opacity.is_finite() {
+        return Err(AppearanceFault::Opacity);
+    }
+    if tint.iter().any(|v| !v.is_finite()) {
+        return Err(AppearanceFault::Tint);
+    }
+    if screen_tint.iter().any(|v| !v.is_finite()) {
+        return Err(AppearanceFault::ScreenTint);
+    }
+    if !mask_threshold.is_finite() {
+        return Err(AppearanceFault::MaskThreshold);
+    }
+    Ok(())
+}
+
 pub(super) fn drop_slot_inputs(kind: &mut ModelNodeKind, gone: impl Fn(&NodeId, &SlotId) -> bool) {
     if let ModelNodeKind::MotionResponse(response) = kind {
         response.inputs.retain(|input| {
@@ -401,6 +453,32 @@ mod tests {
             let mut bad = identity;
             poison(&mut bad);
             assert_eq!(node_placement(0.0, &bad), Err(PlacementFault::Transform));
+        }
+    }
+
+    #[test]
+    fn a_nodes_appearance_is_finite() {
+        assert_eq!(appearance(&ModelNodeKind::Group), Ok(()));
+        assert_eq!(
+            appearance(&ModelNodeKind::Composite(ModelComposite::new())),
+            Ok(())
+        );
+        let poisons: [(fn(&mut ModelComposite), AppearanceFault); 4] = [
+            (|c| c.opacity = f32::NAN, AppearanceFault::Opacity),
+            (|c| c.tint[1] = f32::INFINITY, AppearanceFault::Tint),
+            (
+                |c| c.screen_tint[2] = f32::NEG_INFINITY,
+                AppearanceFault::ScreenTint,
+            ),
+            (
+                |c| c.mask_threshold = f32::NAN,
+                AppearanceFault::MaskThreshold,
+            ),
+        ];
+        for (poison, fault) in poisons {
+            let mut bad = ModelComposite::new();
+            poison(&mut bad);
+            assert_eq!(appearance(&ModelNodeKind::Composite(bad)), Err(fault));
         }
     }
 

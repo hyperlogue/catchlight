@@ -380,17 +380,17 @@ fn the_no_texture_sentinel_draws_nothing() {
 }
 
 #[test]
-fn a_mesh_with_an_odd_coordinate_count_keeps_the_pairs_it_has() {
+fn a_mesh_keeps_the_vertex_pairs_and_whole_triangles_it_has() {
     let d = doc(json!({
         "type": "Part",
         "textures": [0],
-        "mesh": {"verts": [0.0, 1.0, 2.0, 3.0, 4.0], "uvs": [0.0, 0.0, 1.0, 1.0], "indices": [0, 1]}
+        "mesh": {"verts": [0.0, 1.0, 2.0, 3.0, 4.0], "uvs": [0.0, 0.0, 1.0, 1.0], "indices": [0, 1, 1, 0, 1]}
     }));
     let ClmNodeKind::Part(part) = &d.nodes[0].kind else {
         panic!("expected Part");
     };
     assert_eq!(part.mesh.verts.len() / 2, 2);
-    assert_eq!(part.mesh.indices, ClmIndices::U16(vec![0, 1]));
+    assert_eq!(part.mesh.indices, ClmIndices::U16(vec![0, 1, 1]));
 }
 
 #[test]

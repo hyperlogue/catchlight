@@ -131,11 +131,23 @@ pub(crate) fn convert_mesh(
             "index {past} names a vertex past the mesh's {vertices}"
         )));
     }
-    let max = m.indices.iter().copied().max().unwrap_or(0);
+    // A draw ignores indices past the last whole triangle, and the `.clm`
+    // reader refuses them.
+    let whole = m.indices.len() - m.indices.len() % 3;
+    if whole != m.indices.len() {
+        tracing::warn!(
+            "node {} ({:?}): dropping {} indices past its last whole triangle",
+            node.id,
+            node.name,
+            m.indices.len() - whole,
+        );
+    }
+    let kept = m.indices.get(..whole).unwrap_or_default();
+    let max = kept.iter().copied().max().unwrap_or(0);
     let indices = if u16::try_from(max).is_ok() {
-        ClmIndices::U16(m.indices.iter().map(|&i| i as u16).collect())
+        ClmIndices::U16(kept.iter().map(|&i| i as u16).collect())
     } else {
-        ClmIndices::U32(m.indices.clone())
+        ClmIndices::U32(kept.to_vec())
     };
     // Only an untextured mesh group reaches here with ragged UVs; nothing
     // samples them, and the `.clm` reader refuses unpaired UVs.

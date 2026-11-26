@@ -211,9 +211,6 @@ fn empty_degenerate_excluded_and_nonfinite_bounds_have_explicit_meanings() {
     let mut ids = SeededHex::new(73);
     let root = model.root().unwrap().clone();
     let empty = add_part(&mut model, &root, ClmMesh::default(), &mut ids);
-    let mut partial_mesh = triangle();
-    partial_mesh.indices = ClmIndices::U16(vec![0, 1]);
-    let partial = add_part(&mut model, &root, partial_mesh, &mut ids);
     let mut point_mesh = triangle();
     point_mesh.indices = ClmIndices::U16(vec![1, 1, 1]);
     let point = add_part(&mut model, &root, point_mesh, &mut ids);
@@ -239,7 +236,6 @@ fn empty_degenerate_excluded_and_nonfinite_bounds_have_explicit_meanings() {
     assert_eq!(empty.vertex_count(), 0);
     assert_eq!(empty.vertices().count(), 0);
     assert_eq!(empty.world_bounds().unwrap(), None);
-    assert_eq!(frame.mesh(&partial).unwrap().world_bounds().unwrap(), None);
     let point_bounds = Bounds2 {
         min: Vec2::new(2.0, 0.0),
         max: Vec2::new(2.0, 0.0),

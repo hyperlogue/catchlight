@@ -629,6 +629,10 @@ impl Model {
             node.kind = model_kind(
                 &cn.id, &cn.kind, node_slots, &declared, &textures, &params, shape,
             )?;
+            validate::appearance(&node.kind).map_err(|fault| ClmLoadError::NodeNotFinite {
+                node: cn.id.to_string(),
+                field: fault.field(),
+            })?;
             nodes.insert(cn.id.clone(), node);
         }
         if roots.is_empty() && !shape.allows_dangling() {
@@ -1853,7 +1857,7 @@ mod tests {
 
     #[test]
     fn a_malformed_mesh_is_a_structured_error() {
-        let cases: [(BreakMesh, &str); 3] = [
+        let cases: [(BreakMesh, &str); 7] = [
             (
                 |mesh| mesh.verts.push(0.5),
                 "vertex array is not [x, y] pairs",
@@ -1865,6 +1869,16 @@ mod tests {
             (
                 |mesh| mesh.indices = ClmIndices::U16(vec![0, 1, 9]),
                 "index names a missing vertex",
+            ),
+            (
+                |mesh| mesh.indices = ClmIndices::U16(vec![0, 1, 2, 0]),
+                "index count is not whole triangles",
+            ),
+            (|mesh| mesh.verts[3] = f32::NAN, "a vertex is not finite"),
+            (|mesh| mesh.uvs[0] = f32::INFINITY, "a uv is not finite"),
+            (
+                |mesh| mesh.origin[1] = f32::NEG_INFINITY,
+                "the origin is not finite",
             ),
         ];
 
@@ -2134,6 +2148,19 @@ mod tests {
             ClmLoadError::NodeNotFinite {
                 node: id.clone(),
                 field: "transform",
+            }
+        );
+
+        let mut file = sample().to_clm_file().unwrap();
+        match &mut upper(&mut file).kind {
+            ClmNodeKind::Part(p) => p.screen_tint[1] = f32::NAN,
+            other => panic!("not a part: {other:?}"),
+        }
+        assert_eq!(
+            load_err(&file),
+            ClmLoadError::NodeNotFinite {
+                node: id.clone(),
+                field: "screen tint",
             }
         );
 

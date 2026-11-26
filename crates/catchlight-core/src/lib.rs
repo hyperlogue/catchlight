@@ -24,8 +24,8 @@ pub use components::{
 };
 pub use deform::{DeformShapeError, DeformSource, DeformStack};
 pub use id::{
-    EXTENSION_RESERVED_PREFIX, ExtensionKey, HexSource, IdError, MAX_NAME_BYTES, Name, NodeId,
-    NodeIdKind, ParamId, SeededHex, SlotId, TexId,
+    EXTENSION_RESERVED_PREFIX, ExtensionKey, HexSource, IdError, MAX_ID_BYTES, MAX_NAME_BYTES,
+    Name, NodeId, NodeIdKind, ParamId, SeededHex, SlotId, TexId,
 };
 pub use interpolate::InterpolateMode;
 pub use load::{ModelFormat, load_model};

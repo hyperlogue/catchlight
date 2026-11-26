@@ -885,6 +885,10 @@ impl Model {
             node.kind = previous;
             return Err(ModelError::KindEdit(what));
         }
+        if let Err(fault) = validate::appearance(&node.kind) {
+            node.kind = previous;
+            return Err(fault.into());
+        }
         let response_changed = matches!(
             (&previous, &node.kind),
             (ModelNodeKind::MotionResponse(a), ModelNodeKind::MotionResponse(b)) if a != b
@@ -916,7 +920,7 @@ impl Model {
         out
     }
 
-    /// Generated Id: `<parent>/<kind>-<8 hex>`, re-drawn until free.
+    /// The Id is drawn by [`NodeId::generate`] until it is free.
     pub fn add_node(
         &mut self,
         parent: &NodeId,
@@ -946,6 +950,7 @@ impl Model {
             return Err(ModelError::DuplicateId(id.to_string()));
         }
         validate::node_placement(node.z_order, &node.transform)?;
+        validate::appearance(&node.kind)?;
         if let Some(mesh) = node.mesh() {
             validate_mesh(mesh)?;
         }
@@ -2289,7 +2294,8 @@ pub(crate) fn albedo_of(node: &ModelNode) -> Option<&TexId> {
     }
 }
 
-/// Vertices come in pairs, uvs match them, and every index names a vertex.
+/// Vertices come in pairs, uvs match them, every coordinate is finite, and
+/// the indices are whole triangles over existing vertices.
 fn validate_mesh(mesh: &ClmMesh) -> Result<(), ModelError> {
     if !mesh.verts.len().is_multiple_of(2) {
         return Err(ModelError::MalformedMesh(
@@ -2301,11 +2307,25 @@ fn validate_mesh(mesh: &ClmMesh) -> Result<(), ModelError> {
             "uv count does not match vertices",
         ));
     }
-    let vcount = mesh.verts.len() / 2;
-    let max_index = match &mesh.indices {
-        clm::ClmIndices::U16(v) => v.iter().map(|&i| i as usize).max(),
-        clm::ClmIndices::U32(v) => v.iter().map(|&i| i as usize).max(),
+    if mesh.verts.iter().any(|v| !v.is_finite()) {
+        return Err(ModelError::MalformedMesh("a vertex is not finite"));
+    }
+    if mesh.uvs.iter().any(|v| !v.is_finite()) {
+        return Err(ModelError::MalformedMesh("a uv is not finite"));
+    }
+    if mesh.origin.iter().any(|v| !v.is_finite()) {
+        return Err(ModelError::MalformedMesh("the origin is not finite"));
+    }
+    let (count, max_index) = match &mesh.indices {
+        clm::ClmIndices::U16(v) => (v.len(), v.iter().map(|&i| i as usize).max()),
+        clm::ClmIndices::U32(v) => (v.len(), v.iter().map(|&i| i as usize).max()),
     };
+    if !count.is_multiple_of(3) {
+        return Err(ModelError::MalformedMesh(
+            "index count is not whole triangles",
+        ));
+    }
+    let vcount = mesh.verts.len() / 2;
     if max_index.is_some_and(|m| m >= vcount) {
         return Err(ModelError::MalformedMesh("index names a missing vertex"));
     }
@@ -2586,6 +2606,32 @@ mod tests {
             matches!(got, Err(ModelError::NonFinite("a node's transform"))),
             "{got:?}"
         );
+
+        let mut faded = ModelComposite::new();
+        faded.opacity = f32::NAN;
+        let got = r.model.add_node(
+            &root,
+            ModelNode::new("faded", ModelNodeKind::Composite(faded)),
+            &mut r.hex,
+        );
+        assert!(
+            matches!(got, Err(ModelError::NonFinite("a node's opacity"))),
+            "{got:?}"
+        );
+        let got = r.model.update_node_kind(&part, |kind| {
+            if let ModelNodeKind::Part(p) = kind {
+                p.opacity = 0.5;
+                p.mask_threshold = f32::INFINITY;
+            }
+        });
+        assert!(
+            matches!(got, Err(ModelError::NonFinite("a node's mask threshold"))),
+            "{got:?}"
+        );
+        match &r.model.node(&part).unwrap().kind {
+            ModelNodeKind::Part(p) => assert_eq!(p.opacity, 1.0),
+            other => panic!("not a part: {other:?}"),
+        }
 
         let got = r.model.add_param_with_id(
             ParamId::new("nan").unwrap(),
@@ -3544,6 +3590,16 @@ mod tests {
                 &mut hex,
             ),
             Err(ModelError::MalformedMesh(_))
+        ));
+        let mut nan = quad();
+        nan.verts[0] = f32::NAN;
+        assert!(matches!(
+            r.model.add_node(
+                &root,
+                ModelNode::new("nan", ModelNodeKind::Part(ModelPart::new(nan))),
+                &mut hex,
+            ),
+            Err(ModelError::MalformedMesh("a vertex is not finite"))
         ));
         assert!(matches!(
             r.model.add_param_with_id(

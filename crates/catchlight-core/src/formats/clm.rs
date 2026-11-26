@@ -176,6 +176,8 @@ pub enum ClmError {
          the format does not recognise"
     )]
     ReservedSectionKind(u32),
+    #[error("section kind {0} appears twice; this format defines it once per file")]
+    DuplicateSection(u32),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -999,6 +1001,15 @@ fn read_container(bytes: &[u8]) -> Result<container::Container<'_>, ClmError> {
     let file = container::read(bytes, &MAGIC)?;
     if file.version != FORMAT_VERSION {
         return Err(ClmError::UnsupportedVersion(file.version));
+    }
+    let mut known = Vec::with_capacity(4);
+    for section in &file.sections {
+        if is_known_section(section.kind) {
+            if known.contains(&section.kind) {
+                return Err(ClmError::DuplicateSection(section.kind));
+            }
+            known.push(section.kind);
+        }
     }
     Ok(file)
 }
