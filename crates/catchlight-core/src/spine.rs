@@ -261,16 +261,6 @@ fn descendant_turned_nodes(tree: &NodeTree, spine_id: NodeIdx, arena: &Arena) ->
     out
 }
 
-/// Pre-order, so the pass is deterministic.
-fn spine_pre_order(arena: &Arena) -> Vec<NodeIdx> {
-    arena.tree.with_dfs_order(|dfs| {
-        dfs.iter()
-            .copied()
-            .filter(|id| matches!(arena.get(*id).map(|n| &n.kind), Some(NodeKind::Spine(_))))
-            .collect()
-    })
-}
-
 /// `transforms` must be the rest globals.
 pub(crate) fn bake_spine_pins(
     arena: &Arena,
@@ -483,13 +473,13 @@ fn pose_guide(
 /// Runs after transforms and before the mesh groups.
 pub(crate) fn propagate_spine_deforms(arena: &mut Arena, transforms: &GlobalTransforms) {
     let _span = tracing::trace_span!("propagate_spine_deforms").entered();
-    let order = spine_pre_order(arena);
     let mut scratch = std::mem::take(&mut arena.spine_scratch);
     let mut cur_deform = std::mem::take(&mut arena.spine_cur_deform_scratch);
     let mut child_ids: smallvec::SmallVec<[NodeIdx; 8]> = smallvec::SmallVec::new();
     let mut guide = Vec::new();
 
-    for spine_id in order {
+    for i in 0..arena.spine_node_ids.len() {
+        let spine_id = arena.spine_node_ids[i];
         child_ids.clear();
         {
             let Some(node) = arena.get(spine_id) else {

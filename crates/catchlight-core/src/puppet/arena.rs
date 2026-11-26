@@ -66,13 +66,14 @@ pub(crate) struct Arena {
     pub(crate) mg_cur_deform_scratch: Vec<glam::Vec2>,
     pub(crate) mg_deformed_vertices_scratch: Vec<glam::Vec2>,
     pub(crate) mg_local_scratch: Vec<glam::Vec2>,
-    // None = stale.
-    pub(crate) mg_pre_order_cache: Option<Vec<NodeIdx>>,
     pub(crate) mg_written_sources: Vec<(NodeIdx, NodeIdx)>,
     pub(crate) mg_shifts: Vec<(NodeIdx, Vec2)>,
     // Saves ~60-100ns of quat/mat ops per node with no delta this frame.
     pub(crate) base_local_matrix: Arc<Vec<Mat4>>,
     pub(crate) node_transform_dirty: Vec<bool>,
+    // This and the other kind registries hold ascending `NodeIdx`, which is
+    // ancestor-first: `insert_child` only attaches to a node that already has
+    // a slot, and slots are allocated in order.
     pub(crate) deform_node_ids: Vec<NodeIdx>,
     /// Solve order is list order.
     pub(crate) welds: Arc<Vec<crate::weld::Weld>>,
@@ -101,7 +102,6 @@ impl Arena {
             mg_cur_deform_scratch: Vec::new(),
             mg_deformed_vertices_scratch: Vec::new(),
             mg_local_scratch: Vec::new(),
-            mg_pre_order_cache: None,
             mg_written_sources: Vec::new(),
             mg_shifts: Vec::new(),
             base_local_matrix: Arc::new(vec![Mat4::IDENTITY]),
@@ -172,11 +172,6 @@ impl Arena {
                 self.mesh_group_node_ids.push(id);
             }
         }
-        self.invalidate_structure_caches();
-    }
-
-    pub(crate) fn invalidate_structure_caches(&mut self) {
-        self.mg_pre_order_cache = None;
     }
 
     pub(crate) fn rebuild_all_mesh_group_pins(&mut self) {
@@ -347,7 +342,6 @@ impl Arena {
         if is_spine {
             self.spine_node_ids.push(id);
         }
-        self.invalidate_structure_caches();
         id
     }
 

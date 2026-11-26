@@ -446,10 +446,10 @@ impl Arena {
         }
         self.deform_node_ids.retain(|n| needed.contains(n));
         self.mesh_group_node_ids.retain(|n| needed.contains(n));
-        let mut order = mesh_group_pre_order(self);
-        order.retain(|n| needed.contains(n));
-        let groups: std::collections::HashSet<_> = order.iter().copied().collect();
-        for &id in &order {
+        let groups: std::collections::HashSet<_> =
+            self.mesh_group_node_ids.iter().copied().collect();
+        for i in 0..self.mesh_group_node_ids.len() {
+            let id = self.mesh_group_node_ids[i];
             if let Some(NodeKind::MeshGroup(group)) = self.get_mut(id).map(|n| &mut n.kind) {
                 std::sync::Arc::make_mut(&mut group.pins)
                     .per_child
@@ -460,33 +460,7 @@ impl Arena {
                     });
             }
         }
-        self.mg_pre_order_cache = Some(order);
     }
-}
-
-/// Pre-order: an outer MG must push into a nested MG's stack before the
-/// inner combines.
-fn mesh_group_pre_order(arena: &Arena) -> Vec<NodeIdx> {
-    arena.tree.with_dfs_order(|dfs| {
-        dfs.iter()
-            .copied()
-            .filter(|id| {
-                matches!(
-                    arena.get(*id).map(|n| &n.kind),
-                    Some(NodeKind::MeshGroup(_))
-                )
-            })
-            .collect()
-    })
-}
-
-// Caller must return the Vec via `restore_mg_pre_order_cache`; avoids a
-// per-frame clone.
-fn take_mg_pre_order(arena: &mut Arena) -> Vec<NodeIdx> {
-    if arena.mg_pre_order_cache.is_none() {
-        arena.mg_pre_order_cache = Some(mesh_group_pre_order(arena));
-    }
-    arena.mg_pre_order_cache.take().unwrap_or_default()
 }
 
 /// Children are sampled at their current position (`base + cur_deform`,
@@ -500,7 +474,6 @@ pub(crate) fn propagate_mesh_group_deforms(
     let _span = tracing::trace_span!("propagate_mesh_group_deforms").entered();
     arena.mg_written_sources.clear();
     arena.mg_shifts.clear();
-    let order = take_mg_pre_order(arena);
 
     let mut scratch = std::mem::take(&mut arena.mg_propagate_scratch);
     let mut cur_deform_scratch = std::mem::take(&mut arena.mg_cur_deform_scratch);
@@ -508,7 +481,10 @@ pub(crate) fn propagate_mesh_group_deforms(
     let mut mg_local = std::mem::take(&mut arena.mg_local_scratch);
     let mut child_ids: smallvec::SmallVec<[NodeIdx; 8]> = smallvec::SmallVec::new();
 
-    for &mg_id in &order {
+    // Ancestor-first, so an outer MG pushes into a nested MG's stack before
+    // the inner combines.
+    for i in 0..arena.mesh_group_node_ids.len() {
+        let mg_id = arena.mesh_group_node_ids[i];
         mg_local.clear();
         if let Some(node) = arena.get_mut(mg_id) {
             if let NodeKind::MeshGroup(mg) = &mut node.kind {
@@ -585,9 +561,6 @@ pub(crate) fn propagate_mesh_group_deforms(
     arena.mg_cur_deform_scratch = cur_deform_scratch;
     arena.mg_deformed_vertices_scratch = deformed_mg_vertices;
     arena.mg_local_scratch = mg_local;
-    if arena.mg_pre_order_cache.is_none() {
-        arena.mg_pre_order_cache = Some(order);
-    }
 }
 
 /// Shift one MG's `translate_children` targets, then recompute the globals
