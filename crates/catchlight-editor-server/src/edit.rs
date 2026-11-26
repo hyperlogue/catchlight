@@ -83,15 +83,22 @@ pub fn apply(model: &mut Model, edit: EditOp) -> Result<ResponseBody, EditorErro
             apply_patch(model, &node, &patch)?;
             return Ok(ResponseBody::Node { node, dropped });
         }
-        EditOp::NodeReparent { node, to } => model.reparent(&node, &to)?,
-        EditOp::NodeReorder { node, index } => model.reorder(&node, index as usize)?,
+        EditOp::NodeReparent {
+            edit: NodeReparentArgs { node, to },
+        } => model.reparent(&node, &to)?,
+        EditOp::NodeReorder {
+            edit: NodeReorderArgs { node, index },
+        } => model.reorder(&node, index as usize)?,
         EditOp::MeshSet {
-            node,
-            verts,
-            uvs,
-            indices,
-            origin,
-            deform_mapping,
+            edit:
+                MeshSetArgs {
+                    node,
+                    verts,
+                    uvs,
+                    indices,
+                    origin,
+                    deform_mapping,
+                },
         } => {
             let mesh = build_mesh(verts, uvs, indices, origin)?;
             let emptied = if let Some(rows) = deform_mapping {
@@ -129,30 +136,39 @@ pub fn apply(model: &mut Model, edit: EditOp) -> Result<ResponseBody, EditorErro
             return Ok(emptied_reply(node, emptied));
         }
         EditOp::BindingKeyInsert {
-            node,
             params,
-            target,
-            axis,
-            value,
+            edit:
+                BindingKeyInsertArgs {
+                    node,
+                    target,
+                    axis,
+                    value,
+                },
         } => {
             model.key_insert(&binding_key(params, node, target)?, &axis, value)?;
         }
         EditOp::BindingKeyDelete {
-            node,
             params,
-            target,
-            axis,
-            index,
+            edit:
+                BindingKeyDeleteArgs {
+                    node,
+                    target,
+                    axis,
+                    index,
+                },
         } => {
             model.key_delete(&binding_key(params, node, target)?, &axis, index as usize)?;
         }
         EditOp::BindingKeyMove {
-            node,
             params,
-            target,
-            axis,
-            index,
-            value,
+            edit:
+                BindingKeyMoveArgs {
+                    node,
+                    target,
+                    axis,
+                    index,
+                    value,
+                },
         } => {
             model.key_move(
                 &binding_key(params, node, target)?,
@@ -162,10 +178,13 @@ pub fn apply(model: &mut Model, edit: EditOp) -> Result<ResponseBody, EditorErro
             )?;
         }
         EditOp::BindingAdd {
-            node,
             params,
-            target,
-            key_positions,
+            edit:
+                BindingAddArgs {
+                    node,
+                    target,
+                    key_positions,
+                },
         } => {
             let key = binding_key(params, node, target)?;
             if let Some(positions) = key_positions {
@@ -175,18 +194,24 @@ pub fn apply(model: &mut Model, edit: EditOp) -> Result<ResponseBody, EditorErro
             }
         }
         EditOp::BindingCellsSet {
-            node,
             params,
-            target,
-            cells,
+            edit:
+                BindingCellsSetArgs {
+                    node,
+                    target,
+                    cells,
+                },
         } => {
             write_cells(model, &binding_key(params, node, target)?, cells)?;
         }
         EditOp::BindingCellsUnset {
-            node,
             params,
-            target,
-            cells,
+            edit:
+                BindingCellsUnsetArgs {
+                    node,
+                    target,
+                    cells,
+                },
         } => {
             let key = binding_key(params, node, target)?;
             if model.binding(&key).is_none() {
@@ -198,28 +223,37 @@ pub fn apply(model: &mut Model, edit: EditOp) -> Result<ResponseBody, EditorErro
             }
         }
         EditOp::BindingDelete {
-            node,
             params,
-            target,
+            edit: BindingDeleteArgs { node, target },
         } => model.delete_binding(&binding_key(params, node, target)?)?,
         EditOp::BindingInterpolationSet {
-            node,
             params,
-            target,
-            mode,
+            edit: BindingInterpolationSetArgs { node, target, mode },
         } => model.set_binding_interpolate(&binding_key(params, node, target)?, mode.into())?,
-        EditOp::MaskAdd { node, source, mode } => model.mask_add(&node, &source, mode.into())?,
-        EditOp::MaskDelete { node, index } => model.mask_delete(&node, index as usize)?,
+        EditOp::MaskAdd {
+            edit: MaskAddArgs { node, source, mode },
+        } => model.mask_add(&node, &source, mode.into())?,
+        EditOp::MaskDelete {
+            edit: MaskDeleteArgs { node, index },
+        } => model.mask_delete(&node, index as usize)?,
         EditOp::SlotAdd { node, slot } => {
             model.slot_add(&node, slot.clone())?;
             return Ok(ResponseBody::Slot {
                 slot: SlotAddr { node, slot },
             });
         }
-        EditOp::SlotFill { node, slot, vertex } => model.slot_fill(&node, &slot, vertex)?,
-        EditOp::SlotClear { node, slot } => model.slot_clear(&node, &slot)?,
-        EditOp::SlotDelete { node, slot } => model.slot_delete(&node, &slot)?,
-        EditOp::WeldSet { a, b, pairs } => {
+        EditOp::SlotFill {
+            edit: SlotFillArgs { node, slot, vertex },
+        } => model.slot_fill(&node, &slot, vertex)?,
+        EditOp::SlotClear {
+            edit: SlotClearArgs { node, slot },
+        } => model.slot_clear(&node, &slot)?,
+        EditOp::SlotDelete {
+            edit: SlotDeleteArgs { node, slot },
+        } => model.slot_delete(&node, &slot)?,
+        EditOp::WeldSet {
+            edit: WeldSetArgs { a, b, pairs },
+        } => {
             let replacement = build_weld(a, b, pairs);
             let mut welds = model.welds().to_vec();
             if let Some(i) = welds
@@ -232,7 +266,9 @@ pub fn apply(model: &mut Model, edit: EditOp) -> Result<ResponseBody, EditorErro
             }
             model.set_welds(welds)?;
         }
-        EditOp::WeldDelete { a, b } => {
+        EditOp::WeldDelete {
+            edit: WeldDeleteArgs { a, b },
+        } => {
             let mut welds = model.welds().to_vec();
             let before = welds.len();
             welds.retain(|w| !joins(w, &a, &b));

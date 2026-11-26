@@ -230,35 +230,35 @@ export type Command =
     "cmd": "binding_key_insert",
     session: SessionId,
     if_rev?: number | null,
+    param: ParamId,
+    param_y?: ParamId | null,
     node: NodeId,
     target: BindingTarget,
     axis: ParamId,
     value: number,
-    param: ParamId,
-    param_y?: ParamId | null,
   }
   | {
     "cmd": "binding_key_delete",
     session: SessionId,
     if_rev?: number | null,
+    param: ParamId,
+    param_y?: ParamId | null,
     node: NodeId,
     target: BindingTarget,
     axis: ParamId,
     index: number,
-    param: ParamId,
-    param_y?: ParamId | null,
   }
   | {
     "cmd": "binding_key_move",
     session: SessionId,
     if_rev?: number | null,
+    param: ParamId,
+    param_y?: ParamId | null,
     node: NodeId,
     target: BindingTarget,
     axis: ParamId,
     index: number,
     value: number,
-    param: ParamId,
-    param_y?: ParamId | null,
   }
   | {
     "cmd": "edit_apply",
@@ -291,47 +291,47 @@ export type Command =
     "cmd": "binding_cells_set",
     session: SessionId,
     if_rev: number,
+    param: ParamId,
+    param_y?: ParamId | null,
     node: NodeId,
     target: BindingTarget,
     cells: Array<BindingCellWrite>,
-    param: ParamId,
-    param_y?: ParamId | null,
   }
   | {
     "cmd": "binding_cells_unset",
     session: SessionId,
     if_rev: number,
+    param: ParamId,
+    param_y?: ParamId | null,
     node: NodeId,
     target: BindingTarget,
     cells: Array<[number, number]>,
-    param: ParamId,
-    param_y?: ParamId | null,
   }
   | {
     "cmd": "binding_add",
     session: SessionId,
+    param: ParamId,
+    param_y?: ParamId | null,
     node: NodeId,
     target: BindingTarget,
     key_positions?: Array<Array<number>> | null,
-    param: ParamId,
-    param_y?: ParamId | null,
   }
   | {
     "cmd": "binding_delete",
     session: SessionId,
-    node: NodeId,
-    target: BindingTarget,
     param: ParamId,
     param_y?: ParamId | null,
+    node: NodeId,
+    target: BindingTarget,
   }
   | {
     "cmd": "binding_interpolation_set",
     session: SessionId,
+    param: ParamId,
+    param_y?: ParamId | null,
     node: NodeId,
     target: BindingTarget,
     mode: Interpolate,
-    param: ParamId,
-    param_y?: ParamId | null,
   }
   | {
     "cmd": "binding_list",
@@ -992,77 +992,83 @@ export type EditOp =
     "op": "mesh_set",
     node: NodeId,
     verts: Array<[number, number]>,
+    /**
+     * One `[u, v]` per vertex, as many as `verts`.
+     */
     uvs: Array<[number, number]>,
+    /**
+     * One `[a, b, c]` per triangle, each a `verts` index.
+     */
     indices: Array<[number, number, number]>,
     origin: [number, number],
-    deform_mapping: Array<Array<VertexWeight>> | null,
+    deform_mapping?: Array<Array<VertexWeight>> | null,
   }
   | {
     "op": "binding_key_insert",
+    param: ParamId,
+    param_y?: ParamId | null,
     node: NodeId,
     target: BindingTarget,
     axis: ParamId,
     value: number,
-    param: ParamId,
-    param_y?: ParamId | null,
   }
   | {
     "op": "binding_key_delete",
+    param: ParamId,
+    param_y?: ParamId | null,
     node: NodeId,
     target: BindingTarget,
     axis: ParamId,
     index: number,
-    param: ParamId,
-    param_y?: ParamId | null,
   }
   | {
     "op": "binding_key_move",
+    param: ParamId,
+    param_y?: ParamId | null,
     node: NodeId,
     target: BindingTarget,
     axis: ParamId,
     index: number,
     value: number,
-    param: ParamId,
-    param_y?: ParamId | null,
   }
   | {
     "op": "binding_add",
-    node: NodeId,
-    target: BindingTarget,
-    key_positions: Array<Array<number>> | null,
     param: ParamId,
     param_y?: ParamId | null,
+    node: NodeId,
+    target: BindingTarget,
+    key_positions?: Array<Array<number>> | null,
   }
   | {
     "op": "binding_cells_set",
+    param: ParamId,
+    param_y?: ParamId | null,
     node: NodeId,
     target: BindingTarget,
     cells: Array<BindingCellWrite>,
-    param: ParamId,
-    param_y?: ParamId | null,
   }
   | {
     "op": "binding_cells_unset",
+    param: ParamId,
+    param_y?: ParamId | null,
     node: NodeId,
     target: BindingTarget,
     cells: Array<[number, number]>,
-    param: ParamId,
-    param_y?: ParamId | null,
   }
   | {
     "op": "binding_delete",
-    node: NodeId,
-    target: BindingTarget,
     param: ParamId,
     param_y?: ParamId | null,
+    node: NodeId,
+    target: BindingTarget,
   }
   | {
     "op": "binding_interpolation_set",
+    param: ParamId,
+    param_y?: ParamId | null,
     node: NodeId,
     target: BindingTarget,
     mode: Interpolate,
-    param: ParamId,
-    param_y?: ParamId | null,
   }
   | {
     "op": "mask_add",

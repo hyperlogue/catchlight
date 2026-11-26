@@ -2,7 +2,9 @@
 
 use anyhow::{Result, anyhow, bail};
 use catchlight_editor_protocol::{
-    BindingCellRead, BindingCellValue, BindingCellWrite, BindingIdentity, BindingInfo,
+    BindingAddArgs, BindingCellRead, BindingCellValue, BindingCellWrite, BindingCellsSetArgs,
+    BindingCellsUnsetArgs, BindingDeleteArgs, BindingIdentity, BindingInfo,
+    BindingInterpolationSetArgs, BindingKeyDeleteArgs, BindingKeyInsertArgs, BindingKeyMoveArgs,
     BindingParams, BindingTarget, Command, EditOp, Interpolate, NodeId, ParamId, ScalarTarget,
 };
 use clap::Subcommand;
@@ -183,11 +185,13 @@ pub(crate) fn route(action: &BindingCmd) -> Route<'_> {
             value,
         } => Route::composed(move |remote| {
             remote.batch(vec![EditOp::BindingKeyInsert {
-                node: selection.node.clone(),
                 params: selection.params.wire(),
-                target: selection.target,
-                axis: axis.clone(),
-                value: *value,
+                edit: BindingKeyInsertArgs {
+                    node: selection.node.clone(),
+                    target: selection.target,
+                    axis: axis.clone(),
+                    value: *value,
+                },
             }])
         }),
         BindingCmd::KeyDelete {
@@ -196,11 +200,13 @@ pub(crate) fn route(action: &BindingCmd) -> Route<'_> {
             index,
         } => Route::composed(move |remote| {
             remote.batch(vec![EditOp::BindingKeyDelete {
-                node: selection.node.clone(),
                 params: selection.params.wire(),
-                target: selection.target,
-                axis: axis.clone(),
-                index: *index,
+                edit: BindingKeyDeleteArgs {
+                    node: selection.node.clone(),
+                    target: selection.target,
+                    axis: axis.clone(),
+                    index: *index,
+                },
             }])
         }),
         BindingCmd::KeyMove {
@@ -210,12 +216,14 @@ pub(crate) fn route(action: &BindingCmd) -> Route<'_> {
             value,
         } => Route::composed(move |remote| {
             remote.batch(vec![EditOp::BindingKeyMove {
-                node: selection.node.clone(),
                 params: selection.params.wire(),
-                target: selection.target,
-                axis: axis.clone(),
-                index: *index,
-                value: *value,
+                edit: BindingKeyMoveArgs {
+                    node: selection.node.clone(),
+                    target: selection.target,
+                    axis: axis.clone(),
+                    index: *index,
+                    value: *value,
+                },
             }])
         }),
         BindingCmd::Flip { selection, axis } => Route::composed(move |remote| {
@@ -238,14 +246,16 @@ pub(crate) fn route(action: &BindingCmd) -> Route<'_> {
         } => Route::plain(move |cli| {
             let session = resolve_session(cli)?;
             Ok(Command::BindingAdd {
-                key_positions: keys
-                    .as_ref()
-                    .map(|keys| serde_json::from_str(keys))
-                    .transpose()?,
                 session,
                 params: params.wire(),
-                node: node.clone(),
-                target: *target,
+                edit: BindingAddArgs {
+                    key_positions: keys
+                        .as_ref()
+                        .map(|keys| serde_json::from_str(keys))
+                        .transpose()?,
+                    node: node.clone(),
+                    target: *target,
+                },
             })
         }),
         BindingCmd::Key {
@@ -272,10 +282,12 @@ pub(crate) fn route(action: &BindingCmd) -> Route<'_> {
             cell,
         } => Route::composed(move |remote| {
             remote.batch(vec![EditOp::BindingCellsUnset {
-                node: node.clone(),
                 params: params.wire(),
-                target: *target,
-                cells: vec![*cell],
+                edit: BindingCellsUnsetArgs {
+                    node: node.clone(),
+                    target: *target,
+                    cells: vec![*cell],
+                },
             }])
         }),
         BindingCmd::Reset {
@@ -306,20 +318,24 @@ pub(crate) fn route(action: &BindingCmd) -> Route<'_> {
         } => Route::on_session(move |session| Command::BindingDelete {
             session,
             params: params.wire(),
-            node: node.clone(),
-            target: *target,
+            edit: BindingDeleteArgs {
+                node: node.clone(),
+                target: *target,
+            },
         }),
         BindingCmd::Interpolate {
             params,
             node,
             target,
             mode,
-        } => Route::on_session(move |session| Command::BindingInterpolate {
+        } => Route::on_session(move |session| Command::BindingInterpolationSet {
             session,
             params: params.wire(),
-            node: node.clone(),
-            target: *target,
-            mode: *mode,
+            edit: BindingInterpolationSetArgs {
+                node: node.clone(),
+                target: *target,
+                mode: *mode,
+            },
         }),
         BindingCmd::Invert {
             params,
@@ -396,10 +412,12 @@ pub(crate) fn cell_write(
     cells: Vec<BindingCellWrite>,
 ) -> EditOp {
     EditOp::BindingCellsSet {
-        node: node.clone(),
         params,
-        target,
-        cells,
+        edit: BindingCellsSetArgs {
+            node: node.clone(),
+            target,
+            cells,
+        },
     }
 }
 
@@ -462,12 +480,14 @@ fn flip_binding(
     let mut edits: Vec<_> = decreases
         .chain(increases)
         .map(|i| EditOp::BindingKeyMove {
-            node: selection.node.clone(),
             params: params.clone(),
-            target: selection.target,
-            axis: axis.clone(),
-            index: i as u32,
-            value: mirrored[i],
+            edit: BindingKeyMoveArgs {
+                node: selection.node.clone(),
+                target: selection.target,
+                axis: axis.clone(),
+                index: i as u32,
+                value: mirrored[i],
+            },
         })
         .collect();
     let authored: Vec<_> = cells
@@ -481,10 +501,12 @@ fn flip_binding(
         .collect();
     if !authored.is_empty() {
         edits.push(EditOp::BindingCellsUnset {
-            node: selection.node.clone(),
             params: params.clone(),
-            target: selection.target,
-            cells: authored.iter().map(|read| read.cell).collect(),
+            edit: BindingCellsUnsetArgs {
+                node: selection.node.clone(),
+                target: selection.target,
+                cells: authored.iter().map(|read| read.cell).collect(),
+            },
         });
         let mirrored = authored
             .into_iter()
@@ -562,15 +584,22 @@ mod tests {
         assert!(matches!(
             &edits[0],
             EditOp::BindingKeyMove {
-                index: 1,
-                value: 0.75,
+                edit: BindingKeyMoveArgs {
+                    index: 1,
+                    value: 0.75,
+                    ..
+                },
                 ..
             }
         ));
         assert!(
-            matches!(&edits[1], EditOp::BindingCellsUnset { cells, .. } if cells == &vec![[1, 0], [2, 1]])
+            matches!(&edits[1], EditOp::BindingCellsUnset { edit: BindingCellsUnsetArgs { cells, .. }, .. } if cells == &vec![[1, 0], [2, 1]])
         );
-        let EditOp::BindingCellsSet { cells, .. } = &edits[2] else {
+        let EditOp::BindingCellsSet {
+            edit: BindingCellsSetArgs { cells, .. },
+            ..
+        } = &edits[2]
+        else {
             panic!()
         };
         assert_eq!(cells.len(), 2);
@@ -606,7 +635,11 @@ mod tests {
         let mut applied = positions.clone();
         let mut visited = Vec::new();
         for edit in edits {
-            let EditOp::BindingKeyMove { index, value, .. } = edit else {
+            let EditOp::BindingKeyMove {
+                edit: BindingKeyMoveArgs { index, value, .. },
+                ..
+            } = edit
+            else {
                 panic!("mirror must preserve binding order and interpolation")
             };
             let index = index as usize;
@@ -624,7 +657,11 @@ mod tests {
             scoped.key_positions = vec![axis.clone()];
             let mut moved = axis.clone();
             for edit in flip_binding(&selection, &param("x"), scoped, Vec::new()).unwrap() {
-                let EditOp::BindingKeyMove { index, value, .. } = edit else {
+                let EditOp::BindingKeyMove {
+                    edit: BindingKeyMoveArgs { index, value, .. },
+                    ..
+                } = edit
+                else {
                     panic!()
                 };
                 let index = index as usize;

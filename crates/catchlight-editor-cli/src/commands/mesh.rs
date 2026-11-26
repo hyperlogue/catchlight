@@ -1,7 +1,7 @@
 //! `mesh`: a part's or mesh group's mesh.
 
 use anyhow::Context as _;
-use catchlight_editor_protocol::{AutoMesh, Command, EditOp, NodeId};
+use catchlight_editor_protocol::{AutoMesh, Command, EditOp, MeshSetArgs, NodeId};
 use clap::Subcommand;
 
 use crate::cli::resolve_session;
@@ -66,24 +66,28 @@ pub(crate) fn route(action: &MeshCmd) -> Route<'_> {
                 serde_json::from_str(&text).with_context(|| format!("parsing {file}"))?;
             Ok(Command::MeshSet {
                 if_rev: cli.if_rev,
-                deform_mapping: None,
                 session,
-                node: node.clone(),
-                verts: m.verts,
-                uvs: m.uvs,
-                indices: m.indices,
-                origin: m.origin,
+                edit: MeshSetArgs {
+                    deform_mapping: None,
+                    node: node.clone(),
+                    verts: m.verts,
+                    uvs: m.uvs,
+                    indices: m.indices,
+                    origin: m.origin,
+                },
             })
         }),
         MeshCmd::Copy { node, from } => Route::composed(move |remote| {
             let mesh = remote.mesh(from)?;
             remote.batch(vec![EditOp::MeshSet {
-                node: node.clone(),
-                verts: mesh.verts,
-                uvs: mesh.uvs,
-                indices: mesh.indices,
-                origin: mesh.origin,
-                deform_mapping: None,
+                edit: MeshSetArgs {
+                    node: node.clone(),
+                    verts: mesh.verts,
+                    uvs: mesh.uvs,
+                    indices: mesh.indices,
+                    origin: mesh.origin,
+                    deform_mapping: None,
+                },
             }])
         }),
         MeshCmd::Auto {

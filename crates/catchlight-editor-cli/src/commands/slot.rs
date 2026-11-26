@@ -2,7 +2,8 @@
 
 use anyhow::{Result, bail};
 use catchlight_editor_protocol::{
-    Command, NodeId, NodeKind, Rename, ResponseBody, SlotAddr, SlotId, TreeNode,
+    Command, NodeId, NodeKind, Rename, ResponseBody, SlotAddr, SlotClearArgs, SlotDeleteArgs,
+    SlotFillArgs, SlotId, TreeNode,
 };
 use clap::Subcommand;
 
@@ -71,20 +72,26 @@ pub(crate) fn route(action: &SlotCmd) -> Route<'_> {
         SlotCmd::Fill { node, slot, vertex } => {
             Route::on_session(move |session| Command::SlotFill {
                 session,
-                node: node.clone(),
-                slot: slot.clone(),
-                vertex: *vertex,
+                edit: SlotFillArgs {
+                    node: node.clone(),
+                    slot: slot.clone(),
+                    vertex: *vertex,
+                },
             })
         }
         SlotCmd::Clear { node, slot } => Route::on_session(move |session| Command::SlotClear {
             session,
-            node: node.clone(),
-            slot: slot.clone(),
+            edit: SlotClearArgs {
+                node: node.clone(),
+                slot: slot.clone(),
+            },
         }),
         SlotCmd::Delete { node, slot } => Route::on_session(move |session| Command::SlotDelete {
             session,
-            node: node.clone(),
-            slot: slot.clone(),
+            edit: SlotDeleteArgs {
+                node: node.clone(),
+                slot: slot.clone(),
+            },
         }),
         SlotCmd::Rename { node, slot, to } => Route::on_session(move |session| Command::RenameId {
             session,

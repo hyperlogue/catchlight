@@ -8,7 +8,8 @@
 //! The final exact-cell write is one undoable model edit.
 
 use catchlight_editor_protocol::{
-    BindingParams, Command, NodeId, ParamId, Reply, Request, ResponseBody, SessionId,
+    BindingCellsSetArgs, BindingParams, Command, NodeId, ParamId, Reply, Request, ResponseBody,
+    SessionId,
 };
 use catchlight_editor_server::{Attachments, Editor};
 
@@ -112,12 +113,14 @@ fn a_hundred_drag_events_and_one_commit_leave_one_undo_entry() {
                 if_rev: ed.revision(session).unwrap(),
                 session,
                 params: BindingParams::one(param),
-                node,
-                target: catchlight_editor_protocol::BindingTarget::Deform,
-                cells: vec![catchlight_editor_protocol::BindingCellWrite {
-                    cell: [0, 0],
-                    value: catchlight_editor_protocol::BindingCellValue::Offsets(offsets),
-                }],
+                edit: BindingCellsSetArgs {
+                    node,
+                    target: catchlight_editor_protocol::BindingTarget::Deform,
+                    cells: vec![catchlight_editor_protocol::BindingCellWrite {
+                        cell: [0, 0],
+                        value: catchlight_editor_protocol::BindingCellValue::Offsets(offsets),
+                    }],
+                },
             },
         ),
         ResponseBody::Empty

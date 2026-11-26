@@ -988,7 +988,7 @@ class BindingDelete:
 
 
 @dataclass(frozen=True, kw_only=True)
-class BindingInterpolate:
+class BindingInterpolationSet:
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "binding_interpolation_set"
     CMD: ClassVar[str] = TAG
@@ -2093,7 +2093,7 @@ Command = (
     | BindingCellsUnset
     | BindingAdd
     | BindingDelete
-    | BindingInterpolate
+    | BindingInterpolationSet
     | BindingList
     | MeshSet
     | MeshAuto
@@ -2192,7 +2192,7 @@ COMMAND_VARIANTS: dict[str, type[Command]] = {
     "binding_cells_unset": BindingCellsUnset,
     "binding_add": BindingAdd,
     "binding_delete": BindingDelete,
-    "binding_interpolation_set": BindingInterpolate,
+    "binding_interpolation_set": BindingInterpolationSet,
     "binding_list": BindingList,
     "mesh_set": MeshSet,
     "mesh_generate": MeshAuto,
@@ -2459,7 +2459,7 @@ EditCommand = (
     | BindingCellsUnset
     | BindingAdd
     | BindingDelete
-    | BindingInterpolate
+    | BindingInterpolationSet
     | MeshSet
     | MeshAuto
     | SlotAdd
@@ -2871,6 +2871,8 @@ def parse_rename(message: Mapping[str, Any]) -> Rename:
 
 @dataclass(frozen=True, kw_only=True)
 class EditOpNodeAdd:
+    """Unlike [`Command::NodeAdd`], names the node it adds."""
+
     TAG_FIELD: ClassVar[str] = "op"
     TAG: ClassVar[str] = "node_add"
 
@@ -2946,7 +2948,9 @@ class EditOpMeshSet:
 
     node: NodeId
     verts: list[tuple[float, float]]
+    # One `[u, v]` per vertex, as many as `verts`.
     uvs: list[tuple[float, float]]
+    # One `[a, b, c]` per triangle, each a `verts` index.
     indices: list[tuple[int, int, int]]
     origin: tuple[float, float]
     deform_mapping: list[list[VertexWeight]] | None = None
@@ -2961,9 +2965,9 @@ class EditOpBindingKeyInsert:
     TAG_FIELD: ClassVar[str] = "op"
     TAG: ClassVar[str] = "binding_key_insert"
 
-    node: NodeId
     param: ParamId
     param_y: ParamId | None = None
+    node: NodeId
     target: BindingTarget
     axis: ParamId
     value: float
@@ -2978,9 +2982,9 @@ class EditOpBindingKeyDelete:
     TAG_FIELD: ClassVar[str] = "op"
     TAG: ClassVar[str] = "binding_key_delete"
 
-    node: NodeId
     param: ParamId
     param_y: ParamId | None = None
+    node: NodeId
     target: BindingTarget
     axis: ParamId
     index: int
@@ -2995,9 +2999,9 @@ class EditOpBindingKeyMove:
     TAG_FIELD: ClassVar[str] = "op"
     TAG: ClassVar[str] = "binding_key_move"
 
-    node: NodeId
     param: ParamId
     param_y: ParamId | None = None
+    node: NodeId
     target: BindingTarget
     axis: ParamId
     index: int
@@ -3013,9 +3017,9 @@ class EditOpBindingAdd:
     TAG_FIELD: ClassVar[str] = "op"
     TAG: ClassVar[str] = "binding_add"
 
-    node: NodeId
     param: ParamId
     param_y: ParamId | None = None
+    node: NodeId
     target: BindingTarget
     key_positions: list[list[float]] | None = None
 
@@ -3029,9 +3033,9 @@ class EditOpBindingCellsSet:
     TAG_FIELD: ClassVar[str] = "op"
     TAG: ClassVar[str] = "binding_cells_set"
 
-    node: NodeId
     param: ParamId
     param_y: ParamId | None = None
+    node: NodeId
     target: BindingTarget
     cells: list[BindingCellWrite]
 
@@ -3045,9 +3049,9 @@ class EditOpBindingCellsUnset:
     TAG_FIELD: ClassVar[str] = "op"
     TAG: ClassVar[str] = "binding_cells_unset"
 
-    node: NodeId
     param: ParamId
     param_y: ParamId | None = None
+    node: NodeId
     target: BindingTarget
     cells: list[tuple[int, int]]
 
@@ -3061,9 +3065,9 @@ class EditOpBindingDelete:
     TAG_FIELD: ClassVar[str] = "op"
     TAG: ClassVar[str] = "binding_delete"
 
-    node: NodeId
     param: ParamId
     param_y: ParamId | None = None
+    node: NodeId
     target: BindingTarget
 
     def to_wire(self) -> dict[str, Any]:
@@ -3076,9 +3080,9 @@ class EditOpBindingInterpolationSet:
     TAG_FIELD: ClassVar[str] = "op"
     TAG: ClassVar[str] = "binding_interpolation_set"
 
-    node: NodeId
     param: ParamId
     param_y: ParamId | None = None
+    node: NodeId
     target: BindingTarget
     mode: Interpolate
 
@@ -3116,6 +3120,8 @@ class EditOpMaskDelete:
 
 @dataclass(frozen=True, kw_only=True)
 class EditOpSlotAdd:
+    """Unlike [`Command::SlotAdd`], names the slot it adds."""
+
     TAG_FIELD: ClassVar[str] = "op"
     TAG: ClassVar[str] = "slot_add"
 
@@ -3174,7 +3180,7 @@ class EditOpWeldSet:
 
     a: NodeId
     b: NodeId
-    pairs: list[SlotPair]
+    pairs: list[SlotPair] = field(default_factory=list)
 
     def to_wire(self) -> dict[str, Any]:
         """This value, as one JSON object: its tag, then every field it set."""
@@ -5448,7 +5454,7 @@ __all__ = [
     "BindingCellsUnset",
     "BindingAdd",
     "BindingDelete",
-    "BindingInterpolate",
+    "BindingInterpolationSet",
     "BindingList",
     "MeshSet",
     "MeshAuto",

@@ -12,8 +12,8 @@ use std::io;
 use std::sync::{Arc, Mutex};
 
 use catchlight_editor_protocol::{
-    BindingParams, Camera, Command, ErrorCode, ImportTexture, NodeId, NodeKindArg, ParamId, Reply,
-    Request, ResponseBody, SessionId, SessionSource, TexId, TextureEncoding,
+    BindingAddArgs, BindingParams, Camera, Command, ErrorCode, ImportTexture, NodeId, NodeKindArg,
+    ParamId, Reply, Request, ResponseBody, SessionId, SessionSource, TexId, TextureEncoding,
 };
 use catchlight_editor_server::{Attachments, Editor, Payload, Storage};
 
@@ -219,11 +219,13 @@ fn a_fragment_needing(param: &str) -> Vec<u8> {
     ok(ed.handle(req(
         5,
         Command::BindingAdd {
-            key_positions: None,
             session: s,
             params: BindingParams::one(ParamId::new(param).unwrap()),
-            node: hat.clone(),
-            target: catchlight_editor_protocol::BindingTarget::Tx,
+            edit: BindingAddArgs {
+                key_positions: None,
+                node: hat.clone(),
+                target: catchlight_editor_protocol::BindingTarget::Tx,
+            },
         },
     )));
     ed.with_model(s, |m| m.extract(&[hat]).to_clm_bytes().unwrap())

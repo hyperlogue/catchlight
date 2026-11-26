@@ -5,8 +5,8 @@
 //! check the node actually moves (and returns to rest at the other keypoint).
 
 use catchlight_editor_protocol::{
-    BindingCellValue, BindingCellWrite, BindingParams, BindingTarget, Command, NodeKindArg, Reply,
-    Request, ResponseBody, SessionId,
+    BindingCellValue, BindingCellWrite, BindingCellsSetArgs, BindingCellsUnsetArgs, BindingParams,
+    BindingTarget, Command, NodeKindArg, Reply, Request, ResponseBody, SessionId,
 };
 use catchlight_editor_server::{Attachments, Editor};
 
@@ -72,18 +72,20 @@ fn recorded_binding_moves_the_rebaked_puppet() {
             if_rev: ed.revision(session).unwrap(),
             session,
             params: BindingParams::one(param.clone()),
-            node: node.clone(),
-            target: BindingTarget::Tx,
-            cells: vec![
-                BindingCellWrite {
-                    cell: [0, 0],
-                    value: BindingCellValue::Scalar(0.0),
-                },
-                BindingCellWrite {
-                    cell: [1, 0],
-                    value: BindingCellValue::Scalar(25.0),
-                },
-            ],
+            edit: BindingCellsSetArgs {
+                node: node.clone(),
+                target: BindingTarget::Tx,
+                cells: vec![
+                    BindingCellWrite {
+                        cell: [0, 0],
+                        value: BindingCellValue::Scalar(0.0),
+                    },
+                    BindingCellWrite {
+                        cell: [1, 0],
+                        value: BindingCellValue::Scalar(25.0),
+                    },
+                ],
+            },
         },
     );
 
@@ -124,9 +126,11 @@ fn recorded_binding_moves_the_rebaked_puppet() {
             if_rev: ed.revision(session).unwrap(),
             session,
             params: BindingParams::one(param.clone()),
-            node,
-            target: BindingTarget::Tx,
-            cells: vec![[1, 0]],
+            edit: BindingCellsUnsetArgs {
+                node,
+                target: BindingTarget::Tx,
+                cells: vec![[1, 0]],
+            },
         },
     );
     let after_unset = x_at(1.0);

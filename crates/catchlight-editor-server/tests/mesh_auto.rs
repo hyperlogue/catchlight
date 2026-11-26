@@ -13,8 +13,8 @@ use std::sync::{Arc, Mutex};
 
 use catchlight_core::formats::clm::ClmMesh;
 use catchlight_editor_protocol::{
-    AutoMesh, Command, ErrorCode, NodeId, NodeKindArg, Reply, Request, ResponseBody, SessionId,
-    TextureEncoding,
+    AutoMesh, Command, ErrorCode, MeshSetArgs, NodeId, NodeKindArg, Reply, Request, ResponseBody,
+    SessionId, TextureEncoding,
 };
 use catchlight_editor_server::{Attachments, Editor, Storage};
 
@@ -358,14 +358,16 @@ fn a_part_that_already_has_a_mesh_keeps_its_mapping() {
     // A 64×64 quad on the centered convention, v increasing downward: exactly
     // what `from_texture_size` describes, so the fit has to recover it.
     f.body(Command::MeshSet {
-        deform_mapping: None,
         if_rev: None,
         session,
-        node: part.clone(),
-        verts: vec![[-32.0, -32.0], [32.0, -32.0], [32.0, 32.0], [-32.0, 32.0]],
-        uvs: vec![[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]],
-        indices: vec![[0, 1, 2], [0, 2, 3]],
-        origin: [0.0, 0.0],
+        edit: MeshSetArgs {
+            deform_mapping: None,
+            node: part.clone(),
+            verts: vec![[-32.0, -32.0], [32.0, -32.0], [32.0, 32.0], [-32.0, 32.0]],
+            uvs: vec![[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]],
+            indices: vec![[0, 1, 2], [0, 2, 3]],
+            origin: [0.0, 0.0],
+        },
     });
     f.auto(&part, AutoMesh::default());
 
@@ -378,14 +380,16 @@ fn a_trace_is_one_undoable_edit() {
     let part = f.part("blob.png");
     let session = f.session;
     f.body(Command::MeshSet {
-        deform_mapping: None,
         if_rev: None,
         session,
-        node: part.clone(),
-        verts: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]],
-        uvs: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
-        indices: vec![[0, 1, 2]],
-        origin: [0.0, 0.0],
+        edit: MeshSetArgs {
+            deform_mapping: None,
+            node: part.clone(),
+            verts: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]],
+            uvs: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+            indices: vec![[0, 1, 2]],
+            origin: [0.0, 0.0],
+        },
     });
     let before = f.mesh(&part);
 

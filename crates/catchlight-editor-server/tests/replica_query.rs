@@ -11,10 +11,11 @@ use std::collections::BTreeSet;
 use std::io::Cursor;
 
 use catchlight_editor_protocol::{
-    BindingCellValue, BindingCellWrite, BindingInfo, BindingTarget, BlendMode, COMMAND_KINDS,
-    Command, CommandKind, ErrorCode, GeometryField, Interpolate, NodeId, NodeKind, NodeKindArg,
-    NodePatch, ParamId, Presence, Reply, Request, ResponseBody, SessionId, SlotId, SlotPair,
-    TextureEncoding,
+    BindingAddArgs, BindingCellValue, BindingCellWrite, BindingCellsSetArgs, BindingCellsUnsetArgs,
+    BindingInfo, BindingInterpolationSetArgs, BindingKeyInsertArgs, BindingTarget, BlendMode,
+    COMMAND_KINDS, Command, CommandKind, ErrorCode, GeometryField, Interpolate, MeshSetArgs,
+    NodeId, NodeKind, NodeKindArg, NodePatch, ParamId, Presence, Reply, Request, ResponseBody,
+    SessionId, SlotFillArgs, SlotId, SlotPair, TextureEncoding, WeldSetArgs,
 };
 use catchlight_editor_server::{Attachments, Editor, replica_query, replica_reply};
 
@@ -97,18 +98,20 @@ impl Fixture {
             session,
             if_rev: fixture.editor.revision(session).unwrap(),
             params: catchlight_editor_protocol::BindingParams::one(param),
-            node: body_part.clone(),
-            target: BindingTarget::Tx,
-            cells: vec![
-                BindingCellWrite {
-                    cell: [0, 0],
-                    value: BindingCellValue::Scalar(0.0),
-                },
-                BindingCellWrite {
-                    cell: [1, 0],
-                    value: BindingCellValue::Scalar(12.0),
-                },
-            ],
+            edit: BindingCellsSetArgs {
+                node: body_part.clone(),
+                target: BindingTarget::Tx,
+                cells: vec![
+                    BindingCellWrite {
+                        cell: [0, 0],
+                        value: BindingCellValue::Scalar(0.0),
+                    },
+                    BindingCellWrite {
+                        cell: [1, 0],
+                        value: BindingCellValue::Scalar(12.0),
+                    },
+                ],
+            },
         });
 
         let mut texture = Attachments::none();
@@ -142,29 +145,35 @@ impl Fixture {
         for (i, slot) in [&left, &right].into_iter().enumerate() {
             fixture.step(Command::SlotFill {
                 session,
-                node: body_part.clone(),
-                slot: slot.clone(),
-                vertex: i as u32,
+                edit: SlotFillArgs {
+                    node: body_part.clone(),
+                    slot: slot.clone(),
+                    vertex: i as u32,
+                },
             });
         }
         fixture.step(Command::SlotFill {
             session,
-            node: skirt.clone(),
-            slot: left.clone(),
-            vertex: 2,
+            edit: SlotFillArgs {
+                node: skirt.clone(),
+                slot: left.clone(),
+                vertex: 2,
+            },
         });
         fixture.step(Command::WeldSet {
             session,
-            a: body_part.clone(),
-            b: skirt,
-            pairs: [&left, &right]
-                .into_iter()
-                .map(|s| SlotPair {
-                    a: s.clone(),
-                    b: s.clone(),
-                    weight: 0.5,
-                })
-                .collect(),
+            edit: WeldSetArgs {
+                a: body_part.clone(),
+                b: skirt,
+                pairs: [&left, &right]
+                    .into_iter()
+                    .map(|s| SlotPair {
+                        a: s.clone(),
+                        b: s.clone(),
+                        weight: 0.5,
+                    })
+                    .collect(),
+            },
         });
 
         Self {
@@ -203,14 +212,16 @@ impl Fixture {
             node: None,
         });
         self.step(Command::MeshSet {
-            deform_mapping: None,
             if_rev: None,
             session: self.session,
-            node: node.clone(),
-            verts: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
-            uvs: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
-            indices: vec![[0, 1, 2], [0, 2, 3]],
-            origin: [0.0, 0.0],
+            edit: MeshSetArgs {
+                deform_mapping: None,
+                node: node.clone(),
+                verts: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
+                uvs: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+                indices: vec![[0, 1, 2], [0, 2, 3]],
+                origin: [0.0, 0.0],
+            },
         });
         node
     }
@@ -619,14 +630,16 @@ fn node_info_counts_the_mesh_a_part_holds() {
     assert_eq!(counts(&bare), (Some(0), Some(0)));
 
     f.step(Command::MeshSet {
-        deform_mapping: None,
         if_rev: None,
         session,
-        node: bare.clone(),
-        verts: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
-        uvs: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
-        indices: vec![[0, 1, 2]],
-        origin: [0.0, 0.0],
+        edit: MeshSetArgs {
+            deform_mapping: None,
+            node: bare.clone(),
+            verts: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+            uvs: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+            indices: vec![[0, 1, 2]],
+            origin: [0.0, 0.0],
+        },
     });
     assert_eq!(counts(&bare), (Some(3), Some(1)));
 
@@ -640,12 +653,14 @@ fn node_info_counts_the_mesh_a_part_holds() {
     f.step(Command::MeshSet {
         session,
         if_rev: Some(f.editor.revision(session).unwrap()),
-        node: bare.clone(),
-        verts: mesh.verts,
-        uvs: mesh.uvs,
-        indices: mesh.indices,
-        origin: mesh.origin,
-        deform_mapping: None,
+        edit: MeshSetArgs {
+            node: bare.clone(),
+            verts: mesh.verts,
+            uvs: mesh.uvs,
+            indices: mesh.indices,
+            origin: mesh.origin,
+            deform_mapping: None,
+        },
     });
     assert_eq!(counts(&bare), (Some(4), Some(2)), "the fixture's quad");
 }
@@ -780,10 +795,12 @@ fn binding_list_reports_the_authored_grid_and_the_holes_in_it() {
         session,
         if_rev: None,
         params: catchlight_editor_protocol::BindingParams::one(pull.clone()),
-        node: f.body_part.clone(),
-        target: BindingTarget::Tx,
-        axis: pull.clone(),
-        value: 0.5,
+        edit: BindingKeyInsertArgs {
+            node: f.body_part.clone(),
+            target: BindingTarget::Tx,
+            axis: pull.clone(),
+            value: 0.5,
+        },
     });
     let lean = match f.step(Command::ParamAdd {
         session,
@@ -800,38 +817,51 @@ fn binding_list_reports_the_authored_grid_and_the_holes_in_it() {
     f.step(Command::BindingAdd {
         session,
         params: pair.clone(),
-        node: f.body_part.clone(),
-        target: BindingTarget::Ty,
-        key_positions: Some(vec![vec![0.0, 0.25, 1.0], vec![0.0, 0.5, 1.0]]),
+        edit: BindingAddArgs {
+            node: f.body_part.clone(),
+            target: BindingTarget::Ty,
+            key_positions: Some(vec![vec![0.0, 0.25, 1.0], vec![0.0, 0.5, 1.0]]),
+        },
     });
     f.step(Command::BindingCellsSet {
         session,
         if_rev: f.editor.revision(session).unwrap(),
         params: pair.clone(),
-        node: f.body_part.clone(),
-        target: BindingTarget::Ty,
-        cells: vec![BindingCellWrite {
-            cell: [0, 2],
-            value: BindingCellValue::Scalar(-3.0),
-        }],
+        edit: BindingCellsSetArgs {
+            node: f.body_part.clone(),
+            target: BindingTarget::Ty,
+            cells: vec![BindingCellWrite {
+                cell: [0, 2],
+                value: BindingCellValue::Scalar(-3.0),
+            }],
+        },
     });
-    f.step(Command::BindingInterpolate {
+    f.step(Command::BindingInterpolationSet {
         session,
         params: pair,
-        node: f.body_part.clone(),
-        target: BindingTarget::Ty,
-        mode: Interpolate::Cubic,
+        edit: BindingInterpolationSetArgs {
+            node: f.body_part.clone(),
+            target: BindingTarget::Ty,
+            mode: Interpolate::Cubic,
+        },
     });
     f.step(Command::BindingCellsSet {
         session,
         if_rev: f.editor.revision(session).unwrap(),
         params: catchlight_editor_protocol::BindingParams::one(pull.clone()),
-        node: f.body_part.clone(),
-        target: BindingTarget::Deform,
-        cells: vec![BindingCellWrite {
-            cell: [1, 0],
-            value: BindingCellValue::Offsets(vec![[1.0, 0.0], [1.0, 0.0], [0.0, 0.0], [0.0, 0.0]]),
-        }],
+        edit: BindingCellsSetArgs {
+            node: f.body_part.clone(),
+            target: BindingTarget::Deform,
+            cells: vec![BindingCellWrite {
+                cell: [1, 0],
+                value: BindingCellValue::Offsets(vec![
+                    [1.0, 0.0],
+                    [1.0, 0.0],
+                    [0.0, 0.0],
+                    [0.0, 0.0],
+                ]),
+            }],
+        },
     });
 
     let bindings = f.bindings(&f.body_part);
@@ -905,9 +935,11 @@ fn un_authoring_a_cell_reports_it_unset_again() {
         if_rev: f.editor.revision(session).unwrap(),
         session,
         params: params.clone(),
-        node: f.body_part.clone(),
-        target: BindingTarget::Tx,
-        cells: vec![[0, 0]],
+        edit: BindingCellsUnsetArgs {
+            node: f.body_part.clone(),
+            target: BindingTarget::Tx,
+            cells: vec![[0, 0]],
+        },
     });
     let bindings = f.bindings(&f.body_part);
     let tx = find(&bindings, BindingTarget::Tx);
@@ -918,12 +950,14 @@ fn un_authoring_a_cell_reports_it_unset_again() {
         if_rev: f.editor.revision(session).unwrap(),
         session,
         params,
-        node: f.body_part.clone(),
-        target: BindingTarget::Tx,
-        cells: vec![BindingCellWrite {
-            cell: [0, 0],
-            value: BindingCellValue::Scalar(0.0),
-        }],
+        edit: BindingCellsSetArgs {
+            node: f.body_part.clone(),
+            target: BindingTarget::Tx,
+            cells: vec![BindingCellWrite {
+                cell: [0, 0],
+                value: BindingCellValue::Scalar(0.0),
+            }],
+        },
     });
     assert_eq!(
         find(&f.bindings(&f.body_part), BindingTarget::Tx).keys,

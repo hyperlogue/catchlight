@@ -2,7 +2,7 @@
 
 use anyhow::{Result, anyhow, bail};
 use catchlight_editor_protocol::{
-    Command, EditOp, NodeId, ResponseBody, SlotId, SlotPair, WeldInfo,
+    Command, EditOp, NodeId, ResponseBody, SlotId, SlotPair, WeldDeleteArgs, WeldInfo, WeldSetArgs,
 };
 use clap::Subcommand;
 
@@ -49,9 +49,11 @@ pub(crate) fn route(action: &WeldCmd) -> Route<'_> {
     match action {
         WeldCmd::Set { a, b, pairs } => Route::on_session(move |session| Command::WeldSet {
             session,
-            a: a.clone(),
-            b: b.clone(),
-            pairs: pairs.clone(),
+            edit: WeldSetArgs {
+                a: a.clone(),
+                b: b.clone(),
+                pairs: pairs.clone(),
+            },
         }),
         WeldCmd::Weight { a, b, slot, weight } => Route::composed(move |remote| {
             let ResponseBody::Welds { welds } = remote.read(Command::Welds {
@@ -66,15 +68,19 @@ pub(crate) fn route(action: &WeldCmd) -> Route<'_> {
                 .ok_or_else(|| anyhow!("no weld joins {a} and {b}"))?;
             let pairs = reweight(weld, a, slot, *weight)?;
             remote.batch(vec![EditOp::WeldSet {
-                a: pairs.a,
-                b: pairs.b,
-                pairs: pairs.pairs,
+                edit: WeldSetArgs {
+                    a: pairs.a,
+                    b: pairs.b,
+                    pairs: pairs.pairs,
+                },
             }])
         }),
         WeldCmd::Delete { a, b } => Route::on_session(move |session| Command::WeldDelete {
             session,
-            a: a.clone(),
-            b: b.clone(),
+            edit: WeldDeleteArgs {
+                a: a.clone(),
+                b: b.clone(),
+            },
         }),
         WeldCmd::List => Route::on_session(|session| Command::Welds { session }),
     }

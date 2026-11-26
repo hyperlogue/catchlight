@@ -1,7 +1,8 @@
 //! `node`: the node tree.
 
 use catchlight_editor_protocol::{
-    BlendMode, Command, EditOp, NodeId, NodeKindArg, NodePatch, TexId,
+    BlendMode, Command, EditOp, NodeId, NodeKindArg, NodePatch, NodeReorderArgs, NodeReparentArgs,
+    TexId,
 };
 use clap::Subcommand;
 
@@ -161,14 +162,18 @@ pub(crate) fn route(action: &NodeCmd) -> Route<'_> {
         }),
         NodeCmd::Reparent { node, to } => Route::on_session(move |session| Command::NodeReparent {
             session,
-            node: node.clone(),
-            to: to.clone(),
+            edit: NodeReparentArgs {
+                node: node.clone(),
+                to: to.clone(),
+            },
         }),
         NodeCmd::Reorder { node, index } => {
             Route::on_session(move |session| Command::NodeReorder {
                 session,
-                node: node.clone(),
-                index: *index,
+                edit: NodeReorderArgs {
+                    node: node.clone(),
+                    index: *index,
+                },
             })
         }
         NodeCmd::Move {
@@ -178,12 +183,16 @@ pub(crate) fn route(action: &NodeCmd) -> Route<'_> {
         } => Route::composed(move |remote| {
             remote.batch(vec![
                 EditOp::NodeReparent {
-                    node: node.clone(),
-                    to: parent.clone(),
+                    edit: NodeReparentArgs {
+                        node: node.clone(),
+                        to: parent.clone(),
+                    },
                 },
                 EditOp::NodeReorder {
-                    node: node.clone(),
-                    index: *index,
+                    edit: NodeReorderArgs {
+                        node: node.clone(),
+                        index: *index,
+                    },
                 },
             ])
         }),
@@ -251,9 +260,15 @@ mod tests {
             assert_eq!(if_rev, 12);
             assert_eq!(edits.len(), 2);
             assert!(
-                matches!(&edits[0], EditOp::NodeReparent { node, to } if node == &id("panel") && to == &id("head"))
+                matches!(&edits[0], EditOp::NodeReparent { edit: NodeReparentArgs { node, to } } if node == &id("panel") && to == &id("head"))
             );
-            assert!(matches!(&edits[1], EditOp::NodeReorder { index: 2, .. }));
+            assert!(matches!(
+                &edits[1],
+                EditOp::NodeReorder {
+                    edit: NodeReorderArgs { index: 2, .. },
+                    ..
+                }
+            ));
             writeln!(reader.get_mut(), "{}", serde_json::json!({"reply":"ok", "id":request.id, "rev":13, "body":{"result":"edit_results", "changed":true,"results":[]}})).unwrap();
         });
         assert!(matches!(

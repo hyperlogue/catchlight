@@ -126,13 +126,15 @@ fn snapshot(editor: &Editor, session: SessionId) -> Model {
 }
 fn scalar(value: f32) -> EditOp {
     EditOp::BindingCellsSet {
-        node: node("panel"),
         params: params(),
-        target: BindingTarget::Tx,
-        cells: vec![BindingCellWrite {
-            cell: [1, 0],
-            value: BindingCellValue::Scalar(value),
-        }],
+        edit: BindingCellsSetArgs {
+            node: node("panel"),
+            target: BindingTarget::Tx,
+            cells: vec![BindingCellWrite {
+                cell: [1, 0],
+                value: BindingCellValue::Scalar(value),
+            }],
+        },
     }
 }
 
@@ -217,8 +219,10 @@ fn final_content_noop_and_failed_later_operation_publish_nothing() {
             edits: vec![
                 scalar(10.),
                 EditOp::NodeReparent {
-                    node: node("missing"),
-                    to: node("root"),
+                    edit: NodeReparentArgs {
+                        node: node("missing"),
+                        to: node("root"),
+                    },
                 },
             ],
         },
@@ -288,13 +292,15 @@ fn exact_cells_preserve_holes_page_authored_vertices_and_accept_empty_deforms() 
         Command::BindingCellsSet {
             session,
             if_rev: 0,
-            node: node("empty"),
             params: params(),
-            target: BindingTarget::Deform,
-            cells: vec![BindingCellWrite {
-                cell: [1, 0],
-                value: BindingCellValue::Offsets(vec![]),
-            }],
+            edit: BindingCellsSetArgs {
+                node: node("empty"),
+                target: BindingTarget::Deform,
+                cells: vec![BindingCellWrite {
+                    cell: [1, 0],
+                    value: BindingCellValue::Offsets(vec![]),
+                }],
+            },
         },
     ));
     let model = snapshot(&editor, session);
@@ -313,16 +319,18 @@ fn exact_cells_preserve_holes_page_authored_vertices_and_accept_empty_deforms() 
         Command::BindingCellsSet {
             session,
             if_rev: rev,
-            node: node("panel"),
             params: params(),
-            target: BindingTarget::Opacity,
-            cells: vec![
-                BindingCellWrite {
-                    cell: [0, 0],
-                    value: BindingCellValue::Scalar(0.5)
-                };
-                2
-            ],
+            edit: BindingCellsSetArgs {
+                node: node("panel"),
+                target: BindingTarget::Opacity,
+                cells: vec![
+                    BindingCellWrite {
+                        cell: [0, 0],
+                        value: BindingCellValue::Scalar(0.5)
+                    };
+                    2
+                ],
+            },
         },
     );
     assert!(matches!(
@@ -350,27 +358,33 @@ fn binding_axis_edits_and_values_compose_with_single_undo() {
     let before = snapshot(&editor, session);
     let edits = vec![
         EditOp::BindingKeyMove {
-            node: node("panel"),
             params: params(),
-            target: BindingTarget::Deform,
-            axis: param(),
-            index: 1,
-            value: 0.75,
+            edit: BindingKeyMoveArgs {
+                node: node("panel"),
+                target: BindingTarget::Deform,
+                axis: param(),
+                index: 1,
+                value: 0.75,
+            },
         },
         EditOp::BindingCellsUnset {
-            node: node("panel"),
             params: params(),
-            target: BindingTarget::Deform,
-            cells: vec![[2, 0]],
+            edit: BindingCellsUnsetArgs {
+                node: node("panel"),
+                target: BindingTarget::Deform,
+                cells: vec![[2, 0]],
+            },
         },
         EditOp::BindingCellsSet {
-            node: node("panel"),
             params: params(),
-            target: BindingTarget::Deform,
-            cells: vec![BindingCellWrite {
-                cell: [0, 0],
-                value: BindingCellValue::Offsets(vec![[2., 0.]; 3]),
-            }],
+            edit: BindingCellsSetArgs {
+                node: node("panel"),
+                target: BindingTarget::Deform,
+                cells: vec![BindingCellWrite {
+                    cell: [0, 0],
+                    value: BindingCellValue::Offsets(vec![[2., 0.]; 3]),
+                }],
+            },
         },
     ];
     ok(send(
@@ -401,39 +415,47 @@ fn mapped_topology_refills_slots_and_preserves_welds_in_one_undo() {
     let slot = SlotId::new("seam").unwrap();
     let setup = vec![
         EditOp::MeshSet {
-            node: node("empty"),
-            verts: vec![[0., 0.], [2., 0.], [0., 2.]],
-            uvs: vec![],
-            indices: vec![[0, 1, 2]],
-            origin: [0.; 2],
-            deform_mapping: None,
+            edit: MeshSetArgs {
+                node: node("empty"),
+                verts: vec![[0., 0.], [2., 0.], [0., 2.]],
+                uvs: vec![],
+                indices: vec![[0, 1, 2]],
+                origin: [0.; 2],
+                deform_mapping: None,
+            },
         },
         EditOp::SlotAdd {
             node: node("panel"),
             slot: slot.clone(),
         },
         EditOp::SlotFill {
-            node: node("panel"),
-            slot: slot.clone(),
-            vertex: 1,
+            edit: SlotFillArgs {
+                node: node("panel"),
+                slot: slot.clone(),
+                vertex: 1,
+            },
         },
         EditOp::SlotAdd {
             node: node("empty"),
             slot: slot.clone(),
         },
         EditOp::SlotFill {
-            node: node("empty"),
-            slot: slot.clone(),
-            vertex: 1,
+            edit: SlotFillArgs {
+                node: node("empty"),
+                slot: slot.clone(),
+                vertex: 1,
+            },
         },
         EditOp::WeldSet {
-            a: node("panel"),
-            b: node("empty"),
-            pairs: vec![SlotPair {
-                a: slot.clone(),
-                b: slot.clone(),
-                weight: 0.5,
-            }],
+            edit: WeldSetArgs {
+                a: node("panel"),
+                b: node("empty"),
+                pairs: vec![SlotPair {
+                    a: slot.clone(),
+                    b: slot.clone(),
+                    weight: 0.5,
+                }],
+            },
         },
     ];
     ok(send(
@@ -447,40 +469,44 @@ fn mapped_topology_refills_slots_and_preserves_welds_in_one_undo() {
     let before = snapshot(&editor, session);
     let edits = vec![
         EditOp::MeshSet {
-            node: node("panel"),
-            verts: vec![[0., 0.], [2., 0.], [0., 2.], [1., 0.]],
-            uvs: vec![[0., 0.], [1., 0.], [0., 1.], [0.5, 0.]],
-            indices: vec![[0, 3, 2], [3, 1, 2]],
-            origin: [0.; 2],
-            deform_mapping: Some(vec![
-                vec![VertexWeight {
-                    vertex: 0,
-                    weight: 1.0,
-                }],
-                vec![VertexWeight {
-                    vertex: 1,
-                    weight: 1.0,
-                }],
-                vec![VertexWeight {
-                    vertex: 2,
-                    weight: 1.0,
-                }],
-                vec![
-                    VertexWeight {
+            edit: MeshSetArgs {
+                node: node("panel"),
+                verts: vec![[0., 0.], [2., 0.], [0., 2.], [1., 0.]],
+                uvs: vec![[0., 0.], [1., 0.], [0., 1.], [0.5, 0.]],
+                indices: vec![[0, 3, 2], [3, 1, 2]],
+                origin: [0.; 2],
+                deform_mapping: Some(vec![
+                    vec![VertexWeight {
                         vertex: 0,
-                        weight: 0.5,
-                    },
-                    VertexWeight {
+                        weight: 1.0,
+                    }],
+                    vec![VertexWeight {
                         vertex: 1,
-                        weight: 0.5,
-                    },
-                ],
-            ]),
+                        weight: 1.0,
+                    }],
+                    vec![VertexWeight {
+                        vertex: 2,
+                        weight: 1.0,
+                    }],
+                    vec![
+                        VertexWeight {
+                            vertex: 0,
+                            weight: 0.5,
+                        },
+                        VertexWeight {
+                            vertex: 1,
+                            weight: 0.5,
+                        },
+                    ],
+                ]),
+            },
         },
         EditOp::SlotFill {
-            node: node("panel"),
-            slot: slot.clone(),
-            vertex: 3,
+            edit: SlotFillArgs {
+                node: node("panel"),
+                slot: slot.clone(),
+                vertex: 3,
+            },
         },
     ];
     let (rev, result) = ok(send(
@@ -539,20 +565,24 @@ fn exact_writes_have_the_same_authored_result_standalone_and_batched() {
         Command::BindingCellsSet {
             session: one,
             if_rev: 0,
-            node: node("panel"),
             params: params(),
-            target: BindingTarget::Tx,
-            cells: cells.clone(),
+            edit: BindingCellsSetArgs {
+                node: node("panel"),
+                target: BindingTarget::Tx,
+                cells: cells.clone(),
+            },
         },
     ));
     ok(send(
         &editor,
-        Command::BindingInterpolate {
+        Command::BindingInterpolationSet {
             session: one,
-            node: node("panel"),
             params: params(),
-            target: BindingTarget::Tx,
-            mode: Interpolate::Cubic,
+            edit: BindingInterpolationSetArgs {
+                node: node("panel"),
+                target: BindingTarget::Tx,
+                mode: Interpolate::Cubic,
+            },
         },
     ));
     ok(send(
@@ -562,16 +592,20 @@ fn exact_writes_have_the_same_authored_result_standalone_and_batched() {
             if_rev: 0,
             edits: vec![
                 EditOp::BindingCellsSet {
-                    node: node("panel"),
                     params: params(),
-                    target: BindingTarget::Tx,
-                    cells,
+                    edit: BindingCellsSetArgs {
+                        node: node("panel"),
+                        target: BindingTarget::Tx,
+                        cells,
+                    },
                 },
                 EditOp::BindingInterpolationSet {
-                    node: node("panel"),
                     params: params(),
-                    target: BindingTarget::Tx,
-                    mode: Interpolate::Cubic,
+                    edit: BindingInterpolationSetArgs {
+                        node: node("panel"),
+                        target: BindingTarget::Tx,
+                        mode: Interpolate::Cubic,
+                    },
                 },
             ],
         },
@@ -745,12 +779,14 @@ fn mapped_mesh_retains_the_model_error_code_and_batch_index() {
                 session,
                 if_rev: 0,
                 edits: vec![EditOp::MeshSet {
-                    node: node("missing"),
-                    verts: vec![],
-                    uvs: vec![],
-                    indices: vec![],
-                    origin: [0.; 2],
-                    deform_mapping: Some(vec![])
+                    edit: MeshSetArgs {
+                        node: node("missing"),
+                        verts: vec![],
+                        uvs: vec![],
+                        indices: vec![],
+                        origin: [0.; 2],
+                        deform_mapping: Some(vec![]),
+                    },
                 },]
             }
         ),

@@ -1221,38 +1221,48 @@ impl Editor {
             Command::BindingCellsSet {
                 session,
                 if_rev,
-                node,
                 params,
-                target,
-                cells,
+                edit:
+                    BindingCellsSetArgs {
+                        node,
+                        target,
+                        cells,
+                    },
             } => self.edit_session_captured(session, |s| {
                 s.check_revision(Some(if_rev))?;
                 edit::apply(
                     &mut s.model,
                     EditOp::BindingCellsSet {
-                        node,
                         params,
-                        target,
-                        cells,
+                        edit: BindingCellsSetArgs {
+                            node,
+                            target,
+                            cells,
+                        },
                     },
                 )
             }),
             Command::BindingCellsUnset {
                 session,
                 if_rev,
-                node,
                 params,
-                target,
-                cells,
+                edit:
+                    BindingCellsUnsetArgs {
+                        node,
+                        target,
+                        cells,
+                    },
             } => self.edit_session_captured(session, |s| {
                 s.check_revision(Some(if_rev))?;
                 edit::apply(
                     &mut s.model,
                     EditOp::BindingCellsUnset {
-                        node,
                         params,
-                        target,
-                        cells,
+                        edit: BindingCellsUnsetArgs {
+                            node,
+                            target,
+                            cells,
+                        },
                     },
                 )
             }),
@@ -1324,16 +1334,27 @@ impl Editor {
             } => self.edit_session_captured(session, |s| {
                 edit::apply(&mut s.model, EditOp::NodeSet { node, patch })
             }),
-            Command::NodeReparent { session, node, to } => self
-                .edit_session_captured(session, |s| {
-                    edit::apply(&mut s.model, EditOp::NodeReparent { node, to })
-                }),
+            Command::NodeReparent {
+                session,
+                edit: NodeReparentArgs { node, to },
+            } => self.edit_session_captured(session, |s| {
+                edit::apply(
+                    &mut s.model,
+                    EditOp::NodeReparent {
+                        edit: NodeReparentArgs { node, to },
+                    },
+                )
+            }),
             Command::NodeReorder {
                 session,
-                node,
-                index,
+                edit: NodeReorderArgs { node, index },
             } => self.edit_session_captured(session, |s| {
-                edit::apply(&mut s.model, EditOp::NodeReorder { node, index })
+                edit::apply(
+                    &mut s.model,
+                    EditOp::NodeReorder {
+                        edit: NodeReorderArgs { node, index },
+                    },
+                )
             }),
             Command::NodeDuplicate { session, node } => self.edit_session_captured(session, |s| {
                 let copy = s.duplicate_subtree(&node)?;
@@ -1356,18 +1377,25 @@ impl Editor {
             }),
             Command::MaskAdd {
                 session,
-                node,
-                source,
-                mode,
+                edit: MaskAddArgs { node, source, mode },
             } => self.edit_session_captured(session, |s| {
-                edit::apply(&mut s.model, EditOp::MaskAdd { node, source, mode })
+                edit::apply(
+                    &mut s.model,
+                    EditOp::MaskAdd {
+                        edit: MaskAddArgs { node, source, mode },
+                    },
+                )
             }),
             Command::MaskDelete {
                 session,
-                node,
-                index,
+                edit: MaskDeleteArgs { node, index },
             } => self.edit_session_captured(session, |s| {
-                edit::apply(&mut s.model, EditOp::MaskDelete { node, index })
+                edit::apply(
+                    &mut s.model,
+                    EditOp::MaskDelete {
+                        edit: MaskDeleteArgs { node, index },
+                    },
+                )
             }),
             Command::MotionResponseSet {
                 session,
@@ -1455,137 +1483,156 @@ impl Editor {
             Command::BindingKeyInsert {
                 session,
                 if_rev,
-                node,
                 params,
-                target,
-                axis,
-                value,
+                edit:
+                    BindingKeyInsertArgs {
+                        node,
+                        target,
+                        axis,
+                        value,
+                    },
             } => self.edit_session_captured(session, |s| {
                 s.check_revision(if_rev)?;
                 edit::apply(
                     &mut s.model,
                     EditOp::BindingKeyInsert {
-                        node,
                         params,
-                        target,
-                        axis,
-                        value,
+                        edit: BindingKeyInsertArgs {
+                            node,
+                            target,
+                            axis,
+                            value,
+                        },
                     },
                 )
             }),
             Command::BindingKeyDelete {
                 session,
                 if_rev,
-                node,
                 params,
-                target,
-                axis,
-                index,
+                edit:
+                    BindingKeyDeleteArgs {
+                        node,
+                        target,
+                        axis,
+                        index,
+                    },
             } => self.edit_session_captured(session, |s| {
                 s.check_revision(if_rev)?;
                 edit::apply(
                     &mut s.model,
                     EditOp::BindingKeyDelete {
-                        node,
                         params,
-                        target,
-                        axis,
-                        index,
+                        edit: BindingKeyDeleteArgs {
+                            node,
+                            target,
+                            axis,
+                            index,
+                        },
                     },
                 )
             }),
             Command::BindingKeyMove {
                 session,
                 if_rev,
-                node,
                 params,
-                target,
-                axis,
-                index,
-                value,
-            } => self.edit_session_captured(session, |s| {
-                s.check_revision(if_rev)?;
-                edit::apply(
-                    &mut s.model,
-                    EditOp::BindingKeyMove {
+                edit:
+                    BindingKeyMoveArgs {
                         node,
-                        params,
                         target,
                         axis,
                         index,
                         value,
                     },
+            } => self.edit_session_captured(session, |s| {
+                s.check_revision(if_rev)?;
+                edit::apply(
+                    &mut s.model,
+                    EditOp::BindingKeyMove {
+                        params,
+                        edit: BindingKeyMoveArgs {
+                            node,
+                            target,
+                            axis,
+                            index,
+                            value,
+                        },
+                    },
                 )
             }),
             Command::BindingAdd {
                 session,
-                node,
                 params,
-                target,
-                key_positions,
+                edit:
+                    BindingAddArgs {
+                        node,
+                        target,
+                        key_positions,
+                    },
             } => self.edit_session_captured(session, |s| {
                 edit::apply(
                     &mut s.model,
                     EditOp::BindingAdd {
-                        node,
                         params,
-                        target,
-                        key_positions,
+                        edit: BindingAddArgs {
+                            node,
+                            target,
+                            key_positions,
+                        },
                     },
                 )
             }),
             Command::BindingDelete {
                 session,
-                node,
                 params,
-                target,
+                edit: BindingDeleteArgs { node, target },
             } => self.edit_session_captured(session, |s| {
                 edit::apply(
                     &mut s.model,
                     EditOp::BindingDelete {
-                        node,
                         params,
-                        target,
+                        edit: BindingDeleteArgs { node, target },
                     },
                 )
             }),
-            Command::BindingInterpolate {
+            Command::BindingInterpolationSet {
                 session,
-                node,
                 params,
-                target,
-                mode,
+                edit: BindingInterpolationSetArgs { node, target, mode },
             } => self.edit_session_captured(session, |s| {
                 edit::apply(
                     &mut s.model,
                     EditOp::BindingInterpolationSet {
-                        node,
                         params,
-                        target,
-                        mode,
+                        edit: BindingInterpolationSetArgs { node, target, mode },
                     },
                 )
             }),
             Command::MeshSet {
                 session,
                 if_rev,
-                node,
-                verts,
-                uvs,
-                indices,
-                origin,
-                deform_mapping,
-            } => self.edit_session_captured(session, |s| {
-                s.check_revision(if_rev)?;
-                edit::apply(
-                    &mut s.model,
-                    EditOp::MeshSet {
+                edit:
+                    MeshSetArgs {
                         node,
                         verts,
                         uvs,
                         indices,
                         origin,
                         deform_mapping,
+                    },
+            } => self.edit_session_captured(session, |s| {
+                s.check_revision(if_rev)?;
+                edit::apply(
+                    &mut s.model,
+                    EditOp::MeshSet {
+                        edit: MeshSetArgs {
+                            node,
+                            verts,
+                            uvs,
+                            indices,
+                            origin,
+                            deform_mapping,
+                        },
                     },
                 )
             }),
@@ -1614,36 +1661,58 @@ impl Editor {
             }),
             Command::SlotFill {
                 session,
-                node,
-                slot,
-                vertex,
+                edit: SlotFillArgs { node, slot, vertex },
             } => self.edit_session_captured(session, |s| {
-                edit::apply(&mut s.model, EditOp::SlotFill { node, slot, vertex })
+                edit::apply(
+                    &mut s.model,
+                    EditOp::SlotFill {
+                        edit: SlotFillArgs { node, slot, vertex },
+                    },
+                )
             }),
             Command::SlotClear {
                 session,
-                node,
-                slot,
+                edit: SlotClearArgs { node, slot },
             } => self.edit_session_captured(session, |s| {
-                edit::apply(&mut s.model, EditOp::SlotClear { node, slot })
+                edit::apply(
+                    &mut s.model,
+                    EditOp::SlotClear {
+                        edit: SlotClearArgs { node, slot },
+                    },
+                )
             }),
             Command::SlotDelete {
                 session,
-                node,
-                slot,
+                edit: SlotDeleteArgs { node, slot },
             } => self.edit_session_captured(session, |s| {
-                edit::apply(&mut s.model, EditOp::SlotDelete { node, slot })
+                edit::apply(
+                    &mut s.model,
+                    EditOp::SlotDelete {
+                        edit: SlotDeleteArgs { node, slot },
+                    },
+                )
             }),
             Command::WeldSet {
                 session,
-                a,
-                b,
-                pairs,
+                edit: WeldSetArgs { a, b, pairs },
             } => self.edit_session_captured(session, |s| {
-                edit::apply(&mut s.model, EditOp::WeldSet { a, b, pairs })
+                edit::apply(
+                    &mut s.model,
+                    EditOp::WeldSet {
+                        edit: WeldSetArgs { a, b, pairs },
+                    },
+                )
             }),
-            Command::WeldDelete { session, a, b } => self.edit_session_captured(session, |s| {
-                edit::apply(&mut s.model, EditOp::WeldDelete { a, b })
+            Command::WeldDelete {
+                session,
+                edit: WeldDeleteArgs { a, b },
+            } => self.edit_session_captured(session, |s| {
+                edit::apply(
+                    &mut s.model,
+                    EditOp::WeldDelete {
+                        edit: WeldDeleteArgs { a, b },
+                    },
+                )
             }),
             Command::Undo { session, if_rev } => {
                 self.navigate_history(session, if_rev, HistoryNavigation::Undo)

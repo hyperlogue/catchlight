@@ -455,8 +455,18 @@ fn push_field(
     let attrs = serde_attrs(&field.attrs, &format_args!("field `{ident}`"))?;
 
     if attrs.flatten {
-        // `#[serde(flatten)]` splices fields so `to_wire()` stays one level deep.
-        let ty = py_type(&field.ty, known)?;
+        // `#[serde(flatten)]` splices fields so `to_wire()` stays one level deep,
+        // and the spliced struct needs no class of its own.
+        let Type::Path(path) = &field.ty else {
+            bail!("`{ident}` flattens a type that is not a named struct")
+        };
+        let ty = path
+            .path
+            .segments
+            .last()
+            .context("an empty type path in the protocol")?
+            .ident
+            .to_string();
         let Some(item @ Item::Struct(_)) = source.items.get(&ty) else {
             bail!("`{ident}` flattens `{ty}`, which is not a struct in the protocol source")
         };
@@ -1183,8 +1193,9 @@ mod tests {
 #[cfg(test)]
 mod wire_shapes {
     use catchlight_editor_protocol::{
-        AutoMesh, BindingCellValue, BindingIdentity, Camera, Command, MotionResponse, NodeKindArg,
-        NodePatch, ParamPose, Presence, Rename, ResponseInput, ResponseSource, SessionId, TexId,
+        AutoMesh, BindingCellValue, BindingIdentity, Camera, Command, MeshSetArgs, MotionResponse,
+        NodeKindArg, NodePatch, ParamPose, Presence, Rename, ResponseInput, ResponseSource,
+        SessionId, TexId,
     };
     use serde_json::{Value, json};
 
@@ -1366,14 +1377,16 @@ mod wire_shapes {
     fn a_mesh_travels_as_lists_of_points() {
         assert_wire(
             Command::MeshSet {
-                deform_mapping: None,
                 if_rev: None,
                 session: SessionId(1),
-                node: id("hair"),
-                verts: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
-                uvs: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
-                indices: vec![[0, 1, 2]],
-                origin: [0.0, 0.0],
+                edit: MeshSetArgs {
+                    deform_mapping: None,
+                    node: id("hair"),
+                    verts: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+                    uvs: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+                    indices: vec![[0, 1, 2]],
+                    origin: [0.0, 0.0],
+                },
             },
             json!({
                 "cmd": "mesh_set",

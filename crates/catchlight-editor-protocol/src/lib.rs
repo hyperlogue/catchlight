@@ -249,16 +249,16 @@ pub enum Command {
     #[command(Edit)]
     NodeReparent {
         session: SessionId,
-        node: NodeId,
-        to: NodeId,
+        #[serde(flatten)]
+        edit: NodeReparentArgs,
     },
     /// Move a node within its parent's children (clamped to the end).
     #[serde(rename = "node_reorder")]
     #[command(Edit)]
     NodeReorder {
         session: SessionId,
-        node: NodeId,
-        index: u32,
+        #[serde(flatten)]
+        edit: NodeReorderArgs,
     },
 
     /// Deep-copy a node's subtree as its next sibling; copies get fresh Ids.
@@ -280,17 +280,16 @@ pub enum Command {
     #[command(Edit)]
     MaskAdd {
         session: SessionId,
-        node: NodeId,
-        source: NodeId,
-        mode: MaskMode,
+        #[serde(flatten)]
+        edit: MaskAddArgs,
     },
 
     #[serde(rename = "mask_delete")]
     #[command(Edit)]
     MaskDelete {
         session: SessionId,
-        node: NodeId,
-        index: u32,
+        #[serde(flatten)]
+        edit: MaskDeleteArgs,
     },
     #[serde(rename = "motion_response_set")]
     #[command(Edit)]
@@ -374,10 +373,8 @@ pub enum Command {
         if_rev: Option<u64>,
         #[serde(flatten)]
         params: BindingParams,
-        node: NodeId,
-        target: BindingTarget,
-        axis: ParamId,
-        value: f32,
+        #[serde(flatten)]
+        edit: BindingKeyInsertArgs,
     },
     /// Remove a key position while retaining at least one position on the axis.
     #[serde(rename = "binding_key_delete")]
@@ -388,10 +385,8 @@ pub enum Command {
         if_rev: Option<u64>,
         #[serde(flatten)]
         params: BindingParams,
-        node: NodeId,
-        target: BindingTarget,
-        axis: ParamId,
-        index: u32,
+        #[serde(flatten)]
+        edit: BindingKeyDeleteArgs,
     },
     /// Move a key position to normalized `value` in [0, 1], preserving
     /// strict ordering with its neighbors.
@@ -403,11 +398,8 @@ pub enum Command {
         if_rev: Option<u64>,
         #[serde(flatten)]
         params: BindingParams,
-        node: NodeId,
-        target: BindingTarget,
-        axis: ParamId,
-        index: u32,
-        value: f32,
+        #[serde(flatten)]
+        edit: BindingKeyMoveArgs,
     },
 
     /// Atomically execute a bounded list against one revision of the model.
@@ -450,9 +442,8 @@ pub enum Command {
         if_rev: u64,
         #[serde(flatten)]
         params: BindingParams,
-        node: NodeId,
-        target: BindingTarget,
-        cells: Vec<BindingCellWrite>,
+        #[serde(flatten)]
+        edit: BindingCellsSetArgs,
     },
     #[serde(rename = "binding_cells_unset")]
     #[command(Edit)]
@@ -461,9 +452,8 @@ pub enum Command {
         if_rev: u64,
         #[serde(flatten)]
         params: BindingParams,
-        node: NodeId,
-        target: BindingTarget,
-        cells: Vec<[u32; 2]>,
+        #[serde(flatten)]
+        edit: BindingCellsUnsetArgs,
     },
     #[serde(rename = "binding_add")]
     #[command(Edit)]
@@ -471,10 +461,8 @@ pub enum Command {
         session: SessionId,
         #[serde(flatten)]
         params: BindingParams,
-        node: NodeId,
-        target: BindingTarget,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        key_positions: Option<Vec<Vec<f32>>>,
+        #[serde(flatten)]
+        edit: BindingAddArgs,
     },
 
     #[serde(rename = "binding_delete")]
@@ -483,18 +471,17 @@ pub enum Command {
         session: SessionId,
         #[serde(flatten)]
         params: BindingParams,
-        node: NodeId,
-        target: BindingTarget,
+        #[serde(flatten)]
+        edit: BindingDeleteArgs,
     },
     #[serde(rename = "binding_interpolation_set")]
     #[command(Edit)]
-    BindingInterpolate {
+    BindingInterpolationSet {
         session: SessionId,
         #[serde(flatten)]
         params: BindingParams,
-        node: NodeId,
-        target: BindingTarget,
-        mode: Interpolate,
+        #[serde(flatten)]
+        edit: BindingInterpolationSetArgs,
     },
 
     #[serde(rename = "binding_list")]
@@ -513,15 +500,8 @@ pub enum Command {
         /// Refuse a stale draft or gesture while holding the session lock.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         if_rev: Option<u64>,
-        node: NodeId,
-        verts: Vec<[f32; 2]>,
-        /// One `[u, v]` per vertex, as many as `verts`.
-        uvs: Vec<[f32; 2]>,
-        /// One `[a, b, c]` per triangle, each a `verts` index.
-        indices: Vec<[u32; 3]>,
-        origin: [f32; 2],
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        deform_mapping: Option<Vec<Vec<VertexWeight>>>,
+        #[serde(flatten)]
+        edit: MeshSetArgs,
     },
     /// Trace a part's mesh from its texture's alpha and apply it like
     /// [`Command::MeshSet`].
@@ -549,9 +529,8 @@ pub enum Command {
     #[command(Edit)]
     SlotFill {
         session: SessionId,
-        node: NodeId,
-        slot: SlotId,
-        vertex: u32,
+        #[serde(flatten)]
+        edit: SlotFillArgs,
     },
     /// Unfill a slot. The weld pairs that name it keep it and skip it until it
     /// is filled again.
@@ -559,16 +538,16 @@ pub enum Command {
     #[command(Edit)]
     SlotClear {
         session: SessionId,
-        node: NodeId,
-        slot: SlotId,
+        #[serde(flatten)]
+        edit: SlotClearArgs,
     },
     /// Remove a slot from a part, and with it the weld pairs that named it.
     #[serde(rename = "slot_delete")]
     #[command(Edit)]
     SlotDelete {
         session: SessionId,
-        node: NodeId,
-        slot: SlotId,
+        #[serde(flatten)]
+        edit: SlotDeleteArgs,
     },
     #[serde(rename = "slot_list")]
     #[command(ReplicaQuery)]
@@ -589,18 +568,16 @@ pub enum Command {
     #[command(Edit)]
     WeldSet {
         session: SessionId,
-        a: NodeId,
-        b: NodeId,
-        #[serde(default)]
-        pairs: Vec<SlotPair>,
+        #[serde(flatten)]
+        edit: WeldSetArgs,
     },
     /// Unmake the weld pairing two parts, named in either order.
     #[serde(rename = "weld_delete")]
     #[command(Edit)]
     WeldDelete {
         session: SessionId,
-        a: NodeId,
-        b: NodeId,
+        #[serde(flatten)]
+        edit: WeldDeleteArgs,
     },
     /// Add a spine node. Empty `joints`, or a joint repeating the point above
     /// it, is refused.
@@ -1132,7 +1109,7 @@ impl Command {
             | Self::BindingKeyMove { session, .. }
             | Self::BindingAdd { session, .. }
             | Self::BindingDelete { session, .. }
-            | Self::BindingInterpolate { session, .. }
+            | Self::BindingInterpolationSet { session, .. }
             | Self::BindingList { session, .. }
             | Self::MeshSet { session, .. }
             | Self::MeshAuto { session, .. }
@@ -1308,6 +1285,7 @@ pub struct VertexWeight {
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub enum EditOp {
+    /// Unlike [`Command::NodeAdd`], names the node it adds.
     NodeAdd {
         parent: NodeId,
         kind: NodeKindArg,
@@ -1321,117 +1299,244 @@ pub enum EditOp {
         patch: NodePatch,
     },
     NodeReparent {
-        node: NodeId,
-        to: NodeId,
+        #[serde(flatten)]
+        edit: NodeReparentArgs,
     },
     NodeReorder {
-        node: NodeId,
-        index: u32,
+        #[serde(flatten)]
+        edit: NodeReorderArgs,
     },
     MeshSet {
-        node: NodeId,
-        verts: Vec<[f32; 2]>,
-        uvs: Vec<[f32; 2]>,
-        indices: Vec<[u32; 3]>,
-        origin: [f32; 2],
-        #[serde(default)]
-        deform_mapping: Option<Vec<Vec<VertexWeight>>>,
+        #[serde(flatten)]
+        edit: MeshSetArgs,
     },
     BindingKeyInsert {
-        node: NodeId,
         #[serde(flatten)]
         params: BindingParams,
-        target: BindingTarget,
-        axis: ParamId,
-        value: f32,
+        #[serde(flatten)]
+        edit: BindingKeyInsertArgs,
     },
     BindingKeyDelete {
-        node: NodeId,
         #[serde(flatten)]
         params: BindingParams,
-        target: BindingTarget,
-        axis: ParamId,
-        index: u32,
+        #[serde(flatten)]
+        edit: BindingKeyDeleteArgs,
     },
     BindingKeyMove {
-        node: NodeId,
         #[serde(flatten)]
         params: BindingParams,
-        target: BindingTarget,
-        axis: ParamId,
-        index: u32,
-        value: f32,
+        #[serde(flatten)]
+        edit: BindingKeyMoveArgs,
     },
     BindingAdd {
-        node: NodeId,
         #[serde(flatten)]
         params: BindingParams,
-        target: BindingTarget,
-        #[serde(default)]
-        key_positions: Option<Vec<Vec<f32>>>,
+        #[serde(flatten)]
+        edit: BindingAddArgs,
     },
     BindingCellsSet {
-        node: NodeId,
         #[serde(flatten)]
         params: BindingParams,
-        target: BindingTarget,
-        cells: Vec<BindingCellWrite>,
+        #[serde(flatten)]
+        edit: BindingCellsSetArgs,
     },
     BindingCellsUnset {
-        node: NodeId,
         #[serde(flatten)]
         params: BindingParams,
-        target: BindingTarget,
-        cells: Vec<[u32; 2]>,
+        #[serde(flatten)]
+        edit: BindingCellsUnsetArgs,
     },
     BindingDelete {
-        node: NodeId,
         #[serde(flatten)]
         params: BindingParams,
-        target: BindingTarget,
+        #[serde(flatten)]
+        edit: BindingDeleteArgs,
     },
     BindingInterpolationSet {
-        node: NodeId,
         #[serde(flatten)]
         params: BindingParams,
-        target: BindingTarget,
-        mode: Interpolate,
+        #[serde(flatten)]
+        edit: BindingInterpolationSetArgs,
     },
     MaskAdd {
-        node: NodeId,
-        source: NodeId,
-        mode: MaskMode,
+        #[serde(flatten)]
+        edit: MaskAddArgs,
     },
     MaskDelete {
-        node: NodeId,
-        index: u32,
+        #[serde(flatten)]
+        edit: MaskDeleteArgs,
     },
-    SlotAdd {
-        node: NodeId,
-        slot: SlotId,
-    },
+    /// Unlike [`Command::SlotAdd`], names the slot it adds.
+    SlotAdd { node: NodeId, slot: SlotId },
     SlotFill {
-        node: NodeId,
-        slot: SlotId,
-        vertex: u32,
+        #[serde(flatten)]
+        edit: SlotFillArgs,
     },
     SlotClear {
-        node: NodeId,
-        slot: SlotId,
+        #[serde(flatten)]
+        edit: SlotClearArgs,
     },
     SlotDelete {
-        node: NodeId,
-        slot: SlotId,
+        #[serde(flatten)]
+        edit: SlotDeleteArgs,
     },
     WeldSet {
-        a: NodeId,
-        b: NodeId,
-        pairs: Vec<SlotPair>,
+        #[serde(flatten)]
+        edit: WeldSetArgs,
     },
     WeldDelete {
-        a: NodeId,
-        b: NodeId,
+        #[serde(flatten)]
+        edit: WeldDeleteArgs,
     },
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct NodeReparentArgs {
+    pub node: NodeId,
+    pub to: NodeId,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct NodeReorderArgs {
+    pub node: NodeId,
+    pub index: u32,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct MeshSetArgs {
+    pub node: NodeId,
+    pub verts: Vec<[f32; 2]>,
+    /// One `[u, v]` per vertex, as many as `verts`.
+    pub uvs: Vec<[f32; 2]>,
+    /// One `[a, b, c]` per triangle, each a `verts` index.
+    pub indices: Vec<[u32; 3]>,
+    pub origin: [f32; 2],
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deform_mapping: Option<Vec<Vec<VertexWeight>>>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct BindingKeyInsertArgs {
+    pub node: NodeId,
+    pub target: BindingTarget,
+    pub axis: ParamId,
+    pub value: f32,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct BindingKeyDeleteArgs {
+    pub node: NodeId,
+    pub target: BindingTarget,
+    pub axis: ParamId,
+    pub index: u32,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct BindingKeyMoveArgs {
+    pub node: NodeId,
+    pub target: BindingTarget,
+    pub axis: ParamId,
+    pub index: u32,
+    pub value: f32,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct BindingAddArgs {
+    pub node: NodeId,
+    pub target: BindingTarget,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_positions: Option<Vec<Vec<f32>>>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct BindingCellsSetArgs {
+    pub node: NodeId,
+    pub target: BindingTarget,
+    pub cells: Vec<BindingCellWrite>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct BindingCellsUnsetArgs {
+    pub node: NodeId,
+    pub target: BindingTarget,
+    pub cells: Vec<[u32; 2]>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct BindingDeleteArgs {
+    pub node: NodeId,
+    pub target: BindingTarget,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct BindingInterpolationSetArgs {
+    pub node: NodeId,
+    pub target: BindingTarget,
+    pub mode: Interpolate,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct MaskAddArgs {
+    pub node: NodeId,
+    pub source: NodeId,
+    pub mode: MaskMode,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct MaskDeleteArgs {
+    pub node: NodeId,
+    pub index: u32,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct SlotFillArgs {
+    pub node: NodeId,
+    pub slot: SlotId,
+    pub vertex: u32,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct SlotClearArgs {
+    pub node: NodeId,
+    pub slot: SlotId,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct SlotDeleteArgs {
+    pub node: NodeId,
+    pub slot: SlotId,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct WeldSetArgs {
+    pub a: NodeId,
+    pub b: NodeId,
+    #[serde(default)]
+    pub pairs: Vec<SlotPair>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct WeldDeleteArgs {
+    pub a: NodeId,
+    pub b: NodeId,
 }
 
 /// Exactly one source and its declared attachments initialize a new session.
@@ -3274,14 +3379,16 @@ mod tests {
             id: 1,
             command: Command::BindingCellsSet {
                 session: SessionId(2),
-                params: BindingParams::two(param("head.x"), param("head.y")),
-                node: node("root/part-3f9a2c1e"),
-                target: BindingTarget::Tx,
                 if_rev: 0,
-                cells: vec![BindingCellWrite {
-                    cell: [1, 2],
-                    value: BindingCellValue::Scalar(0.5),
-                }],
+                params: BindingParams::two(param("head.x"), param("head.y")),
+                edit: BindingCellsSetArgs {
+                    node: node("root/part-3f9a2c1e"),
+                    target: BindingTarget::Tx,
+                    cells: vec![BindingCellWrite {
+                        cell: [1, 2],
+                        value: BindingCellValue::Scalar(0.5),
+                    }],
+                },
             },
         };
         let line = serde_json::to_string(&req).unwrap();
@@ -3290,7 +3397,11 @@ mod tests {
         assert!(line.contains("\"node\":\"root/part-3f9a2c1e\""), "{line}");
         let back: Request = serde_json::from_str(&line).unwrap();
         match back.command {
-            Command::BindingCellsSet { params, cells, .. } => {
+            Command::BindingCellsSet {
+                params,
+                edit: BindingCellsSetArgs { cells, .. },
+                ..
+            } => {
                 assert_eq!(params.param.as_str(), "head.x");
                 assert_eq!(params.param_y.unwrap().as_str(), "head.y");
                 assert_eq!(cells[0].cell, [1, 2]);
@@ -3306,9 +3417,11 @@ mod tests {
             command: Command::BindingAdd {
                 session: SessionId(1),
                 params: BindingParams::one(param("pull")),
-                key_positions: None,
-                node: node("body"),
-                target: BindingTarget::Tx,
+                edit: BindingAddArgs {
+                    key_positions: None,
+                    node: node("body"),
+                    target: BindingTarget::Tx,
+                },
             },
         })
         .unwrap();
@@ -3703,10 +3816,34 @@ mod tests {
             r#"{"id":1,"cmd":"node_set","session":1,"node":"a","nmae":"b"}"#,
             r#"{"id":1,"cmd":"binding_add","session":1,"node":"a","target":"opacity","param":"p","paramy":"q"}"#,
             r#"{"id":1,"cmd":"edit_apply","session":1,"if_rev":1,"edits":[{"op":"node_set","node":"a","nmae":"b"}]}"#,
+            r#"{"id":1,"cmd":"mesh_set","session":1,"node":"a","verts":[],"uvs":[],"indices":[],"origin":[0,0],"orgin":[0,0]}"#,
+            r#"{"id":1,"cmd":"binding_key_insert","session":1,"node":"a","target":"opacity","param":"p","axis":"p","value":0,"vlaue":0}"#,
+            r#"{"id":1,"cmd":"edit_apply","session":1,"if_rev":1,"edits":[{"op":"weld_set","a":"a","b":"b","pars":[]}]}"#,
             r#"{"id":1,"cmd":"mesh_generate","session":1,"node":"a","mode":{"mode":"grid","colls":4}}"#,
         ] {
             let err = serde_json::from_str::<Request>(line).unwrap_err();
             assert!(err.to_string().contains("unknown field"), "{line}: {err}");
+        }
+    }
+
+    #[test]
+    fn a_batch_op_omits_and_defaults_what_its_command_does() {
+        let op = EditOp::MeshSet {
+            edit: MeshSetArgs {
+                node: node("a"),
+                verts: Vec::new(),
+                uvs: Vec::new(),
+                indices: Vec::new(),
+                origin: [0.0, 0.0],
+                deform_mapping: None,
+            },
+        };
+        let line = serde_json::to_string(&op).unwrap();
+        assert!(!line.contains("deform_mapping"), "{line}");
+        let weld: EditOp = serde_json::from_str(r#"{"op":"weld_set","a":"a","b":"b"}"#).unwrap();
+        match weld {
+            EditOp::WeldSet { edit } => assert!(edit.pairs.is_empty()),
+            other => panic!("{other:?}"),
         }
     }
 

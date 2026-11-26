@@ -5,9 +5,10 @@
 //! following command must use.
 
 use catchlight_editor_protocol::{
-    BindingCellValue, BindingCellWrite, BindingParams, BindingTarget, Command, ErrorCode, NodeId,
-    NodeKindArg, NodePatch, ParamId, Rename, Reply, Request, ResponseBody, SlotAddr, SlotId,
-    SlotPair,
+    BindingCellValue, BindingCellWrite, BindingCellsSetArgs, BindingCellsUnsetArgs, BindingParams,
+    BindingTarget, Command, ErrorCode, MeshSetArgs, NodeId, NodeKindArg, NodePatch, ParamId,
+    Rename, Reply, Request, ResponseBody, SlotAddr, SlotClearArgs, SlotDeleteArgs, SlotFillArgs,
+    SlotId, SlotPair, WeldDeleteArgs, WeldSetArgs,
 };
 use catchlight_editor_server::Editor;
 
@@ -85,14 +86,16 @@ fn unfilled(ed: &Editor, session: catchlight_editor_protocol::SessionId) -> Vec<
 
 fn quad(session: catchlight_editor_protocol::SessionId, node: NodeId) -> Command {
     Command::MeshSet {
-        deform_mapping: None,
         if_rev: None,
         session,
-        node,
-        verts: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
-        uvs: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
-        indices: vec![[0, 1, 2], [0, 2, 3]],
-        origin: [0.0, 0.0],
+        edit: MeshSetArgs {
+            deform_mapping: None,
+            node,
+            verts: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
+            uvs: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            indices: vec![[0, 1, 2], [0, 2, 3]],
+            origin: [0.0, 0.0],
+        },
     }
 }
 
@@ -228,12 +231,14 @@ fn a_renamed_param_keeps_the_binding_that_named_it() {
             if_rev: ed.revision(session).unwrap(),
             session,
             params: BindingParams::one(generated.clone()),
-            node: node.clone(),
-            target: BindingTarget::Tx,
-            cells: vec![BindingCellWrite {
-                cell: [1, 0],
-                value: BindingCellValue::Scalar(25.0),
-            }],
+            edit: BindingCellsSetArgs {
+                node: node.clone(),
+                target: BindingTarget::Tx,
+                cells: vec![BindingCellWrite {
+                    cell: [1, 0],
+                    value: BindingCellValue::Scalar(25.0),
+                }],
+            },
         },
     );
 
@@ -274,9 +279,11 @@ fn a_renamed_param_keeps_the_binding_that_named_it() {
                 if_rev: ed.revision(session).unwrap(),
                 session,
                 params: BindingParams::one(pull),
-                node,
-                target: BindingTarget::Tx,
-                cells: vec![[1, 0]],
+                edit: BindingCellsUnsetArgs {
+                    node,
+                    target: BindingTarget::Tx,
+                    cells: vec![[1, 0]],
+                },
             },
         ),
         Reply::Ok { .. }
@@ -349,15 +356,19 @@ fn a_slot_survives_a_mesh_edit_and_says_what_it_lost() {
     for (i, slot) in [&left, &right].into_iter().enumerate() {
         step(Command::SlotFill {
             session,
-            node: body_part.clone(),
-            slot: slot.clone(),
-            vertex: i as u32,
+            edit: SlotFillArgs {
+                node: body_part.clone(),
+                slot: slot.clone(),
+                vertex: i as u32,
+            },
         });
         step(Command::SlotFill {
             session,
-            node: hem_part.clone(),
-            slot: slot.clone(),
-            vertex: (i + 2) as u32,
+            edit: SlotFillArgs {
+                node: hem_part.clone(),
+                slot: slot.clone(),
+                vertex: (i + 2) as u32,
+            },
         });
     }
 
@@ -390,9 +401,11 @@ fn a_slot_survives_a_mesh_edit_and_says_what_it_lost() {
     };
     step(Command::WeldSet {
         session,
-        a: body_part.clone(),
-        b: hem_part.clone(),
-        pairs: pairs(catchlight_core::DEFAULT_SLOT_WEIGHT),
+        edit: WeldSetArgs {
+            a: body_part.clone(),
+            b: hem_part.clone(),
+            pairs: pairs(catchlight_core::DEFAULT_SLOT_WEIGHT),
+        },
     });
     match step(Command::Welds { session }) {
         ResponseBody::Welds { welds } => {
@@ -413,9 +426,11 @@ fn a_slot_survives_a_mesh_edit_and_says_what_it_lost() {
     // stacking one the model would refuse.
     step(Command::WeldSet {
         session,
-        a: hem_part,
-        b: body_part.clone(),
-        pairs: pairs(catchlight_core::DEFAULT_SLOT_WEIGHT),
+        edit: WeldSetArgs {
+            a: hem_part,
+            b: body_part.clone(),
+            pairs: pairs(catchlight_core::DEFAULT_SLOT_WEIGHT),
+        },
     });
     assert!(matches!(
         step(Command::Welds { session }),
@@ -445,9 +460,11 @@ fn a_slot_survives_a_mesh_edit_and_says_what_it_lost() {
     for (i, slot) in [&left, &right].into_iter().enumerate() {
         step(Command::SlotFill {
             session,
-            node: body_part.clone(),
-            slot: slot.clone(),
-            vertex: i as u32,
+            edit: SlotFillArgs {
+                node: body_part.clone(),
+                slot: slot.clone(),
+                vertex: i as u32,
+            },
         });
     }
     assert!(unfilled(&ed, session).is_empty());
@@ -455,8 +472,10 @@ fn a_slot_survives_a_mesh_edit_and_says_what_it_lost() {
     for slot in [&left, &right] {
         step(Command::SlotDelete {
             session,
-            node: body_part.clone(),
-            slot: slot.clone(),
+            edit: SlotDeleteArgs {
+                node: body_part.clone(),
+                slot: slot.clone(),
+            },
         });
     }
     assert!(matches!(
@@ -594,13 +613,15 @@ fn renaming_a_slot_carries_its_weld_pairs_and_refuses_a_name_in_use() {
     let (top, bottom) = (part(), part());
     step(Command::WeldSet {
         session,
-        a: top.clone(),
-        b: bottom,
-        pairs: vec![SlotPair {
-            a: slot.clone(),
-            b: slot.clone(),
-            weight: 0.5,
-        }],
+        edit: WeldSetArgs {
+            a: top.clone(),
+            b: bottom,
+            pairs: vec![SlotPair {
+                a: slot.clone(),
+                b: slot.clone(),
+                weight: 0.5,
+            }],
+        },
     });
 
     let neck = SlotId::new("neck").unwrap();
@@ -705,16 +726,18 @@ fn replacing_a_weld_preserves_other_pairs_and_explicit_orientation() {
     let (a, b) = (part(), part());
     step(Command::WeldSet {
         session,
-        a: a.clone(),
-        b: b.clone(),
-        pairs: [&left, &right]
-            .into_iter()
-            .map(|s| SlotPair {
-                a: s.clone(),
-                b: s.clone(),
-                weight: 0.5,
-            })
-            .collect(),
+        edit: WeldSetArgs {
+            a: a.clone(),
+            b: b.clone(),
+            pairs: [&left, &right]
+                .into_iter()
+                .map(|s| SlotPair {
+                    a: s.clone(),
+                    b: s.clone(),
+                    weight: 0.5,
+                })
+                .collect(),
+        },
     });
 
     let weights = |ed: &Editor, id: u64| match body(ed, id, Command::Welds { session }) {
@@ -728,20 +751,22 @@ fn replacing_a_weld_preserves_other_pairs_and_explicit_orientation() {
 
     step(Command::WeldSet {
         session,
-        a: a.clone(),
-        b: b.clone(),
-        pairs: vec![
-            SlotPair {
-                a: left.clone(),
-                b: left.clone(),
-                weight: 0.25,
-            },
-            SlotPair {
-                a: right.clone(),
-                b: right.clone(),
-                weight: 0.5,
-            },
-        ],
+        edit: WeldSetArgs {
+            a: a.clone(),
+            b: b.clone(),
+            pairs: vec![
+                SlotPair {
+                    a: left.clone(),
+                    b: left.clone(),
+                    weight: 0.25,
+                },
+                SlotPair {
+                    a: right.clone(),
+                    b: right.clone(),
+                    weight: 0.5,
+                },
+            ],
+        },
     });
     assert_eq!(
         weights(&ed, 900),
@@ -751,20 +776,22 @@ fn replacing_a_weld_preserves_other_pairs_and_explicit_orientation() {
     // A caller changing orientation supplies the desired share of its new A.
     step(Command::WeldSet {
         session,
-        a: b.clone(),
-        b: a.clone(),
-        pairs: vec![
-            SlotPair {
-                a: left.clone(),
-                b: left.clone(),
-                weight: 0.75,
-            },
-            SlotPair {
-                a: right.clone(),
-                b: right.clone(),
-                weight: 0.5,
-            },
-        ],
+        edit: WeldSetArgs {
+            a: b.clone(),
+            b: a.clone(),
+            pairs: vec![
+                SlotPair {
+                    a: left.clone(),
+                    b: left.clone(),
+                    weight: 0.75,
+                },
+                SlotPair {
+                    a: right.clone(),
+                    b: right.clone(),
+                    weight: 0.5,
+                },
+            ],
+        },
     });
     assert_eq!(
         weights(&ed, 901),
@@ -784,13 +811,15 @@ fn replacing_a_weld_preserves_other_pairs_and_explicit_orientation() {
             903,
             Command::WeldSet {
                 session,
-                a,
-                b,
-                pairs: vec![SlotPair {
-                    a: left.clone(),
-                    b: left,
-                    weight: 1.5
-                }],
+                edit: WeldSetArgs {
+                    a,
+                    b,
+                    pairs: vec![SlotPair {
+                        a: left.clone(),
+                        b: left,
+                        weight: 1.5
+                    }],
+                },
             }
         ),
         Reply::Err {
@@ -837,9 +866,11 @@ fn a_weld_is_unmade_without_taking_the_parts_with_it() {
         });
         step(Command::SlotFill {
             session,
-            node: node.clone(),
-            slot: slot.clone(),
-            vertex: 0,
+            edit: SlotFillArgs {
+                node: node.clone(),
+                slot: slot.clone(),
+                vertex: 0,
+            },
         });
         node
     };
@@ -847,13 +878,15 @@ fn a_weld_is_unmade_without_taking_the_parts_with_it() {
 
     step(Command::WeldSet {
         session,
-        a: top.clone(),
-        b: bottom.clone(),
-        pairs: vec![SlotPair {
-            a: slot.clone(),
-            b: slot.clone(),
-            weight: 0.5,
-        }],
+        edit: WeldSetArgs {
+            a: top.clone(),
+            b: bottom.clone(),
+            pairs: vec![SlotPair {
+                a: slot.clone(),
+                b: slot.clone(),
+                weight: 0.5,
+            }],
+        },
     });
     assert!(matches!(
         step(Command::Welds { session }),
@@ -864,8 +897,10 @@ fn a_weld_is_unmade_without_taking_the_parts_with_it() {
     // names it, so B-then-A finds the same one.
     step(Command::WeldDelete {
         session,
-        a: bottom.clone(),
-        b: top.clone(),
+        edit: WeldDeleteArgs {
+            a: bottom.clone(),
+            b: top.clone(),
+        },
     });
     assert!(matches!(
         step(Command::Welds { session }),
@@ -903,8 +938,10 @@ fn a_weld_is_unmade_without_taking_the_parts_with_it() {
 
     step(Command::WeldDelete {
         session,
-        a: top.clone(),
-        b: bottom.clone(),
+        edit: WeldDeleteArgs {
+            a: top.clone(),
+            b: bottom.clone(),
+        },
     });
     next += 1;
     assert!(matches!(
@@ -913,8 +950,7 @@ fn a_weld_is_unmade_without_taking_the_parts_with_it() {
             next,
             Command::WeldDelete {
                 session,
-                a: top,
-                b: bottom,
+                edit: WeldDeleteArgs { a: top, b: bottom },
             }
         ),
         Reply::Err {
@@ -982,8 +1018,10 @@ fn the_slot_errors_a_client_reacts_to_have_their_own_codes() {
             7,
             Command::SlotClear {
                 session,
-                node: part.clone(),
-                slot: SlotId::new("nope").unwrap(),
+                edit: SlotClearArgs {
+                    node: part.clone(),
+                    slot: SlotId::new("nope").unwrap(),
+                },
             }
         ),
         ErrorCode::UnknownSlot
@@ -1010,9 +1048,11 @@ fn the_slot_errors_a_client_reacts_to_have_their_own_codes() {
             10,
             Command::WeldSet {
                 session,
-                a: part.clone(),
-                b: other.clone(),
-                pairs: vec![pair("left", "nope")],
+                edit: WeldSetArgs {
+                    a: part.clone(),
+                    b: other.clone(),
+                    pairs: vec![pair("left", "nope")],
+                },
             }
         ),
         ErrorCode::WeldUnknownSlot,
@@ -1032,9 +1072,11 @@ fn the_slot_errors_a_client_reacts_to_have_their_own_codes() {
             12,
             Command::WeldSet {
                 session,
-                a: part.clone(),
-                b: other.clone(),
-                pairs: vec![pair("left", "left"), pair("left", "left")],
+                edit: WeldSetArgs {
+                    a: part.clone(),
+                    b: other.clone(),
+                    pairs: vec![pair("left", "left"), pair("left", "left")],
+                },
             }
         ),
         ErrorCode::WeldSlotPairedTwice
@@ -1044,13 +1086,15 @@ fn the_slot_errors_a_client_reacts_to_have_their_own_codes() {
             13,
             Command::WeldSet {
                 session,
-                a: part.clone(),
-                b: other,
-                pairs: vec![SlotPair {
-                    a: slot.clone(),
-                    b: slot,
-                    weight: 1.5,
-                }],
+                edit: WeldSetArgs {
+                    a: part.clone(),
+                    b: other,
+                    pairs: vec![SlotPair {
+                        a: slot.clone(),
+                        b: slot,
+                        weight: 1.5,
+                    }],
+                },
             }
         ),
         ErrorCode::WeldWeightOutOfRange
@@ -1060,9 +1104,11 @@ fn the_slot_errors_a_client_reacts_to_have_their_own_codes() {
             14,
             Command::WeldSet {
                 session,
-                a: part.clone(),
-                b: part.clone(),
-                pairs: Vec::new(),
+                edit: WeldSetArgs {
+                    a: part.clone(),
+                    b: part.clone(),
+                    pairs: Vec::new(),
+                },
             }
         ),
         ErrorCode::BadWeldEnd,
@@ -1073,9 +1119,11 @@ fn the_slot_errors_a_client_reacts_to_have_their_own_codes() {
             15,
             Command::WeldSet {
                 session,
-                a: part,
-                b: root,
-                pairs: Vec::new(),
+                edit: WeldSetArgs {
+                    a: part,
+                    b: root,
+                    pairs: Vec::new(),
+                },
             }
         ),
         ErrorCode::BadWeldEnd,

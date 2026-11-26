@@ -1,7 +1,9 @@
 //! `mask`: the mask sources of a part or composite.
 
 use anyhow::{Result, anyhow, bail};
-use catchlight_editor_protocol::{Command, EditOp, MaskInfo, MaskMode, NodeId, ResponseBody};
+use catchlight_editor_protocol::{
+    Command, EditOp, MaskAddArgs, MaskDeleteArgs, MaskInfo, MaskMode, NodeId, ResponseBody,
+};
 use clap::Subcommand;
 
 use crate::args::wire_enum;
@@ -46,9 +48,11 @@ pub(crate) fn route(action: &MaskCmd) -> Route<'_> {
     match action {
         MaskCmd::Add { node, source, mode } => Route::on_session(move |session| Command::MaskAdd {
             session,
-            node: node.clone(),
-            source: source.clone(),
-            mode: *mode,
+            edit: MaskAddArgs {
+                node: node.clone(),
+                source: source.clone(),
+                mode: *mode,
+            },
         }),
         MaskCmd::Set { node, index, mode } => Route::composed(move |remote| {
             rearrange(remote, node, |masks| {
@@ -71,8 +75,10 @@ pub(crate) fn route(action: &MaskCmd) -> Route<'_> {
         }),
         MaskCmd::Delete { node, index } => Route::on_session(move |session| Command::MaskDelete {
             session,
-            node: node.clone(),
-            index: *index,
+            edit: MaskDeleteArgs {
+                node: node.clone(),
+                index: *index,
+            },
         }),
     }
 }
@@ -100,13 +106,17 @@ fn replace_masks(node: &NodeId, count: usize, masks: Vec<MaskInfo>) -> Vec<EditO
     (0..count)
         .rev()
         .map(|index| EditOp::MaskDelete {
-            node: node.clone(),
-            index: index as u32,
+            edit: MaskDeleteArgs {
+                node: node.clone(),
+                index: index as u32,
+            },
         })
         .chain(masks.into_iter().map(|mask| EditOp::MaskAdd {
-            node: node.clone(),
-            source: mask.source,
-            mode: mask.mode,
+            edit: MaskAddArgs {
+                node: node.clone(),
+                source: mask.source,
+                mode: mask.mode,
+            },
         }))
         .collect()
 }

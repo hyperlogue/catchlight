@@ -7,8 +7,8 @@
 //! Authoring a spine through the protocol.
 
 use catchlight_editor_protocol::{
-    Command, ErrorCode, NodeId, NodeInfo, NodeKind, ParamId, Reply, Request, ResponseBody,
-    SessionId, SpineInfo,
+    Command, ErrorCode, MeshSetArgs, NodeId, NodeInfo, NodeKind, NodeReparentArgs, ParamId, Reply,
+    Request, ResponseBody, SessionId, SpineInfo,
 };
 use catchlight_editor_server::Editor;
 
@@ -331,21 +331,23 @@ fn strip_part(
         ed,
         21,
         Command::MeshSet {
-            deform_mapping: None,
             if_rev: None,
             session,
-            node: at.clone(),
-            verts: STRIP.to_vec(),
-            uvs: vec![[0.0, 0.0]; STRIP.len()],
-            indices: vec![
-                [0, 1, 3],
-                [0, 3, 2],
-                [2, 3, 5],
-                [2, 5, 4],
-                [4, 5, 7],
-                [4, 7, 6],
-            ],
-            origin: [3.0, 5.0],
+            edit: MeshSetArgs {
+                deform_mapping: None,
+                node: at.clone(),
+                verts: STRIP.to_vec(),
+                uvs: vec![[0.0, 0.0]; STRIP.len()],
+                indices: vec![
+                    [0, 1, 3],
+                    [0, 3, 2],
+                    [2, 3, 5],
+                    [2, 5, 4],
+                    [4, 5, 7],
+                    [4, 7, 6],
+                ],
+                origin: [3.0, 5.0],
+            },
         },
     );
     body(
@@ -557,8 +559,10 @@ fn a_refit_reuses_the_spine_and_its_params() {
         42,
         Command::NodeReparent {
             session,
-            node: part.clone(),
-            to: parent.clone(),
+            edit: NodeReparentArgs {
+                node: part.clone(),
+                to: parent.clone(),
+            },
         },
     );
     assert_eq!(
