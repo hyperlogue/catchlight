@@ -10,7 +10,7 @@ use catchlight_core::{
     TexId,
 };
 use catchlight_wgpu::{
-    PrepareOptions, RenderCache, RenderContext, RenderList, WgpuRenderer, create_headless_context,
+    GpuContext, PrepareOptions, RenderCache, RenderContext, RenderList, WgpuRenderer,
 };
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -23,7 +23,10 @@ pub const NO_ADAPTER: &str =
 pub fn shared_context() -> (wgpu::Device, wgpu::Queue) {
     static CONTEXT: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
     CONTEXT
-        .get_or_init(|| pollster::block_on(create_headless_context()).expect(NO_ADAPTER))
+        .get_or_init(|| {
+            let gpu = pollster::block_on(GpuContext::headless()).expect(NO_ADAPTER);
+            (gpu.device, gpu.queue)
+        })
         .clone()
 }
 

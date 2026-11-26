@@ -17,7 +17,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
 use catchlight_wgpu::{
-    FrameTargets, RenderList, RenderTarget, RendererError, SurfaceContext, configure_surface,
+    FrameTargets, RenderList, RenderTarget, RendererError, SurfaceContext,
     create_orthographic_camera_at,
 };
 use wasm_bindgen::prelude::*;
@@ -881,7 +881,7 @@ impl Viewport {
         replica: &Replica,
         canvas: web_sys::HtmlCanvasElement,
     ) -> Result<Self, JsValue> {
-        let max_dimension = gpu.device.limits().max_texture_dimension_2d;
+        let max_dimension = gpu.context.device.limits().max_texture_dimension_2d;
         let size = fit_device((canvas.width(), canvas.height()), max_dimension);
 
         let (target, frames) = match &gpu.gl {
@@ -891,7 +891,7 @@ impl Viewport {
             // a stencil sized to the canvas cannot be attached beside a
             // surface sized to the past.
             Some(stage) if stage.is_device_canvas(&canvas) => {
-                stage.resize(&gpu.device, size);
+                stage.resize(&gpu.context.device, size);
                 (
                     Target::Main(stage.clone()),
                     Frames::Tier {
@@ -903,7 +903,7 @@ impl Viewport {
             // WebGL2, on any other canvas: no surface is possible, so render to a texture
             // and borrow the main canvas's surface to present it.
             Some(stage) => {
-                let extra = Extra::new(stage.clone(), &gpu.device, &canvas, size)
+                let extra = Extra::new(stage.clone(), &gpu.context.device, &canvas, size)
                     .map_err(|e| JsValue::from_str(&e))?;
                 (
                     Target::Extra(extra),
@@ -915,19 +915,19 @@ impl Viewport {
             }
             None => {
                 let surface = gpu.surface_for(canvas).map_err(|e| JsValue::from_str(&e))?;
-                let mut surface =
-                    configure_surface(&gpu.adapter, &gpu.device, surface, size.0, size.1).map_err(
-                        |e| match e {
-                            RendererError::SurfaceUnsupported => JsValue::from_str(
-                                "this canvas has no surface format in common with the adapter",
-                            ),
-                            other => JsValue::from_str(&other.to_string()),
-                        },
-                    )?;
+                let mut surface = gpu
+                    .context
+                    .configure_surface(surface, size.0, size.1)
+                    .map_err(|e| match e {
+                        RendererError::SurfaceUnsupported => JsValue::from_str(
+                            "this canvas has no surface format in common with the adapter",
+                        ),
+                        other => JsValue::from_str(&other.to_string()),
+                    })?;
                 // `COPY_SRC` lets `readback` copy the frame. WebGPU only: a GL surface
                 // refuses any usage but `RENDER_ATTACHMENT`.
                 surface.config.usage |= wgpu::TextureUsages::COPY_SRC;
-                surface.reconfigure(&gpu.device);
+                surface.reconfigure(&gpu.context.device);
                 (
                     Target::Own(surface),
                     Frames::Own {

@@ -6,8 +6,7 @@
 use catchlight_core::{Model, Pose, Puppet};
 use catchlight_editor_protocol::SessionId;
 use catchlight_wgpu::{
-    Framing, PrepareOptions, RenderCache, RenderContext, RendererError, WgpuRenderer, collect,
-    create_headless_context,
+    Framing, PrepareOptions, RenderCache, RenderContext, RendererError, collect,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -40,11 +39,8 @@ pub(super) struct PreviewRenderer {
 impl PreviewRenderer {
     /// Expensive (a device and every pipeline); create once and reuse.
     pub(super) fn new() -> Result<Self> {
-        let (device, queue) =
-            pollster::block_on(create_headless_context()).map_err(PreviewError::GpuInit)?;
-        let renderer = WgpuRenderer::new(device, queue, wgpu::TextureFormat::Rgba8UnormSrgb);
         // Resized on first preview; this size only has to be legal.
-        let ctx = RenderContext::with_renderer(renderer, 1, 1);
+        let ctx = pollster::block_on(RenderContext::new(1, 1)).map_err(PreviewError::GpuInit)?;
         Ok(Self { ctx, cache: None })
     }
 

@@ -832,17 +832,17 @@ pub(crate) mod browser {
                     reason = "fires only on wasm32, where wgpu types are not Send"
                 )]
                 renderer: WgpuRenderer::from_pipelines(
-                    gpu.device.clone(),
-                    gpu.queue.clone(),
+                    gpu.context.device.clone(),
+                    gpu.context.queue.clone(),
                     Arc::new(Pipelines::new(
-                        &gpu.device,
+                        &gpu.context.device,
                         format,
                         catchlight_wgpu::PipelineOptions::default(),
                     )),
                 ),
                 cache: None,
             });
-            if render.renderer.device != gpu.device {
+            if render.renderer.device != gpu.context.device {
                 return Err("this replica is already drawing on another device; \
                      one editor holds one Gpu and every viewport shares it"
                     .to_string());

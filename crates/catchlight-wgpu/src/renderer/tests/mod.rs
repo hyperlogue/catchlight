@@ -411,7 +411,9 @@ fn shared_context() -> (wgpu::Device, wgpu::Queue) {
     static CONTEXT: std::sync::OnceLock<(wgpu::Device, wgpu::Queue)> = std::sync::OnceLock::new();
     CONTEXT
         .get_or_init(|| {
-            pollster::block_on(crate::create_headless_context()).expect("a headless adapter")
+            let gpu =
+                pollster::block_on(crate::GpuContext::headless()).expect("a headless adapter");
+            (gpu.device, gpu.queue)
         })
         .clone()
 }

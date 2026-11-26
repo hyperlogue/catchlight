@@ -6,8 +6,8 @@ use crate::render::{
 use crate::{baseline_path, baselines_root, failures_root, repo_root};
 use anyhow::{Context, Result, anyhow};
 use catchlight_wgpu::{
-    FrameTargets, PipelineOptions, Pipelines, RenderTarget, StencilMode, WgpuRenderer,
-    create_headless_context, read_texture_to_rgba,
+    FrameTargets, GpuContext, PipelineOptions, Pipelines, RenderTarget, StencilMode, WgpuRenderer,
+    read_texture_to_rgba,
 };
 use image::RgbaImage;
 use std::collections::HashMap;
@@ -24,9 +24,9 @@ pub fn shared_context() -> Result<(wgpu::Device, wgpu::Queue)> {
     if let Some(context) = context.as_ref() {
         return Ok(context.clone());
     }
-    let created = pollster::block_on(create_headless_context())
-        .map_err(|e| anyhow!("create_headless_context: {e}"))?;
-    Ok(context.insert(created).clone())
+    let gpu =
+        pollster::block_on(GpuContext::headless()).map_err(|e| anyhow!("no headless GPU: {e}"))?;
+    Ok(context.insert((gpu.device, gpu.queue)).clone())
 }
 
 /// `CATCHLIGHT_DISABLE_STENCIL=1` renders the matrix through the alpha-discard

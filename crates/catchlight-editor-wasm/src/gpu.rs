@@ -11,7 +11,7 @@
 use std::rc::Rc;
 use std::sync::Arc;
 
-use catchlight_wgpu::configure_surface;
+use catchlight_wgpu::GpuContext;
 use wasm_bindgen::prelude::*;
 
 use crate::viewport::GlStage;
@@ -22,10 +22,7 @@ pub(crate) const NEEDS_WEBGPU_OR_WEBGL2: &str = "the catchlight editor needs Web
 
 #[wasm_bindgen]
 pub struct Gpu {
-    instance: wgpu::Instance,
-    pub(crate) adapter: wgpu::Adapter,
-    pub(crate) device: wgpu::Device,
-    pub(crate) queue: wgpu::Queue,
+    pub(crate) context: GpuContext,
     /// The device's canvas, surface and frame loop on WebGL2; `None` on WebGPU.
     /// Held for the tab's life: dropping the element would take the device.
     pub(crate) gl: Option<Rc<GlStage>>,
@@ -65,7 +62,7 @@ impl Gpu {
     /// axis. A canvas above it goes black with no other symptom.
     #[wasm_bindgen(js_name = maxSize)]
     pub fn max_size(&self) -> u32 {
-        self.device.limits().max_texture_dimension_2d
+        self.context.device.limits().max_texture_dimension_2d
     }
 }
 
@@ -73,14 +70,8 @@ impl Gpu {
     async fn request_webgpu() -> Result<Self, String> {
         let instance = instance_for(wgpu::Backends::BROWSER_WEBGPU);
         let adapter = request_adapter(&instance, None).await?;
-        let (device, queue) = request_device(&adapter).await?;
-        Ok(Self {
-            instance,
-            adapter,
-            device,
-            queue,
-            gl: None,
-        })
+        let context = request_device(instance, adapter).await?;
+        Ok(Self { context, gl: None })
     }
 
     /// Phase two: WebGL2, whose adapter is `canvas`'s context, so the surface
@@ -89,19 +80,17 @@ impl Gpu {
         let instance = instance_for(wgpu::Backends::GL);
         let surface = canvas_surface(&instance, canvas.clone())?;
         let adapter = request_adapter(&instance, Some(&surface)).await?;
-        let (device, queue) = request_device(&adapter).await?;
+        let context = request_device(instance, adapter).await?;
         let (width, height) = crate::viewport::fit_device(
             (canvas.width(), canvas.height()),
-            device.limits().max_texture_dimension_2d,
+            context.device.limits().max_texture_dimension_2d,
         );
-        let surface = configure_surface(&adapter, &device, surface, width, height)
+        let surface = context
+            .configure_surface(surface, width, height)
             .map_err(|e| e.to_string())?;
-        let stage = GlStage::new(canvas, surface, &device);
+        let stage = GlStage::new(canvas, surface, &context.device);
         Ok(Self {
-            instance,
-            adapter,
-            device,
-            queue,
+            context,
             gl: Some(Rc::new(stage)),
         })
     }
@@ -112,7 +101,7 @@ impl Gpu {
         &self,
         canvas: web_sys::HtmlCanvasElement,
     ) -> Result<wgpu::Surface<'static>, String> {
-        canvas_surface(&self.instance, canvas)
+        canvas_surface(&self.context.instance, canvas)
     }
 }
 
@@ -164,29 +153,19 @@ async fn request_adapter(
         .map_err(|e| format!("no adapter ({e})"))
 }
 
-async fn request_device(adapter: &wgpu::Adapter) -> Result<(wgpu::Device, wgpu::Queue), String> {
-    let optional_features = wgpu::Features::ADDRESS_MODE_CLAMP_TO_BORDER;
-    let required_features = adapter.features() & optional_features;
-    // Mobile Safari's WebGPU has no compute support and reports
-    // `max_compute_workgroups_per_dimension = 0`; `Limits::default()` demands
-    // 65535 and device creation fails. Catchlight is pure render, so take
-    // whatever the adapter actually offers.
-    let required_limits = adapter.limits();
-    let (device, queue) = adapter
-        .request_device(&wgpu::DeviceDescriptor {
-            label: Some("catchlight editor"),
-            required_features,
-            required_limits,
-            memory_hints: Default::default(),
-            trace: wgpu::Trace::Off,
-            experimental_features: wgpu::ExperimentalFeatures::default(),
-        })
+async fn request_device(
+    instance: wgpu::Instance,
+    adapter: wgpu::Adapter,
+) -> Result<GpuContext, String> {
+    let context = GpuContext::from_adapter(instance, adapter)
         .await
         .map_err(|e| format!("adapter gave no device ({e})"))?;
     // Without a handler wgpu-core (the WebGL2 tier) panics on any validation
     // error, and a panic in wasm leaves every `RefCell` borrowed until reload.
-    device.on_uncaptured_error(Arc::new(|error: wgpu::Error| {
-        web_sys::console::error_1(&JsValue::from_str(&error.to_string()));
-    }));
-    Ok((device, queue))
+    context
+        .device
+        .on_uncaptured_error(Arc::new(|error: wgpu::Error| {
+            web_sys::console::error_1(&JsValue::from_str(&error.to_string()));
+        }));
+    Ok(context)
 }

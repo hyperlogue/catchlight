@@ -5,8 +5,8 @@
 //! before writing straight-alpha output.
 
 use crate::{
-    FrameTargets, RenderList, RenderStats, RenderTarget, RendererResult, WgpuRenderer,
-    create_headless_context, create_readback_buffer, readback_layout,
+    FrameTargets, GpuContext, RenderList, RenderStats, RenderTarget, RendererResult, WgpuRenderer,
+    create_readback_buffer, readback_layout,
 };
 
 /// `height` is in world units; width follows the target's aspect. Distinct
@@ -37,8 +37,9 @@ pub struct RenderContext {
 
 impl RenderContext {
     pub async fn new(width: u32, height: u32) -> RendererResult<Self> {
-        let (device, queue) = create_headless_context().await?;
-        let renderer = WgpuRenderer::new(device, queue, wgpu::TextureFormat::Rgba8UnormSrgb);
+        let gpu = GpuContext::headless().await?;
+        let renderer =
+            WgpuRenderer::new(gpu.device, gpu.queue, wgpu::TextureFormat::Rgba8UnormSrgb);
         Ok(Self::with_renderer(renderer, width, height))
     }
 

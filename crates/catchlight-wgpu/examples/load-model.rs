@@ -12,8 +12,8 @@ use catchlight_extension_animations::{
     AnimationPlayer, Animations, Clip, Keyframe, Lane, LaneTarget, LiveInputs, Rig,
 };
 use catchlight_wgpu::{
-    PrepareOptions, RenderCache, RenderList, SurfaceContext, WgpuRenderer,
-    create_orthographic_camera_at, create_surface_context,
+    GpuContext, PrepareOptions, RenderCache, RenderList, SurfaceContext, WgpuRenderer,
+    create_orthographic_camera_at,
 };
 use std::path::Path;
 use std::sync::Arc;
@@ -254,16 +254,16 @@ impl ApplicationHandler for App {
 
             let surface = instance.create_surface(window.clone()).unwrap();
             let size = window.inner_size();
-            let (device, queue, mut surface_ctx) =
-                create_surface_context(&instance, surface, size.width, size.height)
+            let (gpu, mut surface_ctx) =
+                GpuContext::with_surface(instance, surface, size.width, size.height)
                     .await
                     .expect("surface context");
             // Overlay, ColorBurn and LinearBurn read the frame through a copy
             // of it; the primary backends' surfaces allow one.
             surface_ctx.config.usage |= wgpu::TextureUsages::COPY_SRC;
-            surface_ctx.reconfigure(&device);
+            surface_ctx.reconfigure(&gpu.device);
 
-            let mut renderer = WgpuRenderer::new(device, queue, surface_ctx.render_format);
+            let mut renderer = WgpuRenderer::new(gpu.device, gpu.queue, surface_ctx.render_format);
 
             println!("Preparing the render cache...");
             match RenderCache::prepare(&mut renderer, &self.model, PrepareOptions::default()) {

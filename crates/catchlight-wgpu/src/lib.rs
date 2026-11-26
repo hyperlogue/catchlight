@@ -26,6 +26,7 @@
 //! ```
 
 mod collect;
+mod gpu;
 mod headless;
 mod render_cache;
 mod renderer;
@@ -34,6 +35,7 @@ pub use collect::{
     CompositeMaskPartData, CompositeMaskSourceData, DrawableInfo, MaskSourceData, MaskSources,
     RenderList,
 };
+pub use gpu::{GpuContext, SurfaceContext};
 pub use headless::{Framing, RenderContext};
 pub use render_cache::{CacheStats, PrepareOptions, RenderCache, collect};
 pub use renderer::{
@@ -62,163 +64,6 @@ pub fn create_orthographic_camera_at(
         -1000.0,
         1000.0,
     )
-}
-
-pub struct SurfaceContext {
-    pub surface: wgpu::Surface<'static>,
-    pub config: wgpu::SurfaceConfiguration,
-    pub surface_format: wgpu::TextureFormat,
-    pub render_format: wgpu::TextureFormat,
-}
-
-impl SurfaceContext {
-    pub fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {
-        self.config.width = width.max(1);
-        self.config.height = height.max(1);
-        self.surface.configure(device, &self.config);
-    }
-
-    pub fn reconfigure(&self, device: &wgpu::Device) {
-        self.surface.configure(device, &self.config);
-    }
-
-    pub fn acquire(&self) -> Option<(wgpu::SurfaceTexture, wgpu::TextureView)> {
-        // `None` tells the caller to re-acquire.
-        let (wgpu::CurrentSurfaceTexture::Success(frame)
-        | wgpu::CurrentSurfaceTexture::Suboptimal(frame)) = self.surface.get_current_texture()
-        else {
-            return None;
-        };
-        let view = frame.texture.create_view(&wgpu::TextureViewDescriptor {
-            format: Some(self.render_format),
-            ..Default::default()
-        });
-        Some((frame, view))
-    }
-}
-
-/// `optional` features are requested only where the adapter has them.
-async fn request_device(
-    adapter: &wgpu::Adapter,
-    optional: wgpu::Features,
-) -> RendererResult<(wgpu::Device, wgpu::Queue)> {
-    Ok(adapter
-        .request_device(&wgpu::DeviceDescriptor {
-            label: None,
-            required_features: adapter.features() & optional,
-            // Mobile Safari reports no compute limits, so `Limits::default()` fails.
-            required_limits: adapter.limits(),
-            memory_hints: Default::default(),
-            trace: wgpu::Trace::Off,
-            experimental_features: wgpu::ExperimentalFeatures::default(),
-        })
-        .await?)
-}
-
-async fn headless_adapter() -> RendererResult<wgpu::Adapter> {
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-        backends: wgpu::Backends::PRIMARY,
-        flags: Default::default(),
-        memory_budget_thresholds: Default::default(),
-        backend_options: Default::default(),
-        display: None,
-    });
-    // `HighPerformance` makes a hardware adapter win over lavapipe when both
-    // are present.
-    Ok(instance
-        .request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            compatible_surface: None,
-            force_fallback_adapter: false,
-        })
-        .await?)
-}
-
-/// Renders through an sRGB view: shaders work in linear space, so a
-/// non-sRGB target would skip the gamma encode on present.
-pub async fn create_surface_context(
-    instance: &wgpu::Instance,
-    surface: wgpu::Surface<'static>,
-    width: u32,
-    height: u32,
-) -> RendererResult<(wgpu::Device, wgpu::Queue, SurfaceContext)> {
-    let adapter = instance
-        .request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::default(),
-            compatible_surface: Some(&surface),
-            force_fallback_adapter: false,
-        })
-        .await?;
-    let (device, queue) =
-        request_device(&adapter, wgpu::Features::ADDRESS_MODE_CLAMP_TO_BORDER).await?;
-    let context = configure_surface(&adapter, &device, surface, width, height)?;
-    Ok((device, queue, context))
-}
-
-/// For a second canvas on an existing device; a new device per canvas could
-/// not share textures.
-pub fn configure_surface(
-    adapter: &wgpu::Adapter,
-    device: &wgpu::Device,
-    surface: wgpu::Surface<'static>,
-    width: u32,
-    height: u32,
-) -> RendererResult<SurfaceContext> {
-    let caps = surface.get_capabilities(adapter);
-    let (Some(&first_format), Some(&first_alpha)) =
-        (caps.formats.first(), caps.alpha_modes.first())
-    else {
-        return Err(RendererError::SurfaceUnsupported);
-    };
-    // WebGPU canvases advertise only non-sRGB formats, so render through an
-    // sRGB view of the native format.
-    let (surface_format, render_format, view_formats) =
-        if let Some(&fmt) = caps.formats.iter().find(|f| f.is_srgb()) {
-            (fmt, fmt, Vec::<wgpu::TextureFormat>::new())
-        } else {
-            let base = *caps
-                .formats
-                .iter()
-                .find(|f| f.add_srgb_suffix() != **f)
-                .unwrap_or(&first_format);
-            let srgb = base.add_srgb_suffix();
-            (base, srgb, vec![srgb])
-        };
-
-    // The frame clear writes alpha 1.0, so Opaque lets the compositor skip
-    // blending against the page.
-    let alpha_mode = caps
-        .alpha_modes
-        .iter()
-        .copied()
-        .find(|m| *m == wgpu::CompositeAlphaMode::Opaque)
-        .unwrap_or(first_alpha);
-
-    let config = wgpu::SurfaceConfiguration {
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-        format: surface_format,
-        width: width.max(1),
-        height: height.max(1),
-        present_mode: wgpu::PresentMode::Fifo,
-        alpha_mode,
-        view_formats,
-        desired_maximum_frame_latency: 2,
-    };
-    surface.configure(device, &config);
-
-    Ok(SurfaceContext {
-        surface,
-        config,
-        surface_format,
-        render_format,
-    })
-}
-
-/// `Backends::PRIMARY`, not `all()`: the workspace-unified `webgl` feature
-/// enables GL, which panics initializing EGL headless.
-pub async fn create_headless_context() -> RendererResult<(wgpu::Device, wgpu::Queue)> {
-    let adapter = headless_adapter().await?;
-    request_device(&adapter, wgpu::Features::ADDRESS_MODE_CLAMP_TO_BORDER).await
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
