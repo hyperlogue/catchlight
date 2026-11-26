@@ -133,7 +133,7 @@ macro_rules! notes_extension {
             fn refs(&self) -> &[IdRef] {
                 &self.0.refs
             }
-            fn refs_mut(&mut self) -> &mut Vec<IdRef> {
+            fn refs_mut(&mut self) -> &mut [IdRef] {
                 &mut self.0.refs
             }
             fn migrate(from: u32, raw: RawExtension) -> Result<RawExtension, MigrationError> {
@@ -782,7 +782,7 @@ impl Extension for Probe {
     fn refs(&self) -> &[IdRef] {
         &self.refs
     }
-    fn refs_mut(&mut self) -> &mut Vec<IdRef> {
+    fn refs_mut(&mut self) -> &mut [IdRef] {
         &mut self.refs
     }
     fn reconcile(&mut self, model: &Model) {
@@ -843,7 +843,7 @@ impl Extension for Counted {
     fn refs(&self) -> &[IdRef] {
         &self.refs
     }
-    fn refs_mut(&mut self) -> &mut Vec<IdRef> {
+    fn refs_mut(&mut self) -> &mut [IdRef] {
         &mut self.refs
     }
 }

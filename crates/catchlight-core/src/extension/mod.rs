@@ -41,7 +41,7 @@ pub trait Extension: Clone + Default + fmt::Debug + Send + Sync + 'static {
     fn decode(raw: RawExtension) -> Result<Self, DecodeError>;
     fn encode(&self) -> RawExtension;
     fn refs(&self) -> &[IdRef];
-    fn refs_mut(&mut self) -> &mut Vec<IdRef>;
+    fn refs_mut(&mut self) -> &mut [IdRef];
 
     /// Lifts `raw` from version `from` to `from + 1`; the core stamps the
     /// result with that version.
@@ -318,7 +318,7 @@ impl fmt::Debug for Receipt {
 pub(crate) trait DynExtension: Any + fmt::Debug + Send + Sync {
     fn dyn_encode(&self) -> RawExtension;
     fn dyn_refs(&self) -> &[IdRef];
-    fn dyn_refs_mut(&mut self) -> &mut Vec<IdRef>;
+    fn dyn_refs_mut(&mut self) -> &mut [IdRef];
     fn dyn_check(&self, model: &Model) -> Vec<Warning>;
     fn dyn_reconcile(&mut self, model: &Model);
     fn dyn_merge_addon(
@@ -342,7 +342,7 @@ impl<T: Extension> DynExtension for T {
         Extension::refs(self)
     }
 
-    fn dyn_refs_mut(&mut self) -> &mut Vec<IdRef> {
+    fn dyn_refs_mut(&mut self) -> &mut [IdRef] {
         Extension::refs_mut(self)
     }
 

@@ -245,7 +245,7 @@ impl Extension for Humanoid {
         &self.refs
     }
 
-    fn refs_mut(&mut self) -> &mut Vec<IdRef> {
+    fn refs_mut(&mut self) -> &mut [IdRef] {
         &mut self.refs
     }
 

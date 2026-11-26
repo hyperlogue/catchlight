@@ -127,7 +127,7 @@ impl Stored {
             Self::Value {
                 value: ExtensionValue::Maintained(raw),
                 ..
-            } => &mut raw.refs,
+            } => &mut raw.refs[..],
             Self::Value { .. } => return false,
         };
         for r in refs.iter_mut() {
