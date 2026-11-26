@@ -5,7 +5,7 @@
 //! Unix and written via temp-then-rename. Drop removes it only while it still
 //! names this process, leaving a newer server's file alone.
 
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 
 pub use catchlight_editor_protocol::{default_connection_path, Connection};
@@ -62,23 +62,7 @@ fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
     std::os::unix::fs::DirBuilderExt::mode(&mut dir, 0o700);
     dir.create(parent)?;
 
-    let name = path.file_name().unwrap_or_default().to_string_lossy();
-    let temp = parent.join(format!(".{name}.{}.tmp", std::process::id()));
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    let written = options.open(&temp).and_then(|mut file| {
-        file.write_all(bytes)?;
-        file.sync_all()
-    });
-    match written.and_then(|()| std::fs::rename(&temp, path)) {
-        Ok(()) => Ok(()),
-        Err(err) => {
-            let _ = std::fs::remove_file(&temp);
-            Err(err)
-        }
-    }
+    crate::atomic::write_with_mode(path, bytes, 0o600)
 }
 
 #[cfg(test)]

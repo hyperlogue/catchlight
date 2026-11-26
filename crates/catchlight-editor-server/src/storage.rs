@@ -104,15 +104,7 @@ impl Storage for FileStorage {
     }
 
     fn write(&self, key: &str, bytes: &[u8]) -> io::Result<()> {
-        // Temp-then-rename: an interrupted save must not truncate the only
-        // copy. The temp sits beside the target so the rename stays on one fs.
-        let path = self.path(key);
-        let tmp = path.with_extension(match path.extension().and_then(|e| e.to_str()) {
-            Some(ext) => format!("{ext}.tmp"),
-            None => "tmp".to_string(),
-        });
-        std::fs::write(&tmp, bytes)?;
-        std::fs::rename(&tmp, &path)
+        crate::atomic::write(&self.path(key), bytes)
     }
 }
 

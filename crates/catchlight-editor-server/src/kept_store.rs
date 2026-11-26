@@ -353,11 +353,7 @@ mod files {
         let path = dir.join(name);
         let write = || {
             std::fs::create_dir_all(path.parent().unwrap_or(dir))?;
-            // Beside the target so the rename stays on one filesystem.
-            let mut tmp = path.clone().into_os_string();
-            tmp.push(".tmp");
-            std::fs::write(&tmp, bytes)?;
-            std::fs::rename(&tmp, &path)
+            crate::atomic::write(&path, bytes)
         };
         write().map_err(|e| named(&path, e))
     }

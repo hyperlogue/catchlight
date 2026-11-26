@@ -1,6 +1,8 @@
 //! The catchlight editor server.
 
 #[cfg(not(target_arch = "wasm32"))]
+mod atomic;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod connection;
 mod edit;
 #[cfg(test)]
