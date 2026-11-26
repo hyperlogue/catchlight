@@ -28,7 +28,6 @@ tracing.workspace = true
 catchlight-wgpu.workspace = true
 glam.workspace = true
 wgpu.workspace = true
-anyhow.workspace = true
 pollster.workspace = true
 # WebSocket framing for the browser transport. Default features carry the
 # handshake helpers (`derive_accept_key`); no TLS -- this listens on loopback.

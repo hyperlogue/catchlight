@@ -1542,7 +1542,6 @@ dependencies = [
 name = "catchlight-editor-server"
 version = "0.3.0"
 dependencies = [
- "anyhow",
  "catchlight-core",
  "catchlight-editor-core",
  "catchlight-editor-protocol",

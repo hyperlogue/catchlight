@@ -3,13 +3,34 @@
 //! A render cache's slots name GPU state inside the one warm renderer, so only
 //! one session's cache is live; switching the previewed session re-prepares it.
 
-use anyhow::{anyhow, Result};
 use catchlight_core::{Model, Pose, Puppet};
 use catchlight_editor_protocol::SessionId;
 use catchlight_wgpu::{
     collect, create_headless_context, Framing, PrepareOptions, RenderCache, RenderContext,
-    WgpuRenderer,
+    RendererError, WgpuRenderer,
 };
+
+#[derive(Debug, thiserror::Error)]
+pub enum PreviewError {
+    #[error("gpu init: {0}")]
+    GpuInit(#[source] RendererError),
+    #[error("prepare: {0}")]
+    Prepare(#[source] RendererError),
+    #[error("refresh: {0}")]
+    Refresh(#[source] RendererError),
+    #[error("render: {0}")]
+    Render(#[source] RendererError),
+    #[error("png encode: {0}")]
+    Encode(#[source] image::ImageError),
+    #[error("puppet build failed")]
+    PuppetBuild,
+    #[error("renderer unavailable")]
+    RendererUnavailable,
+    #[error("render cache unavailable")]
+    CacheUnavailable,
+}
+
+type Result<T> = std::result::Result<T, PreviewError>;
 
 pub(super) struct PreviewRenderer {
     ctx: RenderContext,
@@ -20,7 +41,7 @@ impl PreviewRenderer {
     /// Expensive (a device and every pipeline); create once and reuse.
     pub(super) fn new() -> Result<Self> {
         let (device, queue) =
-            pollster::block_on(create_headless_context()).map_err(|e| anyhow!("gpu init: {e}"))?;
+            pollster::block_on(create_headless_context()).map_err(PreviewError::GpuInit)?;
         let renderer = WgpuRenderer::new(device, queue, wgpu::TextureFormat::Rgba8UnormSrgb);
         // Resized on first preview; this size only has to be legal.
         let ctx = RenderContext::with_renderer(renderer, 1, 1);
@@ -55,7 +76,7 @@ impl PreviewRenderer {
             image::ColorType::Rgba8,
             image::ImageFormat::Png,
         )
-        .map_err(|e| anyhow!("png encode: {e}"))?;
+        .map_err(PreviewError::Encode)?;
         Ok(png)
     }
 
@@ -77,18 +98,18 @@ impl PreviewRenderer {
         if !matches!(&self.cache, Some((held, _)) if *held == session) {
             let cache =
                 RenderCache::prepare(&mut self.ctx.renderer, model, PrepareOptions::default())
-                    .map_err(|e| anyhow!("prepare: {e}"))?;
+                    .map_err(PreviewError::Prepare)?;
             self.cache = Some((session, cache));
         }
         let Some((_, cache)) = self.cache.as_mut() else {
-            return Err(anyhow!("render cache unavailable"));
+            return Err(PreviewError::CacheUnavailable);
         };
 
         puppet.apply_pose(pose);
         puppet.tick(model, 0.0);
         cache
             .refresh(&mut self.ctx.renderer, model, puppet)
-            .map_err(|e| anyhow!("refresh: {e}"))?;
+            .map_err(PreviewError::Refresh)?;
         let render_list = collect(cache, puppet);
 
         let pixels = self
@@ -105,7 +126,7 @@ impl PreviewRenderer {
                     a: 1.0,
                 }),
             )
-            .map_err(|e| anyhow!("render: {e}"))?;
+            .map_err(PreviewError::Render)?;
         Ok((pixels, width, height))
     }
 }

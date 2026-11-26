@@ -25,6 +25,8 @@ pub use http::{bind_http, serve_http, HttpOptions, HttpServer, UiFiles};
 #[cfg(not(target_arch = "wasm32"))]
 pub use kept_store::{user_kept_dir, SidecarKeptStore, UnusedKept, UserKeptStore};
 pub use kept_store::{KeptStore, NoKeptStore};
+#[cfg(not(target_arch = "wasm32"))]
+pub use preview::PreviewError;
 pub use query::{extension_value_info, replica_query, replica_reply};
 #[cfg(not(target_arch = "wasm32"))]
 pub use storage::FileStorage;
@@ -127,8 +129,9 @@ pub enum EditorError {
     Io(#[from] std::io::Error),
     #[error("image: {0}")]
     Image(String),
+    #[cfg(not(target_arch = "wasm32"))]
     #[error("preview: {0}")]
-    Preview(String),
+    Preview(#[from] PreviewError),
     #[error("command is native-only (path IO / headless preview)")]
     NativeOnly,
     #[error("install: {0}")]
@@ -222,6 +225,7 @@ impl EditorError {
             Self::Manifest(_) => ErrorCode::Manifest,
             Self::Io(_) => ErrorCode::Io,
             Self::Image(_) => ErrorCode::Image,
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Preview(_) => ErrorCode::Preview,
             Self::NativeOnly => ErrorCode::NativeOnly,
             Self::NoExtension(_) => ErrorCode::NoExtension,
@@ -474,10 +478,7 @@ impl Session {
     #[cfg(not(target_arch = "wasm32"))]
     fn take_preview_puppet(&mut self) -> Result<Puppet, EditorError> {
         self.puppet();
-        let puppet = self
-            .puppet
-            .take()
-            .ok_or_else(|| EditorError::Preview("puppet build failed".into()))?;
+        let puppet = self.puppet.take().ok_or(PreviewError::PuppetBuild)?;
         self.pending_preview_pose = Some(puppet.pose());
         Ok(puppet)
     }
@@ -1886,12 +1887,9 @@ impl Editor {
         let render_result = (|| {
             let mut prev = lock(&self.preview);
             if prev.is_none() {
-                *prev =
-                    Some(PreviewRenderer::new().map_err(|e| EditorError::Preview(e.to_string()))?);
+                *prev = Some(PreviewRenderer::new()?);
             }
-            let pr = prev
-                .as_mut()
-                .ok_or_else(|| EditorError::Preview("renderer unavailable".into()))?;
+            let pr = prev.as_mut().ok_or(PreviewError::RendererUnavailable)?;
             let max_side = pr.max_texture_dimension();
             if width.max(height) > max_side {
                 return Err(EditorError::Limit {
@@ -1900,8 +1898,7 @@ impl Editor {
                     requested: width.max(height).into(),
                 });
             }
-            pr.render_png(session, &model, &mut puppet, &pose, width, height, framing)
-                .map_err(|e| EditorError::Preview(e.to_string()))
+            Ok(pr.render_png(session, &model, &mut puppet, &pose, width, height, framing)?)
         })();
 
         {
