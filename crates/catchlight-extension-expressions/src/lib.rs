@@ -35,7 +35,7 @@ mod standard;
 
 pub use standard::{standard_visemes, EMOTIONS, VISEMES, VISEME_CONTROLS};
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use catchlight_core::extension::{
     DecodeError, Extension, ExtensionError, IdRef, MergeRefused, Payload, RawExtension, Receipt,
@@ -535,13 +535,17 @@ impl Expressions {
     /// expressions first, then visemes.
     fn compact(&mut self) {
         let old = std::mem::take(&mut self.refs);
-        let mut groups = std::mem::take(&mut self.groups);
-        for setting in groups.iter_mut().flatten().flat_map(|e| &mut e.settings) {
+        let mut at = HashMap::new();
+        for setting in self
+            .groups
+            .iter_mut()
+            .flatten()
+            .flat_map(|e| &mut e.settings)
+        {
             if let stored::Setting::Param(s) = setting {
-                s.param = self.intern(old[s.param as usize].clone());
+                s.param = renumber(&mut self.refs, &mut at, &old[s.param as usize]);
             }
         }
-        self.groups = groups;
     }
 
     /// What [`Extension::check`] finds in `group` alone.
@@ -684,6 +688,14 @@ fn playable(settings: &[stored::Setting], i: usize) -> bool {
         && !settings[i + 1..]
             .iter()
             .any(|s| s.same_target(&settings[i]))
+}
+
+/// `r`'s index in `refs`, appending it on first use; `at` indexes `refs`.
+fn renumber(refs: &mut Vec<IdRef>, at: &mut HashMap<IdRef, u32>, r: &IdRef) -> u32 {
+    *at.entry(r.clone()).or_insert_with(|| {
+        refs.push(r.clone());
+        (refs.len() - 1) as u32
+    })
 }
 
 impl Extension for Expressions {

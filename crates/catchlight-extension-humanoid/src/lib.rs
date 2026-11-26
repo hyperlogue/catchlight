@@ -22,7 +22,7 @@ mod controls;
 pub use arkit::{controls_from_arkit, ARKIT_BLEND_SHAPES};
 pub use controls::{clamp_control, control, Control, ControlValues, CONTROLS};
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use catchlight_core::extension::{
     DecodeError, Extension, IdRef, Payload, RawExtension, RemovedRef, Warning,
@@ -195,12 +195,19 @@ impl Humanoid {
     /// Keeps exactly the references some mapping uses, in first-use order.
     fn compact(&mut self) {
         let old = std::mem::take(&mut self.refs);
-        let mut controls = std::mem::take(&mut self.controls);
-        for m in controls.values_mut() {
-            m.param = self.intern(old[m.param as usize].clone());
+        let mut at = HashMap::new();
+        for m in self.controls.values_mut() {
+            m.param = renumber(&mut self.refs, &mut at, &old[m.param as usize]);
         }
-        self.controls = controls;
     }
+}
+
+/// `r`'s index in `refs`, appending it on first use; `at` indexes `refs`.
+fn renumber(refs: &mut Vec<IdRef>, at: &mut HashMap<IdRef, u32>, r: &IdRef) -> u32 {
+    *at.entry(r.clone()).or_insert_with(|| {
+        refs.push(r.clone());
+        (refs.len() - 1) as u32
+    })
 }
 
 impl Extension for Humanoid {

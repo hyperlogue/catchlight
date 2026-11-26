@@ -30,6 +30,8 @@ mod sample;
 
 pub use player::{AnimationPlayer, AnimationSample, LiveInputs, Rig};
 
+use std::collections::HashMap;
+
 use catchlight_core::extension::{
     DecodeError, Extension, ExtensionError, IdRef, MergeRefused, Payload, RawExtension, Receipt,
     RemovedRef, Warning,
@@ -426,13 +428,12 @@ impl Animations {
     /// Keeps exactly the references some lane uses, in first-use order.
     fn compact(&mut self) {
         let old = std::mem::take(&mut self.refs);
-        let mut clips = std::mem::take(&mut self.clips);
-        for lane in clips.iter_mut().flat_map(|c| &mut c.lanes) {
+        let mut at = HashMap::new();
+        for lane in self.clips.iter_mut().flat_map(|c| &mut c.lanes) {
             if let Some(param) = &mut lane.param {
-                *param = self.intern(old[*param as usize].clone());
+                *param = renumber(&mut self.refs, &mut at, &old[*param as usize]);
             }
         }
-        self.clips = clips;
     }
 
     fn param_lanes(&self) -> impl Iterator<Item = (&stored::Clip, &IdRef)> {
@@ -497,6 +498,14 @@ impl Animations {
         }
         out
     }
+}
+
+/// `r`'s index in `refs`, appending it on first use; `at` indexes `refs`.
+fn renumber(refs: &mut Vec<IdRef>, at: &mut HashMap<IdRef, u32>, r: &IdRef) -> u32 {
+    *at.entry(r.clone()).or_insert_with(|| {
+        refs.push(r.clone());
+        (refs.len() - 1) as u32
+    })
 }
 
 impl Extension for Animations {
