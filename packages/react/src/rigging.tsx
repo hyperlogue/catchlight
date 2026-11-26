@@ -82,6 +82,8 @@ export function MeshPanel({ session, info, onError }: AuthoringPanelProps) {
                     label="Mesh spacing"
                     value={spacing}
                     min={1}
+                    max={4096}
+                    step={1}
                     unit="px"
                     onCommit={setSpacing}
                   />

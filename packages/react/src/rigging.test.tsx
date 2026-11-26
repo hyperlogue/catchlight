@@ -23,6 +23,22 @@ describe("the mesh panel", () => {
     await view.unmount();
   });
 
+  test("a contour spacing is a whole number of pixels up to 4096", async () => {
+    const { wasm, view } = await meshing();
+    const spacing = input(view.container, "Mesh spacing");
+
+    for (const refused of ["2.5", "4097"]) {
+      await commit(spacing, refused);
+      await generate(view.container);
+      expect(generated(wasm).at(-1)?.mode).toEqual({ mode: "contour", spacing: 32, margin: 4 });
+    }
+
+    await commit(spacing, "4096");
+    await generate(view.container);
+    expect(generated(wasm).at(-1)?.mode).toEqual({ mode: "contour", spacing: 4096, margin: 4 });
+    await view.unmount();
+  });
+
   test("a grid offers no pixel margin and sends none", async () => {
     const { wasm, view } = await meshing();
     await commit(input(view.container, "Mesh margin"), "8");
