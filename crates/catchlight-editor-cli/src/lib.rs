@@ -11,6 +11,7 @@ mod review;
 mod transport;
 mod version;
 use std::path::PathBuf;
+use std::process::ExitCode;
 
 use anyhow::{anyhow, bail, Result};
 use catchlight_editor_protocol::*;
@@ -811,7 +812,7 @@ pub enum Discovery {
 }
 
 /// `args` starts with the program name; `name` replaces it in help and errors.
-pub fn run<I, T>(name: &'static str, discovery: Discovery, args: I) -> Result<()>
+pub fn run<I, T>(name: &'static str, discovery: Discovery, args: I) -> Result<ExitCode>
 where
     I: IntoIterator<Item = T>,
     T: Into<std::ffi::OsString> + Clone,
@@ -829,15 +830,12 @@ where
     {
         write_current(SessionId(*id))?;
         println!("using session {id}");
-        return Ok(());
+        return Ok(ExitCode::SUCCESS);
     }
 
     if let Cmd::Review(args) = &cli.cmd {
         if let Some(code) = review::run_local(&cli, args)? {
-            if code != 0 {
-                std::process::exit(code);
-            }
-            return Ok(());
+            return Ok(exit_code(code));
         }
     }
 
@@ -852,18 +850,15 @@ where
             program: name,
             endpoint: &endpoint,
         };
-        let code = review::run(&cli, args, &mut transport, &reached)?;
-        if code != 0 {
-            std::process::exit(code);
-        }
-        return Ok(());
+        return Ok(exit_code(review::run(
+            &cli,
+            args,
+            &mut transport,
+            &reached,
+        )?));
     }
     if let Cmd::Version(args) = &cli.cmd {
-        let code = version::run(&cli, args, &mut transport)?;
-        if code != 0 {
-            std::process::exit(code);
-        }
-        return Ok(());
+        return Ok(exit_code(version::run(&cli, args, &mut transport)?));
     }
     let set_matches = |group: &str| {
         matches
@@ -890,10 +885,7 @@ where
         _ => None,
     };
     if let Some(code) = typed {
-        if code != 0 {
-            std::process::exit(code);
-        }
-        return Ok(());
+        return Ok(exit_code(code));
     }
     let composed = match compose::execute(&cli, &mut transport)? {
         Some(compose::Output::Reply(reply)) => Some(reply),
@@ -907,7 +899,7 @@ where
                     println!("unfilled {}:{}", slot.node, slot.slot);
                 }
             }
-            return Ok(());
+            return Ok(ExitCode::SUCCESS);
         }
         None => None,
     };
@@ -940,10 +932,16 @@ where
     }
 
     print_reply(&cli, &reply);
-    if matches!(reply, Reply::Err { .. }) {
-        std::process::exit(1);
-    }
-    Ok(())
+    Ok(if matches!(reply, Reply::Err { .. }) {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    })
+}
+
+/// A status the platform cannot represent fails rather than passing as 0.
+fn exit_code(code: i32) -> ExitCode {
+    u8::try_from(code).map_or(ExitCode::FAILURE, ExitCode::from)
 }
 
 fn build_command(cli: &Cli) -> Result<Command> {
@@ -1936,6 +1934,46 @@ mod tests {
         let exact = std::io::repeat(b' ').take(MAX_COMMAND_BYTES as u64);
         assert_eq!(read_command_json(exact).unwrap().len(), MAX_COMMAND_BYTES);
         assert!(read_command_json(&[0xff][..]).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_refused_command_returns_failure_to_the_caller() {
+        use std::io::{BufRead, Write};
+        let dir = std::env::temp_dir().join(format!("clirun{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("e.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let editor = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            std::io::BufReader::new(&stream)
+                .read_line(&mut line)
+                .unwrap();
+            let reply = Reply::Err {
+                id: 1,
+                code: catchlight_editor_protocol::ErrorCode::NoNode,
+                message: "no node".into(),
+                op_index: None,
+                limit: None,
+            };
+            writeln!(&stream, "{}", serde_json::to_string(&reply).unwrap()).unwrap();
+        });
+        let socket = path.to_str().unwrap();
+        let args = [
+            "cli",
+            "--socket",
+            socket,
+            "--session",
+            "1",
+            "node",
+            "delete",
+            "x",
+        ];
+        let code = run("cli", Discovery::SocketFirst, args).unwrap();
+        editor.join().unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(code, ExitCode::FAILURE);
     }
 
     #[test]

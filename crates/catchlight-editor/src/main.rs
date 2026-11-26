@@ -20,6 +20,7 @@ use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
@@ -108,28 +109,20 @@ impl Serve {
     }
 }
 
-fn main() -> Result<()> {
+fn main() -> Result<ExitCode> {
     let args: Vec<OsString> = std::env::args_os().collect();
     let first = args.get(1).and_then(|a| a.to_str());
     match first {
-        Some("-h" | "--help") => {
-            println!("{USAGE}");
-            Ok(())
-        }
-        Some("-V" | "--version") => {
-            println!("{NAME} {}", env!("CARGO_PKG_VERSION"));
-            Ok(())
-        }
-        Some("guide") if args.len() == 2 => {
-            print!("{GUIDE}");
-            Ok(())
-        }
-        Some("gc") => gc_command(&args[2..]),
-        Some("serve") => serve(parse_serve(&args[2..])?),
-        None => serve(parse_serve(&[])?),
-        Some(first) if is_serve_argument(first) => serve(parse_serve(&args[1..])?),
-        Some(_) => catchlight_editor_cli::run(NAME, Discovery::ConnectionFirst, args),
+        Some("-h" | "--help") => println!("{USAGE}"),
+        Some("-V" | "--version") => println!("{NAME} {}", env!("CARGO_PKG_VERSION")),
+        Some("guide") if args.len() == 2 => print!("{GUIDE}"),
+        Some("gc") => gc_command(&args[2..])?,
+        Some("serve") => return serve(parse_serve(&args[2..])?),
+        None => return serve(parse_serve(&[])?),
+        Some(first) if is_serve_argument(first) => return serve(parse_serve(&args[1..])?),
+        Some(_) => return catchlight_editor_cli::run(NAME, Discovery::ConnectionFirst, args),
     }
+    Ok(ExitCode::SUCCESS)
 }
 
 fn is_serve_argument(arg: &str) -> bool {
@@ -177,7 +170,7 @@ fn parse_serve(args: &[OsString]) -> Result<Serve> {
     Ok(serve)
 }
 
-fn serve(options: Serve) -> Result<()> {
+fn serve(options: Serve) -> Result<ExitCode> {
     let model = match &options.model {
         Some(path) => Some(
             std::path::absolute(path)
@@ -204,12 +197,15 @@ fn serve(options: Serve) -> Result<()> {
             );
         }
         if let Some(model) = model {
-            open_in_running(&running, &model)?;
+            let code = open_in_running(&running, &model)?;
+            if code != ExitCode::SUCCESS {
+                return Ok(code);
+            }
         }
         if options.open {
             open_browser(&page_url(&running.url, &running.token));
         }
-        return Ok(());
+        return Ok(ExitCode::SUCCESS);
     }
 
     let store = match options.store {
@@ -284,7 +280,8 @@ fn serve(options: Serve) -> Result<()> {
     if let Ok(mut file) = file.lock() {
         file.take();
     }
-    served.context("serving the editor")
+    served.context("serving the editor")?;
+    Ok(ExitCode::SUCCESS)
 }
 
 /// Where reviews and versions are kept, from `--keep` or `CATCHLIGHT_KEEP`.
@@ -518,7 +515,7 @@ fn is_live(connection: &Connection) -> bool {
     response.starts_with(b"HTTP/1.1 200")
 }
 
-fn open_in_running(running: &Connection, model: &str) -> Result<()> {
+fn open_in_running(running: &Connection, model: &str) -> Result<ExitCode> {
     catchlight_editor_cli::run(
         NAME,
         Discovery::ConnectionFirst,
