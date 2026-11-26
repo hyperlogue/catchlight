@@ -880,6 +880,12 @@ pub(crate) mod browser {
         }
     }
 
+    fn js_u64(value: f64, what: &str) -> Result<u64, JsValue> {
+        super::wire_u64(value).ok_or_else(|| {
+            JsValue::from_str(&format!("{what} must be a safe integer, not {value}"))
+        })
+    }
+
     #[wasm_bindgen]
     pub struct Replica {
         inner: Rc<RefCell<ReplicaInner>>,
@@ -953,19 +959,26 @@ pub(crate) mod browser {
         /// put, with the model untouched.
         #[wasm_bindgen(js_name = applyStructure)]
         pub fn apply_structure(&self, structure: &[u8], rev: f64) -> Result<bool, JsValue> {
+            let rev = js_u64(rev, "rev")?;
             self.inner
                 .borrow_mut()
                 .state
-                .apply_structure(structure, rev as u64)
+                .apply_structure(structure, rev)
                 .map_err(|e| JsValue::from_str(&e))
         }
 
         #[wasm_bindgen(js_name = syncFromEditor)]
-        pub fn sync_from_editor(&self, editor: &CatchlightEditor, session: f64) -> f64 {
-            self.inner
+        pub fn sync_from_editor(
+            &self,
+            editor: &CatchlightEditor,
+            session: f64,
+        ) -> Result<f64, JsValue> {
+            let session = SessionId(js_u64(session, "session")?);
+            Ok(self
+                .inner
                 .borrow_mut()
                 .state
-                .sync_from_editor(editor.editor(), SessionId(session as u64)) as f64
+                .sync_from_editor(editor.editor(), session) as f64)
         }
 
         pub fn query(&self, request_json: &str) -> String {
@@ -1202,6 +1215,15 @@ pub(crate) mod browser {
 #[cfg(target_arch = "wasm32")]
 pub use browser::Replica;
 
+/// A JavaScript number as a wire id or revision: a non-negative integer no
+/// larger than `Number.MAX_SAFE_INTEGER`.
+#[cfg(any(target_arch = "wasm32", test))]
+fn wire_u64(value: f64) -> Option<u64> {
+    const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
+    (value.is_finite() && value >= 0.0 && value.fract() == 0.0 && value <= MAX_SAFE_INTEGER)
+        .then_some(value as u64)
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -1268,6 +1290,18 @@ mod tests {
             .with_model(session, |m| m.to_structure_bytes())
             .unwrap()
             .unwrap()
+    }
+
+    #[test]
+    fn only_safe_integers_cross_as_wire_numbers() {
+        assert_eq!(wire_u64(0.0), Some(0));
+        assert_eq!(
+            wire_u64(9_007_199_254_740_991.0),
+            Some(9_007_199_254_740_991)
+        );
+        for bad in [-1.0, 0.5, f64::NAN, f64::INFINITY, 9_007_199_254_740_992.0] {
+            assert_eq!(wire_u64(bad), None, "{bad}");
+        }
     }
 
     #[test]
