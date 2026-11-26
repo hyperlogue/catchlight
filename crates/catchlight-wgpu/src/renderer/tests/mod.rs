@@ -2,6 +2,7 @@
 
 mod errors;
 mod offscreen_culling;
+mod pipelines;
 mod upload_mesh;
 mod upload_texture;
 
