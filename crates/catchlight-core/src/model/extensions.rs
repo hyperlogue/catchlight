@@ -1,6 +1,8 @@
 //! Typed access to a model's extensions, and the core's side of keeping them
 //! consistent with the model.
 
+use std::any::Any;
+
 use crate::extension::{
     codes, decode_as, decode_registered, Extension, ExtensionError, Stored, Typed, Warning,
 };
@@ -28,9 +30,7 @@ impl Model {
                 .map_err(|why| ExtensionError::Unread(why.clone()))?,
             Stored::Value { .. } => return Err(ExtensionError::NotMaintained),
         };
-        typed
-            .data
-            .dyn_as_any()
+        (&*typed.data as &dyn Any)
             .downcast_ref::<T>()
             .ok_or(ExtensionError::WrongType)
     }
@@ -46,7 +46,7 @@ impl Model {
             .ok_or(ExtensionError::Missing)?;
         let promoted = match stored {
             Stored::Typed(typed) => {
-                if !typed.data.dyn_as_any().is::<T>() {
+                if !(&*typed.data as &dyn Any).is::<T>() {
                     return Err(ExtensionError::WrongType);
                 }
                 None
@@ -62,7 +62,7 @@ impl Model {
                         decode_as::<T>(raw.clone()).map_err(ExtensionError::Unread)?,
                     )),
                 };
-                if !typed.data.dyn_as_any().is::<T>() {
+                if !(&*typed.data as &dyn Any).is::<T>() {
                     return Err(ExtensionError::WrongType);
                 }
                 Some(typed)
@@ -81,9 +81,7 @@ impl Model {
         }
         self.bump();
         match self.extensions.map.get_mut(T::KEY) {
-            Some(Stored::Typed(typed)) => Arc::make_mut(typed)
-                .data_mut()
-                .dyn_as_any_mut()
+            Some(Stored::Typed(typed)) => (Arc::make_mut(typed).data_mut() as &mut dyn Any)
                 .downcast_mut::<T>()
                 .ok_or(ExtensionError::WrongType),
             _ => Err(ExtensionError::Missing),

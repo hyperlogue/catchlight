@@ -329,8 +329,6 @@ pub(crate) trait DynExtension: Any + fmt::Debug + Send + Sync {
     fn dyn_clone(&self) -> Box<dyn DynExtension>;
     /// An empty instance of this type, for an addon's data to merge into.
     fn dyn_default(&self) -> Box<dyn DynExtension>;
-    fn dyn_as_any(&self) -> &dyn Any;
-    fn dyn_as_any_mut(&mut self) -> &mut dyn Any;
 }
 
 impl<T: Extension> DynExtension for T {
@@ -358,8 +356,7 @@ impl<T: Extension> DynExtension for T {
         &self,
         addon: &dyn DynExtension,
     ) -> Result<(Box<dyn DynExtension>, Receipt), MergeRefused> {
-        let addon = addon
-            .dyn_as_any()
+        let addon = (addon as &dyn Any)
             .downcast_ref::<T>()
             .ok_or(MergeRefused::WrongType)?;
         let (merged, receipt) = Extension::merge_addon(self, addon)?;
@@ -376,13 +373,5 @@ impl<T: Extension> DynExtension for T {
 
     fn dyn_default(&self) -> Box<dyn DynExtension> {
         Box::new(T::default())
-    }
-
-    fn dyn_as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn dyn_as_any_mut(&mut self) -> &mut dyn Any {
-        self
     }
 }
