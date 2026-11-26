@@ -704,25 +704,21 @@ impl Model {
         }
         self.remove_nodes(&removed);
 
+        let textures: HashSet<&TexId> = installed.textures.iter().collect();
+        let bindings: HashSet<&BindingKey> = installed.bindings.iter().collect();
         for node in self.nodes.values_mut() {
             if let ModelNodeKind::Part(p) = &mut node.kind {
-                if p.albedo
-                    .as_ref()
-                    .is_some_and(|t| installed.textures.contains(t))
-                {
+                if p.albedo.as_ref().is_some_and(|t| textures.contains(t)) {
                     p.albedo = None;
                 }
             }
         }
-        self.bindings
-            .retain(|b| !installed.bindings.contains(&b.key));
+        self.bindings.retain(|b| !bindings.contains(&b.key));
         for t in &installed.textures {
             self.textures.remove(t);
-            self.texture_order.retain(|x| x != t);
         }
-        self.remove_in_extensions(
-            |r| matches!(r, IdRef::Texture(t) if installed.textures.contains(t)),
-        );
+        self.texture_order.retain(|x| !textures.contains(x));
+        self.remove_in_extensions(|r| matches!(r, IdRef::Texture(t) if textures.contains(t)));
         self.gc_textures();
         retain_less(&mut self.welds, &installed.welds, |_| true);
         for (key, receipt) in &installed.extensions {
