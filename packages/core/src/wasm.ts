@@ -65,6 +65,9 @@ export interface WasmReplica extends WasmOwned {
     y: number,
   ): WasmRecording;
   setEditing(editing: boolean): void;
+  setMotionPaused(paused: boolean): void;
+  motionPaused(): boolean;
+  motionRunning(): boolean;
   textureImage(texture: string): ReturnType<WasmReplica["textureThumbnail"]>;
   rev(): number;
 

@@ -906,8 +906,20 @@ export class FakeGpu implements WasmGpu {
 }
 
 export class FakeReplica implements WasmReplica {
+  editing = false;
+  paused = false;
   setEditing(editing: boolean): void {
+    this.editing = editing;
     if (editing) this.clip = undefined;
+  }
+  setMotionPaused(paused: boolean): void {
+    this.paused = paused;
+  }
+  motionPaused(): boolean {
+    return this.paused;
+  }
+  motionRunning(): boolean {
+    return !this.editing && !this.paused;
   }
   recordingPairs(_node: string, _param: string): string {
     return "[]";

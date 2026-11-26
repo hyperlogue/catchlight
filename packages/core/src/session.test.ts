@@ -223,6 +223,34 @@ describe("the quiet paths", () => {
     expect(replica.scratchDeforms.size).toBe(0);
   });
 
+  test("pausing motion reaches the replica and repaints, and editing pauses it too", () => {
+    const { replica, session } = open();
+    let repaints = 0;
+    session.onInvalidate(() => {
+      repaints += 1;
+    });
+    let revisions = 0;
+    session.subscribe(() => {
+      revisions += 1;
+    });
+    expect(session.motionRunning()).toBe(true);
+
+    session.setMotionPaused(true);
+    expect(replica.paused).toBe(true);
+    expect(session.motionPaused()).toBe(true);
+    expect(session.motionRunning()).toBe(false);
+
+    session.setMotionPaused(false);
+    session.setEditing(true);
+    expect(session.motionPaused()).toBe(false);
+    expect(session.motionRunning()).toBe(false);
+    session.setEditing(false);
+    expect(session.motionRunning()).toBe(true);
+
+    expect(repaints).toBe(4);
+    expect(revisions).toBe(0);
+  });
+
   test("an absent scratch field is NaN, which leaves what the fold produced", () => {
     const { replica, session } = open();
     session.scratchTransform("root/part-1", { scale: [2, 2] });

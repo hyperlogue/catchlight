@@ -69,6 +69,8 @@ pub struct ReplicaState {
     moving: bool,
     player: AnimationPlayer,
     inputs: LiveInputs,
+    editing: bool,
+    motion_paused: bool,
 }
 
 impl Default for ReplicaState {
@@ -97,6 +99,8 @@ impl ReplicaState {
             moving: false,
             player: AnimationPlayer::default(),
             inputs: LiveInputs::default(),
+            editing: false,
+            motion_paused: false,
         }
     }
 
@@ -517,10 +521,31 @@ impl ReplicaState {
     /// Editing pauses motion responses in this tab and stops the playing
     /// clip. Live inputs stay.
     pub fn set_editing(&mut self, editing: bool) {
-        self.puppet.set_motion_responses_enabled(!editing);
+        self.editing = editing;
         if editing {
             self.player.stop();
         }
+        self.apply_motion();
+    }
+
+    /// The person's own pause, apart from editing. A playing clip keeps
+    /// playing.
+    pub fn set_motion_paused(&mut self, paused: bool) {
+        self.motion_paused = paused;
+        self.apply_motion();
+    }
+
+    pub fn motion_paused(&self) -> bool {
+        self.motion_paused
+    }
+
+    pub fn motion_running(&self) -> bool {
+        !self.editing && !self.motion_paused
+    }
+
+    fn apply_motion(&mut self) {
+        self.puppet
+            .set_motion_responses_enabled(self.motion_running());
         self.tick(0.0);
     }
 
@@ -1081,6 +1106,21 @@ pub(crate) mod browser {
         #[wasm_bindgen(js_name = setEditing)]
         pub fn set_editing(&self, editing: bool) {
             self.inner.borrow_mut().state.set_editing(editing);
+        }
+
+        #[wasm_bindgen(js_name = setMotionPaused)]
+        pub fn set_motion_paused(&self, paused: bool) {
+            self.inner.borrow_mut().state.set_motion_paused(paused);
+        }
+
+        #[wasm_bindgen(js_name = motionPaused)]
+        pub fn motion_paused(&self) -> bool {
+            self.inner.borrow().state.motion_paused()
+        }
+
+        #[wasm_bindgen(js_name = motionRunning)]
+        pub fn motion_running(&self) -> bool {
+            self.inner.borrow().state.motion_running()
         }
 
         #[wasm_bindgen(js_name = textureImage)]

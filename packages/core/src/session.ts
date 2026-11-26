@@ -380,6 +380,22 @@ export class Session {
     this.invalidate();
   }
 
+  /** This tab's own pause of the motion responses; never an edit. */
+  setMotionPaused(paused: boolean): void {
+    if (this.#closed) return;
+    this.replica.setMotionPaused(paused);
+    this.invalidate();
+  }
+
+  motionPaused(): boolean {
+    return !this.#closed && this.replica.motionPaused();
+  }
+
+  /** Neither paused nor in an editing mode. */
+  motionRunning(): boolean {
+    return !this.#closed && this.replica.motionRunning();
+  }
+
   /** Full-resolution straight-alpha artwork. */
   textureImage(
     texture: string,

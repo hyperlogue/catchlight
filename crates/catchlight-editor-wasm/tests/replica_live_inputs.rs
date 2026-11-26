@@ -5,7 +5,8 @@
 use catchlight_core::formats::clm::{ClmIndices, ClmMesh};
 use catchlight_core::{
     BindingKey, BindingTarget, InterpolateMode, Model, ModelNode, ModelNodeKind, ModelParam,
-    ModelPart, Name, NodeId, ParamId, Puppet, ScalarTarget,
+    ModelPart, MotionResponse, Name, NodeId, ParamId, Puppet, ResponseInput, ResponseSource,
+    ScalarTarget,
 };
 use catchlight_editor_wasm::{Playing, ReplicaState};
 use catchlight_extension_animations::{Animations, Clip, Keyframe, Lane, LaneTarget};
@@ -323,4 +324,94 @@ fn with_no_inputs_and_no_clip_frames_are_the_puppets_own() {
             "{param}",
         );
     }
+}
+
+/// [`rig`] with a motion response `follow` that reads `brow` and writes
+/// `sway`.
+fn swaying() -> Model {
+    let mut model = rig();
+    model
+        .add_param_with_id(
+            pid("sway"),
+            ModelParam::new(Name::truncated("sway"), -1.0, 1.0, 0.0),
+        )
+        .unwrap();
+    let root = model.root().unwrap().clone();
+    model
+        .add_node_with_id(
+            NodeId::new("follow").unwrap(),
+            &root,
+            ModelNode::new(
+                "follow",
+                ModelNodeKind::MotionResponse(MotionResponse {
+                    inputs: vec![ResponseInput {
+                        source: ResponseSource::PoseParam { param: pid("brow") },
+                        gain: 1.0,
+                    }],
+                    output_param: Some(pid("sway")),
+                    ..MotionResponse::default()
+                }),
+            ),
+        )
+        .unwrap();
+    model
+}
+
+fn driven(replica: &ReplicaState, param: &str) -> bool {
+    replica.model_and_puppet().1.is_driven(&pid(param))
+}
+
+#[test]
+fn pausing_motion_hands_a_driven_param_to_the_pose_and_resuming_takes_it_back() {
+    let mut replica = replica_of(&swaying());
+    replica.frame(0.0);
+    assert!(replica.motion_running());
+    assert!(driven(&replica, "sway"));
+
+    replica.set_motion_paused(true);
+    assert!(replica.motion_paused());
+    assert!(!replica.motion_running());
+    assert!(!driven(&replica, "sway"));
+    assert!(replica.set_param("sway", 0.3));
+    replica.frame(DT_MS);
+    assert_eq!(replica.param_value("sway"), Some(0.3));
+
+    replica.set_motion_paused(false);
+    assert!(replica.motion_running());
+    assert!(driven(&replica, "sway"));
+    replica.set_param("brow", 1.0);
+    replica.frame(2.0 * DT_MS);
+    let written = replica.param_value("sway").unwrap();
+    assert!(
+        written != 0.3 && written != 0.0,
+        "the response writes its lag again, got {written}"
+    );
+}
+
+#[test]
+fn pausing_motion_leaves_a_playing_clip_playing() {
+    let mut replica = replica_of(&swaying());
+    assert!(replica.play("ramp"));
+    replica.set_motion_paused(true);
+    assert_eq!(replica.playing().map(|p| p.name), Some("ramp".into()));
+}
+
+#[test]
+fn leaving_an_editing_mode_keeps_a_pause_the_person_chose() {
+    let mut replica = replica_of(&swaying());
+    replica.set_motion_paused(true);
+    replica.set_editing(true);
+    assert!(!replica.motion_running());
+    replica.set_editing(false);
+    assert!(replica.motion_paused());
+    assert!(!replica.motion_running());
+    assert!(!driven(&replica, "sway"));
+
+    replica.set_editing(true);
+    replica.set_motion_paused(false);
+    assert!(!replica.motion_running(), "editing still pauses motion");
+    assert!(!driven(&replica, "sway"));
+    replica.set_editing(false);
+    assert!(replica.motion_running());
+    assert!(driven(&replica, "sway"));
 }
