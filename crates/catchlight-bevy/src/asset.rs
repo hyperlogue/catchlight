@@ -6,7 +6,7 @@ use std::sync::Arc;
 use bevy::asset::io::Reader;
 use bevy::asset::{AssetLoader, LoadContext};
 use bevy::prelude::*;
-use catchlight_core::{Model, ModelFormat};
+use catchlight_core::{Model, ModelError, ModelFormat};
 
 /// A loaded [`Model`], shared by every puppet animating it.
 #[derive(Asset, TypePath, Clone)]
@@ -84,39 +84,17 @@ impl AssetLoader for CatchlightModelLoader {
 }
 
 pub fn model_from_bytes(bytes: &[u8], format: ModelFormat) -> Result<Model, ModelAssetError> {
-    catchlight_core::load_model(bytes, format).map_err(ModelAssetError::parse)
+    catchlight_core::load_model(bytes, format).map_err(ModelAssetError::Parse)
 }
 
-#[derive(Debug)]
+/// Each message prints the wrapped error, and `source` does not repeat it:
+/// bevy logs a failed load by its message alone.
+#[derive(Debug, thiserror::Error)]
 pub enum ModelAssetError {
+    #[error("could not read the model asset: {0}")]
     Read(std::io::Error),
+    #[error("not a catchlight model: the extension and the leading bytes name no known format")]
     UnknownFormat,
-    Parse(String),
-}
-
-impl ModelAssetError {
-    fn parse(error: impl fmt::Display) -> Self {
-        Self::Parse(error.to_string())
-    }
-}
-
-impl fmt::Display for ModelAssetError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Read(error) => write!(f, "could not read the model asset: {error}"),
-            Self::UnknownFormat => f.write_str(
-                "not a catchlight model: the extension and the leading bytes name no known format",
-            ),
-            Self::Parse(message) => write!(f, "could not parse the model: {message}"),
-        }
-    }
-}
-
-impl std::error::Error for ModelAssetError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Read(error) => Some(error),
-            _ => None,
-        }
-    }
+    #[error("could not parse the model: {0}")]
+    Parse(ModelError),
 }

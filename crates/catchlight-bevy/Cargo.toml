@@ -15,6 +15,7 @@ catchlight-wgpu.workspace = true
 glam.workspace = true
 wgpu.workspace = true
 tracing.workspace = true
+thiserror.workspace = true
 
 bevy = { version = "0.19", default-features = false, features = [
   "bevy_asset",

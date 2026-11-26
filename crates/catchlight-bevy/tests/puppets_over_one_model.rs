@@ -526,3 +526,17 @@ fn puppet_value(app: &App, entity: Entity, param: &ParamId) -> f32 {
         .param_value(param)
         .expect("the clip drives the param")
 }
+
+#[test]
+fn a_malformed_model_reports_the_core_error() {
+    let error =
+        catchlight_bevy::model_from_bytes(b"not a model", catchlight_core::ModelFormat::Clm)
+            .expect_err("garbage does not parse");
+    let catchlight_bevy::ModelAssetError::Parse(core) = &error else {
+        panic!("expected a parse error, got {error:?}");
+    };
+    assert_eq!(
+        error.to_string(),
+        format!("could not parse the model: {core}")
+    );
+}
