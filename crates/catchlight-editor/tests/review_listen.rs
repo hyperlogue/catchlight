@@ -103,7 +103,9 @@ fn each_send_is_announced_once_in_the_listening_session() {
     std::fs::create_dir_all(&dir).unwrap();
     let dir = Dir(dir);
 
-    let editor = Arc::new(Editor::with_storage(Arc::new(FileStorage::new(&dir.0))));
+    let editor = Arc::new(Editor::with_storage(Arc::new(
+        FileStorage::new(&dir.0).unwrap(),
+    )));
     let opened = editor.handle(Request {
         id: 1,
         command: Wire::SessionNew {

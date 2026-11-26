@@ -1,7 +1,7 @@
 """A blocking client over one transport.
 
 Paths are made absolute before they are sent, because a relative key would
-resolve against the server's store root rather than this script's directory.
+resolve against the server's root rather than this script's directory.
 """
 
 from __future__ import annotations
@@ -267,7 +267,7 @@ class Client:
         return _session(self.send(SessionNew(name=name)))
 
     def open(self, path: str | os.PathLike[str]) -> SessionId:
-        """Over HTTP `path` is a key in the server's own store instead."""
+        """Over HTTP `path` is a key under the server's own root instead."""
         return _session(self.send(SessionOpen(path=_absolute(path))))
 
     def close_session(self, session: SessionId) -> None:

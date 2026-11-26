@@ -1247,7 +1247,7 @@ mod tests {
     fn an_unsaved_models_versions_are_written_out_when_it_is_first_saved() {
         let dir = temp("versions-unsaved");
         let editor = || {
-            Editor::with_storage(Arc::new(FileStorage::new(&dir)))
+            Editor::with_storage(Arc::new(FileStorage::new(&dir).unwrap()))
                 .with_kept_store(Arc::new(SidecarKeptStore::new(&dir)))
         };
         let mut f = Fixture::new(editor());
@@ -1304,7 +1304,7 @@ mod tests {
                 Arc::new(UserKeptStore::new(&models, &kept_dir))
             };
             let editor = || {
-                Editor::with_storage(Arc::new(FileStorage::new(&models)))
+                Editor::with_storage(Arc::new(FileStorage::new(&models).unwrap()))
                     .with_kept_store(store.clone())
             };
             let mut f = Fixture::new(editor());
@@ -1363,7 +1363,8 @@ mod tests {
         let dir = temp("versions-unreadable");
         let store = Arc::new(SidecarKeptStore::new(&dir));
         let editor = || {
-            Editor::with_storage(Arc::new(FileStorage::new(&dir))).with_kept_store(store.clone())
+            Editor::with_storage(Arc::new(FileStorage::new(&dir).unwrap()))
+                .with_kept_store(store.clone())
         };
         let mut f = Fixture::new(editor());
         let session = f.session;
@@ -1403,7 +1404,8 @@ mod tests {
         let dir = temp("versions-forged");
         let store = Arc::new(SidecarKeptStore::new(&dir));
         let editor = || {
-            Editor::with_storage(Arc::new(FileStorage::new(&dir))).with_kept_store(store.clone())
+            Editor::with_storage(Arc::new(FileStorage::new(&dir).unwrap()))
+                .with_kept_store(store.clone())
         };
         let mut f = Fixture::new(editor());
         let session = f.session;
@@ -1457,7 +1459,7 @@ mod tests {
         std::fs::create_dir_all(&models).unwrap();
         let store = UserKeptStore::new(&models, dir.join("kept"));
         let mut f = Fixture::new(
-            Editor::with_storage(Arc::new(FileStorage::new(&models)))
+            Editor::with_storage(Arc::new(FileStorage::new(&models).unwrap()))
                 .with_kept_store(Arc::new(store.clone())),
         );
         let session = f.session;

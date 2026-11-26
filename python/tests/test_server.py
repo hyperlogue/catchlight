@@ -14,7 +14,7 @@ from support import is_running, launched_directories
 
 def test_a_launch_answers_and_exits_leaving_nothing_behind(tmp_path: Path) -> None:
     before = launched_directories()
-    running = launch(store=tmp_path)
+    running = launch(root=tmp_path)
     pid = running.pid
     assert pid is not None
     assert running.healthy()
@@ -29,7 +29,7 @@ def test_a_launch_answers_and_exits_leaving_nothing_behind(tmp_path: Path) -> No
 
 
 def test_stopping_twice_is_not_an_error(tmp_path: Path) -> None:
-    running = launch(store=tmp_path)
+    running = launch(root=tmp_path)
     running.stop()
     running.stop()
     assert not running.healthy()
@@ -38,7 +38,7 @@ def test_stopping_twice_is_not_an_error(tmp_path: Path) -> None:
 def test_the_context_manager_stops_the_server_when_the_block_raises(tmp_path: Path) -> None:
     seen: list[tuple[int, Path]] = []
     with pytest.raises(ZeroDivisionError):
-        with launch(store=tmp_path) as running:
+        with launch(root=tmp_path) as running:
             assert running.pid is not None
             seen.append((running.pid, running.directory))
             raise ZeroDivisionError
@@ -50,7 +50,7 @@ def test_the_context_manager_stops_the_server_when_the_block_raises(tmp_path: Pa
 def test_a_binary_that_is_not_there_raises_and_leaves_nothing(tmp_path: Path) -> None:
     before = launched_directories()
     with pytest.raises(ServerError) as raised:
-        launch(binary=tmp_path / "not-a-server", store=tmp_path)
+        launch(binary=tmp_path / "not-a-server", root=tmp_path)
     assert "not-a-server" in str(raised.value)
     assert launched_directories() == before
 
@@ -59,7 +59,7 @@ def test_a_model_that_is_not_there_raises_with_what_the_server_printed(tmp_path:
     before = launched_directories()
     missing = tmp_path / "missing.clm"
     with pytest.raises(ServerError) as raised:
-        launch(store=tmp_path, model=missing)
+        launch(root=tmp_path, model=missing)
     message = str(raised.value)
     assert "could not open" in message, message
     assert str(missing) in message, message
@@ -89,7 +89,7 @@ def test_an_exited_server_drains_pending_stderr_before_reporting(
     before = launched_directories()
     try:
         with pytest.raises(ServerError, match="could not open"):
-            launch(store=tmp_path, model=tmp_path / "missing.clm")
+            launch(root=tmp_path, model=tmp_path / "missing.clm")
     finally:
         release.set()
     assert launched_directories() == before
@@ -98,14 +98,14 @@ def test_an_exited_server_drains_pending_stderr_before_reporting(
 def test_a_launch_opens_the_model_it_is_given(tmp_path: Path, client: Client) -> None:
     session = client.new()
     saved = client.save_to(session, tmp_path / "opened.clm")
-    with launch(store=tmp_path, model=saved) as reopened:
+    with launch(root=tmp_path, model=saved) as reopened:
         body = reopened.client().send(SessionList())
         assert isinstance(body, ResponseBodySessions)
         assert [info.file for info in body.sessions] == [saved]
 
 
 def test_restart_gives_a_working_server_that_holds_no_sessions(tmp_path: Path) -> None:
-    with launch(store=tmp_path) as running:
+    with launch(root=tmp_path) as running:
         first = running.pid
         running.client().new()
         assert _session_count(running) == 1
@@ -118,7 +118,7 @@ def test_restart_gives_a_working_server_that_holds_no_sessions(tmp_path: Path) -
 
 
 def test_a_stopped_server_hands_out_no_client(tmp_path: Path) -> None:
-    running = launch(store=tmp_path)
+    running = launch(root=tmp_path)
     running.stop()
     with pytest.raises(ServerError):
         running.client()

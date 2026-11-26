@@ -34,7 +34,9 @@ fn serve(tag: &str) -> Served {
     let dir = std::env::temp_dir().join(format!("cl-ext-e2e-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let editor = Arc::new(Editor::with_storage(Arc::new(FileStorage::new(&dir))));
+    let editor = Arc::new(Editor::with_storage(Arc::new(
+        FileStorage::new(&dir).unwrap(),
+    )));
     let session = match editor.handle(Request {
         id: 1,
         command: Command::SessionNew {

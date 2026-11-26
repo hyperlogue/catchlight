@@ -26,7 +26,7 @@ def _kept_apart(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
 
 @pytest.fixture
 def server(tmp_path: Path) -> Iterator[LaunchedServer]:
-    with launch(store=tmp_path) as running:
+    with launch(root=tmp_path) as running:
         yield running
 
 
@@ -38,7 +38,7 @@ def client(server: LaunchedServer) -> Client:
 @pytest.fixture
 def served(tmp_path: Path) -> Iterator[LaunchedServer]:
     """Separate from `server` because the HTTP door costs a bind and a port."""
-    with launch(store=tmp_path, http="127.0.0.1:0") as running:
+    with launch(root=tmp_path, http="127.0.0.1:0") as running:
         yield running
 
 

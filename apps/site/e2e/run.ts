@@ -75,7 +75,7 @@ const modelHash = createHash("sha256").update(modelBytes).digest("hex");
 if (modelBytes.subarray(0, 40).toString("latin1").startsWith("version https://git-lfs")) {
   fail("Lan is a Git LFS pointer; run `git lfs pull --include=tests/models/lan.clm`.");
 }
-const serverModel = join(runtime, "Lan.clm");
+const serverModel = join(runtime, "models", "Lan.clm");
 await copyFile(OPEN_MODEL, serverModel);
 
 await must("cargo", ["build", "-p", "catchlight-editor-server", "-p", "catchlight-editor-cli"]);
@@ -101,7 +101,7 @@ const server = serve(
     `127.0.0.1:${serverPort}`,
     "--allow-origin",
     origin,
-    "--store",
+    "--root",
     join(runtime, "models"),
     serverModel,
   ],

@@ -3143,7 +3143,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
         std::fs::create_dir_all(dir.join("models")).unwrap();
         let editor = || {
-            Editor::with_storage(Arc::new(FileStorage::new(&dir)))
+            Editor::with_storage(Arc::new(FileStorage::new(&dir).unwrap()))
                 .with_kept_store(Arc::new(SidecarKeptStore::new(&dir)))
         };
         let first = editor();
@@ -3232,7 +3232,7 @@ mod tests {
         std::fs::create_dir_all(&models).unwrap();
         let store = UserKeptStore::new(&models, &reviews);
         let editor = || {
-            Editor::with_storage(Arc::new(FileStorage::new(&models)))
+            Editor::with_storage(Arc::new(FileStorage::new(&models).unwrap()))
                 .with_kept_store(Arc::new(store.clone()))
         };
         let open = |editor: Editor, path: &str| {

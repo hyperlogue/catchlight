@@ -3083,7 +3083,8 @@ mod tests {
 
     #[test]
     fn session_node_save_reopen_lifecycle() {
-        let ed = Editor::new();
+        let ed = Editor::with_storage(Arc::new(FileStorage::new(std::env::temp_dir()).unwrap()))
+            .with_kept_store(Arc::new(SidecarKeptStore::default()));
         let s = session_of(body(ed.handle(req(
             1,
             Command::SessionNew {

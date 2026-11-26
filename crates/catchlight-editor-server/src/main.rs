@@ -27,11 +27,14 @@ mod native {
         user_kept_dir,
     };
 
-    const USAGE: &str = "usage: catchlight-editor-server [--socket <path>] [--store <dir>] \
+    const USAGE: &str = "usage: catchlight-editor-server [--socket <path>] [--root <dir>] \
                          [--keep <user|beside|dir>] [--http <addr> [--allow-remote]] \
                          [--allow-origin <origin>]... [--connection-file <path>] \
                          [<model.clm>]
 
+  --root     the only directory the editor reads and writes models in; a
+             relative path resolves under it (default: the model's directory,
+             else this one)
   --allow-remote  let --http listen on an address other machines reach; the
                   token is then never served, so hand it to the client yourself
 
@@ -92,8 +95,8 @@ mod native {
     struct Args {
         /// `None` means the default socket path.
         socket: Option<PathBuf>,
-        /// `None` means the current directory.
-        store: Option<PathBuf>,
+        /// `None` means the model's directory, else the current one.
+        root: Option<PathBuf>,
         /// `None` means `CATCHLIGHT_KEEP`, else the per-user directory.
         keep: Option<Keep>,
         http: Option<SocketAddr>,
@@ -113,14 +116,20 @@ mod native {
             }
         };
 
-        let store = match args.store {
-            Some(dir) => FileStorage::new(dir),
-            None => FileStorage::default(),
+        let store = rooted(args.root, args.model)
+            .and_then(|(root, model)| Ok((FileStorage::new(root)?, model)));
+        let (store, model) = match store {
+            Ok(rooted) => rooted,
+            Err(e) => {
+                eprintln!("catchlight-editor-server: {e}");
+                std::process::exit(2);
+            }
         };
-        let kept = Keep::chosen(args.keep).store(store.root());
+        let root = store.root().to_path_buf();
+        let kept = Keep::chosen(args.keep).store(&root);
         let editor = Arc::new(Editor::with_storage(Arc::new(store)).with_kept_store(kept));
 
-        if let Some(path) = args.model {
+        if let Some(path) = model {
             // Through `handle` so the session shows up in `session_list`.
             let reply = editor.handle(Request {
                 id: 0,
@@ -152,7 +161,7 @@ mod native {
         eprintln!("catchlight-editor-server: http://{}", server.addr);
         eprintln!("catchlight-editor-server: token: {}", server.token);
         if let Some(path) = &args.connection_file {
-            let file = std::sync::Mutex::new(Some(ConnectionFile::write(path, &server)?));
+            let file = std::sync::Mutex::new(Some(ConnectionFile::write(path, &server, &root)?));
             // `serve` never returns, so the file leaves on a signal or not at all.
             ctrlc::set_handler(move || {
                 if let Ok(mut file) = file.lock() {
@@ -165,6 +174,24 @@ mod native {
         // The socket keeps serving agents in the background; HTTP owns main.
         spawn_socket(editor, args.socket);
         server.serve()
+    }
+
+    /// The root, and the key the model on the command line opens under it.
+    /// Without `--root`, a model roots the editor in its own directory and
+    /// is named relative to this one.
+    fn rooted(
+        root: Option<PathBuf>,
+        model: Option<String>,
+    ) -> std::io::Result<(PathBuf, Option<String>)> {
+        match (root, model) {
+            (Some(root), model) => Ok((root, model)),
+            (None, Some(model)) => {
+                let path = std::path::absolute(&model)?;
+                let dir = path.parent().map_or_else(PathBuf::new, Path::to_path_buf);
+                Ok((dir, Some(path.display().to_string())))
+            }
+            (None, None) => Ok((std::env::current_dir()?, None)),
+        }
     }
 
     #[cfg(unix)]
@@ -208,7 +235,7 @@ mod native {
     fn parse(args: impl Iterator<Item = String>) -> Result<Args, String> {
         let mut parsed = Args {
             socket: None,
-            store: None,
+            root: None,
             keep: None,
             http: None,
             allow_remote: false,
@@ -223,9 +250,9 @@ mod native {
                     let value = args.next().ok_or("--socket needs a path")?;
                     parsed.socket = Some(PathBuf::from(value));
                 }
-                "--store" => {
-                    let value = args.next().ok_or("--store needs a directory")?;
-                    parsed.store = Some(PathBuf::from(value));
+                "--root" => {
+                    let value = args.next().ok_or("--root needs a directory")?;
+                    parsed.root = Some(PathBuf::from(value));
                 }
                 "--keep" => {
                     let value = args
@@ -299,11 +326,22 @@ mod native {
         }
 
         #[test]
-        fn the_store_is_a_directory_and_defaults_to_none() {
-            assert_eq!(parse_args(&[]).ok().and_then(|a| a.store), None);
-            let args = parse_args(&["--store", "models"]).expect("a store directory");
-            assert_eq!(args.store, Some(PathBuf::from("models")));
-            assert!(parse_args(&["--store"]).is_err());
+        fn the_root_is_named_else_the_models_directory_else_this_one() {
+            assert_eq!(parse_args(&[]).ok().and_then(|a| a.root), None);
+            let args = parse_args(&["--root", "models"]).expect("a root directory");
+            assert_eq!(args.root, Some(PathBuf::from("models")));
+            assert!(parse_args(&["--root"]).is_err());
+
+            let named = rooted(Some("models".into()), Some("akari.clm".into())).unwrap();
+            assert_eq!(named, ("models".into(), Some("akari.clm".into())));
+            let here = std::env::current_dir().unwrap();
+            let (root, model) = rooted(None, Some("sub/akari.clm".into())).unwrap();
+            assert_eq!(root, here.join("sub"));
+            assert_eq!(
+                model,
+                Some(here.join("sub/akari.clm").display().to_string())
+            );
+            assert_eq!(rooted(None, None).unwrap(), (here, None));
         }
 
         #[test]
@@ -360,7 +398,7 @@ mod native {
 
         #[test]
         fn the_one_positional_is_the_model_and_a_second_is_an_error() {
-            let args = parse_args(&["--store", "models", "akari.clm"]).expect("a model");
+            let args = parse_args(&["--root", "models", "akari.clm"]).expect("a model");
             assert_eq!(args.model.as_deref(), Some("akari.clm"));
             assert!(parse_args(&["a.clm", "b.clm"]).is_err());
         }

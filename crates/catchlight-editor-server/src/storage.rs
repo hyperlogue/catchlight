@@ -65,46 +65,79 @@ fn unconfigured(key: &str) -> io::Error {
     )
 }
 
-/// The root is read once at construction, so a later working-directory change
-/// does not move a session's file.
+/// Files under one root directory, and nothing outside it.
+///
+/// A key is a path relative to the root, or an absolute one inside it. The
+/// root is resolved once at construction, so a later working-directory
+/// change does not move a session's file.
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Clone)]
 pub struct FileStorage {
+    /// Canonical, so a resolved key is compared against it component-wise.
     root: PathBuf,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 impl FileStorage {
-    pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+    pub fn new(root: impl AsRef<Path>) -> io::Result<Self> {
+        let root = root.as_ref();
+        let resolved = std::fs::canonicalize(root)
+            .map_err(|e| io::Error::new(e.kind(), format!("the root {}: {e}", root.display())))?;
+        Ok(Self { root: resolved })
     }
 
     pub fn root(&self) -> &Path {
         &self.root
     }
 
-    /// `Path::join` returns an absolute argument unchanged.
-    fn path(&self, key: &str) -> PathBuf {
-        self.root.join(key)
+    /// Where `key` really is, symlinks followed; a file not written yet is
+    /// resolved through its directory. A key that lands outside the root is
+    /// refused with [`io::ErrorKind::PermissionDenied`].
+    pub fn resolve(&self, key: &str) -> io::Result<PathBuf> {
+        // `Path::join` returns an absolute argument unchanged.
+        let joined = self.root.join(key);
+        let resolved = match std::fs::canonicalize(&joined) {
+            Ok(resolved) => resolved,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                match (joined.parent(), joined.file_name()) {
+                    (Some(parent), Some(name)) => std::fs::canonicalize(parent)?.join(name),
+                    _ => return Err(e),
+                }
+            }
+            Err(e) => return Err(e),
+        };
+        if resolved.starts_with(&self.root) {
+            Ok(resolved)
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!("{key} is outside the editor's root {}", self.root.display()),
+            ))
+        }
     }
 }
 
-/// Falls back to `.` if the working directory cannot be read.
+/// The working directory; one that cannot be resolved roots nothing, so
+/// every key is refused.
 #[cfg(not(target_arch = "wasm32"))]
 impl Default for FileStorage {
     fn default() -> Self {
-        Self::new(std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+        std::env::current_dir()
+            .and_then(Self::new)
+            .unwrap_or_else(|_| Self {
+                root: PathBuf::new(),
+            })
     }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 impl Storage for FileStorage {
     fn read(&self, key: &str) -> io::Result<Vec<u8>> {
-        std::fs::read(self.path(key))
+        std::fs::read(self.resolve(key)?)
     }
 
     fn write(&self, key: &str, bytes: &[u8]) -> io::Result<()> {
-        crate::atomic::write(&self.path(key), bytes)
+        crate::atomic::write(&self.resolve(key)?, bytes)
     }
 }
 
@@ -142,7 +175,7 @@ mod tests {
     #[test]
     fn file_storage_write_is_visible_to_read() {
         let dir = scratch_dir("visible");
-        let store = FileStorage::default();
+        let store = FileStorage::new(&dir).unwrap();
         let key = dir.join("m.clm").display().to_string();
         store.write(&key, b"hello").unwrap();
         assert_eq!(store.read(&key).unwrap(), b"hello");
@@ -153,31 +186,60 @@ mod tests {
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    fn a_relative_key_lands_under_the_root_and_an_absolute_one_does_not() {
+    fn a_key_reaches_what_is_under_the_root_and_nothing_else() {
         let root = scratch_dir("root");
         let elsewhere = scratch_dir("elsewhere");
-        let store = FileStorage::new(&root);
+        std::fs::create_dir(root.join("sub")).unwrap();
+        let store = FileStorage::new(&root).unwrap();
 
         store.write("m.clm", b"under the root").unwrap();
-        assert_eq!(store.read("m.clm").unwrap(), b"under the root");
-        assert_eq!(
-            std::fs::read(root.join("m.clm")).unwrap(),
-            b"under the root"
-        );
+        assert_eq!(store.read("sub/../m.clm").unwrap(), b"under the root");
+        let absolute = root.join("sub/m.clm").display().to_string();
+        store.write(&absolute, b"absolute, inside").unwrap();
+        assert_eq!(store.read("sub/m.clm").unwrap(), b"absolute, inside");
 
-        let absolute = elsewhere.join("m.clm").display().to_string();
-        store.write(&absolute, b"its own path").unwrap();
-        assert_eq!(store.read(&absolute).unwrap(), b"its own path");
-        assert_eq!(std::fs::read(&absolute).unwrap(), b"its own path");
-        let mut under_root: Vec<String> = std::fs::read_dir(&root)
-            .unwrap()
-            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-            .collect();
-        under_root.sort();
-        assert_eq!(under_root, vec!["m.clm".to_string()]);
+        std::fs::write(elsewhere.join("m.clm"), b"outside").unwrap();
+        let outside = elsewhere.join("m.clm").display().to_string();
+        let escape = format!(
+            "../{}/m.clm",
+            elsewhere.file_name().unwrap().to_string_lossy()
+        );
+        for key in [outside.as_str(), escape.as_str(), "..", "sub/../../x.clm"] {
+            let read = store.read(key).unwrap_err();
+            assert_eq!(
+                read.kind(),
+                io::ErrorKind::PermissionDenied,
+                "{key}: {read}"
+            );
+            assert!(
+                read.to_string().contains("outside the editor's root"),
+                "{read}"
+            );
+            let written = store.write(key, b"escaped").unwrap_err();
+            assert_eq!(written.kind(), io::ErrorKind::PermissionDenied, "{key}");
+        }
+        assert_eq!(std::fs::read(elsewhere.join("m.clm")).unwrap(), b"outside");
+
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&elsewhere, root.join("link")).unwrap();
+            let followed = store.write("link/new.clm", b"escaped").unwrap_err();
+            assert_eq!(followed.kind(), io::ErrorKind::PermissionDenied);
+            assert!(!elsewhere.join("new.clm").exists());
+            assert!(store.read("link/m.clm").is_err());
+        }
 
         std::fs::remove_dir_all(&root).ok();
         std::fs::remove_dir_all(&elsewhere).ok();
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_root_that_does_not_exist_is_refused_by_name() {
+        let missing = scratch_dir("missing").join("not-here");
+        let err = FileStorage::new(&missing).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
+        assert!(err.to_string().contains("not-here"), "{err}");
     }
 
     #[cfg(not(target_arch = "wasm32"))]

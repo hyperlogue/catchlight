@@ -1,10 +1,13 @@
 //! `catchlight-editor` — the Catchlight editor as one program.
 //!
 //! ```text
-//! catchlight-editor [serve] [--port <port>] [--store <dir>] [--keep <where>] [--no-open] [<model.clm>]
+//! catchlight-editor [serve] [--port <port>] [--root <dir>] [--keep <where>] [--no-open] [<model.clm>]
 //! catchlight-editor gc [--dry-run] [--unused-days <n>] [--keep <user|dir>]
 //! catchlight-editor <command> ...
 //! ```
+//!
+//! The editor reads and writes models only under its root: `--root`, else
+//! the directory of the model it opens, else the working directory.
 //!
 //! Each model's review threads and saved versions are kept per user (`--keep
 //! user`, the default), beside each model (`beside`), or under a named
@@ -49,7 +52,7 @@ const USAGE: &str = "\
 catchlight-editor: the Catchlight editor in your browser, drivable by local agents
 
 usage:
-  catchlight-editor [serve] [--port <port>] [--store <dir>] [--keep <where>] [--no-open] [<model.clm>]
+  catchlight-editor [serve] [--port <port>] [--root <dir>] [--keep <where>] [--no-open] [<model.clm>]
   catchlight-editor gc [--dry-run] [--unused-days <n>] [--keep <user|dir>]
   catchlight-editor <command> ...
 
@@ -58,7 +61,8 @@ records where it listens so that commands can find it. With an editor already
 running, it opens that one instead.
 
   --port <port>   listen here (default 7323, or any free port if that is taken)
-  --store <dir>   where relative model paths resolve (default: this directory)
+  --root <dir>    the only directory the editor reads and writes models in
+                  (default: the model's directory, else this one)
   --keep <where>  where each model's review threads and saved versions are
                   kept: `user` (default) in your per-user data directory,
                   `beside` next to each model, or a directory; CATCHLIGHT_KEEP
@@ -89,7 +93,7 @@ files directly; no editor needs to be running.
 #[derive(Debug, Default, PartialEq)]
 struct Serve {
     port: Option<u16>,
-    store: Option<PathBuf>,
+    root: Option<PathBuf>,
     keep: Option<Keep>,
     open: bool,
     model: Option<PathBuf>,
@@ -100,7 +104,7 @@ impl Serve {
     fn server_flags(&self) -> Vec<&'static str> {
         [
             ("--port", self.port.is_some()),
-            ("--store", self.store.is_some()),
+            ("--root", self.root.is_some()),
             ("--keep", self.keep.is_some()),
         ]
         .into_iter()
@@ -126,7 +130,7 @@ fn main() -> Result<ExitCode> {
 }
 
 fn is_serve_argument(arg: &str) -> bool {
-    matches!(arg, "--port" | "--store" | "--keep" | "--no-open")
+    matches!(arg, "--port" | "--root" | "--keep" | "--no-open")
         || Path::new(arg)
             .extension()
             .is_some_and(|ext| ext.eq_ignore_ascii_case("clm"))
@@ -149,11 +153,11 @@ fn parse_serve(args: &[OsString]) -> Result<Serve> {
                         .map_err(|_| anyhow!("--port {value}: not a port"))?,
                 );
             }
-            Some("--store") => {
+            Some("--root") => {
                 let value = args
                     .next()
-                    .ok_or_else(|| anyhow!("--store needs a directory"))?;
-                serve.store = Some(PathBuf::from(value));
+                    .ok_or_else(|| anyhow!("--root needs a directory"))?;
+                serve.root = Some(PathBuf::from(value));
             }
             Some("--keep") => {
                 let value = args
@@ -197,6 +201,7 @@ fn serve(options: Serve) -> Result<ExitCode> {
             );
         }
         if let Some(model) = model {
+            reachable(&running, &model)?;
             let code = open_in_running(&running, &model)?;
             if code != ExitCode::SUCCESS {
                 return Ok(code);
@@ -209,11 +214,16 @@ fn serve(options: Serve) -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
 
-    let store = match options.store {
-        Some(dir) => FileStorage::new(dir),
-        None => FileStorage::default(),
+    let root = match (options.root, &model) {
+        (Some(root), _) => root,
+        (None, Some(model)) => Path::new(model)
+            .parent()
+            .map_or_else(PathBuf::new, Path::to_path_buf),
+        (None, None) => std::env::current_dir().context("reading the working directory")?,
     };
-    let kept = Keep::chosen(options.keep).store(store.root());
+    let store = FileStorage::new(&root)?;
+    let root = store.root().to_path_buf();
+    let kept = Keep::chosen(options.keep).store(&root);
     let editor = Arc::new(Editor::with_storage(Arc::new(store)).with_kept_store(kept));
     if let Some(model) = model {
         match editor.handle(Request {
@@ -254,6 +264,7 @@ fn serve(options: Serve) -> Result<ExitCode> {
     let file = Arc::new(Mutex::new(Some(ConnectionFile::write(
         &connection_path,
         &server,
+        &root,
     )?)));
     drop(lock);
     let page = page_url(&url, &server.launch_code()?);
@@ -555,6 +566,21 @@ fn post(connection: &Connection, path: &str, body: &str) -> Option<Vec<u8>> {
         .then(|| response.split_off(head + 4))
 }
 
+/// The running editor reads nothing outside its root.
+fn reachable(running: &Connection, model: &str) -> Result<()> {
+    let outside = FileStorage::new(&running.root)
+        .and_then(|root| root.resolve(model))
+        .is_err_and(|e| e.kind() == std::io::ErrorKind::PermissionDenied);
+    if outside {
+        bail!(
+            "{model} is outside {}, the root of the editor already running; stop that editor, \
+             or start an editor in the model's directory",
+            running.root.display()
+        );
+    }
+    Ok(())
+}
+
 fn open_in_running(running: &Connection, model: &str) -> Result<ExitCode> {
     catchlight_editor_cli::run(
         NAME,
@@ -643,7 +669,7 @@ mod tests {
             serve,
             Serve {
                 port: Some(9000),
-                store: None,
+                root: None,
                 keep: None,
                 open: false,
                 model: Some(PathBuf::from("a.clm")),
@@ -659,8 +685,8 @@ mod tests {
         let flags = |list: &[&str]| parse_serve(&args(list)).unwrap().server_flags();
         assert!(flags(&["--no-open", "a.clm"]).is_empty());
         assert_eq!(
-            flags(&["--keep", "user", "--port", "9000", "--store", "s"]),
-            ["--port", "--store", "--keep"]
+            flags(&["--keep", "user", "--port", "9000", "--root", "s"]),
+            ["--port", "--root", "--keep"]
         );
     }
 
@@ -775,6 +801,7 @@ mod tests {
             token: server.token.clone(),
             pid: 1,
             version: String::new(),
+            root: PathBuf::from("/"),
         };
         std::thread::spawn(move || server.serve());
         assert!(is_live(&record));
@@ -782,6 +809,27 @@ mod tests {
         assert!(!is_live(&record));
         record.url = "http://127.0.0.1:1".into();
         assert!(!is_live(&record));
+    }
+
+    #[test]
+    fn a_model_outside_the_running_editors_root_is_refused_naming_it() {
+        let dir = std::env::temp_dir().join(format!("cl-editor-root-{}", std::process::id()));
+        let root = dir.join("models");
+        std::fs::create_dir_all(&root).unwrap();
+        let running = Connection {
+            url: "http://127.0.0.1:1".into(),
+            token: String::new(),
+            pid: 1,
+            version: String::new(),
+            root: std::fs::canonicalize(&root).unwrap(),
+        };
+        let inside = root.join("a.clm").display().to_string();
+        assert!(reachable(&running, &inside).is_ok());
+        let outside = dir.join("b.clm").display().to_string();
+        let why = reachable(&running, &outside).unwrap_err().to_string();
+        assert!(why.contains(&*running.root.to_string_lossy()), "{why}");
+        assert!(why.contains("stop that editor"), "{why}");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -800,6 +848,7 @@ mod tests {
             token: server.token.clone(),
             pid: 1,
             version: String::new(),
+            root: PathBuf::from("/"),
         };
         let first = server.launch_code().unwrap();
         std::thread::spawn(move || server.serve());

@@ -37,7 +37,7 @@ class ServerError(RuntimeError):
 def launch(
     *,
     binary: str | os.PathLike[str] | None = None,
-    store: str | os.PathLike[str] | None = None,
+    root: str | os.PathLike[str] | None = None,
     model: str | os.PathLike[str] | None = None,
     http: str | None = None,
     timeout: float = 10.0,
@@ -53,7 +53,7 @@ def launch(
     try:
         socket_path = directory / "server.sock"
         argv += ["--socket", str(socket_path)]
-        argv += ["--store", str(Path(store).absolute() if store else Path.cwd())]
+        argv += ["--root", str(Path(root).absolute() if root else Path.cwd())]
         if http is not None:
             argv += ["--http", http]
         if model is not None:

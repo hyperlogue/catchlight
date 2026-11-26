@@ -3227,6 +3227,8 @@ pub struct Connection {
     /// The process that wrote the file, so it removes only its own.
     pub pid: u32,
     pub version: String,
+    /// The directory the editor's files are confined to.
+    pub root: std::path::PathBuf,
 }
 
 #[cfg(test)]

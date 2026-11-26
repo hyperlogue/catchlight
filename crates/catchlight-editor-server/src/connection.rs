@@ -20,12 +20,14 @@ pub struct ConnectionFile {
 }
 
 impl ConnectionFile {
-    pub fn write(path: &Path, server: &HttpServer) -> io::Result<Self> {
+    /// `root` is the editor's [`FileStorage::root`](crate::FileStorage::root).
+    pub fn write(path: &Path, server: &HttpServer, root: &Path) -> io::Result<Self> {
         let connection = Connection {
             url: format!("http://{}", server.addr),
             token: server.token.clone(),
             pid: std::process::id(),
             version: env!("CARGO_PKG_VERSION").to_string(),
+            root: root.to_path_buf(),
         };
         write_private(path, &serde_json::to_vec_pretty(&connection)?)?;
         Ok(Self {
@@ -94,11 +96,12 @@ mod tests {
     fn the_file_names_the_door_and_leaves_with_its_writer() {
         let path = scratch("roundtrip");
         let server = server();
-        let file = ConnectionFile::write(&path, &server).unwrap();
+        let file = ConnectionFile::write(&path, &server, Path::new("/models")).unwrap();
         let read = read_connection(&path).unwrap();
         assert_eq!(read.url, format!("http://{}", server.addr));
         assert_eq!(read.token, server.token);
         assert_eq!(read.pid, std::process::id());
+        assert_eq!(read.root, Path::new("/models"));
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -113,12 +116,13 @@ mod tests {
     #[test]
     fn a_file_another_process_took_over_is_left_alone() {
         let path = scratch("takeover");
-        let file = ConnectionFile::write(&path, &server()).unwrap();
+        let file = ConnectionFile::write(&path, &server(), Path::new("/")).unwrap();
         let newer = Connection {
             url: "http://127.0.0.1:1".into(),
             token: "t".into(),
             pid: std::process::id().wrapping_add(1),
             version: "0".into(),
+            root: "/".into(),
         };
         std::fs::write(&path, serde_json::to_vec(&newer).unwrap()).unwrap();
         drop(file);
