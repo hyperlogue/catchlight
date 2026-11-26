@@ -1,13 +1,13 @@
-use crate::config::{default_models, Config, ModelSpec, Thresholds};
-use crate::diff::{diff_images, Metrics};
+use crate::config::{Config, ModelSpec, Thresholds, default_models};
+use crate::diff::{Metrics, diff_images};
 use crate::render::{
-    camera_matrix, prepare_puppet, render_one_to_rgba, CachedModel, RenderContext, CLEAR_COLOR,
+    CLEAR_COLOR, CachedModel, RenderContext, camera_matrix, prepare_puppet, render_one_to_rgba,
 };
 use crate::{baseline_path, baselines_root, failures_root, repo_root};
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use catchlight_wgpu::{
-    create_headless_context, read_texture_to_rgba, FrameTargets, Pipelines, RenderTarget,
-    WgpuRenderer,
+    FrameTargets, Pipelines, RenderTarget, WgpuRenderer, create_headless_context,
+    read_texture_to_rgba,
 };
 use image::RgbaImage;
 use std::collections::HashMap;
@@ -234,7 +234,7 @@ pub fn run_one(harness: &SharedHarness, config: &Config) -> Result<RunOutcome> {
             return Err(crate::lfs::pointer_error(&baseline));
         }
         Err(error) => {
-            return Err(error).with_context(|| format!("loading baseline {}", baseline.display()))
+            return Err(error).with_context(|| format!("loading baseline {}", baseline.display()));
         }
     };
     if expected_img.dimensions() != actual_img.dimensions() {

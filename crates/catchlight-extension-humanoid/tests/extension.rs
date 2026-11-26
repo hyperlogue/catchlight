@@ -2,12 +2,12 @@
 //! `catchlight.humanoid` as a maintained extension: its codec, the core's
 //! upkeep of its reference table, its check, and posing a puppet.
 
-use catchlight_core::extension::{register, Extension, IdRef, Payload};
+use catchlight_core::extension::{Extension, IdRef, Payload, register};
 use catchlight_core::{
     ExtensionValue, Model, ModelNode, ModelNodeKind, ModelParam, MotionResponse, Name, NodeId,
     ParamId, Puppet, ResponseInput, ResponseSource,
 };
-use catchlight_extension_humanoid::{ControlMapping, ControlValues, Humanoid, CONTROLS};
+use catchlight_extension_humanoid::{CONTROLS, ControlMapping, ControlValues, Humanoid};
 
 fn pid(s: &str) -> ParamId {
     ParamId::new(s).unwrap()
@@ -141,9 +141,11 @@ fn a_non_finite_stop_survives_a_file_as_nan() {
 #[test]
 fn set_replaces_by_control_and_keeps_the_table_compact() {
     let mut humanoid = Humanoid::default();
-    assert!(humanoid
-        .set("mouth_open", map("jaw", [0.0, 0.0, 1.0]))
-        .is_none());
+    assert!(
+        humanoid
+            .set("mouth_open", map("jaw", [0.0, 0.0, 1.0]))
+            .is_none()
+    );
     let old = humanoid
         .set("mouth_open", map("smile", [0.0, 0.0, 1.0]))
         .unwrap();

@@ -8,8 +8,8 @@ use std::process::Output;
 use std::sync::Arc;
 
 use catchlight_editor_protocol::{Command, ParamId, Reply, Request, ResponseBody, SessionId};
-use catchlight_editor_server::{bind_http, Editor, FileStorage, HttpOptions};
-use serde_json::{json, Value};
+use catchlight_editor_server::{Editor, FileStorage, HttpOptions, bind_http};
+use serde_json::{Value, json};
 
 const TOKEN: &str = "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0";
 
@@ -226,10 +226,12 @@ fn the_typed_commands_print_what_the_file_cli_prints() {
 
     let listed: Value = serde_json::from_str(&s.ok(&["humanoid", "list"])).unwrap();
     assert_eq!(listed["mappings"].as_array().unwrap().len(), 2);
-    assert!(!listed["unmapped"]
-        .as_array()
-        .unwrap()
-        .contains(&json!("mouth_open")));
+    assert!(
+        !listed["unmapped"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("mouth_open"))
+    );
     assert_eq!(
         listed["warnings"][0]["code"],
         "catchlight.humanoid/shared-param"

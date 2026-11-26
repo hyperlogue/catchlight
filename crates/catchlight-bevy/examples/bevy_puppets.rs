@@ -19,8 +19,8 @@ use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin, LogDiagnost
 use bevy::prelude::*;
 use bevy::render::RenderPlugin;
 use catchlight_bevy::{
-    model_from_bytes, CameraControlsPlugin, CatchlightCamera, CatchlightModel, CatchlightPlugin,
-    CatchlightPuppet,
+    CameraControlsPlugin, CatchlightCamera, CatchlightModel, CatchlightPlugin, CatchlightPuppet,
+    model_from_bytes,
 };
 use catchlight_core::{BindingTarget, InterpolateMode, Model, ModelFormat, ParamId};
 use catchlight_extension_animations::{Animations, Clip, Keyframe, Lane, LaneTarget};
@@ -72,12 +72,10 @@ fn setup(mut commands: Commands, mut models: ResMut<Assets<CatchlightModel>>) {
     let has_clips = model
         .extension::<Animations>()
         .is_ok_and(|animations| !animations.is_empty());
-    if !has_clips {
-        if let Some(blink) = build_blink_animation(&model) {
-            *model
-                .extension_or_default::<Animations>()
-                .expect("install blink") = Animations::from_clips([blink]);
-        }
+    if !has_clips && let Some(blink) = build_blink_animation(&model) {
+        *model
+            .extension_or_default::<Animations>()
+            .expect("install blink") = Animations::from_clips([blink]);
     }
     // Resolved against the model, because a range is the model's; the
     // puppets below are posed by `ParamId` alone.

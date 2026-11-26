@@ -12,11 +12,7 @@ pub struct Control {
 
 impl Control {
     pub fn min(&self) -> f32 {
-        if self.one_sided {
-            0.0
-        } else {
-            -1.0
-        }
+        if self.one_sided { 0.0 } else { -1.0 }
     }
 
     pub fn max(&self) -> f32 {

@@ -141,10 +141,10 @@ impl Stored {
 
 impl PartialEq for Stored {
     fn eq(&self, other: &Self) -> bool {
-        if let (Self::Typed(a), Self::Typed(b)) = (self, other) {
-            if Arc::ptr_eq(a, b) {
-                return true;
-            }
+        if let (Self::Typed(a), Self::Typed(b)) = (self, other)
+            && Arc::ptr_eq(a, b)
+        {
+            return true;
         }
         self.as_value() == other.as_value()
     }

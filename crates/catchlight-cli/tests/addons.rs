@@ -4,7 +4,7 @@
 mod common;
 
 use catchlight_cli::diff::diff;
-use catchlight_cli::{fragment, Error};
+use catchlight_cli::{Error, fragment};
 use catchlight_core::extension::{IdRef, Payload, RawExtension};
 use catchlight_core::id::{ExtensionKey, NodeId, ParamId, SlotId, TexId};
 use catchlight_core::{ExtensionValue, InstallError, Model, Required, Requirement};
@@ -325,10 +325,10 @@ fn part_albedo(clm: &catchlight_core::formats::clm::ClmFile, node: &str) -> TexI
 
 fn set_part_albedo(clm: &mut catchlight_core::formats::clm::ClmFile, node: &str, tex: &TexId) {
     for n in &mut clm.doc.nodes {
-        if n.id.as_str() == node {
-            if let catchlight_core::formats::clm::ClmNodeKind::Part(p) = &mut n.kind {
-                p.albedo = Some(tex.clone());
-            }
+        if n.id.as_str() == node
+            && let catchlight_core::formats::clm::ClmNodeKind::Part(p) = &mut n.kind
+        {
+            p.albedo = Some(tex.clone());
         }
     }
 }

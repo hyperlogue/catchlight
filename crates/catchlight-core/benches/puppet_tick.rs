@@ -294,10 +294,12 @@ impl Built {
                     model
                         .add_binding_with_positions(
                             &key,
-                            vec![BEND_KEYS
-                                .iter()
-                                .map(|k| (k - BEND_MIN) / (BEND_MAX - BEND_MIN))
-                                .collect()],
+                            vec![
+                                BEND_KEYS
+                                    .iter()
+                                    .map(|k| (k - BEND_MIN) / (BEND_MAX - BEND_MIN))
+                                    .collect(),
+                            ],
                         )
                         .unwrap();
                     for (k, &bend) in BEND_KEYS.iter().enumerate() {

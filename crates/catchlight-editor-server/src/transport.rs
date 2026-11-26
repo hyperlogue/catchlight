@@ -8,12 +8,12 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use catchlight_core::LoadLimits;
-use catchlight_editor_protocol::{default_socket_path, ErrorCode, Reply, Request, RequestId};
+use catchlight_editor_protocol::{ErrorCode, Reply, Request, RequestId, default_socket_path};
 use serde_json::Value;
 
 use super::{Attachments, Editor, Payload};
@@ -272,7 +272,7 @@ fn answer_line(editor: &Editor, line: &[u8]) -> Reply {
                     code: ErrorCode::Io,
                     message,
                 },
-            }
+            };
         }
     };
 

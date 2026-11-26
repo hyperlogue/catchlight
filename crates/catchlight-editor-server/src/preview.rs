@@ -6,8 +6,8 @@
 use catchlight_core::{Model, Pose, Puppet};
 use catchlight_editor_protocol::SessionId;
 use catchlight_wgpu::{
-    collect, create_headless_context, Framing, PrepareOptions, RenderCache, RenderContext,
-    RendererError, WgpuRenderer,
+    Framing, PrepareOptions, RenderCache, RenderContext, RendererError, WgpuRenderer, collect,
+    create_headless_context,
 };
 
 #[derive(Debug, thiserror::Error)]

@@ -9,16 +9,16 @@
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use catchlight_editor_protocol::{
     Command, ErrorCode, NodeId, NodeKindArg, Reply, Request, ResponseBody, SessionId,
     TextureEncoding,
 };
-use catchlight_editor_server::{serve_unix, Editor};
-use serde_json::{json, Value};
+use catchlight_editor_server::{Editor, serve_unix};
+use serde_json::{Value, json};
 
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 

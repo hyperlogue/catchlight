@@ -9,9 +9,9 @@ use std::{
 };
 
 use catchlight_core::{
-    formats::clm::{self, ClmMesh},
     BindingKey, BindingTarget as CoreBindingTarget, ExtensionValue, Model, ModelNode,
     ModelNodeKind, ModelParam, ModelPart, ModelTexture, Name, ScalarTarget, SeededHex,
+    formats::clm::{self, ClmMesh},
 };
 use catchlight_editor_protocol::*;
 use catchlight_editor_server::{Attachments, Editor, Payload, Storage};
@@ -193,9 +193,11 @@ fn empty_and_clm_creation_publish_finished_clean_roots_once() {
         Some(SessionSource::Clm {}),
         clm_source(&model),
     );
-    assert!(editor
-        .with_model(loaded, |loaded| loaded.authored_eq(&model).unwrap())
-        .unwrap());
+    assert!(
+        editor
+            .with_model(loaded, |loaded| loaded.authored_eq(&model).unwrap())
+            .unwrap()
+    );
     assert_eq!(history(&editor, loaded), (0, 0));
     assert!(!dirty(&editor, loaded));
     assert!(matches!(
@@ -230,9 +232,11 @@ fn empty_and_clm_creation_publish_finished_clean_roots_once() {
     }
     let events = events.lock().unwrap();
     assert_eq!(events.len(), 2);
-    assert!(events
-        .iter()
-        .all(|event| matches!(event, Event::SessionsChanged)));
+    assert!(
+        events
+            .iter()
+            .all(|event| matches!(event, Event::SessionsChanged))
+    );
 }
 
 #[test]
@@ -302,9 +306,11 @@ fn json_creation_preserves_authored_data_and_pairs_images_exactly() {
         Some(SessionSource::Json { textures }),
         attachments,
     );
-    assert!(editor
-        .with_model(loaded, |loaded| loaded.authored_eq(&model).unwrap())
-        .unwrap());
+    assert!(
+        editor
+            .with_model(loaded, |loaded| loaded.authored_eq(&model).unwrap())
+            .unwrap()
+    );
     let (textures, mut extra) = json_source(&model);
     extra.insert("texture:unused", vec![1]);
     assert!(matches!(
@@ -388,22 +394,28 @@ fn source_variants_reject_foreign_fields_and_classify_bytes_per_request() {
     ] {
         assert!(serde_json::from_value::<SessionSource>(value).is_err());
     }
-    assert!(Command::SessionNew {
-        name: None,
-        source: None
-    }
-    .carries_bytes()
-    .is_none());
-    assert!(Command::SessionNew {
-        name: None,
-        source: Some(SessionSource::Clm {})
-    }
-    .carries_bytes()
-    .is_some());
-    assert!(serde_json::from_value::<Command>(
-        serde_json::json!({"cmd":"structure_json_import", "session":1, "if_rev":0})
-    )
-    .is_err());
+    assert!(
+        Command::SessionNew {
+            name: None,
+            source: None
+        }
+        .carries_bytes()
+        .is_none()
+    );
+    assert!(
+        Command::SessionNew {
+            name: None,
+            source: Some(SessionSource::Clm {})
+        }
+        .carries_bytes()
+        .is_some()
+    );
+    assert!(
+        serde_json::from_value::<Command>(
+            serde_json::json!({"cmd":"structure_json_import", "session":1, "if_rev":0})
+        )
+        .is_err()
+    );
     assert!(
         serde_json::from_value::<Command>(serde_json::json!({"cmd":"edit_undo", "session":1}))
             .is_err()
@@ -442,9 +454,11 @@ fn forks_are_independent_models_with_clean_history_and_source_metadata() {
         other => panic!("unexpected fork: {other:?}"),
     };
     assert_ne!(editor.with_model(fork, Model::identity).unwrap(), before);
-    assert!(editor
-        .with_model(fork, |fork| fork.authored_eq(&model).unwrap())
-        .unwrap());
+    assert!(
+        editor
+            .with_model(fork, |fork| fork.authored_eq(&model).unwrap())
+            .unwrap()
+    );
     assert_eq!(history(&editor, fork), (0, 0));
     assert!(!dirty(&editor, fork));
     let key = ExtensionKey::new("test.binary").unwrap();
@@ -558,9 +572,11 @@ fn export_returns_the_complete_guarded_model_without_save_side_effects() {
         other => panic!("unexpected export: {other:?}"),
     }
     let exported = Model::from_clm_bytes(&payload.bytes).unwrap();
-    assert!(editor
-        .with_model(session, |model| model.authored_eq(&exported).unwrap())
-        .unwrap());
+    assert!(
+        editor
+            .with_model(session, |model| model.authored_eq(&exported).unwrap())
+            .unwrap()
+    );
     assert_eq!(history(&editor, session), depths);
     assert_eq!(editor.revision(session), Some(1));
     assert!(dirty(&editor, session));

@@ -8,7 +8,7 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-pub use catchlight_editor_protocol::{default_connection_path, Connection};
+pub use catchlight_editor_protocol::{Connection, default_connection_path};
 
 use crate::HttpServer;
 
@@ -70,7 +70,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::{bind_http, Editor, HttpOptions};
+    use crate::{Editor, HttpOptions, bind_http};
 
     fn server() -> HttpServer {
         bind_http(

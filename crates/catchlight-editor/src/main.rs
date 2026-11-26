@@ -24,15 +24,15 @@ use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use catchlight_editor_cli::Discovery;
 use catchlight_editor_protocol::{Command, Reply, Request};
 use catchlight_editor_server::connection::{
-    default_connection_path, read_connection, Connection, ConnectionFile,
+    Connection, ConnectionFile, default_connection_path, read_connection,
 };
 use catchlight_editor_server::{
-    bind_http, user_kept_dir, Editor, FileStorage, HttpOptions, KeptStore, SidecarKeptStore,
-    UiFiles, UserKeptStore,
+    Editor, FileStorage, HttpOptions, KeptStore, SidecarKeptStore, UiFiles, UserKeptStore,
+    bind_http, user_kept_dir,
 };
 
 mod ui {
@@ -411,16 +411,16 @@ fn collect(gc: &Gc, dir: &Path, out: &mut dyn Write, err: &mut dyn Write) -> Res
     let now = SystemTime::now();
     let (mut count, mut bytes, mut removed_all) = (0, 0, true);
     for kept in &unused {
-        if !gc.dry_run {
-            if let Err(e) = store.remove(kept) {
-                writeln!(
-                    err,
-                    "{NAME}: could not remove what is kept for {}: {e}",
-                    kept.model.display()
-                )?;
-                removed_all = false;
-                continue;
-            }
+        if !gc.dry_run
+            && let Err(e) = store.remove(kept)
+        {
+            writeln!(
+                err,
+                "{NAME}: could not remove what is kept for {}: {e}",
+                kept.model.display()
+            )?;
+            removed_all = false;
+            continue;
         }
         let days = now
             .duration_since(kept.changed)

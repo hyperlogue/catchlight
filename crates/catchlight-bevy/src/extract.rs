@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use bevy::prelude::*;
-use bevy::render::{sync_world::RenderEntity, Extract};
+use bevy::render::{Extract, sync_world::RenderEntity};
 use catchlight_core::{Model, Puppet};
 
 use crate::asset::CatchlightModel;

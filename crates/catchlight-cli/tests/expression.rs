@@ -7,11 +7,11 @@ mod common;
 
 use std::path::{Path, PathBuf};
 
-use catchlight_core::extension::Extension;
 use catchlight_core::Model;
-use catchlight_extension_expressions::{standard_visemes, Expressions, Group, EMOTIONS, VISEMES};
+use catchlight_core::extension::Extension;
+use catchlight_extension_expressions::{EMOTIONS, Expressions, Group, VISEMES, standard_visemes};
 use catchlight_extension_humanoid::Humanoid;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 fn grid(tag: &str) -> PathBuf {
     common::copy_fixture("two_param_grid", &common::tmp(tag))
@@ -263,10 +263,12 @@ fn viseme_commands_edit_only_the_visemes_and_list_only_their_warnings() {
     let (listing, _) = ok(&["list"], &path);
     assert_eq!(listing["expressions"][0]["name"], "oh");
     assert!(listing.get("visemes").is_none());
-    assert!(listing["warnings"][0]["message"]
-        .as_str()
-        .unwrap()
-        .starts_with("expression \"oh\""));
+    assert!(
+        listing["warnings"][0]["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("expression \"oh\"")
+    );
 
     let (removed, _) = viseme(&["remove", "oh"], &path);
     assert_eq!(removed, oh);

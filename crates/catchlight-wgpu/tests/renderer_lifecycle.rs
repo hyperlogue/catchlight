@@ -8,8 +8,8 @@ mod common;
 
 use catchlight_core::{Mesh, Model};
 use catchlight_wgpu::{
-    create_orthographic_camera, FrameStats, FrameTargets, Pipelines, RenderList, RenderStats,
-    RenderTarget, RendererError, Submission, WgpuRenderer, CAMERA_RING_SLOTS,
+    CAMERA_RING_SLOTS, FrameStats, FrameTargets, Pipelines, RenderList, RenderStats, RenderTarget,
+    RendererError, Submission, WgpuRenderer, create_orthographic_camera,
 };
 use common::Scene;
 use std::path::PathBuf;

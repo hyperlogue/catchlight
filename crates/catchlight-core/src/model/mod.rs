@@ -13,10 +13,10 @@ mod validate;
 
 pub use addon::{InstallError, Installed, Required, Requirement, Requirements};
 pub use binding::{
-    param_range_is_valid, BindingKey, BindingParams, BindingTarget, DenseGrid, ScalarTarget,
+    BindingKey, BindingParams, BindingTarget, DenseGrid, ScalarTarget, param_range_is_valid,
 };
 pub use check::{CheckWarning, ExtensionWarning};
-pub use correspondence::{DeformMapping, MeshMappingError, VertexWeight, MAX_MAPPING_ENTRIES};
+pub use correspondence::{DeformMapping, MAX_MAPPING_ENTRIES, MeshMappingError, VertexWeight};
 pub use eval::Pose;
 pub use file::ClmLoadError;
 pub use validate::SpineJointError;
@@ -711,10 +711,9 @@ impl ModelNode {
         if self
             .masks()
             .is_some_and(|masks| masks.iter().any(|m| removed(&m.source)))
+            && let Some(masks) = self.masks_mut()
         {
-            if let Some(masks) = self.masks_mut() {
-                masks.retain(|m| !removed(&m.source));
-            }
+            masks.retain(|m| !removed(&m.source));
         }
     }
 
@@ -965,13 +964,11 @@ impl Model {
         // In a fragment the new node can resolve a formerly external input.
         let check = added != 0 || self.resolves_response_node(&id);
         self.nodes.insert(id.clone(), node);
-        if check {
-            if let Err(error) = self.validate_responses() {
-                self.response_count -= added;
-                self.response_index.take();
-                self.nodes.remove(&id);
-                return Err(error);
-            }
+        if check && let Err(error) = self.validate_responses() {
+            self.response_count -= added;
+            self.response_index.take();
+            self.nodes.remove(&id);
+            return Err(error);
         }
         self.attach_child(parent, id);
         self.bump();
@@ -1139,10 +1136,10 @@ impl Model {
             {
                 r.output_param = None;
                 for t in &mut r.inputs {
-                    if let crate::ResponseSource::PartSlot { part, .. } = &mut t.source {
-                        if let Some(mapped) = map.get(part) {
-                            *part = mapped.clone();
-                        }
+                    if let crate::ResponseSource::PartSlot { part, .. } = &mut t.source
+                        && let Some(mapped) = map.get(part)
+                    {
+                        *part = mapped.clone();
                     }
                 }
             }
@@ -1266,10 +1263,10 @@ impl Model {
         for node in self.nodes.values_mut() {
             if let ModelNodeKind::MotionResponse(r) = &mut node.kind {
                 for t in &mut r.inputs {
-                    if let crate::ResponseSource::PartSlot { part, .. } = &mut t.source {
-                        if part == old {
-                            *part = new.clone();
-                        }
+                    if let crate::ResponseSource::PartSlot { part, .. } = &mut t.source
+                        && part == old
+                    {
+                        *part = new.clone();
                     }
                 }
             }
@@ -1340,10 +1337,10 @@ impl Model {
                         r.output_param = Some(new.clone());
                     }
                     for t in &mut r.inputs {
-                        if let crate::ResponseSource::PoseParam { param: p } = &mut t.source {
-                            if p == old {
-                                *p = new.clone();
-                            }
+                        if let crate::ResponseSource::PoseParam { param: p } = &mut t.source
+                            && p == old
+                        {
+                            *p = new.clone();
                         }
                     }
                 }
@@ -1376,10 +1373,10 @@ impl Model {
             }
         }
         for node in self.nodes.values_mut() {
-            if let ModelNodeKind::Part(p) = &mut node.kind {
-                if p.albedo.as_ref() == Some(old) {
-                    p.albedo = Some(new.clone());
-                }
+            if let ModelNodeKind::Part(p) = &mut node.kind
+                && p.albedo.as_ref() == Some(old)
+            {
+                p.albedo = Some(new.clone());
             }
         }
         self.extensions.rewrite(|r| match r {
@@ -1477,7 +1474,7 @@ impl Model {
                     ModelError::NotMeshed
                 } else {
                     ModelError::UnknownNode
-                })
+                });
             }
         };
         let expected = mesh.verts.len();
@@ -1699,10 +1696,11 @@ impl Model {
         for node in self.nodes.values_mut() {
             if let ModelNodeKind::MotionResponse(r) = &mut node.kind {
                 for t in &mut r.inputs {
-                    if let crate::ResponseSource::PartSlot { part, slot, .. } = &mut t.source {
-                        if part == id && slot == from {
-                            *slot = to.clone();
-                        }
+                    if let crate::ResponseSource::PartSlot { part, slot, .. } = &mut t.source
+                        && part == id
+                        && slot == from
+                    {
+                        *slot = to.clone();
                     }
                 }
             }
@@ -1806,11 +1804,12 @@ impl Model {
             return Err(ModelError::DuplicateId(id.to_string()));
         }
         self.params.insert(id.clone(), param);
-        if self.is_fragment() && self.response_owner(&id).is_some() {
-            if let Err(error) = self.validate_responses() {
-                self.params.remove(&id);
-                return Err(error);
-            }
+        if self.is_fragment()
+            && self.response_owner(&id).is_some()
+            && let Err(error) = self.validate_responses()
+        {
+            self.params.remove(&id);
+            return Err(error);
         }
         self.param_order.push(id);
         self.bump();
@@ -1897,10 +1896,10 @@ impl Model {
         }
         self.texture_order.retain(|t| t != id);
         for node in self.nodes.values_mut() {
-            if let ModelNodeKind::Part(p) = &mut node.kind {
-                if p.albedo.as_ref() == Some(id) {
-                    p.albedo = None;
-                }
+            if let ModelNodeKind::Part(p) = &mut node.kind
+                && p.albedo.as_ref() == Some(id)
+            {
+                p.albedo = None;
             }
         }
         self.remove_in_extensions(|r| matches!(r, IdRef::Texture(t) if t == id));
@@ -1951,12 +1950,12 @@ impl Model {
             Some(ModelNodeKind::Part(p)) => std::mem::replace(&mut p.albedo, albedo),
             _ => return,
         };
-        if let Some(old) = old {
-            if !self.nodes.values().any(|n| albedo_of(n) == Some(&old)) {
-                self.textures.remove(&old);
-                self.texture_order.retain(|t| t != &old);
-                self.remove_in_extensions(|r| matches!(r, IdRef::Texture(t) if t == &old));
-            }
+        if let Some(old) = old
+            && !self.nodes.values().any(|n| albedo_of(n) == Some(&old))
+        {
+            self.textures.remove(&old);
+            self.texture_order.retain(|t| t != &old);
+            self.remove_in_extensions(|r| matches!(r, IdRef::Texture(t) if t == &old));
         }
     }
 
@@ -2200,28 +2199,26 @@ impl Model {
     fn check_node_refs(&self, node: &ModelNode) -> Result<(), ModelError> {
         // Checked in either shape: an addon carries its own textures, so an
         // albedo is the one cross-reference that never dangles into a base.
-        if let ModelNodeKind::Part(p) = &node.kind {
-            if p.albedo
+        if let ModelNodeKind::Part(p) = &node.kind
+            && p.albedo
                 .as_ref()
                 .is_some_and(|t| !self.textures.contains_key(t))
-            {
-                return Err(ModelError::UnknownTexture);
-            }
+        {
+            return Err(ModelError::UnknownTexture);
         }
         // A fragment's other cross-references are supposed to dangle into a
         // base; `Model::install` is where they are resolved.
         if self.is_fragment() {
             return Ok(());
         }
-        if let ModelNodeKind::Spine(spine) = &node.kind {
-            if spine
+        if let ModelNodeKind::Spine(spine) = &node.kind
+            && spine
                 .targets
                 .iter()
                 .flatten()
                 .any(|p| !self.params.contains_key(p))
-            {
-                return Err(ModelError::UnknownParam);
-            }
+        {
+            return Err(ModelError::UnknownParam);
         }
         if let Some(masks) = node.masks() {
             for m in masks {
@@ -3585,10 +3582,11 @@ mod tests {
         assert!(r.model.reparent(&root, &r.part).is_err());
         assert!(r.model.mask_add(&r.part, &r.part, MaskMode::Mask).is_err());
         assert!(r.model.mask_delete(&r.composite, 7).is_err());
-        assert!(r
-            .model
-            .set_binding_key(&scalar_key(&r), [9, 0], 1.0)
-            .is_err());
+        assert!(
+            r.model
+                .set_binding_key(&scalar_key(&r), [9, 0], 1.0)
+                .is_err()
+        );
         assert_eq!(r.model.generation(), before);
     }
 
@@ -3814,12 +3812,13 @@ mod tests {
 
         assert!(r.model.node(&part).is_none());
         assert!(r.model.node(&new_node).is_some());
-        assert!(r
-            .model
-            .node(&r.root)
-            .unwrap()
-            .children()
-            .contains(&new_node));
+        assert!(
+            r.model
+                .node(&r.root)
+                .unwrap()
+                .children()
+                .contains(&new_node)
+        );
         assert_eq!(r.model.node(&child).unwrap().parent(), Some(&new_node));
         assert_eq!(
             r.model.node(&composite).unwrap().masks().unwrap()[0].source(),
@@ -3895,11 +3894,7 @@ mod tests {
         let mut draws = 0u32;
         let mut hex = move || {
             draws += 1;
-            if draws <= 2 {
-                0xaaaa_aaaa
-            } else {
-                0xbbbb_bbbb
-            }
+            if draws <= 2 { 0xaaaa_aaaa } else { 0xbbbb_bbbb }
         };
         let mut model = Model::new();
         let root = model.root().unwrap().clone();
@@ -4135,9 +4130,10 @@ mod tests {
 
         m.mask_delete(&target, 0).unwrap();
         assert!(m.mask_add(&a, &a, MaskMode::Mask).is_err());
-        assert!(m
-            .mask_add(&a, &root, MaskMode::Mask)
-            .is_err_and(|e| matches!(e, ModelError::NotAMaskSource)));
+        assert!(
+            m.mask_add(&a, &root, MaskMode::Mask)
+                .is_err_and(|e| matches!(e, ModelError::NotAMaskSource))
+        );
         m.mask_add(&a, &target, MaskMode::Mask).unwrap();
         m.mask_delete(&a, 0).unwrap();
         let bend = r.node(
@@ -4145,9 +4141,10 @@ mod tests {
             ModelNodeKind::MeshGroup(ModelMeshGroup::new(quad())),
         );
         let m = &mut r.model;
-        assert!(m
-            .mask_add(&a, &bend, MaskMode::Mask)
-            .is_err_and(|e| matches!(e, ModelError::NotAMaskSource)));
+        assert!(
+            m.mask_add(&a, &bend, MaskMode::Mask)
+                .is_err_and(|e| matches!(e, ModelError::NotAMaskSource))
+        );
 
         m.mask_add(&target, &a, MaskMode::Mask).unwrap();
         m.mask_add(&target, &b, MaskMode::DodgeMask).unwrap();

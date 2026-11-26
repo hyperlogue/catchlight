@@ -5,17 +5,17 @@
 
 use std::path::Path;
 
+use catchlight_core::Model;
 use catchlight_core::extension::{Extension, Warning};
 use catchlight_core::formats::clm::ClmFile;
-use catchlight_core::Model;
 use catchlight_extension_expressions::authoring::{self, AuthoringError};
 use catchlight_extension_expressions::{
-    Expression, Expressions, Group, Setting, Target, EMOTIONS, VISEMES,
+    EMOTIONS, Expression, Expressions, Group, Setting, Target, VISEMES,
 };
 use serde::ser::{Serialize, SerializeMap, Serializer};
 
-use crate::humanoid::{self, parse_param, warning_lines, Edited, WarningLine};
-use crate::{extension, file, Error};
+use crate::humanoid::{self, Edited, WarningLine, parse_param, warning_lines};
+use crate::{Error, extension, file};
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct SettingLine {

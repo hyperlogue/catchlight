@@ -178,7 +178,7 @@ impl TryFrom<LaneFields> for Lane {
             _ => {
                 return Err(
                     "a lane names exactly one of param, control, expression or viseme".into(),
-                )
+                );
             }
         };
         Ok(Self::new(target, f.interpolation, f.keyframes))
@@ -544,7 +544,7 @@ impl Extension for Animations {
                                 "a lane of clip {:?} names reference {param}, which is not a \
                                  param",
                                 clip.name
-                            )))
+                            )));
                         }
                     }
                 }

@@ -14,7 +14,7 @@ use catchlight_core::formats::clm::{
 use catchlight_extension_animations::{Animations, Clip};
 use serde::Serialize;
 
-use crate::{extension, file, Error};
+use crate::{Error, extension, file};
 
 /// Its presence is a bug report, not a normal outcome.
 pub const UNRENDERED: &str = "~ (the two files differ in a way this summary does not render)";

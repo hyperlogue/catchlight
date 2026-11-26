@@ -1,5 +1,5 @@
-use anyhow::{anyhow, Result};
-use visual_tests::{generate_configs, list_configs, update_all, SharedHarness};
+use anyhow::{Result, anyhow};
+use visual_tests::{SharedHarness, generate_configs, list_configs, update_all};
 
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);

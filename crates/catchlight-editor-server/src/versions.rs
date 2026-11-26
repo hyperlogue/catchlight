@@ -255,7 +255,7 @@ impl Versions {
                     return Self {
                         unreadable: Some(e.to_string()),
                         ..Self::default()
-                    }
+                    };
                 }
             }
         }
@@ -317,7 +317,7 @@ impl Versions {
             Some(k) if k.is_empty() || k.len() > MAX_KEY_BYTES => {
                 return Err(EditorError::BadRequest(format!(
                     "a retry key is 1 to {MAX_KEY_BYTES} bytes"
-                )))
+                )));
             }
             k => k,
         };
@@ -415,16 +415,16 @@ impl Versions {
             let name = record_name(record.info.version);
             let document = serde_json::to_vec(record).map_err(bad)?;
             // Two sessions on one model must not both number a version n.
-            if let Some(there) = store.read(key, &name)? {
-                if there != document {
-                    return Err(io::Error::new(
-                        io::ErrorKind::AlreadyExists,
-                        format!(
-                            "{} was saved meanwhile by another session on this model; reopen it",
-                            store.place(key, &name)
-                        ),
-                    ));
-                }
+            if let Some(there) = store.read(key, &name)?
+                && there != document
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    format!(
+                        "{} was saved meanwhile by another session on this model; reopen it",
+                        store.place(key, &name)
+                    ),
+                ));
             }
             store.write(key, &name, &document)?;
             self.written += 1;

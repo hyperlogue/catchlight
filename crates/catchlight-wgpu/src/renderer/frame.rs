@@ -386,10 +386,10 @@ impl WgpuRenderer {
     /// Must run after the submit carrying `resolve_gpu_queries`: it maps the
     /// read buffer, and a submit still writing a mapped buffer fails validation.
     pub fn end_gpu_frame(&mut self) {
-        if let Some(profiler) = self.gpu_profiler.as_mut() {
-            if let Err(e) = profiler.end_frame() {
-                tracing::warn!("wgpu_profiler::end_frame: {e}");
-            }
+        if let Some(profiler) = self.gpu_profiler.as_mut()
+            && let Err(e) = profiler.end_frame()
+        {
+            tracing::warn!("wgpu_profiler::end_frame: {e}");
         }
     }
 

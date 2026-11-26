@@ -5,7 +5,7 @@
 use catchlight_core::extension::ExtensionError;
 use catchlight_core::{Model, ParamId};
 
-use crate::{control, Control, ControlMapping, Humanoid, CONTROLS};
+use crate::{CONTROLS, Control, ControlMapping, Humanoid, control};
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum AuthoringError {

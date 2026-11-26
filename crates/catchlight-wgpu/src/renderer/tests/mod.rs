@@ -7,9 +7,9 @@ mod upload_mesh;
 mod upload_texture;
 
 use super::{
-    blend_mode_to_wgpu, blend_transparent_src_is_identity, camera_slot_offset, pixels_to_scissor,
-    project_aabb_to_pixels, renders_as_over, same_mask_signature, Aabb2, ScreenRect,
-    CAMERA_RING_SLOTS,
+    Aabb2, CAMERA_RING_SLOTS, ScreenRect, blend_mode_to_wgpu, blend_transparent_src_is_identity,
+    camera_slot_offset, pixels_to_scissor, project_aabb_to_pixels, renders_as_over,
+    same_mask_signature,
 };
 use catchlight_core::BlendMode;
 

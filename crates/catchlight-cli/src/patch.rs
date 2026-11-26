@@ -7,10 +7,10 @@ use std::path::Path;
 
 use catchlight_core::components::BlendMode;
 use catchlight_core::formats::clm::{ClmFile, ClmNode, ClmNodeKind, ClmParam, ClmTexture};
-use catchlight_core::id::{TexId, MAX_NAME_BYTES};
+use catchlight_core::id::{MAX_NAME_BYTES, TexId};
 
 use crate::diff::enum_name;
-use crate::{file, Error};
+use crate::{Error, file};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -179,7 +179,7 @@ fn verify(clm: &ClmFile, path: &Path) -> Result<(), Error> {
                 return Err(Error::AlreadyBroken {
                     path: path.to_path_buf(),
                     source,
-                })
+                });
             }
             Err(other) => return Err(other),
         }

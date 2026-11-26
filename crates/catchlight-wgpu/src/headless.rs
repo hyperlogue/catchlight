@@ -5,8 +5,8 @@
 //! before writing straight-alpha output.
 
 use crate::{
-    create_headless_context, create_readback_buffer, readback_layout, FrameTargets, RenderList,
-    RenderStats, RenderTarget, RendererResult, WgpuRenderer,
+    FrameTargets, RenderList, RenderStats, RenderTarget, RendererResult, WgpuRenderer,
+    create_headless_context, create_readback_buffer, readback_layout,
 };
 
 /// `height` is in world units; width follows the target's aspect. Distinct

@@ -21,7 +21,7 @@ use catchlight_core::{
     Puppet, TexId, UvCrop, Vec2,
 };
 
-use crate::collect::{Collector, DrawSource, RenderList, NO_SLOT};
+use crate::collect::{Collector, DrawSource, NO_SLOT, RenderList};
 use crate::renderer::{DeformSet, RendererResult, WgpuRenderer};
 
 /// A slot in the renderer's mesh table — dense, handed out as meshes upload.

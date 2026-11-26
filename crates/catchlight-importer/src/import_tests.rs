@@ -2,9 +2,9 @@
 //! repair, or refuse. A repair is also re-read, since one that leaves an
 //! unloadable `.clm` has repaired nothing.
 
+use crate::ImportError;
 use crate::inx::InxModel;
 use crate::to_clm::from_inx_model;
-use crate::ImportError;
 use catchlight_core::formats::clm::{ClmFile, ClmIndices, ClmNode, ClmNodeKind, ClmStructure};
 use catchlight_core::interpolate::InterpolateMode;
 use catchlight_core::texture::{EncodedTexture, TextureFormat};

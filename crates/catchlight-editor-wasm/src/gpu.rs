@@ -17,8 +17,7 @@ use wasm_bindgen::prelude::*;
 use crate::viewport::GlStage;
 
 /// Shown verbatim when a tab cannot draw; the browser smoke test asserts it.
-pub(crate) const NEEDS_WEBGPU_OR_WEBGL2: &str =
-    "the catchlight editor needs WebGPU or WebGL2 to draw and this browser \
+pub(crate) const NEEDS_WEBGPU_OR_WEBGL2: &str = "the catchlight editor needs WebGPU or WebGL2 to draw and this browser \
      offered neither; use a current Chrome, Edge, Safari or Firefox";
 
 #[wasm_bindgen]

@@ -12,7 +12,7 @@ use catchlight_core::extension::{Extension, ExtensionError};
 use catchlight_core::{Model, ModelNodeKind, NodeId, ParamId};
 use catchlight_extension_animations::{Animations, Clip};
 use catchlight_extension_expressions::{Expressions, Group};
-use catchlight_extension_humanoid::{control, Humanoid};
+use catchlight_extension_humanoid::{Humanoid, control};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -492,7 +492,9 @@ impl Framing {
         let s = f64::from(scale);
         if !rect.iter().all(|v| v.is_finite()) || w <= 0.0 || h <= 0.0 || !s.is_finite() || s <= 0.0
         {
-            return Err(bad("rect requires finite coordinates and positive dimensions; scale must be finite and positive"));
+            return Err(bad(
+                "rect requires finite coordinates and positive dimensions; scale must be finite and positive",
+            ));
         }
         let dimensions = [w * s, h * s].map(|v| v.round().max(1.0));
         if dimensions.iter().any(|v| *v > f64::from(MAX_DIMENSION)) {
@@ -1182,7 +1184,9 @@ fn validate_name(name: &str) -> Result<(), Error> {
             .bytes()
             .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
     {
-        return Err(bad(format!("name {name:?} must use 1..{MAX_NAME_BYTES} ASCII letters/digits/_/-, start with a letter/digit and exclude --")));
+        return Err(bad(format!(
+            "name {name:?} must use 1..{MAX_NAME_BYTES} ASCII letters/digits/_/-, start with a letter/digit and exclude --"
+        )));
     }
     if ["con", "prn", "aux", "nul"]
         .iter()
@@ -1239,12 +1243,12 @@ pub fn validate_controls(model: &Model, controls: &BTreeMap<String, f32>) -> Res
                 "controls need the model's {} control mappings, and it has none; map one with \
                  `catchlight-cli humanoid map`",
                 Humanoid::KEY
-            )))
+            )));
         }
         Err(e) => {
             return Err(bad(format!(
                 "the model's control mappings cannot be read: {e}"
-            )))
+            )));
         }
     };
     for (name, value) in controls {
@@ -1281,7 +1285,7 @@ pub fn validate_weights(
                 "{noun}s need the model's {} extension, and it has none; add one with \
                  `catchlight-cli {noun} set`",
                 Expressions::KEY
-            )))
+            )));
         }
         Err(e) => return Err(bad(format!("the model's {noun}s cannot be read: {e}"))),
     };

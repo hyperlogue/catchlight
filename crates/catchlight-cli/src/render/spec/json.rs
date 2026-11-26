@@ -1,6 +1,6 @@
 //! Bounded parsing that preserves duplicate-key errors at every nesting level.
 
-use super::{bad, check_limit, MAX_JSON_BYTES};
+use super::{MAX_JSON_BYTES, bad, check_limit};
 use crate::Error;
 use serde::Deserialize;
 use std::io::Read;

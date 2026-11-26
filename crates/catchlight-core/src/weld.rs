@@ -373,12 +373,12 @@ mod tests {
     #[test]
     fn midweight_meets_halfway_after_a_deform() {
         let (mut arena, a, b) = two_part_arena(Vec2::ZERO);
-        if let Some(node) = arena.get_mut(a) {
-            if let NodeKind::Part(p) = &mut node.kind {
-                p.deform_stack
-                    .set(DeformSource::Test, vec![Vec2::new(8.0, 0.0); 3])
-                    .unwrap();
-            }
+        if let Some(node) = arena.get_mut(a)
+            && let NodeKind::Part(p) = &mut node.kind
+        {
+            p.deform_stack
+                .set(DeformSource::Test, vec![Vec2::new(8.0, 0.0); 3])
+                .unwrap();
         }
         arena.welds = vec![seam_weld(a, b, 0.5)].into();
         run(&mut arena);
@@ -397,12 +397,12 @@ mod tests {
     fn weight_endpoints_pin_one_side() {
         for (w, expect_a_moves, expect_b_moves) in [(1.0f32, false, true), (0.0f32, true, false)] {
             let (mut arena, a, b) = two_part_arena(Vec2::ZERO);
-            if let Some(node) = arena.get_mut(a) {
-                if let NodeKind::Part(p) = &mut node.kind {
-                    p.deform_stack
-                        .set(DeformSource::Test, vec![Vec2::new(8.0, 0.0); 3])
-                        .unwrap();
-                }
+            if let Some(node) = arena.get_mut(a)
+                && let NodeKind::Part(p) = &mut node.kind
+            {
+                p.deform_stack
+                    .set(DeformSource::Test, vec![Vec2::new(8.0, 0.0); 3])
+                    .unwrap();
             }
             arena.welds = vec![seam_weld(a, b, w)].into();
             run(&mut arena);
@@ -466,12 +466,12 @@ mod tests {
         let root = arena.root();
         let b = arena.insert_child(root, node);
 
-        if let Some(node) = arena.get_mut(a) {
-            if let NodeKind::Part(p) = &mut node.kind {
-                p.deform_stack
-                    .set(DeformSource::Test, vec![Vec2::new(8.0, 0.0); 3])
-                    .unwrap();
-            }
+        if let Some(node) = arena.get_mut(a)
+            && let NodeKind::Part(p) = &mut node.kind
+        {
+            p.deform_stack
+                .set(DeformSource::Test, vec![Vec2::new(8.0, 0.0); 3])
+                .unwrap();
         }
         arena.welds = vec![Weld {
             a,
@@ -519,12 +519,12 @@ mod tests {
                 Vec2::new(5.0, -20.0),
             ],
         );
-        if let Some(node) = arena.get_mut(a) {
-            if let NodeKind::Part(p) = &mut node.kind {
-                p.deform_stack
-                    .set(DeformSource::Test, vec![Vec2::new(8.0, 0.0); 3])
-                    .unwrap();
-            }
+        if let Some(node) = arena.get_mut(a)
+            && let NodeKind::Part(p) = &mut node.kind
+        {
+            p.deform_stack
+                .set(DeformSource::Test, vec![Vec2::new(8.0, 0.0); 3])
+                .unwrap();
         }
         arena.welds = vec![seam_weld(a, b, 1.0), seam_weld(b, c, 1.0)].into();
         run(&mut arena);
@@ -538,23 +538,23 @@ mod tests {
     #[test]
     fn weld_slot_does_not_accumulate_across_frames() {
         let (mut arena, a, b) = two_part_arena(Vec2::ZERO);
-        if let Some(node) = arena.get_mut(a) {
-            if let NodeKind::Part(p) = &mut node.kind {
-                p.deform_stack
-                    .set(DeformSource::Test, vec![Vec2::new(8.0, 0.0); 3])
-                    .unwrap();
-            }
+        if let Some(node) = arena.get_mut(a)
+            && let NodeKind::Part(p) = &mut node.kind
+        {
+            p.deform_stack
+                .set(DeformSource::Test, vec![Vec2::new(8.0, 0.0); 3])
+                .unwrap();
         }
         arena.welds = vec![seam_weld(a, b, 0.0)].into();
         run(&mut arena);
         let first = weld_slot(&arena, a);
         arena.reset_deforms();
-        if let Some(node) = arena.get_mut(a) {
-            if let NodeKind::Part(p) = &mut node.kind {
-                p.deform_stack
-                    .set(DeformSource::Test, vec![Vec2::new(8.0, 0.0); 3])
-                    .unwrap();
-            }
+        if let Some(node) = arena.get_mut(a)
+            && let NodeKind::Part(p) = &mut node.kind
+        {
+            p.deform_stack
+                .set(DeformSource::Test, vec![Vec2::new(8.0, 0.0); 3])
+                .unwrap();
         }
         run(&mut arena);
         assert_eq!(weld_slot(&arena, a), first);
@@ -565,9 +565,10 @@ mod tests {
         fn frame(arena: &mut Arena, a: NodeIdx, shift: f32) {
             arena.reset_deforms();
             if let Some(NodeKind::Part(p)) = arena.get_mut(a).map(|n| &mut n.kind) {
-                assert!(p
-                    .deform_stack
-                    .write_source(DeformSource::Test, &[Vec2::new(shift, 0.0); 3]));
+                assert!(
+                    p.deform_stack
+                        .write_source(DeformSource::Test, &[Vec2::new(shift, 0.0); 3])
+                );
             }
             run(arena);
         }

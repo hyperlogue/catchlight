@@ -2782,7 +2782,7 @@ impl TryFrom<ExtensionRef> for IdRef {
             ExtensionRef::Slot((node, slot)) => IdRef::Slot(node, slot),
             ExtensionRef::Removed(inner) => match IdRef::try_from(*inner)? {
                 IdRef::Removed(_) => {
-                    return Err("a removed reference cannot itself be removed".into())
+                    return Err("a removed reference cannot itself be removed".into());
                 }
                 live => live.removed(),
             },
@@ -3457,10 +3457,12 @@ mod tests {
             Command::PresenceGet { session }.kind(),
             CommandKind::ServerQuery
         );
-        assert!(serde_json::from_str::<Command>(
-            r#"{"cmd":"scratch_deform","session":1,"node":"hair","offsets":[]}"#
-        )
-        .is_err());
+        assert!(
+            serde_json::from_str::<Command>(
+                r#"{"cmd":"scratch_deform","session":1,"node":"hair","offsets":[]}"#
+            )
+            .is_err()
+        );
     }
 
     #[test]

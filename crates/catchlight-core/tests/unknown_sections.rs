@@ -154,9 +154,10 @@ fn authored_equality_sees_unknown_sections() {
 
     assert!(!with.authored_eq(&without).unwrap());
     assert!(!without.authored_eq(&with).unwrap());
-    assert!(with
-        .authored_eq(&Model::from_clm_bytes(&file_from_the_future()).unwrap())
-        .unwrap());
+    assert!(
+        with.authored_eq(&Model::from_clm_bytes(&file_from_the_future()).unwrap())
+            .unwrap()
+    );
 }
 
 #[test]

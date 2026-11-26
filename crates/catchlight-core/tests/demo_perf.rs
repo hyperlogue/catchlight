@@ -3,7 +3,7 @@
 //! Run `cargo test -p catchlight-core --release --test demo_perf -- --ignored --nocapture`.
 //! Requires the Lan Git LFS object. Timing is excluded from ordinary CI because
 //! shared runners and debug builds do not provide a meaningful frame budget.
-use catchlight_core::{formats::clm, Model, ParamId, Puppet};
+use catchlight_core::{Model, ParamId, Puppet, formats::clm};
 
 #[test]
 #[ignore = "timing measurement; run in release with the Lan LFS fixture"]

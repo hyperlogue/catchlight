@@ -11,14 +11,14 @@ use std::sync::Arc;
 
 use catchlight_core::formats::clm::structure_texture_ids;
 use catchlight_core::formats::clm::{
-    decode_structure, extension_hash, ClmTextureRef, TextureAlpha, TextureEncoding,
+    ClmTextureRef, TextureAlpha, TextureEncoding, decode_structure, extension_hash,
 };
 use catchlight_core::{
     BlendMode, ExtensionKey, LoadBudget, Mat4, Model, ModelTexture, NodeId, NodeKind, ParamId,
     Puppet, ScratchTransform, TexId, Vec2, Vec3,
 };
 use catchlight_editor_protocol::{ErrorCode, Reply, Request, RequestId, SessionId};
-use catchlight_editor_server::{replica_reply, Editor};
+use catchlight_editor_server::{Editor, replica_reply};
 use catchlight_extension_animations::{AnimationPlayer, Animations, LiveInputs, Rig};
 use catchlight_extension_expressions::Expressions;
 use catchlight_extension_humanoid::Humanoid;
@@ -573,12 +573,12 @@ impl ReplicaState {
             .bindings_of_node(&node)
             .chain(self.model.bindings_of_param(&param))
         {
-            if b.params().contains(&param) {
-                if let Some(y) = b.params().y() {
-                    let pair = [b.params().x().to_string(), y.to_string()];
-                    if !pairs.contains(&pair) {
-                        pairs.push(pair);
-                    }
+            if b.params().contains(&param)
+                && let Some(y) = b.params().y()
+            {
+                let pair = [b.params().x().to_string(), y.to_string()];
+                if !pairs.contains(&pair) {
+                    pairs.push(pair);
                 }
             }
         }
@@ -1229,7 +1229,7 @@ mod tests {
     use super::*;
     use crate::CatchlightEditor;
     use catchlight_editor_server::Attachments;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     const ROOT: &str = "root";
 
@@ -1392,9 +1392,11 @@ mod tests {
 
         let mut replica = ReplicaState::new();
         replica.put_extension("acme.thumb", b"held".to_vec());
-        assert!(replica
-            .apply_structure(&structure_of(&editor, session), 1)
-            .unwrap());
+        assert!(
+            replica
+                .apply_structure(&structure_of(&editor, session), 1)
+                .unwrap()
+        );
 
         add_node(&editor, session, ROOT, "group", "head");
         let after = structure_of(&editor, session);
@@ -1650,9 +1652,11 @@ mod tests {
             .unwrap();
         assert_eq!(root[0], 3.0, "root moved by the world delta, got {root:?}");
 
-        assert!(replica
-            .translation_after_world_delta("root/part-deadbeef", 1.0, 1.0)
-            .is_none());
+        assert!(
+            replica
+                .translation_after_world_delta("root/part-deadbeef", 1.0, 1.0)
+                .is_none()
+        );
     }
 
     fn add_drawn_part(editor: &CatchlightEditor, session: SessionId, name: &str) -> String {
@@ -2079,9 +2083,11 @@ mod tests {
             vec![["x".to_string(), "y".to_string()]]
         );
         replica.set_param("y", 0.25);
-        assert!(replica
-            .recording(&face, "x", Some("y"), [1.0, 1.0])
-            .is_err());
+        assert!(
+            replica
+                .recording(&face, "x", Some("y"), [1.0, 1.0])
+                .is_err()
+        );
         send(json!({"cmd":"node_set", "node":face, "name":"renamed"}));
         replica.sync_from_editor(editor.editor(), session);
         assert!(

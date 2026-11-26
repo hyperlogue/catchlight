@@ -384,7 +384,7 @@ fn build_kind<'a>(
         "part" => {
             let albedo = match &mn.texture {
                 Some(t) if !tex_dims.contains_key(t.as_str()) => {
-                    return Err(ManifestError::UnknownTexture(mn.id.clone(), t.clone()))
+                    return Err(ManifestError::UnknownTexture(mn.id.clone(), t.clone()));
                 }
                 Some(t) => Some(t.as_str()),
                 None => None,

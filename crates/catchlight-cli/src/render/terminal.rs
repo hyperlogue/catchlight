@@ -22,8 +22,8 @@ pub fn supported() -> bool {
 }
 #[cfg(unix)]
 fn query() -> std::io::Result<bool> {
-    use rustix::event::{poll, PollFd, PollFlags, Timespec};
-    use rustix::termios::{tcgetattr, tcsetattr, LocalModes, OptionalActions, SpecialCodeIndex};
+    use rustix::event::{PollFd, PollFlags, Timespec, poll};
+    use rustix::termios::{LocalModes, OptionalActions, SpecialCodeIndex, tcgetattr, tcsetattr};
     use std::io::Read;
     let mut tty = std::fs::OpenOptions::new()
         .read(true)

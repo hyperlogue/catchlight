@@ -123,9 +123,11 @@ fn feed(replica: &mut ReplicaState, model: &Model) {
         replica.put_extension(blob.key.as_str(), blob.data);
     }
     let rev = replica.rev() + 1;
-    assert!(replica
-        .apply_structure(&model.to_structure_bytes().unwrap(), rev)
-        .unwrap());
+    assert!(
+        replica
+            .apply_structure(&model.to_structure_bytes().unwrap(), rev)
+            .unwrap()
+    );
 }
 
 fn value(replica: &ReplicaState, param: &str) -> f32 {

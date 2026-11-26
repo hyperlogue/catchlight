@@ -33,7 +33,7 @@
 pub mod authoring;
 mod standard;
 
-pub use standard::{standard_visemes, EMOTIONS, VISEMES, VISEME_CONTROLS};
+pub use standard::{EMOTIONS, VISEME_CONTROLS, VISEMES, standard_visemes};
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -42,7 +42,7 @@ use catchlight_core::extension::{
     RemovedRef, Warning,
 };
 use catchlight_core::{Model, ParamId, Puppet};
-use catchlight_extension_humanoid::{control, ControlValues, Humanoid};
+use catchlight_extension_humanoid::{ControlValues, Humanoid, control};
 
 /// The warning codes [`Expressions`] raises from its check, for either group.
 pub mod codes {
@@ -729,7 +729,7 @@ impl Extension for Expressions {
                                 "a setting of {noun} {:?} names reference {}, which is not a \
                                  param",
                                 expression.name, s.param
-                            )))
+                            )));
                         }
                     }
                 }

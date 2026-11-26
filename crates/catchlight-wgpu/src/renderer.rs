@@ -38,7 +38,7 @@ pub use pipelines::Pipelines;
 use pipelines::{MaskPipelines, ShaderBlend};
 pub use {
     deform::DeformSet,
-    frame::{Frame, Recorded, Submission, CAMERA_RING_SLOTS},
+    frame::{CAMERA_RING_SLOTS, Frame, Recorded, Submission},
     targets::{FrameTargets, RenderTarget},
 };
 

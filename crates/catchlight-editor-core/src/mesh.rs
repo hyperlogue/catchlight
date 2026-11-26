@@ -32,7 +32,9 @@ pub enum MeshError {
     ConstraintCross,
     #[error("the texture is empty above the alpha threshold")]
     NothingToMesh,
-    #[error("This mesh has a custom texture mapping. Mesh placement requires an undeformed artwork mesh.")]
+    #[error(
+        "This mesh has a custom texture mapping. Mesh placement requires an undeformed artwork mesh."
+    )]
     CustomTextureMapping,
     #[error("triangulation failed")]
     Triangulation,
@@ -1185,10 +1187,11 @@ mod tests {
         let mut wm = WorkingMesh::from_mesh(&quad());
         wm.delete_vertices(&[1]);
         assert_eq!(wm.vertex_count(), 3);
-        assert!(wm
-            .constraints
-            .iter()
-            .all(|&(a, b)| a < 3 && b < 3 && a != b));
+        assert!(
+            wm.constraints
+                .iter()
+                .all(|&(a, b)| a < 3 && b < 3 && a != b)
+        );
         assert!(wm.triangulate().unwrap().len() == 1);
     }
 
@@ -1510,12 +1513,14 @@ mod tests {
             }))
         };
 
-        assert!(grid(GridKnobs {
-            cols: MAX_GRID_DIVISIONS,
-            rows: 2,
-            ..GridKnobs::default()
-        })
-        .is_ok());
+        assert!(
+            grid(GridKnobs {
+                cols: MAX_GRID_DIVISIONS,
+                rows: 2,
+                ..GridKnobs::default()
+            })
+            .is_ok()
+        );
         assert_eq!(
             grid(GridKnobs {
                 cols: u32::MAX,
@@ -1541,12 +1546,14 @@ mod tests {
             )
         );
         // Named lines replace `rows`, so an unused count is not checked.
-        assert!(grid(GridKnobs {
-            rows: u32::MAX,
-            axes_y: vec![0.0, 1.0],
-            ..GridKnobs::default()
-        })
-        .is_ok());
+        assert!(
+            grid(GridKnobs {
+                rows: u32::MAX,
+                axes_y: vec![0.0, 1.0],
+                ..GridKnobs::default()
+            })
+            .is_ok()
+        );
 
         assert_eq!(
             contour_automesh(

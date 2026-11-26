@@ -16,11 +16,11 @@ mod lfs;
 pub mod render;
 
 pub use config::{
-    build_matrix, default_models, Camera, Config, FramePuppet, ModelSpec, ParamSetting, Thresholds,
+    Camera, Config, FramePuppet, ModelSpec, ParamSetting, Thresholds, build_matrix, default_models,
 };
 pub use diff::Metrics;
-pub use harness::{list_configs, run_one, shared_context, update_all, RunOutcome, SharedHarness};
-pub use render::{render_one_to_rgba, RenderContext};
+pub use harness::{RunOutcome, SharedHarness, list_configs, run_one, shared_context, update_all};
+pub use render::{RenderContext, render_one_to_rgba};
 
 use std::path::{Path, PathBuf};
 

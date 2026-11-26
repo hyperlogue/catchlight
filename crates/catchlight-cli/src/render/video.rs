@@ -1,6 +1,6 @@
 //! Video encoding pipes straight-alpha RGBA frames to an external ffmpeg
 //! (`CATCHLIGHT_FFMPEG`, else `ffmpeg` on PATH); no codec is linked.
-use super::spec::{bad, Background, VideoFormat};
+use super::spec::{Background, VideoFormat, bad};
 use crate::Error;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};

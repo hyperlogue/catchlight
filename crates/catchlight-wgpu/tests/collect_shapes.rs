@@ -12,7 +12,7 @@ use catchlight_core::{
     MaskMode, Model, ModelComposite, ModelNodeKind, ModelPart, NodeId, Puppet, TexId,
 };
 use catchlight_wgpu::{
-    collect, DrawableInfo, MaskSourceData, PrepareOptions, RenderCache, RenderList, WgpuRenderer,
+    DrawableInfo, MaskSourceData, PrepareOptions, RenderCache, RenderList, WgpuRenderer, collect,
 };
 use common::{Build, Scene};
 use std::path::PathBuf;
@@ -347,17 +347,19 @@ fn invisible_composite_children_do_not_prepare_masks_but_can_supply_them() {
         let list = scene.frame(&mut ctx.renderer, 0.0);
         assert_eq!(list.root_drawables().len(), 1);
         assert_eq!(list.composite_mask_sources().count(), 1);
-        assert!(list
-            .composite_mask_source(node_slot(&scene, &source))
-            .is_some());
+        assert!(
+            list.composite_mask_source(node_slot(&scene, &source))
+                .is_some()
+        );
         ctx.render(&list, Some(wgpu::Color::TRANSPARENT));
-        assert!(ctx
-            .read_rgba()
-            .unwrap()
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .any(|p| p[3] != 0));
+        assert!(
+            ctx.read_rgba()
+                .unwrap()
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .any(|p| p[3] != 0)
+        );
 
         scene
             .model

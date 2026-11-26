@@ -5,8 +5,8 @@
 
 use super::bad;
 use crate::Error;
-use catchlight_core::interpolate::InterpolateMode;
 use catchlight_core::ParamId;
+use catchlight_core::interpolate::InterpolateMode;
 use catchlight_extension_animations::{Clip, Keyframe, Lane, LaneTarget};
 use catchlight_extension_expressions::Group;
 use schemars::JsonSchema;

@@ -14,7 +14,7 @@ mod generate;
 mod ui;
 mod wasm;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::path::PathBuf;
 
 fn main() -> Result<()> {

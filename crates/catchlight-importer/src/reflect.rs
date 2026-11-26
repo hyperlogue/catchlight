@@ -5,8 +5,9 @@
 use serde::Deserialize;
 use std::collections::HashMap;
 
+use catchlight_core::NodeId;
 use catchlight_core::components::{BlendMode, MaskMode};
-use catchlight_core::fill::{derive_dense, FillCell};
+use catchlight_core::fill::{FillCell, derive_dense};
 use catchlight_core::formats::clm::{
     ClmBindingValues, ClmCell, ClmCells, ClmIndices, ClmMesh, ClmTransform,
 };
@@ -14,7 +15,6 @@ use catchlight_core::interpolate::InterpolateMode;
 use catchlight_core::load_budget::{
     LoadLimitError, LoadLimits, LoadResource, MAX_BINDING_GRID_CELLS,
 };
-use catchlight_core::NodeId;
 
 use crate::error::ImportError;
 use crate::schema::{SchemaMesh, SchemaNode, SchemaParam, SchemaTransform};
@@ -268,11 +268,7 @@ fn fit_deform_cells(d: &mut Dense<Vec<f32>>, deform_len: usize, node: NodeRef<'_
 }
 
 pub(crate) fn reflect_z(value: f32) -> f32 {
-    if value == 0.0 {
-        0.0
-    } else {
-        -value
-    }
+    if value == 0.0 { 0.0 } else { -value }
 }
 
 /// Row-major: `data[y * width + x]`.
@@ -383,14 +379,14 @@ fn matrix_columns<'v>(
         let Some(col) = col.as_array() else {
             return Err(malformed(format!("column {x} is not an array")));
         };
-        if let Some(first) = columns.first() {
-            if col.len() != first.len() {
-                return Err(malformed(format!(
-                    "column {x} holds {} cells where column 0 holds {}",
-                    col.len(),
-                    first.len()
-                )));
-            }
+        if let Some(first) = columns.first()
+            && col.len() != first.len()
+        {
+            return Err(malformed(format!(
+                "column {x} holds {} cells where column 0 holds {}",
+                col.len(),
+                first.len()
+            )));
         }
         columns.push(col.as_slice());
     }

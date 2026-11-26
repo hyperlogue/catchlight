@@ -117,8 +117,8 @@ struct Two<'a, A, B>((&'a str, &'a A), (&'a str, &'a B));
 impl<A: Serialize, B: Serialize> Serialize for Two<'_, A, B> {
     fn serialize<S: Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
         let mut map = s.serialize_map(Some(2))?;
-        map.serialize_entry(self.0 .0, self.0 .1)?;
-        map.serialize_entry(self.1 .0, self.1 .1)?;
+        map.serialize_entry(self.0.0, self.0.1)?;
+        map.serialize_entry(self.1.0, self.1.1)?;
         map.end()
     }
 }

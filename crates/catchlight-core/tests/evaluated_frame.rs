@@ -529,45 +529,47 @@ fn two_param_fixture(mode: InterpolateMode) -> FixtureFile {
     ];
     let d = |x: u32, y: u32, v: Vec<f32>| (x, y, v);
     let b = |node: usize, values: ClmBindingValues| binding(node, mode, two(0), values);
-    let params = vec![FixtureParam::pair(
-        "Head",
-        [-1.0, -2.0],
-        [1.0, 2.0],
-        [0.0, 0.5],
-        vec![0.0, 0.25, 1.0],
-        vec![0.0, 0.5, 1.0],
-    )
-    .driving(vec![
-        b(
-            1,
-            ClmBindingValues::Deform(cells(vec![
-                d(0, 0, vec![-2.0, 0.5, 0.0, 0.0, 1.0, -1.0, 0.0, 3.0]),
-                d(2, 0, vec![4.0, 0.0, -1.0, 2.0, 0.0, 0.0, 0.5, 0.5]),
-                d(1, 2, vec![0.0, -3.0, 2.0, 1.0, -1.0, 0.0, 0.0, 0.0]),
-                d(2, 2, vec![1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]),
-            ])),
-        ),
-        b(
-            1,
-            ClmBindingValues::TransformTX(cells(vec![(0, 0, -6.0), (2, 2, 9.0)])),
-        ),
-        b(1, ClmBindingValues::TransformRZ(cells(vec![(2, 0, 0.7)]))),
-        b(1, ClmBindingValues::TransformSY(cells(vec![(0, 2, 1.8)]))),
-        b(
-            1,
-            ClmBindingValues::ZOrder(cells(vec![(0, 0, -4.0), (2, 2, 6.0)])),
-        ),
-        b(
-            1,
-            ClmBindingValues::Opacity(cells(vec![(0, 0, 0.25), (2, 2, 1.0)])),
-        ),
-        b(
-            3,
-            ClmBindingValues::TintG(cells(vec![(0, 0, 0.2), (2, 2, 1.0)])),
-        ),
-        b(3, ClmBindingValues::ScreenTintB(cells(vec![(1, 1, 0.6)]))),
-        b(2, ClmBindingValues::Opacity(cells(vec![(0, 2, 0.3)]))),
-    ])];
+    let params = vec![
+        FixtureParam::pair(
+            "Head",
+            [-1.0, -2.0],
+            [1.0, 2.0],
+            [0.0, 0.5],
+            vec![0.0, 0.25, 1.0],
+            vec![0.0, 0.5, 1.0],
+        )
+        .driving(vec![
+            b(
+                1,
+                ClmBindingValues::Deform(cells(vec![
+                    d(0, 0, vec![-2.0, 0.5, 0.0, 0.0, 1.0, -1.0, 0.0, 3.0]),
+                    d(2, 0, vec![4.0, 0.0, -1.0, 2.0, 0.0, 0.0, 0.5, 0.5]),
+                    d(1, 2, vec![0.0, -3.0, 2.0, 1.0, -1.0, 0.0, 0.0, 0.0]),
+                    d(2, 2, vec![1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]),
+                ])),
+            ),
+            b(
+                1,
+                ClmBindingValues::TransformTX(cells(vec![(0, 0, -6.0), (2, 2, 9.0)])),
+            ),
+            b(1, ClmBindingValues::TransformRZ(cells(vec![(2, 0, 0.7)]))),
+            b(1, ClmBindingValues::TransformSY(cells(vec![(0, 2, 1.8)]))),
+            b(
+                1,
+                ClmBindingValues::ZOrder(cells(vec![(0, 0, -4.0), (2, 2, 6.0)])),
+            ),
+            b(
+                1,
+                ClmBindingValues::Opacity(cells(vec![(0, 0, 0.25), (2, 2, 1.0)])),
+            ),
+            b(
+                3,
+                ClmBindingValues::TintG(cells(vec![(0, 0, 0.2), (2, 2, 1.0)])),
+            ),
+            b(3, ClmBindingValues::ScreenTintB(cells(vec![(1, 1, 0.6)]))),
+            b(2, ClmBindingValues::Opacity(cells(vec![(0, 2, 0.3)]))),
+        ]),
+    ];
     file(nodes, params, Vec::new())
 }
 

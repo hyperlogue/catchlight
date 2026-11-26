@@ -1,6 +1,6 @@
 //! Mesh lines are an independent image overlay. Coverage is antialiased in
 //! image pixels and composited as straight sRGB inputs in linear light.
-use super::spec::{bad, Framing, MeshOverlay, Positions};
+use super::spec::{Framing, MeshOverlay, Positions, bad};
 use crate::Error;
 use catchlight_core::geometry::EvaluatedGeometry;
 use catchlight_core::{Model, Puppet};

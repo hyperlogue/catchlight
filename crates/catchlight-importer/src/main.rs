@@ -3,7 +3,7 @@
 //! Recognized container magic takes precedence over extensions. Extensions
 //! only select a validator when no signature is recognized; they never bypass
 //! that format's validation. ZIP inputs must still contain a LivLiv package.
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use catchlight_importer::livliv::{Options, Package};
 use std::ffi::OsString;
 use std::io::Read;

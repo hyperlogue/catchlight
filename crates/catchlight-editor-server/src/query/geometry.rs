@@ -1,8 +1,8 @@
 //! Isolated explicit-pose geometry: no preview scratch, animation or motion responses.
 
-use super::{check_count, page, MAX_QUERY_ITEMS};
+use super::{MAX_QUERY_ITEMS, check_count, page};
 use crate::EditorError;
-use catchlight_core::{geometry::EvaluatedGeometry, LoadLimits, Model, Puppet};
+use catchlight_core::{LoadLimits, Model, Puppet, geometry::EvaluatedGeometry};
 use catchlight_editor_protocol::*;
 use std::collections::HashSet;
 

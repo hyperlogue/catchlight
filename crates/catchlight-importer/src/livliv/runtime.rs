@@ -255,17 +255,16 @@ impl Runtime {
             .get("keyforms")
             .map(|path| -> Result<_> { Ok(serde_json::from_slice(package.resource(path)?)?) })
             .transpose()?;
-        if let Some(k) = &keyforms {
-            if k.turn <= 0.
+        if let Some(k) = &keyforms
+            && (k.turn <= 0.
                 || k.nod <= 0.
                 || k.keys
                     .iter()
-                    .any(|key| key.param != "diag" && key.value == 0.)
-            {
-                return Err(Error::Invalid(
-                    "keyforms require positive turn/nod and nonzero key values for baking".into(),
-                ));
-            }
+                    .any(|key| key.param != "diag" && key.value == 0.))
+        {
+            return Err(Error::Invalid(
+                "keyforms require positive turn/nod and nonzero key values for baking".into(),
+            ));
         }
         let mouth = layers.iter().find(|l| l.role == "mouth");
         let mouth_id = mouth.map(|l| l.id.clone());
@@ -557,16 +556,17 @@ impl Runtime {
             let mut eased = weights.clone();
             if k.interp.as_deref() == Some("hermite") {
                 for (i, (key, &t)) in k.keys.iter().zip(&weights).enumerate() {
-                    if t > 0. && t < 1. && key.param != "diag" {
-                        if let Some(j) = k
+                    if t > 0.
+                        && t < 1.
+                        && key.param != "diag"
+                        && let Some(j) = k
                             .keys
                             .iter()
                             .position(|other| other.param == key.param && other.value == -key.value)
-                        {
-                            let h10 = t * t * t - 2. * t * t + t;
-                            eased[i] = 3. * t * t - 2. * t * t * t + 0.5 * h10 + t * t * t - t * t;
-                            eased[j] -= 0.5 * h10;
-                        }
+                    {
+                        let h10 = t * t * t - 2. * t * t + t;
+                        eased[i] = 3. * t * t - 2. * t * t * t + 0.5 * h10 + t * t * t - t * t;
+                        eased[j] -= 0.5 * h10;
                     }
                 }
             }
@@ -593,25 +593,24 @@ impl Runtime {
         } else {
             None
         };
-        if l.role.starts_with("eye_") || l.role.starts_with("iris_") || l.role.starts_with("shine_")
+        if (l.role.starts_with("eye_")
+            || l.role.starts_with("iris_")
+            || l.role.starts_with("shine_"))
+            && let Some(pivot) = l.pivot
         {
-            if let Some(pivot) = l.pivot {
-                let open = side.map_or(1., |s| p.0[6 + s]);
-                let squash = 0.12 + 0.88 * open;
-                let iris = l.role.starts_with("iris_");
-                let lid_iris = iris && l.range.is_some_and(|r| r[0] > 0. || r[1] > 0.);
-                if iris {
-                    if let Some(range) = l.range {
-                        x += p.0[8] * range[0];
-                        y -= p.0[9] * range[1];
-                    }
-                }
-                if lid_iris {
-                    y += 0.3 * (1. - squash) * (pivot[1] - (l.y + l.h / 2.));
-                }
-                if !lid_iris || y > pivot[1] {
-                    y = pivot[1] + (y - pivot[1]) * squash;
-                }
+            let open = side.map_or(1., |s| p.0[6 + s]);
+            let squash = 0.12 + 0.88 * open;
+            let iris = l.role.starts_with("iris_");
+            let lid_iris = iris && l.range.is_some_and(|r| r[0] > 0. || r[1] > 0.);
+            if iris && let Some(range) = l.range {
+                x += p.0[8] * range[0];
+                y -= p.0[9] * range[1];
+            }
+            if lid_iris {
+                y += 0.3 * (1. - squash) * (pivot[1] - (l.y + l.h / 2.));
+            }
+            if !lid_iris || y > pivot[1] {
+                y = pivot[1] + (y - pivot[1]) * squash;
             }
         }
         if let Some((side, w, cap)) = v.brow {
@@ -750,11 +749,7 @@ impl Runtime {
 }
 pub(super) fn smooth(a: f64, b: f64, x: f64) -> f64 {
     let t = if a == b {
-        if x >= b {
-            1.
-        } else {
-            0.
-        }
+        if x >= b { 1. } else { 0. }
     } else {
         ((x - a) / (b - a)).clamp(0., 1.)
     };

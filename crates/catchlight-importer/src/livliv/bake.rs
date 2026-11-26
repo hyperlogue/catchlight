@@ -5,7 +5,7 @@
 //! Three-way and higher interactions remain an approximation, measured on
 //! held-out mixed poses below.
 //! The same mesh and bindings drive every texture variant and its mask.
-use super::runtime::{Pose, Runtime, Vertex, PARAMETERS};
+use super::runtime::{PARAMETERS, Pose, Runtime, Vertex};
 use super::{Error, Layer, Result};
 use catchlight_core::formats::clm::*;
 use catchlight_core::interpolate::InterpolateMode;

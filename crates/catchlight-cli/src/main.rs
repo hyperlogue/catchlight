@@ -6,8 +6,8 @@ use std::process::ExitCode;
 
 use catchlight_cli::render::execute::Cancellation;
 use catchlight_cli::{
-    diff, expression, extension, fragment, humanoid, patch, poses, print_json, render, storage,
-    texture, Error, EXIT_DIFFERS, EXIT_ERROR,
+    EXIT_DIFFERS, EXIT_ERROR, Error, diff, expression, extension, fragment, humanoid, patch, poses,
+    print_json, render, storage, texture,
 };
 use catchlight_core::formats::clm::TextureAlpha;
 use catchlight_extension_animations::Animations;
@@ -391,7 +391,7 @@ fn run_extension(cmd: ExtensionCmd, stdout: &mut dyn Write) -> Result<u8, Error>
                         field: "--json/--bytes".into(),
                         expected: "exactly one of them".into(),
                         value: String::new(),
-                    })
+                    });
                 }
             };
             let changed = match (version, source) {

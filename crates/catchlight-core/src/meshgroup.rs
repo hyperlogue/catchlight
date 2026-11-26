@@ -7,7 +7,7 @@ use glam::swizzles::Vec4Swizzles;
 use glam::{Affine2, Mat2, Mat4, Vec2, Vec4};
 
 use crate::{
-    components::{checked_affine_inverse, Mesh, MeshIndices, NodeIdx, NodeKind},
+    components::{Mesh, MeshIndices, NodeIdx, NodeKind, checked_affine_inverse},
     deform::DeformSource,
     node::NodeTree,
     puppet::{Arena, GlobalTransforms},
@@ -486,11 +486,11 @@ pub(crate) fn propagate_mesh_group_deforms(
     for i in 0..arena.mesh_group_node_ids.len() {
         let mg_id = arena.mesh_group_node_ids[i];
         mg_local.clear();
-        if let Some(node) = arena.get_mut(mg_id) {
-            if let NodeKind::MeshGroup(mg) = &mut node.kind {
-                mg.deform_stack.combine();
-                mg_local.extend(mg.mesh.vertices.iter().map(|v| *v - mg.mesh.origin));
-            }
+        if let Some(node) = arena.get_mut(mg_id)
+            && let NodeKind::MeshGroup(mg) = &mut node.kind
+        {
+            mg.deform_stack.combine();
+            mg_local.extend(mg.mesh.vertices.iter().map(|v| *v - mg.mesh.origin));
         }
 
         // Shift before pushing, so targets move by own Params plus every outer push.
@@ -827,10 +827,10 @@ fn propagate_to_child(
         NodeKind::MeshGroup(mg) => Some(&mut mg.deform_stack),
         _ => None,
     };
-    if let Some(stack) = stack {
-        if stack.write_source(DeformSource::Node(mg_id), scratch) {
-            arena.mg_written_sources.push((child_id, mg_id));
-        }
+    if let Some(stack) = stack
+        && stack.write_source(DeformSource::Node(mg_id), scratch)
+    {
+        arena.mg_written_sources.push((child_id, mg_id));
     }
 }
 
@@ -1370,22 +1370,22 @@ mod tests {
         arena.compute_transforms(&mut tx);
         let pins = bake_mesh_group_pins(&arena, &tx, mg_id);
         assert!(pins.per_child.contains_key(&child_id));
-        if let Some(node) = arena.get_mut(mg_id) {
-            if let NodeKind::MeshGroup(mg) = &mut node.kind {
-                mg.pins = pins.into();
-            }
+        if let Some(node) = arena.get_mut(mg_id)
+            && let NodeKind::MeshGroup(mg) = &mut node.kind
+        {
+            mg.pins = pins.into();
         }
 
         // Vertex 2 moves (+4,0); the child at (5,5) has baryc (0, 0.5, 0.5).
-        if let Some(node) = arena.get_mut(mg_id) {
-            if let NodeKind::MeshGroup(mg) = &mut node.kind {
-                mg.deform_stack
-                    .set(
-                        DeformSource::Param(0),
-                        vec![Vec2::ZERO, Vec2::ZERO, Vec2::new(4.0, 0.0), Vec2::ZERO],
-                    )
-                    .unwrap();
-            }
+        if let Some(node) = arena.get_mut(mg_id)
+            && let NodeKind::MeshGroup(mg) = &mut node.kind
+        {
+            mg.deform_stack
+                .set(
+                    DeformSource::Param(0),
+                    vec![Vec2::ZERO, Vec2::ZERO, Vec2::new(4.0, 0.0), Vec2::ZERO],
+                )
+                .unwrap();
         }
 
         propagate_mesh_group_deforms(&mut arena, &mut tx, Mat4::IDENTITY);
@@ -1456,30 +1456,30 @@ mod tests {
             let mut tx = GlobalTransforms::new();
             arena.compute_transforms(&mut tx);
             let pins = bake_mesh_group_pins(&arena, &tx, mg_id);
-            if let Some(node) = arena.get_mut(mg_id) {
-                if let NodeKind::MeshGroup(mg) = &mut node.kind {
-                    mg.bins = MgTriangleBins::build(&mg.mesh).map(Into::into);
-                    mg.pins = pins.into();
-                    mg.deform_stack
-                        .set(
-                            DeformSource::Param(0),
-                            vec![
-                                Vec2::ZERO,
-                                Vec2::new(2.0, 0.0),
-                                Vec2::new(4.0, 0.0),
-                                Vec2::ZERO,
-                            ],
-                        )
-                        .unwrap();
-                }
+            if let Some(node) = arena.get_mut(mg_id)
+                && let NodeKind::MeshGroup(mg) = &mut node.kind
+            {
+                mg.bins = MgTriangleBins::build(&mg.mesh).map(Into::into);
+                mg.pins = pins.into();
+                mg.deform_stack
+                    .set(
+                        DeformSource::Param(0),
+                        vec![
+                            Vec2::ZERO,
+                            Vec2::new(2.0, 0.0),
+                            Vec2::new(4.0, 0.0),
+                            Vec2::ZERO,
+                        ],
+                    )
+                    .unwrap();
             }
 
-            if let Some(node) = arena.get_mut(child_id) {
-                if let NodeKind::Part(p) = &mut node.kind {
-                    p.deform_stack
-                        .set(DeformSource::Param(1), vec![Vec2::new(2.0, 0.0)])
-                        .unwrap();
-                }
+            if let Some(node) = arena.get_mut(child_id)
+                && let NodeKind::Part(p) = &mut node.kind
+            {
+                p.deform_stack
+                    .set(DeformSource::Param(1), vec![Vec2::new(2.0, 0.0)])
+                    .unwrap();
             }
 
             (arena, child_id)
@@ -1574,35 +1574,35 @@ mod tests {
         assert!(inner_pins.per_child.contains_key(&part_id));
         assert!(outer_pins.per_child.contains_key(&inner_id));
 
-        if let Some(node) = arena.get_mut(outer_id) {
-            if let NodeKind::MeshGroup(mg) = &mut node.kind {
-                mg.pins = outer_pins.into();
-            }
+        if let Some(node) = arena.get_mut(outer_id)
+            && let NodeKind::MeshGroup(mg) = &mut node.kind
+        {
+            mg.pins = outer_pins.into();
         }
-        if let Some(node) = arena.get_mut(inner_id) {
-            if let NodeKind::MeshGroup(mg) = &mut node.kind {
-                mg.pins = inner_pins.into();
-            }
+        if let Some(node) = arena.get_mut(inner_id)
+            && let NodeKind::MeshGroup(mg) = &mut node.kind
+        {
+            mg.pins = inner_pins.into();
         }
 
         // Outer pushes (4,0) everywhere on the inner; inner adds (+4,0) at vertex 2.
         // The part at (5,5) lands at (11,5): offset (6,0).
-        if let Some(node) = arena.get_mut(outer_id) {
-            if let NodeKind::MeshGroup(mg) = &mut node.kind {
-                mg.deform_stack
-                    .set(DeformSource::Param(0), vec![Vec2::new(4.0, 0.0); 4])
-                    .unwrap();
-            }
+        if let Some(node) = arena.get_mut(outer_id)
+            && let NodeKind::MeshGroup(mg) = &mut node.kind
+        {
+            mg.deform_stack
+                .set(DeformSource::Param(0), vec![Vec2::new(4.0, 0.0); 4])
+                .unwrap();
         }
-        if let Some(node) = arena.get_mut(inner_id) {
-            if let NodeKind::MeshGroup(mg) = &mut node.kind {
-                mg.deform_stack
-                    .set(
-                        DeformSource::Param(0),
-                        vec![Vec2::ZERO, Vec2::ZERO, Vec2::new(4.0, 0.0), Vec2::ZERO],
-                    )
-                    .unwrap();
-            }
+        if let Some(node) = arena.get_mut(inner_id)
+            && let NodeKind::MeshGroup(mg) = &mut node.kind
+        {
+            mg.deform_stack
+                .set(
+                    DeformSource::Param(0),
+                    vec![Vec2::ZERO, Vec2::ZERO, Vec2::new(4.0, 0.0), Vec2::ZERO],
+                )
+                .unwrap();
         }
 
         propagate_mesh_group_deforms(&mut arena, &mut tx, Mat4::IDENTITY);
@@ -1632,15 +1632,15 @@ mod tests {
                     .unwrap();
             }
         }
-        if let Some(node) = arena.get_mut(inner_id) {
-            if let NodeKind::MeshGroup(mg) = &mut node.kind {
-                mg.deform_stack
-                    .set(
-                        DeformSource::Param(0),
-                        vec![Vec2::ZERO, Vec2::ZERO, Vec2::new(4.0, 0.0), Vec2::ZERO],
-                    )
-                    .unwrap();
-            }
+        if let Some(node) = arena.get_mut(inner_id)
+            && let NodeKind::MeshGroup(mg) = &mut node.kind
+        {
+            mg.deform_stack
+                .set(
+                    DeformSource::Param(0),
+                    vec![Vec2::ZERO, Vec2::ZERO, Vec2::new(4.0, 0.0), Vec2::ZERO],
+                )
+                .unwrap();
         }
         arena.mark_transform_dirty(outer_id);
         arena.compute_transforms(&mut tx);
@@ -1654,11 +1654,12 @@ mod tests {
         else {
             panic!("nested part disappeared");
         };
-        assert!(part
-            .deform_stack
-            .combined()
-            .iter()
-            .all(|offset| offset.is_finite() && *offset == Vec2::ZERO));
+        assert!(
+            part.deform_stack
+                .combined()
+                .iter()
+                .all(|offset| offset.is_finite() && *offset == Vec2::ZERO)
+        );
     }
 
     #[test]
@@ -1732,22 +1733,22 @@ mod tests {
         let inner_pins = bake_mesh_group_pins(&arena, &tx, inner_id);
         assert!(outer_pins.per_child.contains_key(&inner_id));
 
-        if let Some(node) = arena.get_mut(outer_id) {
-            if let NodeKind::MeshGroup(mg) = &mut node.kind {
-                mg.bins = MgTriangleBins::build(&mg.mesh).map(Into::into);
-                mg.pins = outer_pins.into();
-                mg.deform_stack
-                    .set(
-                        DeformSource::Param(0),
-                        vec![Vec2::ZERO, Vec2::ZERO, Vec2::new(4.0, 0.0), Vec2::ZERO],
-                    )
-                    .unwrap();
-            }
+        if let Some(node) = arena.get_mut(outer_id)
+            && let NodeKind::MeshGroup(mg) = &mut node.kind
+        {
+            mg.bins = MgTriangleBins::build(&mg.mesh).map(Into::into);
+            mg.pins = outer_pins.into();
+            mg.deform_stack
+                .set(
+                    DeformSource::Param(0),
+                    vec![Vec2::ZERO, Vec2::ZERO, Vec2::new(4.0, 0.0), Vec2::ZERO],
+                )
+                .unwrap();
         }
-        if let Some(node) = arena.get_mut(inner_id) {
-            if let NodeKind::MeshGroup(mg) = &mut node.kind {
-                mg.pins = inner_pins.into();
-            }
+        if let Some(node) = arena.get_mut(inner_id)
+            && let NodeKind::MeshGroup(mg) = &mut node.kind
+        {
+            mg.pins = inner_pins.into();
         }
 
         propagate_mesh_group_deforms(&mut arena, &mut tx, Mat4::IDENTITY);
@@ -1834,11 +1835,11 @@ mod tests {
             let inner_pins = bake_mesh_group_pins(&arena, &tx, inner_id);
             assert!(outer_pins.per_child.contains_key(&inner_id));
             for (id, pins) in [(outer_id, outer_pins), (inner_id, inner_pins)] {
-                if let Some(node) = arena.get_mut(id) {
-                    if let NodeKind::MeshGroup(mg) = &mut node.kind {
-                        mg.bins = MgTriangleBins::build(&mg.mesh).map(Into::into);
-                        mg.pins = pins.into();
-                    }
+                if let Some(node) = arena.get_mut(id)
+                    && let NodeKind::MeshGroup(mg) = &mut node.kind
+                {
+                    mg.bins = MgTriangleBins::build(&mg.mesh).map(Into::into);
+                    mg.pins = pins.into();
                 }
             }
             (arena, tx, outer_id, inner_id, group_id)
@@ -1858,12 +1859,12 @@ mod tests {
 
         let own = {
             let (mut arena, mut tx, _outer_id, inner_id, group_id) = build();
-            if let Some(node) = arena.get_mut(inner_id) {
-                if let NodeKind::MeshGroup(mg) = &mut node.kind {
-                    mg.deform_stack
-                        .set(DeformSource::Param(0), corner_pull())
-                        .unwrap();
-                }
+            if let Some(node) = arena.get_mut(inner_id)
+                && let NodeKind::MeshGroup(mg) = &mut node.kind
+            {
+                mg.deform_stack
+                    .set(DeformSource::Param(0), corner_pull())
+                    .unwrap();
             }
             propagate_mesh_group_deforms(&mut arena, &mut tx, Mat4::IDENTITY);
             let shifted = translation_of(&arena, group_id);
@@ -1877,12 +1878,12 @@ mod tests {
 
         {
             let (mut arena, mut tx, outer_id, _inner_id, group_id) = build();
-            if let Some(node) = arena.get_mut(outer_id) {
-                if let NodeKind::MeshGroup(mg) = &mut node.kind {
-                    mg.deform_stack
-                        .set(DeformSource::Param(0), corner_pull())
-                        .unwrap();
-                }
+            if let Some(node) = arena.get_mut(outer_id)
+                && let NodeKind::MeshGroup(mg) = &mut node.kind
+            {
+                mg.deform_stack
+                    .set(DeformSource::Param(0), corner_pull())
+                    .unwrap();
             }
             propagate_mesh_group_deforms(&mut arena, &mut tx, Mat4::IDENTITY);
             let shifted = translation_of(&arena, group_id);
@@ -1972,16 +1973,16 @@ mod tests {
         let pins = bake_mesh_group_pins(&arena, &tx, mg_id);
         let child_pins = pins.per_child.get(&child_id).expect("child pins present");
         assert_eq!(child_pins.vertices[0], 0, "should fall inside triangle 0");
-        if let Some(node) = arena.get_mut(mg_id) {
-            if let NodeKind::MeshGroup(mg) = &mut node.kind {
-                mg.pins = pins.into();
-                mg.deform_stack
-                    .set(
-                        DeformSource::Param(0),
-                        vec![Vec2::ZERO, Vec2::ZERO, Vec2::new(4.0, 0.0), Vec2::ZERO],
-                    )
-                    .unwrap();
-            }
+        if let Some(node) = arena.get_mut(mg_id)
+            && let NodeKind::MeshGroup(mg) = &mut node.kind
+        {
+            mg.pins = pins.into();
+            mg.deform_stack
+                .set(
+                    DeformSource::Param(0),
+                    vec![Vec2::ZERO, Vec2::ZERO, Vec2::new(4.0, 0.0), Vec2::ZERO],
+                )
+                .unwrap();
         }
         propagate_mesh_group_deforms(&mut arena, &mut tx, Mat4::IDENTITY);
         arena.combine_deforms();
@@ -2062,15 +2063,15 @@ mod tests {
         let pins = bake_mesh_group_pins(&arena, &tx, mg_id);
         let child_pins = pins.per_child.get(&child_id).unwrap().clone();
 
-        if let Some(node) = arena.get_mut(mg_id) {
-            if let NodeKind::MeshGroup(mg) = &mut node.kind {
-                std::sync::Arc::make_mut(&mut mg.pins)
-                    .per_child
-                    .insert(child_id, child_pins);
-                mg.deform_stack
-                    .set(DeformSource::Param(0), vec![Vec2::new(1.0, 0.0); 4])
-                    .unwrap();
-            }
+        if let Some(node) = arena.get_mut(mg_id)
+            && let NodeKind::MeshGroup(mg) = &mut node.kind
+        {
+            std::sync::Arc::make_mut(&mut mg.pins)
+                .per_child
+                .insert(child_id, child_pins);
+            mg.deform_stack
+                .set(DeformSource::Param(0), vec![Vec2::new(1.0, 0.0); 4])
+                .unwrap();
         }
         propagate_mesh_group_deforms(&mut arena, &mut tx, Mat4::IDENTITY);
         arena.combine_deforms();

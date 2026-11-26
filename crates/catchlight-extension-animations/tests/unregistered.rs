@@ -46,11 +46,13 @@ fn an_unregistered_reader_keeps_the_removal_marker_until_a_typed_write() {
         codes,
         [extension::codes::REMOVED, extension::codes::NOT_CHECKED]
     );
-    assert!(model
-        .extension_mut::<Animations>()
-        .unwrap()
-        .clip("talk")
-        .unwrap()
-        .lanes
-        .is_empty());
+    assert!(
+        model
+            .extension_mut::<Animations>()
+            .unwrap()
+            .clip("talk")
+            .unwrap()
+            .lanes
+            .is_empty()
+    );
 }

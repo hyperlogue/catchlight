@@ -12,7 +12,7 @@ use catchlight_core::{
 use catchlight_extension_animations::{Animations, Clip};
 use catchlight_extension_expressions::{Expression, Expressions, Setting as ExpressionSetting};
 use catchlight_extension_humanoid::{ControlMapping, Humanoid};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
 /// Maps `mouth_open` onto `closure`, and has a `happy` expression that sets
@@ -154,9 +154,11 @@ fn inheritance_reports_missing_bases_cycles_and_does_not_use_call_stack() {
         json!({"a":{"extends":"a"}}),
         json!({"a":{"extends":"b"},"b":{"extends":"a"}}),
     ] {
-        assert!(parse(json!({"schema":1,"requests":requests}))
-            .resolve(&model())
-            .is_err());
+        assert!(
+            parse(json!({"schema":1,"requests":requests}))
+                .resolve(&model())
+                .is_err()
+        );
     }
     let mut requests = BTreeMap::new();
     requests.insert("r0000".to_owned(), json!({"rect":[0,0,1,1],"scale":1}));
@@ -288,10 +290,12 @@ fn duplicate_keys_unknown_fields_and_non_native_motion_are_refused() {
         r#"{"schema":1,"requests":{"a":{},"a":{}}}"#,
         r#"{"schema":1,"requests":{"a":{"pose":{"drive":0,"drive":1}}}}"#,
     ] {
-        assert!(Document::parse(text.as_bytes())
-            .unwrap_err()
-            .to_string()
-            .contains("duplicate key"));
+        assert!(
+            Document::parse(text.as_bytes())
+                .unwrap_err()
+                .to_string()
+                .contains("duplicate key")
+        );
     }
     for value in [
         json!({"schema":1,"requests":{"a":{"typo":1}}}),
@@ -562,10 +566,12 @@ fn cli_schema_and_validate_do_not_need_a_gpu_or_create_artifacts() {
         let (code, stdout, stderr) = common::run(&args);
         assert_eq!(code, 0, "{stderr}");
         let schema: Value = serde_json::from_str(&stdout).unwrap();
-        assert!(schema["$schema"]
-            .as_str()
-            .unwrap()
-            .contains("json-schema.org"));
+        assert!(
+            schema["$schema"]
+                .as_str()
+                .unwrap()
+                .contains("json-schema.org")
+        );
         assert_eq!(schema["additionalProperties"], false);
     }
     let (code, stdout, stderr) = common::run(&[
@@ -649,9 +655,11 @@ fn output_schema_examples_are_complete_and_share_evaluated_model_facts() {
                 "{kind}: missing {required}"
             );
         }
-        assert!(object
-            .keys()
-            .all(|key| schema["properties"].get(key).is_some()));
+        assert!(
+            object
+                .keys()
+                .all(|key| schema["properties"].get(key).is_some())
+        );
         examples.insert(kind, example);
     }
     let plan = &examples["resolved"];

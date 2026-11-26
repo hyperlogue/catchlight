@@ -2,11 +2,11 @@
 
 mod common;
 
-use catchlight_cli::diff::{diff, UNRENDERED};
+use catchlight_cli::diff::{UNRENDERED, diff};
+use catchlight_core::Model;
 use catchlight_core::components::BlendMode;
 use catchlight_core::formats::clm::{ClmFile, ClmNode, ClmNodeKind, ClmTransform};
 use catchlight_core::id::NodeId;
-use catchlight_core::Model;
 use catchlight_extension_animations::{Animations, Clip, Keyframe, Lane, LaneTarget};
 
 use common::{copy_fixture, decode, fixtures, read, tmp, write_clm};
@@ -135,12 +135,16 @@ fn a_node_that_changes_kind_reports_the_fields_that_came_and_went() {
     let lines = diff(&base, &changed);
     assert!(lines.contains(&"~ node node-1 kind: Part -> Group".to_string()));
     assert!(lines.contains(&"~ node node-1 albedo: \"tex-0\" -> (none)".to_string()));
-    assert!(lines
-        .iter()
-        .any(|l| l.starts_with("~ node node-1 mesh.verts: 8 values")));
-    assert!(lines
-        .iter()
-        .any(|l| l.starts_with("~ node node-1 opacity: 1 -> (none)")));
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.starts_with("~ node node-1 mesh.verts: 8 values"))
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.starts_with("~ node node-1 opacity: 1 -> (none)"))
+    );
 }
 
 #[test]

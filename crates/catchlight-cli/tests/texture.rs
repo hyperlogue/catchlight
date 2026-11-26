@@ -4,11 +4,11 @@
 
 mod common;
 
+use catchlight_cli::Error;
 use catchlight_cli::diff::diff;
 use catchlight_cli::texture;
-use catchlight_cli::Error;
-use catchlight_core::formats::clm::{TextureAlpha, TextureEncoding};
 use catchlight_core::Model;
+use catchlight_core::formats::clm::{TextureAlpha, TextureEncoding};
 
 use common::{copy_fixture, decode, read, tmp};
 
@@ -167,8 +167,10 @@ fn the_alpha_convention_is_kept_unless_asked() {
     )
     .unwrap();
     assert_eq!(decode(&told).textures[0].alpha, TextureAlpha::Straight);
-    assert!(diff(&decode(&kept), &decode(&told))
-        .contains(&"~ texture tex-0 alpha: PremultipliedSrgb -> Straight".to_string()));
+    assert!(
+        diff(&decode(&kept), &decode(&told))
+            .contains(&"~ texture tex-0 alpha: PremultipliedSrgb -> Straight".to_string())
+    );
 }
 
 #[test]

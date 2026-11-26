@@ -4,7 +4,7 @@
 //! generation compares equal without being read; `Arc`-shared leaves compare
 //! equal without being read.
 
-use super::{same, Model, ModelBinding, ModelError, ModelNode, ModelNodeKind};
+use super::{Model, ModelBinding, ModelError, ModelNode, ModelNodeKind, same};
 
 impl Model {
     /// Whether both models would write the same authored structure and assets.
@@ -132,11 +132,11 @@ fn binding_eq(a: &ModelBinding, b: &ModelBinding) -> bool {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use crate::{
-        formats::clm::{ClmIndices, ClmMesh, TextureAlpha, TextureEncoding},
         BindingKey, BindingTarget, BlendMode, ExtensionKey, ExtensionValue, InterpolateMode,
         MaskMode, ModelComposite, ModelMeshGroup, ModelNode, ModelNodeKind, ModelParam, ModelPart,
         ModelSpine, ModelTexture, ModelWeld, MotionResponse, Name, NodeId, ParamId, ScalarTarget,
         SeededHex, SlotId, SlotPair,
+        formats::clm::{ClmIndices, ClmMesh, TextureAlpha, TextureEncoding},
     };
 
     use super::*;

@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
 
 use catchlight_extension_humanoid::{
-    controls_from_arkit, ControlValues, ARKIT_BLEND_SHAPES, CONTROLS,
+    ARKIT_BLEND_SHAPES, CONTROLS, ControlValues, controls_from_arkit,
 };
 
 fn from(shapes: &[(&str, f32)]) -> ControlValues {

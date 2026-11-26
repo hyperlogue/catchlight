@@ -2,7 +2,7 @@
 //! Lanes on controls, expressions and visemes: their storage, their check,
 //! and one frame applied in the shared order with the live inputs.
 
-use catchlight_core::extension::{register, Extension, IdRef, Payload, RawExtension};
+use catchlight_core::extension::{Extension, IdRef, Payload, RawExtension, register};
 use catchlight_core::formats::clm::{ClmIndices, ClmMesh};
 use catchlight_core::{
     InterpolateMode, Model, ModelNode, ModelNodeKind, ModelParam, ModelPart, Name, NodeId, ParamId,
@@ -284,9 +284,10 @@ fn with_no_clip_the_host_inputs_still_apply() {
     let mut host = Host::new(&model);
     host.inputs.controls.set("mouth_open", 0.25);
     host.inputs.visemes.set("aa", 0.5);
-    assert!(host
-        .player
-        .advance_with(&mut host.puppet, 0.0, Rig::of(&model), &host.inputs));
+    assert!(
+        host.player
+            .advance_with(&mut host.puppet, 0.0, Rig::of(&model), &host.inputs)
+    );
     assert_eq!(host.value("jaw"), 0.25 + (1.0 - 0.25) * 0.5);
     assert!(
         !host

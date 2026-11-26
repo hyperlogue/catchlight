@@ -225,10 +225,10 @@ impl DeformStack {
     }
 
     pub(crate) fn settle_source(&mut self, source: DeformSource, before: &[Vec2]) {
-        if let Some(slot) = self.sources.iter().find(|s| s.source == source) {
-            if slot.offsets.as_slice() != before {
-                self.dirty = true;
-            }
+        if let Some(slot) = self.sources.iter().find(|s| s.source == source)
+            && slot.offsets.as_slice() != before
+        {
+            self.dirty = true;
         }
     }
 

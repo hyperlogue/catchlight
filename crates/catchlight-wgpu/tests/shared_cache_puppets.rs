@@ -9,8 +9,8 @@ use common::apply_uniform_scratch_deform;
 
 use catchlight_core::{Mesh, Model, Puppet, Vec2};
 use catchlight_wgpu::{
-    create_orthographic_camera, DeformSet, PrepareOptions, RenderCache, RenderContext, RenderList,
-    WgpuRenderer,
+    DeformSet, PrepareOptions, RenderCache, RenderContext, RenderList, WgpuRenderer,
+    create_orthographic_camera,
 };
 
 const W: u32 = 128;

@@ -147,10 +147,10 @@ pub(super) fn run(
             if wrote_bytes {
                 bail!("extension {key} is a byte value; say where to write it with --out");
             }
-            if let ResponseBody::Extension { value, .. } = body {
-                if let Some(text) = value_json(value) {
-                    println!("{text}");
-                }
+            if let ResponseBody::Extension { value, .. } = body
+                && let Some(text) = value_json(value)
+            {
+                println!("{text}");
             }
         }
         (Reply::Ok { .. }, ExtensionCmd::Set { key, .. }) => println!("extension {key} set"),

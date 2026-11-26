@@ -12,13 +12,13 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use catchlight_editor_protocol as proto;
 use syn::{Attribute, Expr, Fields, File, Item, Lit, Meta, Type};
 
 use super::{
-    byte_rows, check_aliased, check_byte_bearing, check_classified, tags_of, Decl, BYTES_DOC,
-    KINDS, QUERY_UNION_DOC,
+    BYTES_DOC, Decl, KINDS, QUERY_UNION_DOC, byte_rows, check_aliased, check_byte_bearing,
+    check_classified, tags_of,
 };
 
 /// Not `protocol.gen.py`: a Python module name must be an identifier.
@@ -1364,7 +1364,7 @@ mod wire_shapes {
         AutoMesh, BindingCellValue, BindingIdentity, Camera, Command, MotionResponse, NodeKindArg,
         NodePatch, ParamPose, Presence, Rename, ResponseInput, ResponseSource, SessionId, TexId,
     };
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     fn id<T: std::str::FromStr>(s: &str) -> T
     where

@@ -4,7 +4,7 @@
 
 use std::{
     io,
-    sync::{mpsc, Barrier},
+    sync::{Barrier, mpsc},
     thread,
     time::Duration,
 };
@@ -196,12 +196,14 @@ fn noops_and_failures_preserve_revision_history_notifications_and_model() {
         })
         .unwrap();
     assert_eq!(no_op.rev, Some(1));
-    assert!(editor
-        .edit_session_captured(session, |s| -> Result<(), EditorError> {
-            rename_model(&mut s.model, "partial");
-            Err(EditorError::BadTarget("refused second operation".into()))
-        })
-        .is_err());
+    assert!(
+        editor
+            .edit_session_captured(session, |s| -> Result<(), EditorError> {
+                rename_model(&mut s.model, "partial");
+                Err(EditorError::BadTarget("refused second operation".into()))
+            })
+            .is_err()
+    );
     assert_eq!(
         ok_revision(command(
             &editor,
@@ -477,9 +479,11 @@ fn navigation_replaces_model_generation_and_clears_retained_runtime() {
         })
         .unwrap();
     editor.with_puppet(session, |_, _| ()).unwrap();
-    assert!(editor
-        .with_session(session, |s| Ok(s.puppet.is_some()))
-        .unwrap());
+    assert!(
+        editor
+            .with_session(session, |s| Ok(s.puppet.is_some()))
+            .unwrap()
+    );
     assert_eq!(
         ok_revision(command(&editor, Command::Undo { session, if_rev: 1 })),
         2
@@ -492,9 +496,11 @@ fn navigation_replaces_model_generation_and_clears_retained_runtime() {
     assert_eq!(after.0, initial.0);
     assert!(after.1 > initial.1);
     assert_eq!(after.2, 2);
-    assert!(editor
-        .with_session(session, |s| Ok(s.puppet.is_none()))
-        .unwrap());
+    assert!(
+        editor
+            .with_session(session, |s| Ok(s.puppet.is_none()))
+            .unwrap()
+    );
     assert!(editor.is_dirty(session).unwrap());
 }
 

@@ -13,7 +13,7 @@ mod version;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use catchlight_editor_protocol::*;
 use clap::{Parser, Subcommand};
 
@@ -833,10 +833,10 @@ where
         return Ok(ExitCode::SUCCESS);
     }
 
-    if let Cmd::Review(args) = &cli.cmd {
-        if let Some(code) = review::run_local(&cli, args)? {
-            return Ok(exit_code(code));
-        }
+    if let Cmd::Review(args) = &cli.cmd
+        && let Some(code) = review::run_local(&cli, args)?
+    {
+        return Ok(exit_code(code));
     }
 
     let (mut transport, endpoint) = transport::resolve(&transport::Target {
@@ -921,14 +921,13 @@ where
         )?,
     };
 
-    if persist {
-        if let Reply::Ok {
+    if persist
+        && let Reply::Ok {
             body: ResponseBody::Session { session } | ResponseBody::SessionFork { session, .. },
             ..
         } = &reply
-        {
-            write_current(*session)?;
-        }
+    {
+        write_current(*session)?;
     }
 
     print_reply(&cli, &reply);
@@ -1416,7 +1415,9 @@ fn read_command_json(reader: impl Read) -> Result<String> {
         .take(MAX_COMMAND_BYTES as u64 + 1)
         .read_to_end(&mut bytes)?;
     if bytes.len() > MAX_COMMAND_BYTES {
-        bail!("JSON input exceeds the 1 MiB command limit; split independent edits into explicit batches");
+        bail!(
+            "JSON input exceeds the 1 MiB command limit; split independent edits into explicit batches"
+        );
     }
     Ok(String::from_utf8(bytes)?)
 }

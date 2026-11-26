@@ -33,7 +33,9 @@ pub const EXIT_DIFFERS: u8 = 1;
 pub enum Error {
     #[error("storage: {0}")]
     Storage(String),
-    #[error("poses budget {budget}: requested {requested}, maximum {limit}; reduce key positions or model complexity")]
+    #[error(
+        "poses budget {budget}: requested {requested}, maximum {limit}; reduce key positions or model complexity"
+    )]
     PosesLimit {
         budget: &'static str,
         limit: u64,

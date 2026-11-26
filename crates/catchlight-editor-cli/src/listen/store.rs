@@ -8,7 +8,7 @@ use std::os::unix::fs::{
 };
 use std::path::{Path, PathBuf};
 
-use anyhow::{anyhow, bail, Context as _, Result};
+use anyhow::{Context as _, Result, anyhow, bail};
 use catchlight_editor_protocol::ReviewIdentity;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};

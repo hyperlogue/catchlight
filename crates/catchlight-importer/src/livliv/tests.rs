@@ -52,7 +52,9 @@ fn conversion_roundtrips_geometry_alpha_rights_and_drivable_parts() {
     };
     assert_eq!(
         face.mesh.verts,
-        [-14., 12., -10., 12., -14., 10., -10., 10., -14., 8., -10., 8.]
+        [
+            -14., 12., -10., 12., -14., 10., -10., 10., -14., 8., -10., 8.
+        ]
     );
     assert_eq!(
         face.mesh.uvs,
@@ -186,11 +188,13 @@ fn rejects_traversal_corruption_and_unbounded_zip_directory() {
         "a//b",
     ] {
         assert!(Package::from_files(BTreeMap::from([(path.into(), vec![])])).is_err());
-        assert!(Package::from_zip(&zip_files(
-            &BTreeMap::from([(path.into(), vec![])]),
-            zip::CompressionMethod::Stored
-        ))
-        .is_err());
+        assert!(
+            Package::from_zip(&zip_files(
+                &BTreeMap::from([(path.into(), vec![])]),
+                zip::CompressionMethod::Stored
+            ))
+            .is_err()
+        );
     }
     let mut bytes = zip_files(&files(), zip::CompressionMethod::Stored);
     let n = bytes.len();
@@ -206,12 +210,14 @@ fn keyforms_reject_wrong_decoded_lengths() {
         m["files"] = json!({"keyforms":"keyforms.json"})
     });
     files.insert("keyforms.json".into(), serde_json::to_vec(&json!({"version":1,"cell":8,"cols":2,"rows":2,"units":1,"turn":1,"nod":1,"keys":[{"param":"angleX","value":30,"fields":{"head":"AA=="}}]})).unwrap());
-    assert!(Package::from_files(files)
-        .unwrap()
-        .validate()
-        .unwrap_err()
-        .to_string()
-        .contains("incorrect field length"));
+    assert!(
+        Package::from_files(files)
+            .unwrap()
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("incorrect field length")
+    );
 }
 
 #[test]
@@ -346,11 +352,13 @@ fn official_sample_validates_without_losing_watermark_requirement() {
         package.manifest()["meta"]["license"]["id"],
         "LicenseRef-LivLiv-Samples"
     );
-    assert!(package
-        .report()
-        .blockers
-        .iter()
-        .any(|b| b.contains("watermark")));
+    assert!(
+        package
+            .report()
+            .blockers
+            .iter()
+            .any(|b| b.contains("watermark"))
+    );
     assert!(package.convert(Options { allow_lossy: true }).is_err());
     let zip = zip_files(&package.package.files, zip::CompressionMethod::Deflated);
     let zipped = Package::from_zip(&zip).unwrap().validate().unwrap();
@@ -414,7 +422,7 @@ fn motion_package() -> ValidatedPackage {
 
 #[test]
 fn baked_bindings_reproduce_key_poses_after_save_and_load() {
-    use super::runtime::{Pose, Runtime, PARAMETERS};
+    use super::runtime::{PARAMETERS, Pose, Runtime};
     let package = motion_package();
     let runtime = Runtime::new(&package).unwrap();
     let converted = package.convert(Options { allow_lossy: true }).unwrap();
@@ -511,22 +519,24 @@ fn keyform_fields_are_baked_at_source_poses_and_hermite_between_them() {
         .convert(Options { allow_lossy: true })
         .unwrap()
         .model;
-    assert!(model
-        .to_clm_file()
-        .unwrap()
-        .doc
-        .bindings
-        .iter()
-        .any(|b| matches!(
-            &b.values,
-            catchlight_core::formats::clm::ClmBindingValues::Deform(_)
-        )));
+    assert!(
+        model
+            .to_clm_file()
+            .unwrap()
+            .doc
+            .bindings
+            .iter()
+            .any(|b| matches!(
+                &b.values,
+                catchlight_core::formats::clm::ClmBindingValues::Deform(_)
+            ))
+    );
 }
 
 #[test]
 #[ignore = "requires pinned LivLiv player checkout and Node 24; set LIVLIV_PLAYER_DIR"]
 fn motion_evaluator_matches_upstream_cpu_runtime() {
-    use super::runtime::{Pose, Runtime, PARAMETERS};
+    use super::runtime::{PARAMETERS, Pose, Runtime};
     use std::process::{Command, Stdio};
     let upstream = std::env::var("LIVLIV_PLAYER_DIR").expect("set LIVLIV_PLAYER_DIR");
     let revision = Command::new("git")
@@ -612,7 +622,11 @@ fn motion_evaluator_matches_upstream_cpu_runtime() {
                     ];
                     let error = (actual[0] - expected[0]).hypot(actual[1] - expected[1]);
                     max_error = max_error.max(error);
-                    assert!(error<0.0001,"case {case}, layer {layer}, point {:?}: {actual:?} != {expected:?}, error {error}",v.rest);
+                    assert!(
+                        error < 0.0001,
+                        "case {case}, layer {layer}, point {:?}: {actual:?} != {expected:?}, error {error}",
+                        v.rest
+                    );
                 }
             }
         }
@@ -711,7 +725,7 @@ fn bake_limits_are_checked_before_allocating_tables() {
 
 #[test]
 fn baked_combined_controls_are_evaluated_by_the_normal_puppet() {
-    use super::runtime::{Pose, Runtime, PARAMETERS};
+    use super::runtime::{PARAMETERS, Pose, Runtime};
     let package = motion_package();
     let runtime = Runtime::new(&package).unwrap();
     let model = package

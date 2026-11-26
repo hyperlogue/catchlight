@@ -10,7 +10,7 @@ use crate::asset::{CatchlightModel, CatchlightModelLoader};
 use crate::components::{CatchlightCamera, CatchlightPuppet};
 use crate::extract::{extract_cameras, extract_puppets};
 use crate::node::catchlight_2d_pass;
-use crate::prepare::{prepare_puppets, CatchlightRenderState};
+use crate::prepare::{CatchlightRenderState, prepare_puppets};
 use crate::update::update_puppets;
 
 /// Changing it re-prepares every cache on the next frame.

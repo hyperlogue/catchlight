@@ -16,7 +16,7 @@ use catchlight_editor_protocol::{
     Command, ErrorCode, ExtensionSet, NodeId, NodeKindArg, Reply, Request, ResponseBody,
     ReviewAuthor, ReviewTarget, SessionId, SessionInfo, TextureEncoding,
 };
-use catchlight_editor_server::{bind_http, Editor, HttpOptions, Storage};
+use catchlight_editor_server::{Editor, HttpOptions, Storage, bind_http};
 use tungstenite::client::IntoClientRequest;
 use tungstenite::{Message, WebSocket};
 
@@ -418,10 +418,10 @@ fn an_edit_on_one_connection_is_pushed_to_the_other() {
             session: changed,
             rev: at,
         }) = read_frame(&mut watcher)
+            && changed == session
+            && at == rev
         {
-            if changed == session && at == rev {
-                break;
-            }
+            break;
         }
     }
 }
@@ -670,10 +670,10 @@ fn an_edit_made_over_post_reaches_a_websocket_subscriber() {
             session: changed,
             rev: at,
         }) = read_frame(&mut watcher)
+            && changed == session
+            && at == rev
         {
-            if changed == session && at == rev {
-                break;
-            }
+            break;
         }
     }
 }
@@ -1288,11 +1288,13 @@ fn a_payload_is_the_body_and_the_reply_is_a_header() {
     assert_eq!(response.status, 200);
     assert_eq!(response.header("content-type"), Some("image/png"));
     let decoded = image::load_from_memory(&response.body).expect("the body is the png");
-    assert!(response
-        .header("access-control-expose-headers")
-        .expect("the browser must be able to read the binary reply receipt")
-        .split(',')
-        .any(|name| name.trim().eq_ignore_ascii_case("X-Catchlight-Reply")));
+    assert!(
+        response
+            .header("access-control-expose-headers")
+            .expect("the browser must be able to read the binary reply receipt")
+            .split(',')
+            .any(|name| name.trim().eq_ignore_ascii_case("X-Catchlight-Reply"))
+    );
     assert_eq!((decoded.width(), decoded.height()), (48, 32));
 
     let header = response

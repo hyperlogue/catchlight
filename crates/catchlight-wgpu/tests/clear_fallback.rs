@@ -3,8 +3,8 @@
 //! With `Some(clear_color)`, `render_list` clears even when nothing draws.
 
 use catchlight_wgpu::{
-    create_headless_context, FrameTargets, RenderContext, RenderList, RenderTarget, RendererError,
-    WgpuRenderer,
+    FrameTargets, RenderContext, RenderList, RenderTarget, RendererError, WgpuRenderer,
+    create_headless_context,
 };
 
 const W: u32 = 4;

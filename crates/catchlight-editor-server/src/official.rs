@@ -2,16 +2,16 @@
 //! crates' checked authoring functions, and reads of the model alone that a
 //! replica answers too.
 
-use catchlight_core::extension::ExtensionError;
 use catchlight_core::Model;
+use catchlight_core::extension::ExtensionError;
 use catchlight_editor_protocol::*;
 use catchlight_extension_animations::{Animations, LaneTarget};
 use catchlight_extension_expressions::authoring as expressions;
 use catchlight_extension_expressions::{
-    Expression, Expressions, Group, Setting, Target, EMOTIONS, VISEMES,
+    EMOTIONS, Expression, Expressions, Group, Setting, Target, VISEMES,
 };
 use catchlight_extension_humanoid::authoring as humanoid;
-use catchlight_extension_humanoid::{ControlMapping, Humanoid, CONTROLS};
+use catchlight_extension_humanoid::{CONTROLS, ControlMapping, Humanoid};
 
 use crate::EditorError;
 

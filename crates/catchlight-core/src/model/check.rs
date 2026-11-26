@@ -379,10 +379,11 @@ mod tests {
             BindingTarget::Scalar(ScalarTarget::Tx),
         ))
         .unwrap();
-        assert!(!m
-            .check()
-            .iter()
-            .any(|w| w.message.contains("has no colour")));
+        assert!(
+            !m.check()
+                .iter()
+                .any(|w| w.message.contains("has no colour"))
+        );
 
         let group = m
             .nodes_in_order()

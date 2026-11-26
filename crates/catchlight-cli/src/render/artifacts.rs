@@ -1,7 +1,7 @@
 //! Portable JSON records and durable atomic artifacts. Records contain relative
 //! output names and input hashes, never input paths or adapter/device identity.
-use super::frame::{color_retained, FrameRuntime};
-use super::spec::{bad, Framing, MotionResponseMode, ResolvedRequest, ResolvedSpec};
+use super::frame::{FrameRuntime, color_retained};
+use super::spec::{Framing, MotionResponseMode, ResolvedRequest, ResolvedSpec, bad};
 use crate::Error;
 use catchlight_core::geometry::EvaluatedGeometry;
 use catchlight_core::{Model, ModelNodeKind, ParamId, Puppet};
@@ -261,10 +261,8 @@ impl BoundsOutput {
                 included &= n.enabled;
                 node = n.parent().and_then(|id| model.node(id));
             }
-            if included {
-                if let Some(b) = bounds {
-                    overall = Some(overall.map_or(b, |v| v.union(b)));
-                }
+            if included && let Some(b) = bounds {
+                overall = Some(overall.map_or(b, |v| v.union(b)));
             }
             parts.insert(
                 id.to_string(),

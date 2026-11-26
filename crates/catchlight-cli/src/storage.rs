@@ -13,7 +13,7 @@ use catchlight_core::formats::{
 };
 use serde::Serialize;
 
-use crate::{file, Error};
+use crate::{Error, file};
 
 #[derive(Debug, Serialize)]
 pub struct Size {

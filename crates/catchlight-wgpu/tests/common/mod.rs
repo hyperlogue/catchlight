@@ -10,7 +10,7 @@ use catchlight_core::{
     TexId,
 };
 use catchlight_wgpu::{
-    create_headless_context, PrepareOptions, RenderCache, RenderContext, RenderList, WgpuRenderer,
+    PrepareOptions, RenderCache, RenderContext, RenderList, WgpuRenderer, create_headless_context,
 };
 use std::collections::HashMap;
 use std::sync::OnceLock;

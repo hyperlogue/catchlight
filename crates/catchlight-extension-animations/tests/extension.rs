@@ -2,7 +2,7 @@
 //! `catchlight.animations` as a maintained extension: its codec, the core's
 //! upkeep of its reference table, its check, and addon merging.
 
-use catchlight_core::extension::{register, Extension, IdRef, Payload};
+use catchlight_core::extension::{Extension, IdRef, Payload, register};
 use catchlight_core::formats::clm::{ClmIndices, ClmMesh};
 use catchlight_core::{
     ExtensionValue, InstallError, InterpolateMode, Model, ModelNode, ModelNodeKind, ModelParam,
@@ -138,9 +138,11 @@ fn clips_round_trip_through_a_file_bit_for_bit_as_a_columnar_byte_payload() {
 #[test]
 fn insert_replaces_by_name_sorts_keyframes_and_keeps_the_table_compact() {
     let mut animations = Animations::default();
-    assert!(animations
-        .insert(clip("a", vec![lane("eye", &[(9, 1.0), (2, 0.0)])]))
-        .is_none());
+    assert!(
+        animations
+            .insert(clip("a", vec![lane("eye", &[(9, 1.0), (2, 0.0)])]))
+            .is_none()
+    );
     assert_eq!(
         animations.clip("a").unwrap().lanes[0].keyframes()[0].frame,
         2
@@ -238,10 +240,12 @@ fn an_addons_clips_merge_on_install_refuse_a_taken_name_and_leave_on_uninstall()
         Animations::from_clips([clip("idle", vec![lane("eye", &[(0, 1.0)])])]);
     *addon.extension_or_default::<Animations>().unwrap() =
         Animations::from_clips([clip("tip", vec![lane("brow", &[(0, 1.0)])])]);
-    assert!(addon
-        .requirements()
-        .iter()
-        .any(|r| r.id == catchlight_core::Required::Param(pid("brow"))));
+    assert!(
+        addon
+            .requirements()
+            .iter()
+            .any(|r| r.id == catchlight_core::Required::Param(pid("brow")))
+    );
 
     let installed = base.install(&addon).unwrap();
     assert_eq!(names(&base), ["idle", "tip"]);

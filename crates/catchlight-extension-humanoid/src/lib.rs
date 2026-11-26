@@ -19,8 +19,8 @@ mod arkit;
 pub mod authoring;
 mod controls;
 
-pub use arkit::{controls_from_arkit, ARKIT_BLEND_SHAPES};
-pub use controls::{clamp_control, control, Control, ControlValues, CONTROLS};
+pub use arkit::{ARKIT_BLEND_SHAPES, controls_from_arkit};
+pub use controls::{CONTROLS, Control, ControlValues, clamp_control, control};
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -226,7 +226,7 @@ impl Extension for Humanoid {
                     return Err(DecodeError::new(format!(
                         "control {name:?} names reference {}, which is not a param",
                         m.param
-                    )))
+                    )));
                 }
             }
         }
@@ -275,19 +275,19 @@ impl Extension for Humanoid {
                     .with_subjects(vec![r.clone()]),
                 );
             }
-            if let IdRef::Param(param) = r {
-                if model.response_owner(param).is_some() {
-                    out.push(
-                        Warning::new(
-                            codes::DRIVEN_PARAM,
-                            format!(
-                                "control {name:?} maps onto {r}, which a motion response \
+            if let IdRef::Param(param) = r
+                && model.response_owner(param).is_some()
+            {
+                out.push(
+                    Warning::new(
+                        codes::DRIVEN_PARAM,
+                        format!(
+                            "control {name:?} maps onto {r}, which a motion response \
                                  drives, so the control never moves it"
-                            ),
-                        )
-                        .with_subjects(vec![r.clone()]),
-                    );
-                }
+                        ),
+                    )
+                    .with_subjects(vec![r.clone()]),
+                );
             }
         }
         for (index, r) in self.refs.iter().enumerate() {

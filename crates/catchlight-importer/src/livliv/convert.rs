@@ -11,8 +11,8 @@ use catchlight_core::{Model, NodeId, ParamId, TexId};
 use serde::Serialize;
 use serde_json::json;
 
+use super::{Error, Result, UPSTREAM_REVISION, ValidatedPackage, decode_image};
 use super::{bake, runtime::Runtime};
-use super::{decode_image, Error, Result, ValidatedPackage, UPSTREAM_REVISION};
 
 /// Machine-readable findings, also stored in the resulting model extension.
 #[derive(Debug, Clone, Serialize)]
@@ -88,13 +88,13 @@ impl ValidatedPackage {
                     omitted.join(", ")
                 ));
             }
-            if let Some(role) = &layer.role {
-                if Role::parse(role).is_none() {
-                    report.losses.push(format!(
-                        "layer {}: role {role} is drawn as a plain layer",
-                        layer.id
-                    ));
-                }
+            if let Some(role) = &layer.role
+                && Role::parse(role).is_none()
+            {
+                report.losses.push(format!(
+                    "layer {}: role {role} is drawn as a plain layer",
+                    layer.id
+                ));
             }
         }
         report
@@ -289,25 +289,25 @@ impl ValidatedPackage {
                             .collect(),
                         InterpolateMode::Nearest,
                     );
-                } else if matches!(layer.role.as_deref(), Some("expr" | "expr_brows")) {
-                    if let Some(expr) = &layer.expression {
-                        let axis: Vec<_> = (0..=16).map(|n| n as f32 / 16.0).collect();
-                        let values = axis
-                            .iter()
-                            .map(|x| {
-                                let t = ((x - 0.3) / 0.4).clamp(0.0, 1.0);
-                                t * t * (3.0 - 2.0 * t)
-                            })
-                            .collect();
-                        opacity_binding(
-                            &mut file.doc,
-                            id,
-                            ParamId::new(format!("expression/{expr}"))?,
-                            axis,
-                            values,
-                            InterpolateMode::Linear,
-                        );
-                    }
+                } else if matches!(layer.role.as_deref(), Some("expr" | "expr_brows"))
+                    && let Some(expr) = &layer.expression
+                {
+                    let axis: Vec<_> = (0..=16).map(|n| n as f32 / 16.0).collect();
+                    let values = axis
+                        .iter()
+                        .map(|x| {
+                            let t = ((x - 0.3) / 0.4).clamp(0.0, 1.0);
+                            t * t * (3.0 - 2.0 * t)
+                        })
+                        .collect();
+                    opacity_binding(
+                        &mut file.doc,
+                        id,
+                        ParamId::new(format!("expression/{expr}"))?,
+                        axis,
+                        values,
+                        InterpolateMode::Linear,
+                    );
                 }
             }
             bake::layer(

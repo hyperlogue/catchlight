@@ -7,10 +7,10 @@ use catchlight_core::extension::{Extension, Warning};
 use catchlight_core::formats::clm::ClmFile;
 use catchlight_core::{Model, ParamId};
 use catchlight_extension_humanoid::authoring::{self, AuthoringError};
-use catchlight_extension_humanoid::{Humanoid, CONTROLS};
+use catchlight_extension_humanoid::{CONTROLS, Humanoid};
 use serde::Serialize;
 
-use crate::{extension, file, Error};
+use crate::{Error, extension, file};
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct StandardControl {

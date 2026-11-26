@@ -400,10 +400,12 @@ fn a_slot_survives_a_mesh_edit_and_says_what_it_lost() {
             assert_eq!(welds[0].a, body_part);
             assert_eq!(welds[0].b, hem_part);
             assert_eq!(welds[0].pairs.len(), 2);
-            assert!(welds[0]
-                .pairs
-                .iter()
-                .all(|p| (p.weight - catchlight_core::DEFAULT_SLOT_WEIGHT).abs() < 1e-6));
+            assert!(
+                welds[0]
+                    .pairs
+                    .iter()
+                    .all(|p| (p.weight - catchlight_core::DEFAULT_SLOT_WEIGHT).abs() < 1e-6)
+            );
         }
         other => panic!("{other:?}"),
     }

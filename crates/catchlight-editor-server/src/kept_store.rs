@@ -147,10 +147,10 @@ impl UserKeptStore {
         if let Ok(path) = std::fs::canonicalize(&path) {
             return path;
         }
-        if let (Some(parent), Some(name)) = (path.parent(), path.file_name()) {
-            if let Ok(parent) = std::fs::canonicalize(parent) {
-                return parent.join(name);
-            }
+        if let (Some(parent), Some(name)) = (path.parent(), path.file_name())
+            && let Ok(parent) = std::fs::canonicalize(parent)
+        {
+            return parent.join(name);
         }
         std::path::absolute(&path).unwrap_or(path)
     }

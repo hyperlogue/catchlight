@@ -116,15 +116,15 @@ pub fn world_bounds(puppet: &Puppet, roots: &[u32]) -> Option<(Vec2, Vec2)> {
     for &root in roots {
         let mut stack = vec![catchlight_core::NodeIdx(root)];
         while let Some(id) = stack.pop() {
-            if let Some(node) = puppet.get(id) {
-                if let NodeKind::Part(p) = &node.kind {
-                    let m = transforms.get(id);
-                    for i in 0..p.mesh.vertices.len() {
-                        let w = part_world_vertex(p, &m, i);
-                        min = min.min(w);
-                        max = max.max(w);
-                        any = true;
-                    }
+            if let Some(node) = puppet.get(id)
+                && let NodeKind::Part(p) = &node.kind
+            {
+                let m = transforms.get(id);
+                for i in 0..p.mesh.vertices.len() {
+                    let w = part_world_vertex(p, &m, i);
+                    min = min.min(w);
+                    max = max.max(w);
+                    any = true;
                 }
             }
             stack.extend(puppet.tree().get_children(id));

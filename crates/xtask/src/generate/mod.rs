@@ -18,7 +18,7 @@ pub mod typescript;
 
 use std::collections::BTreeSet;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use catchlight_editor_protocol as proto;
 use ts_rs::{Config, Dependency, TS};
 

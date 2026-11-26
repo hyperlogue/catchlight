@@ -6,7 +6,7 @@
 mod common;
 
 use catchlight_core::{Mesh, Model, ModelNodeKind, Puppet};
-use catchlight_wgpu::{collect, DrawableInfo, WgpuRenderer};
+use catchlight_wgpu::{DrawableInfo, WgpuRenderer, collect};
 
 /// Distinct z at every level so a dropped ancestor shows as a wrong sum.
 fn nested_model() -> (Model, Vec<&'static str>) {

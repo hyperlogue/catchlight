@@ -10,7 +10,7 @@ use std::collections::HashMap;
 
 use glam::{Affine2, Mat2, Vec2};
 
-use crate::components::{checked_affine_inverse, NodeIdx, NodeKind};
+use crate::components::{NodeIdx, NodeKind, checked_affine_inverse};
 use crate::deform::DeformSource;
 use crate::meshgroup::affine2_from_mat4;
 use crate::node::NodeTree;

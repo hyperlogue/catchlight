@@ -10,8 +10,8 @@ use catchlight_core::{
 use catchlight_editor_protocol::*;
 use catchlight_editor_server::{Attachments, Editor};
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
     Arc,
+    atomic::{AtomicUsize, Ordering},
 };
 
 /// Undo and redo depths, as the session reports them.
@@ -328,13 +328,15 @@ fn exact_cells_preserve_holes_page_authored_vertices_and_accept_empty_deforms() 
             ..
         }
     ));
-    assert!(snapshot(&editor, session)
-        .binding(&BindingKey::new(
-            param(),
-            node("panel"),
-            Target::Scalar(ScalarTarget::Opacity)
-        ))
-        .is_none());
+    assert!(
+        snapshot(&editor, session)
+            .binding(&BindingKey::new(
+                param(),
+                node("panel"),
+                Target::Scalar(ScalarTarget::Opacity)
+            ))
+            .is_none()
+    );
 }
 
 #[test]
@@ -570,9 +572,11 @@ fn exact_writes_have_the_same_authored_result_standalone_and_batched() {
             ],
         },
     ));
-    assert!(snapshot(&editor, one)
-        .authored_eq(&snapshot(&editor, batch))
-        .unwrap());
+    assert!(
+        snapshot(&editor, one)
+            .authored_eq(&snapshot(&editor, batch))
+            .unwrap()
+    );
     assert_eq!(history(&editor, one), (2, 0));
     assert_eq!(history(&editor, batch), (1, 0));
 }

@@ -6,14 +6,14 @@ mod common;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use catchlight_cli::diff::diff;
-use catchlight_cli::patch::{self, node_fields, Kind, PARAM_FIELDS};
 use catchlight_cli::Error;
+use catchlight_cli::diff::diff;
+use catchlight_cli::patch::{self, Kind, PARAM_FIELDS, node_fields};
+use catchlight_core::Model;
 use catchlight_core::formats::clm::{
     ClmComposite, ClmFile, ClmNode, ClmNodeKind, ClmParam, ClmTransform,
 };
-use catchlight_core::id::{NodeId, ParamId, TexId, MAX_NAME_BYTES};
-use catchlight_core::Model;
+use catchlight_core::id::{MAX_NAME_BYTES, NodeId, ParamId, TexId};
 
 use common::{copy_fixture, decode, read, tmp, write_clm};
 
@@ -298,10 +298,10 @@ fn shared_albedo() -> (ClmFile, [NodeId; 2], TexId, TexId) {
         .cloned()
         .expect("a part with a texture of its own");
     for node in &mut clm.doc.nodes {
-        if node.id == second {
-            if let ClmNodeKind::Part(p) = &mut node.kind {
-                p.albedo = Some(shared.clone());
-            }
+        if node.id == second
+            && let ClmNodeKind::Part(p) = &mut node.kind
+        {
+            p.albedo = Some(shared.clone());
         }
     }
     clm.textures.retain(|t| t.id != freed);

@@ -4,8 +4,8 @@
 //! lies strictly inside the clip, and a lead-out before the lead-in falls back
 //! to the whole length.
 
-use catchlight_core::interpolate::cubic;
 use catchlight_core::InterpolateMode;
+use catchlight_core::interpolate::cubic;
 
 use crate::{Clip, Keyframe, Lane};
 

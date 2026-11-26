@@ -15,12 +15,12 @@
 use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Sender};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use catchlight_core::formats::clm::{extension_hash, TextureEncoding};
+use catchlight_core::formats::clm::{TextureEncoding, extension_hash};
 use catchlight_editor_protocol::{
     ErrorCode, ExtensionKey, Reply, Request, RequestId, SessionId, TexId,
 };

@@ -546,18 +546,19 @@ pub(super) fn run(
                     } => {
                         // Another agent may take what was waiting between
                         // the poll and the fetch; then keep waiting.
-                        if pending > 0 {
-                            if let Some(code) =
+                        if pending > 0
+                            && let Some(code) =
                                 deliver(cli, &mut client, session, &who, attachments_dir, false)?
-                            {
-                                return Ok(code);
-                            }
+                        {
+                            return Ok(code);
                         }
                     }
                     other => return Ok(finish(cli, &other, all, None)),
                 }
                 if deadline.is_some_and(|at| Instant::now() >= at) {
-                    eprintln!("no comments were sent before the timeout; run `review watch` again to keep waiting");
+                    eprintln!(
+                        "no comments were sent before the timeout; run `review watch` again to keep waiting"
+                    );
                     return Ok(TIMED_OUT);
                 }
                 std::thread::sleep(POLL_INTERVAL);

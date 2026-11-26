@@ -4,7 +4,7 @@
 //! fixture's structure changes. Nodes, params and textures are numbered by
 //! position so fixture Ids match what an import mints.
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 

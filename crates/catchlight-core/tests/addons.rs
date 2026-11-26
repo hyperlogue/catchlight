@@ -69,13 +69,11 @@ fn random_model(rng: &mut Rng) -> Model {
 
     let params: Vec<ParamId> = (0..2 + rng.below(3))
         .map(|i| {
-            let p = m
-                .add_param(
-                    ModelParam::new(Name::truncated(format!("P{i}")), -1.0, 1.0, 0.0),
-                    &mut hex,
-                )
-                .unwrap();
-            p
+            m.add_param(
+                ModelParam::new(Name::truncated(format!("P{i}")), -1.0, 1.0, 0.0),
+                &mut hex,
+            )
+            .unwrap()
         })
         .collect();
 

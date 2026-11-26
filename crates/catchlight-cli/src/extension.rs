@@ -6,16 +6,16 @@
 use std::path::Path;
 
 use catchlight_core::extension::{
-    codes, decode_as, Extension, ExtensionError, IdRef, Payload, RawExtension, Unread, Warning,
+    Extension, ExtensionError, IdRef, Payload, RawExtension, Unread, Warning, codes, decode_as,
 };
 use catchlight_core::formats::clm::{
-    extension_hash, ClmExtension, ClmExtensionBlob, ClmExtensionMarker, ClmFile, ClmPayload,
+    ClmExtension, ClmExtensionBlob, ClmExtensionMarker, ClmFile, ClmPayload, extension_hash,
 };
-use catchlight_core::id::{ExtensionKey, EXTENSION_RESERVED_PREFIX};
+use catchlight_core::id::{EXTENSION_RESERVED_PREFIX, ExtensionKey};
 use catchlight_core::{ExtensionValue, Model};
 use catchlight_extension_animations::Animations;
 
-use crate::{file, Error};
+use crate::{Error, file};
 
 pub struct Listed {
     pub key: ExtensionKey,
@@ -86,20 +86,20 @@ pub fn get(path: &Path, key: &str, out: Option<&Path>) -> Result<Got, Error> {
         source,
     })?;
     let file = file::read(path)?;
-    if key.as_str() == Animations::KEY {
-        if let Some(decoded) = typed::<Animations>(&file) {
-            let clips = decoded.map_err(|why| Error::Unread {
-                key: key.to_string(),
-                why,
-            })?;
-            let text = serde_json::to_string(&clips.clips())
-                .unwrap_or_else(|_| "<unrenderable>".to_string());
-            if let Some(out) = out {
-                file::write(out, text.as_bytes())?;
-                return Ok(Got::Json(String::new()));
-            }
-            return Ok(Got::Json(text));
+    if key.as_str() == Animations::KEY
+        && let Some(decoded) = typed::<Animations>(&file)
+    {
+        let clips = decoded.map_err(|why| Error::Unread {
+            key: key.to_string(),
+            why,
+        })?;
+        let text =
+            serde_json::to_string(&clips.clips()).unwrap_or_else(|_| "<unrenderable>".to_string());
+        if let Some(out) = out {
+            file::write(out, text.as_bytes())?;
+            return Ok(Got::Json(String::new()));
         }
+        return Ok(Got::Json(text));
     }
     match lookup(&file, &key, path)? {
         ClmExtension::Json(value) => {

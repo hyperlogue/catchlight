@@ -1350,11 +1350,11 @@ mod tests {
         for (cell, page) in pages {
             assert_eq!(page, r.m.deform_value_at(&key, cell).unwrap()[2..6]);
         }
-        assert!(r
-            .m
-            .deform_value_at_range(&key, [0, 0], 4..4)
-            .unwrap()
-            .is_empty());
+        assert!(
+            r.m.deform_value_at_range(&key, [0, 0], 4..4)
+                .unwrap()
+                .is_empty()
+        );
         assert!(r.m.deform_value_at_range(&key, [0, 0], 0..5).is_err());
     }
 
@@ -1458,10 +1458,10 @@ mod tests {
             (cells[0].x, &cells[0].value),
             (2, &vec![10.0, 0.0, 10.0, 0.0, 10.0, 0.0, 10.0, 0.0])
         );
-        assert!(r
-            .m
-            .set_deform_vertices(&key, [0, 0], vec![1.0, 2.0])
-            .is_err());
+        assert!(
+            r.m.set_deform_vertices(&key, [0, 0], vec![1.0, 2.0])
+                .is_err()
+        );
         assert!(r.m.to_clm_bytes().is_ok());
     }
 

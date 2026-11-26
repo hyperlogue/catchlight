@@ -300,17 +300,17 @@ fn collect_mask_sources<S: DrawSource + ?Sized>(
                     let mut parts = Vec::new();
                     let mut stack: Vec<NodeIdx> = source.tree().children(mask_node_id).collect();
                     while let Some(descendant) = stack.pop() {
-                        if let Some(node) = source.node(descendant) {
-                            if let NodeKind::Part(part) = &node.kind {
-                                let texture_id = source.texture_slot(node);
-                                if source.has_texture(texture_id) {
-                                    parts.push(CompositeMaskPartData {
-                                        mesh_id: source.mesh_slot(descendant),
-                                        texture_id,
-                                        transform: source.transform(descendant),
-                                        mask_threshold: part.mask_threshold,
-                                    });
-                                }
+                        if let Some(node) = source.node(descendant)
+                            && let NodeKind::Part(part) = &node.kind
+                        {
+                            let texture_id = source.texture_slot(node);
+                            if source.has_texture(texture_id) {
+                                parts.push(CompositeMaskPartData {
+                                    mesh_id: source.mesh_slot(descendant),
+                                    texture_id,
+                                    transform: source.transform(descendant),
+                                    mask_threshold: part.mask_threshold,
+                                });
                             }
                         }
                         stack.extend(source.tree().children(descendant));

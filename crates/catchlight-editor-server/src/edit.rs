@@ -13,8 +13,8 @@ use catchlight_editor_core::ModelMeshExt as _;
 use catchlight_editor_protocol::*;
 
 use super::{
-    apply_patch, binding_key, build_mesh, build_weld, default_name, emptied_reply, joins,
-    make_kind, pairs_the_same_parts, EditorError,
+    EditorError, apply_patch, binding_key, build_mesh, build_weld, default_name, emptied_reply,
+    joins, make_kind, pairs_the_same_parts,
 };
 
 pub const MAX_EDIT_OPS: usize = 1024;
@@ -67,10 +67,10 @@ pub fn apply(model: &mut Model, edit: EditOp) -> Result<ResponseBody, EditorErro
         EditOp::NodeSet { node, patch } => {
             let mut dropped = Vec::new();
             if let Some(albedo) = &patch.texture {
-                if let Some(tex) = albedo {
-                    if model.texture(tex).is_none() {
-                        return Err(EditorError::NoTexture(tex.clone()));
-                    }
+                if let Some(tex) = albedo
+                    && model.texture(tex).is_none()
+                {
+                    return Err(EditorError::NoTexture(tex.clone()));
                 }
                 if matches!(
                     model.node(&node).map(|n| &n.kind),
@@ -307,7 +307,7 @@ fn write_cells(
                 return Err(EditorError::BadTarget(
                     "cell payload must match target and mesh size and contain only finite numbers"
                         .into(),
-                ))
+                ));
             }
         }
     }

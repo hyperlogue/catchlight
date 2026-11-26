@@ -194,11 +194,13 @@ mod tests {
         ] {
             assert!(DeformMapping::new(2, 1, &[weights]).is_err());
         }
-        assert!(DeformMapping::new(0, 0, &[])
-            .unwrap()
-            .map(&[])
-            .unwrap()
-            .is_empty());
+        assert!(
+            DeformMapping::new(0, 0, &[])
+                .unwrap()
+                .map(&[])
+                .unwrap()
+                .is_empty()
+        );
         assert!(DeformMapping::new(0, 1, &[row(&[(0, 1.)])]).is_err());
         let map = DeformMapping::new(1, 1, &[row(&[(0, 1. + 5e-7)])]).unwrap();
         assert!(matches!(
@@ -261,9 +263,11 @@ mod tests {
             origin: [1., 1.],
         };
         let bad = vec![row(&[(0, 0.4)]), row(&[(1, 1.)]), row(&[(2, 1.)])];
-        assert!(model
-            .set_node_mesh_mapped(&node, mesh.clone(), &bad)
-            .is_err());
+        assert!(
+            model
+                .set_node_mesh_mapped(&node, mesh.clone(), &bad)
+                .is_err()
+        );
         assert!(model.authored_eq(&before).unwrap());
         let rows = vec![
             row(&[(0, 0.5), (1, 0.5)]),

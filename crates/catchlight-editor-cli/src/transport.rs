@@ -11,9 +11,9 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use catchlight_editor_protocol::{
-    default_connection_path, Connection, Reply, Request, COMMAND_BYTES,
+    COMMAND_BYTES, Connection, Reply, Request, default_connection_path,
 };
 use serde_json::{Map, Value};
 
@@ -238,7 +238,9 @@ fn call_socket(
     };
     line.push('\n');
     if line.len() > MAX_COMMAND_BYTES {
-        bail!("request exceeds the 1 MiB command limit; split independent edits into explicit batches");
+        bail!(
+            "request exceeds the 1 MiB command limit; split independent edits into explicit batches"
+        );
     }
     stream.get_mut().write_all(line.as_bytes())?;
     loop {
@@ -298,7 +300,9 @@ impl Http {
     fn call(&self, req: Request, mut siblings: Map<String, Value>) -> Result<Reply> {
         let json = serde_json::to_vec(&req)?;
         if json.len() + 1 > MAX_COMMAND_BYTES {
-            bail!("request exceeds the 1 MiB command limit; split independent edits into explicit batches");
+            bail!(
+                "request exceeds the 1 MiB command limit; split independent edits into explicit batches"
+            );
         }
         let out = match siblings.remove("out") {
             Some(Value::String(path)) => Some(PathBuf::from(path)),

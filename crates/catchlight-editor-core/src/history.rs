@@ -250,10 +250,10 @@ impl ModelHistory {
             return Ok(None);
         }
         let model = self.entries[&target].model.clone();
-        if action == HistoryNavigation::Undo {
-            if let Some(parent) = self.entries.get_mut(&target) {
-                parent.redo = Some(self.current);
-            }
+        if action == HistoryNavigation::Undo
+            && let Some(parent) = self.entries.get_mut(&target)
+        {
+            parent.redo = Some(self.current);
         }
         let mut child = target;
         while let Some(parent) = self.entries[&child].parent {
@@ -397,10 +397,10 @@ impl ModelHistory {
                 .iter()
                 .rev()
                 .find_map(|(&id, entry)| (entry.parent == Some(parent)).then_some(id));
-            if let Some(entry) = self.entries.get_mut(&parent) {
-                if entry.redo == Some(revision) {
-                    entry.redo = replacement;
-                }
+            if let Some(entry) = self.entries.get_mut(&parent)
+                && entry.redo == Some(revision)
+            {
+                entry.redo = replacement;
             }
         }
     }
@@ -410,8 +410,8 @@ impl ModelHistory {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use catchlight_core::{
-        formats::clm::{ClmMesh, TextureAlpha, TextureEncoding},
         ExtensionKey, ModelNode, ModelNodeKind, ModelPart, ModelTexture, Name, SeededHex,
+        formats::clm::{ClmMesh, TextureAlpha, TextureEncoding},
     };
 
     use super::*;
@@ -581,10 +581,12 @@ mod tests {
         let before = history.metadata();
         let bytes = history.bytes();
         for target in [0, 2] {
-            assert!(history
-                .navigate(HistoryNavigation::Goto(target), 100)
-                .unwrap()
-                .is_none());
+            assert!(
+                history
+                    .navigate(HistoryNavigation::Goto(target), 100)
+                    .unwrap()
+                    .is_none()
+            );
             assert_eq!(history.metadata(), before);
             assert_eq!(history.live_revision(), 2);
             assert_eq!(history.bytes(), bytes);
@@ -600,10 +602,12 @@ mod tests {
         // Equality detection belongs to the caller, which may reach identical
         // contents through a series of meaningful edits or separate branches.
         history.record(model, 4).unwrap();
-        assert!(history
-            .navigate(HistoryNavigation::Undo, 7)
-            .unwrap()
-            .is_some());
+        assert!(
+            history
+                .navigate(HistoryNavigation::Undo, 7)
+                .unwrap()
+                .is_some()
+        );
         assert_eq!(history.live_revision(), 7);
         assert_eq!(history.metadata().current, 0);
         assert_eq!(history.metadata().entries.len(), 2);
@@ -822,10 +826,12 @@ mod tests {
             let metadata = history.metadata();
             assert!(metadata.entries.len() <= 4);
             assert!(history.aliases.len() <= 3);
-            assert!(metadata
-                .entries
-                .iter()
-                .any(|entry| entry.revision == metadata.current));
+            assert!(
+                metadata
+                    .entries
+                    .iter()
+                    .any(|entry| entry.revision == metadata.current)
+            );
             assert!(history.model_at(history.live_revision()).is_ok());
             for entry in &metadata.entries {
                 assert!(entry.revisions.contains(&entry.revision));

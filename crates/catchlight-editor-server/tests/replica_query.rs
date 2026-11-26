@@ -6,12 +6,12 @@ use std::collections::BTreeSet;
 use std::io::Cursor;
 
 use catchlight_editor_protocol::{
-    BindingCellValue, BindingCellWrite, BindingInfo, BindingTarget, BlendMode, Command,
-    CommandKind, ErrorCode, GeometryField, Interpolate, NodeId, NodeKind, NodeKindArg, NodePatch,
-    ParamId, Presence, Reply, Request, ResponseBody, SessionId, SlotId, SlotPair, TextureEncoding,
-    COMMAND_KINDS,
+    BindingCellValue, BindingCellWrite, BindingInfo, BindingTarget, BlendMode, COMMAND_KINDS,
+    Command, CommandKind, ErrorCode, GeometryField, Interpolate, NodeId, NodeKind, NodeKindArg,
+    NodePatch, ParamId, Presence, Reply, Request, ResponseBody, SessionId, SlotId, SlotPair,
+    TextureEncoding,
 };
-use catchlight_editor_server::{replica_query, replica_reply, Attachments, Editor};
+use catchlight_editor_server::{Attachments, Editor, replica_query, replica_reply};
 
 fn ok(reply: Reply) -> ResponseBody {
     match reply {

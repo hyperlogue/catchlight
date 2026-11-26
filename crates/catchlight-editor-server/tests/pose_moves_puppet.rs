@@ -52,11 +52,11 @@ fn state_signature(puppet: &catchlight_core::Puppet) -> Vec<[i64; 2]> {
         let m = puppet.transforms().get(id);
         let t = m.transform_point3(glam::vec3(0.0, 0.0, 0.0));
         sig.push([(t.x * 1e3) as i64, (t.y * 1e3) as i64]);
-        if let Some(node) = puppet.get(id) {
-            if let catchlight_core::NodeKind::Part(p) = &node.kind {
-                for v in p.deform_stack.combined() {
-                    sig.push([(v.x * 1e3) as i64, (v.y * 1e3) as i64]);
-                }
+        if let Some(node) = puppet.get(id)
+            && let catchlight_core::NodeKind::Part(p) = &node.kind
+        {
+            for v in p.deform_stack.combined() {
+                sig.push([(v.x * 1e3) as i64, (v.y * 1e3) as i64]);
             }
         }
     }

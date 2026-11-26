@@ -5,7 +5,7 @@ use std::path::Path;
 
 use catchlight_core::formats::clm::{TextureAlpha, TextureEncoding};
 
-use crate::{file, Error};
+use crate::{Error, file};
 
 const PNG_MAGIC: &[u8] = &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
 const TGA_FOOTER: &[u8] = b"TRUEVISION-XFILE.\0";

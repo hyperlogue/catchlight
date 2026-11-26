@@ -7,8 +7,8 @@
 use anyhow::{Context, Result};
 
 use super::{
-    byte_rows, check_aliased, check_byte_bearing, check_classified, command_tags, tags_of, Decl,
-    BYTES_DOC, KINDS, QUERY_UNION_DOC,
+    BYTES_DOC, Decl, KINDS, QUERY_UNION_DOC, byte_rows, check_aliased, check_byte_bearing,
+    check_classified, command_tags, tags_of,
 };
 
 const OUT: &str = "packages/core/src/protocol.gen.ts";

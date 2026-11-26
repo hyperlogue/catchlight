@@ -16,11 +16,11 @@ use bevy::asset::RenderAssetUsages;
 use bevy::camera::RenderTarget;
 use bevy::image::Image;
 use bevy::prelude::*;
+use bevy::render::RenderPlugin;
 use bevy::render::render_asset::RenderAssets;
 use bevy::render::renderer::{RenderDevice, RenderQueue};
 use bevy::render::sync_world::RenderEntity;
 use bevy::render::texture::GpuImage;
-use bevy::render::RenderPlugin;
 use bevy::window::{ExitCondition, WindowPlugin};
 use catchlight_bevy::{
     CatchlightCamera, CatchlightModel, CatchlightPlugin, CatchlightPuppet, CatchlightRenderState,

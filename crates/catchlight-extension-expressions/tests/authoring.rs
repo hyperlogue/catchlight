@@ -7,10 +7,10 @@ use catchlight_core::formats::clm::{self, ClmExtension, ClmPayload};
 use catchlight_core::id::ExtensionKey;
 use catchlight_core::{Model, ModelParam, Name, ParamId};
 use catchlight_extension_expressions::authoring::{
-    add_standard_visemes, remove, set, AuthoringError,
+    AuthoringError, add_standard_visemes, remove, set,
 };
 use catchlight_extension_expressions::{
-    standard_visemes, Expression, Expressions, Group, Setting, VISEMES,
+    Expression, Expressions, Group, Setting, VISEMES, standard_visemes,
 };
 use catchlight_extension_humanoid::authoring::AuthoringError as ControlError;
 

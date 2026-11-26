@@ -35,10 +35,10 @@ impl Model {
                 );
                 index.rows.sort_unstable();
                 for id in &index.rows {
-                    if let Some(ModelNodeKind::MotionResponse(r)) = self.node(id).map(|n| &n.kind) {
-                        if let Some(p) = &r.output_param {
-                            index.owners.entry(p.clone()).or_insert_with(|| id.clone());
-                        }
+                    if let Some(ModelNodeKind::MotionResponse(r)) = self.node(id).map(|n| &n.kind)
+                        && let Some(p) = &r.output_param
+                    {
+                        index.owners.entry(p.clone()).or_insert_with(|| id.clone());
                     }
                 }
             }
@@ -172,7 +172,7 @@ impl Model {
                     ResponseSource::PoseParam { param: p }
                         if declaration(p).is_none() && !fragment =>
                     {
-                        return Err(invalid(format!("unknown input param {p}")))
+                        return Err(invalid(format!("unknown input param {p}")));
                     }
                     ResponseSource::PartSlot {
                         part,
@@ -207,7 +207,7 @@ impl Model {
                     _ => {
                         return Err(invalid(format!(
                             "output {p} needs a declared range containing zero and a zero default"
-                        )))
+                        )));
                     }
                 }
             }

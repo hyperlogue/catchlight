@@ -5,7 +5,7 @@
 mod support;
 
 use catchlight_core::{Mat2, Model, NodeId, NodeKind, Puppet, Vec2};
-use support::{envelope, smooth, width_delta, Fixture, LIMIT, ROWS};
+use support::{Fixture, LIMIT, ROWS, envelope, smooth, width_delta};
 
 fn world_positions(puppet: &Puppet, part: &NodeId) -> Vec<Vec2> {
     let idx = puppet.node_idx(part).unwrap();
@@ -163,11 +163,13 @@ fn neutral_width_is_exactly_inactive_and_the_recipe_round_trips() {
     for lock in &f.locks {
         for part in &lock.parts {
             let idx = puppet.node_idx(part).unwrap();
-            assert!(puppet
-                .combined_deform(idx)
-                .unwrap()
-                .iter()
-                .all(|d| *d == Vec2::ZERO));
+            assert!(
+                puppet
+                    .combined_deform(idx)
+                    .unwrap()
+                    .iter()
+                    .all(|d| *d == Vec2::ZERO)
+            );
         }
     }
     puppet.set_param_value(&f.yaw, 0.7);
@@ -187,11 +189,13 @@ fn neutral_width_is_exactly_inactive_and_the_recipe_round_trips() {
         puppet.tick(&reopened, 0.0);
         for lock in &f.locks {
             for part in &lock.parts {
-                assert!(puppet
-                    .combined_deform(puppet.node_idx(part).unwrap())
-                    .unwrap()
-                    .iter()
-                    .all(|d| *d == Vec2::ZERO));
+                assert!(
+                    puppet
+                        .combined_deform(puppet.node_idx(part).unwrap())
+                        .unwrap()
+                        .iter()
+                        .all(|d| *d == Vec2::ZERO)
+                );
             }
         }
     }

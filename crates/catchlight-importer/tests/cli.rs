@@ -125,16 +125,19 @@ fn livliv_binary_inspects_and_exports_the_final_baking_report() {
     ]));
     let bytes = std::fs::read(dir.0.join("model.clm")).unwrap();
     let model = catchlight_core::Model::from_clm_bytes(&bytes).unwrap();
-    assert!(model
-        .param(&catchlight_core::ParamId::new("angleX").unwrap())
-        .is_some());
+    assert!(
+        model
+            .param(&catchlight_core::ParamId::new("angleX").unwrap())
+            .is_some()
+    );
     let report: serde_json::Value =
         serde_json::from_slice(&std::fs::read(dir.0.join("report.json")).unwrap()).unwrap();
     assert!(report["baking"]["deform_bindings"].as_u64().unwrap() > 0);
-    assert!(!dir
-        .run(&["source", "--allow-lossy", "-o", "model.clm"])
-        .status
-        .success());
+    assert!(
+        !dir.run(&["source", "--allow-lossy", "-o", "model.clm"])
+            .status
+            .success()
+    );
     assert_eq!(std::fs::read(dir.0.join("model.clm")).unwrap(), bytes);
 }
 

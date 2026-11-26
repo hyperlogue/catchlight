@@ -3,9 +3,9 @@
 mod common;
 
 use catchlight_core::{Model, Vec2};
-use catchlight_wgpu::{collect, create_orthographic_camera, RenderContext, WgpuRenderer};
-use common::apply_uniform_scratch_deform;
+use catchlight_wgpu::{RenderContext, WgpuRenderer, collect, create_orthographic_camera};
 use common::Scene;
+use common::apply_uniform_scratch_deform;
 use std::path::{Path, PathBuf};
 
 const W: u32 = 320;

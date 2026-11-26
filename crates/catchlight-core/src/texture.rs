@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use crate::components::{srgb_encode_to_byte, DecodedTexture};
+use crate::components::{DecodedTexture, srgb_encode_to_byte};
 use crate::load_budget::{LoadBudget, LoadLimitError};
 
 #[derive(Debug, Clone, thiserror::Error)]
@@ -714,13 +714,15 @@ mod tests {
             (48, 32)
         );
         assert_eq!(prepped[0].uv_crop, None);
-        assert!(prepped[0]
-            .texture
-            .rgba
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .all(|px| *px == [9, 8, 7, 255]));
+        assert!(
+            prepped[0]
+                .texture
+                .rgba
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|px| *px == [9, 8, 7, 255])
+        );
 
         let prepped = prepare_textures(&[source], 0, ROOMY, budget).unwrap();
         assert_eq!(

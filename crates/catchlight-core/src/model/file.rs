@@ -8,7 +8,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::extension::{decode_registered, Payload, Stored};
+use crate::extension::{Payload, Stored, decode_registered};
 use crate::formats::clm::ClmPayload;
 use crate::formats::clm::{
     self as clm, ClmBinding, ClmComposite, ClmExtension, ClmExtensionBlob, ClmExtensionMarker,
@@ -17,7 +17,7 @@ use crate::formats::clm::{
 };
 use crate::id::SlotId;
 use crate::load_budget::{
-    charge_clm_file, charge_clm_structure, charge_decoded_clm, LoadBudget, LoadResource,
+    LoadBudget, LoadResource, charge_clm_file, charge_clm_structure, charge_decoded_clm,
 };
 
 use super::*;
@@ -62,7 +62,9 @@ pub enum ClmLoadError {
         "the binding on node {node:?} names {got} params; a binding names one or two distinct ones"
     )]
     BindingParamCount { node: String, got: usize },
-    #[error("binding on node {node:?} must carry one nonempty, finite, strictly increasing axis in 0..=1 per param, within the binding-grid budget")]
+    #[error(
+        "binding on node {node:?} must carry one nonempty, finite, strictly increasing axis in 0..=1 per param, within the binding-grid budget"
+    )]
     BindingPositions { node: String },
     #[error("binding on node {node:?} has invalid authored cell {cell:?}: {reason}")]
     BindingCell {
@@ -679,10 +681,10 @@ impl Model {
         }
 
         for cn in &doc.nodes {
-            if let Some(parent) = &cn.parent {
-                if let Some(pn) = nodes.get_mut(parent) {
-                    Arc::make_mut(&mut pn.children).push(cn.id.clone());
-                }
+            if let Some(parent) = &cn.parent
+                && let Some(pn) = nodes.get_mut(parent)
+            {
+                Arc::make_mut(&mut pn.children).push(cn.id.clone());
             }
         }
 
@@ -715,14 +717,14 @@ impl Model {
                         node: b.node.to_string(),
                         target: t.name(),
                     }
-                    .into())
+                    .into());
                 }
                 Err(validate::BindingFault::DeformOnUnmeshed) => {
                     return Err(ClmLoadError::DeformOnUnmeshed {
                         node: b.node.to_string(),
                         kind: bound.kind.name(),
                     }
-                    .into())
+                    .into());
                 }
             }
             let vertices = bound.mesh().map_or(0, |m| m.verts.len());
@@ -736,7 +738,7 @@ impl Model {
                         node: b.node.to_string(),
                         got: other.len(),
                     }
-                    .into())
+                    .into());
                 }
             };
             if !validate::binding_positions_are_valid(b.params.len(), &b.key_positions) {

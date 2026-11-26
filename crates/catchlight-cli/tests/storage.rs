@@ -78,10 +78,12 @@ fn canonical_categories_partition_every_byte_without_decoding_textures() {
             .map(|e| e.binding_bytes)
             .sum::<usize>()
     );
-    assert!(report
-        .elements
-        .windows(2)
-        .all(|w| w[0].total_bytes >= w[1].total_bytes));
+    assert!(
+        report
+            .elements
+            .windows(2)
+            .all(|w| w[0].total_bytes >= w[1].total_bytes)
+    );
 }
 
 #[test]

@@ -6,7 +6,7 @@
 mod common;
 
 use catchlight_core::{Mesh, Model, Puppet};
-use catchlight_wgpu::{collect, Framing, PrepareOptions, RenderCache, RenderContext, WgpuRenderer};
+use catchlight_wgpu::{Framing, PrepareOptions, RenderCache, RenderContext, WgpuRenderer, collect};
 
 const CAMERA: Framing = Framing {
     center: glam::Vec2::ZERO,

@@ -1,8 +1,8 @@
-use visual_tests::{generate_configs, run_one, Config, RunOutcome, SharedHarness};
+use visual_tests::{Config, RunOutcome, SharedHarness, generate_configs, run_one};
 
 #[test]
 fn lan_visual_regressions_fringe_coverage() {
-    use visual_tests::render::{render_one_to_rgba, CachedModel, RenderContext};
+    use visual_tests::render::{CachedModel, RenderContext, render_one_to_rgba};
     use visual_tests::{Camera, ParamSetting};
     let root = visual_tests::repo_root();
     let mut model =

@@ -12,10 +12,10 @@ use catchlight_editor_protocol::{
     ExpressionSetting, ExtensionRef, ExtensionSet, ExtensionWarningInfo, LaneInfo, LaneTargetInfo,
     ParamId, Reply, Request, ResponseBody, ReviewAuthor, SessionId, SessionSource,
 };
-use catchlight_editor_server::{replica_query, Attachments, Editor};
+use catchlight_editor_server::{Attachments, Editor, replica_query};
 use catchlight_extension_animations::{Animations, Clip, Keyframe, Lane, LaneTarget};
-use catchlight_extension_expressions::{Expressions, EMOTIONS, VISEMES};
-use catchlight_extension_humanoid::{Humanoid, CONTROLS};
+use catchlight_extension_expressions::{EMOTIONS, Expressions, VISEMES};
+use catchlight_extension_humanoid::{CONTROLS, Humanoid};
 use serde_json::json;
 
 struct Fixture {
@@ -518,10 +518,11 @@ fn official_data_this_editor_cannot_read_is_neither_shown_nor_edited() {
         let tag = command.tag();
         assert_eq!(f.code(command), ErrorCode::ExtensionUnread, "{tag}");
     }
-    assert!(f
-        .warnings()
-        .iter()
-        .any(|w| w.code == "catchlight/newer-version"));
+    assert!(
+        f.warnings()
+            .iter()
+            .any(|w| w.code == "catchlight/newer-version")
+    );
 }
 
 #[test]

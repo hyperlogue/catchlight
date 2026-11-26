@@ -4,7 +4,7 @@ use glam::Vec2;
 
 use crate::components::NodeKind;
 use crate::deform::DeformSource;
-use crate::interpolate::{cubic, frac, InterpolateMode};
+use crate::interpolate::{InterpolateMode, cubic, frac};
 use crate::model::{BindingTarget, DenseGrid, ScalarTarget};
 
 use super::bake::BakedBinding;

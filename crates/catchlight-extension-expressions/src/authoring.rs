@@ -5,9 +5,9 @@
 
 use catchlight_core::extension::ExtensionError;
 use catchlight_core::{Model, ParamId};
-use catchlight_extension_humanoid::authoring::{standard_control, AuthoringError as ControlError};
+use catchlight_extension_humanoid::authoring::{AuthoringError as ControlError, standard_control};
 
-use crate::{standard_visemes, Expression, Expressions, Group, Setting, Target};
+use crate::{Expression, Expressions, Group, Setting, Target, standard_visemes};
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum AuthoringError {

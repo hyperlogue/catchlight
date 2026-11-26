@@ -4,7 +4,7 @@
 use std::any::Any;
 
 use crate::extension::{
-    codes, decode_as, decode_registered, Extension, ExtensionError, Stored, Typed, Warning,
+    Extension, ExtensionError, Stored, Typed, Warning, codes, decode_as, decode_registered,
 };
 
 use super::*;

@@ -10,7 +10,7 @@ use std::os::unix::fs::OpenOptionsExt as _;
 use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use catchlight_editor_protocol::*;
 
 use super::harness;
@@ -375,11 +375,11 @@ fn serve(
         if in_flight.contains(&reg.name()) {
             continue;
         }
-        if let Some(owner) = &reg.owner {
-            if processes.liveness(owner) == Liveness::Dead {
-                drop_reg(store, &reg, "its harness process exited")?;
-                continue;
-            }
+        if let Some(owner) = &reg.owner
+            && processes.liveness(owner) == Liveness::Dead
+        {
+            drop_reg(store, &reg, "its harness process exited")?;
+            continue;
         }
         let known: Vec<&str> = reg
             .notified

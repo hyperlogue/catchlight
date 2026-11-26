@@ -295,19 +295,18 @@ pub(crate) fn prepare_puppets(
             // Lists collected against the old cache name stale slots.
             if model_gpu.options != options
                 && !failures.failed(model_key, &model_gpu.model, options)
-            {
-                if let Some(cache) = failures.prepare(
+                && let Some(cache) = failures.prepare(
                     model_key,
                     &mut model_gpu.renderer,
                     &model_gpu.model,
                     options,
-                ) {
-                    model_gpu.cache = cache;
-                    model_gpu.options = options;
-                    for puppet in puppets.values_mut() {
-                        if puppet.model == model_key {
-                            puppet.collected = false;
-                        }
+                )
+            {
+                model_gpu.cache = cache;
+                model_gpu.options = options;
+                for puppet in puppets.values_mut() {
+                    if puppet.model == model_key {
+                        puppet.collected = false;
                     }
                 }
             }

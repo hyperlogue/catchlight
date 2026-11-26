@@ -7,8 +7,8 @@
 use std::sync::Arc;
 
 use catchlight_core::extension::{
-    codes, register, DecodeError, Extension, ExtensionError, IdRef, MergeRefused, MigrationError,
-    Payload, RawExtension, Receipt, RegisterError, RemovedRef, Unread, Warning,
+    DecodeError, Extension, ExtensionError, IdRef, MergeRefused, MigrationError, Payload,
+    RawExtension, Receipt, RegisterError, RemovedRef, Unread, Warning, codes, register,
 };
 use catchlight_core::formats::clm::{ClmIndices, ClmMesh, TextureAlpha, TextureEncoding};
 use catchlight_core::{
@@ -330,10 +330,11 @@ fn a_newer_version_is_carried_unchanged_and_warned_about() {
         }))
     );
     assert_eq!(warning_codes(&read, Newer::KEY), [codes::NEWER]);
-    assert!(read
-        .check()
-        .iter()
-        .any(|w| w.message.contains("test.newer")));
+    assert!(
+        read.check()
+            .iter()
+            .any(|w| w.message.contains("test.newer"))
+    );
     assert_eq!(read.to_clm_bytes().unwrap(), bytes);
 }
 
@@ -457,10 +458,12 @@ fn renaming_each_kind_of_id_rewrites_typed_and_raw_tables() {
     ];
     assert_eq!(model.extension::<RenameTyped>().unwrap().0.refs, want);
     assert_eq!(stored_raw(&model, "test.rename-raw").refs, want);
-    assert!(model
-        .extension_warnings()
-        .iter()
-        .all(|w| w.warning.code != codes::DANGLING && w.warning.code != codes::REMOVED));
+    assert!(
+        model
+            .extension_warnings()
+            .iter()
+            .all(|w| w.warning.code != codes::DANGLING && w.warning.code != codes::REMOVED)
+    );
 }
 
 #[test]
@@ -622,9 +625,11 @@ fn check_reports_dangling_references_own_warnings_and_unregistered_keys() {
         [codes::NOT_CHECKED]
     );
     let messages: Vec<String> = model.check().into_iter().map(|w| w.message).collect();
-    assert!(messages
-        .iter()
-        .any(|m| m.contains("test.never-registered") && m.contains("not checked")));
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("test.never-registered") && m.contains("not checked"))
+    );
     assert!(messages.iter().any(|m| m.contains("param-ghost")));
 }
 

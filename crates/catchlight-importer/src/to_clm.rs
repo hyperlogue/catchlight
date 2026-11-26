@@ -10,9 +10,9 @@ use std::collections::{HashMap, HashSet};
 
 use catchlight_core::extension::{Extension, Payload};
 use catchlight_core::formats::clm::{
-    extension_hash, ClmBinding, ClmComposite, ClmExtension, ClmExtensionBlob, ClmExtensionMarker,
-    ClmFile, ClmMask, ClmMesh, ClmMeshGroup, ClmNode, ClmNodeKind, ClmParam, ClmPart, ClmPayload,
-    ClmStructure, ClmTexture, TextureAlpha, TextureEncoding,
+    ClmBinding, ClmComposite, ClmExtension, ClmExtensionBlob, ClmExtensionMarker, ClmFile, ClmMask,
+    ClmMesh, ClmMeshGroup, ClmNode, ClmNodeKind, ClmParam, ClmPart, ClmPayload, ClmStructure,
+    ClmTexture, TextureAlpha, TextureEncoding, extension_hash,
 };
 use catchlight_core::interpolate::InterpolateMode;
 use catchlight_core::texture::TextureFormat;
@@ -22,12 +22,12 @@ use catchlight_extension_animations::{Animations, Clip, Keyframe, Lane, LaneTarg
 use crate::error::ImportError;
 use crate::inx::InxModel;
 use crate::reflect::{
-    axes_of, blend, convert_binding_values, convert_mesh, convert_transform, flatten, interp,
-    mask_mode, reflect_z, vec2_arr, vec3_arr, NodeRef,
+    NodeRef, axes_of, blend, convert_binding_values, convert_mesh, convert_transform, flatten,
+    interp, mask_mode, reflect_z, vec2_arr, vec3_arr,
 };
 use crate::schema::{
-    source_binding_is_color, SchemaAnimation, SchemaAnimationLane, SchemaBinding, SchemaMask,
-    SchemaNode, SchemaParam,
+    SchemaAnimation, SchemaAnimationLane, SchemaBinding, SchemaMask, SchemaNode, SchemaParam,
+    source_binding_is_color,
 };
 
 /// Import a parsed `.inx` into a [`Model`].
@@ -441,7 +441,7 @@ fn convert_part(
                     name: node.name.to_string(),
                     slot: v,
                     count: refs.textures,
-                })
+                });
             }
         },
     };

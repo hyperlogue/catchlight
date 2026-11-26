@@ -189,8 +189,8 @@ fn low_rate_fixed_clock_tracks_a_continuous_ramp() {
 
 fn slot_model() -> (Model, catchlight_core::SlotId) {
     use catchlight_core::{
-        formats::clm::{ClmIndices, ClmMesh},
         ModelPart, SlotId,
+        formats::clm::{ClmIndices, ClmMesh},
     };
     let mut m = model(0.7);
     let root = m.root().unwrap().clone();
@@ -382,14 +382,18 @@ fn rounded_neutral_key_is_protected_and_evaluates_to_exact_rest() {
 fn resolving_a_fragment_output_checks_its_range_before_the_edit_lands() {
     let mut fragment = model(0.7).extract(&[nid("upper")]);
     let invalid = ModelParam::new(Name::truncated("control"), 0., 1., 1.);
-    assert!(fragment
-        .add_param_with_id(pid("bend"), invalid.clone())
-        .is_err());
+    assert!(
+        fragment
+            .add_param_with_id(pid("bend"), invalid.clone())
+            .is_err()
+    );
     fragment.add_param_with_id(pid("control"), invalid).unwrap();
     let before = fragment.to_clm_bytes().unwrap();
-    assert!(fragment
-        .rename_param_id(&pid("control"), pid("bend"))
-        .is_err());
+    assert!(
+        fragment
+            .rename_param_id(&pid("control"), pid("bend"))
+            .is_err()
+    );
     assert_eq!(fragment.to_clm_bytes().unwrap(), before);
 }
 
@@ -440,10 +444,12 @@ fn a_fragment_rename_cannot_merge_two_response_writers() {
         )
         .unwrap();
     let before = fragment.to_clm_bytes().unwrap();
-    assert!(fragment
-        .rename_param_id(&pid("broad"), pid("bend"))
-        .unwrap_err()
-        .to_string()
-        .contains("already driven"));
+    assert!(
+        fragment
+            .rename_param_id(&pid("broad"), pid("bend"))
+            .unwrap_err()
+            .to_string()
+            .contains("already driven")
+    );
     assert_eq!(fragment.to_clm_bytes().unwrap(), before);
 }

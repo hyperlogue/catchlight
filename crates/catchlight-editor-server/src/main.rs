@@ -23,8 +23,8 @@ mod native {
     use catchlight_editor_protocol::{Command, Reply, Request};
     use catchlight_editor_server::connection::ConnectionFile;
     use catchlight_editor_server::{
-        bind_http, user_kept_dir, Editor, FileStorage, HttpOptions, KeptStore, SidecarKeptStore,
-        UserKeptStore,
+        Editor, FileStorage, HttpOptions, KeptStore, SidecarKeptStore, UserKeptStore, bind_http,
+        user_kept_dir,
     };
 
     const USAGE: &str = "usage: catchlight-editor-server [--socket <path>] [--store <dir>] \

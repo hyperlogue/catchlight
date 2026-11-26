@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use crate::id::ParamId;
-use crate::interpolate::{cubic, frac, InterpolateMode};
+use crate::interpolate::{InterpolateMode, cubic, frac};
 
 use super::{BindingKey, BindingTarget, DenseGrid, Model, ModelError};
 

@@ -729,10 +729,12 @@ mod tests {
         let (model, param, node) = fixture(0.0);
         let write = at(&model, &param, &node, 1.0).deform_write(&[]).unwrap();
         assert_eq!(write.cells.len(), 2);
-        assert!(write
-            .cells
-            .iter()
-            .all(|c| matches!(&c.value, RecordingValue::Offsets(v) if v.is_empty())));
+        assert!(
+            write
+                .cells
+                .iter()
+                .all(|c| matches!(&c.value, RecordingValue::Offsets(v) if v.is_empty()))
+        );
     }
 
     #[test]

@@ -13,7 +13,7 @@ mod worker;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use catchlight_editor_protocol::*;
 use serde_json::json;
 
@@ -169,10 +169,10 @@ pub(crate) fn listen(how: &Listening, stream: &mut Transport) -> Result<i32> {
         let _lock = store.lock()?;
         store.write(&reg)?;
     }
-    if worker::ensure(&store)? {
-        if let Some(warning) = sandbox_warning(&env) {
-            eprintln!("{warning}");
-        }
+    if worker::ensure(&store)?
+        && let Some(warning) = sandbox_warning(&env)
+    {
+        eprintln!("{warning}");
     }
 
     if how.json {

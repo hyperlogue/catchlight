@@ -10,7 +10,7 @@ use catchlight_editor_protocol::{
     Command, ErrorCode, ExtensionKey, ExtensionRef, ExtensionSet, ExtensionValueInfo, ParamId,
     Rename, Reply, Request, ResponseBody, SessionId,
 };
-use catchlight_editor_server::{replica_query, Attachments, Editor, Payload, Storage};
+use catchlight_editor_server::{Attachments, Editor, Payload, Storage, replica_query};
 use serde_json::json;
 
 #[derive(Debug, Default)]

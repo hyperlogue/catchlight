@@ -1,9 +1,9 @@
 use crate::config::{Camera, Config, ParamSetting};
 use anyhow::{Context, Result};
 use catchlight_core::formats::{clm::ClmError, container::ContainerError};
-use catchlight_core::{load_model, Model, ModelError, ModelFormat, ParamId, Pose, Puppet};
+use catchlight_core::{Model, ModelError, ModelFormat, ParamId, Pose, Puppet, load_model};
 use catchlight_wgpu::{
-    collect, create_orthographic_camera_at, PrepareOptions, RenderCache, RenderList,
+    PrepareOptions, RenderCache, RenderList, collect, create_orthographic_camera_at,
 };
 use std::collections::HashMap;
 use std::path::Path;

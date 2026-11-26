@@ -1158,10 +1158,10 @@ mod tests {
 
     #[test]
     fn puppets_of_one_generation_share_a_bake() {
+        use crate::Name;
         use crate::id::SeededHex;
         use crate::model::ScalarTarget;
         use crate::model::{BindingKey, BindingTarget, ModelNode, ModelNodeKind, ModelParam};
-        use crate::Name;
 
         let mut hex = SeededHex::new(5);
         let mut model = Model::new();
@@ -1221,11 +1221,11 @@ mod tests {
 
     #[test]
     fn a_clone_shares_the_baked_model_and_owns_its_frame() {
+        use crate::Name;
         use crate::formats::clm::{ClmIndices, ClmMesh};
         use crate::id::SeededHex;
         use crate::model::{BindingKey, BindingTarget, ModelNode, ModelNodeKind, ModelParam};
         use crate::model::{ModelPart, ScalarTarget};
-        use crate::Name;
 
         let mut hex = SeededHex::new(3);
         let mut model = Model::new();
@@ -1285,9 +1285,9 @@ mod tests {
     }
 
     fn two_claimants() -> (Model, Puppet, ParamId, NodeIdx, NodeIdx) {
+        use crate::Name;
         use crate::id::SeededHex;
         use crate::model::{ModelNode, ModelNodeKind, ModelParam};
-        use crate::Name;
 
         let mut hex = SeededHex::new(3);
         let mut model = Model::new();

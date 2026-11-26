@@ -7,10 +7,10 @@ mod common;
 
 use std::path::{Path, PathBuf};
 
-use catchlight_core::extension::Extension;
 use catchlight_core::Model;
-use catchlight_extension_humanoid::{Humanoid, CONTROLS};
-use serde_json::{json, Value};
+use catchlight_core::extension::Extension;
+use catchlight_extension_humanoid::{CONTROLS, Humanoid};
+use serde_json::{Value, json};
 
 fn grid(tag: &str) -> PathBuf {
     common::copy_fixture("two_param_grid", &common::tmp(tag))
@@ -108,10 +108,12 @@ fn map_replaces_and_list_reports_mappings_unmapped_and_warnings() {
         listing["warnings"][0]["code"],
         "catchlight.humanoid/shared-param"
     );
-    assert!(listing["warnings"][0]["message"]
-        .as_str()
-        .unwrap()
-        .contains("param-0"));
+    assert!(
+        listing["warnings"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("param-0")
+    );
 }
 
 #[test]

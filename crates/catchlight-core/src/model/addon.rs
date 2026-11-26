@@ -252,10 +252,10 @@ impl Model {
             let Some(node) = self.nodes.get(&id) else {
                 continue;
             };
-            if let Some(parent) = node.parent() {
-                if !self.nodes.contains_key(parent) {
-                    need(Required::Node(parent.clone()), "parent", &id);
-                }
+            if let Some(parent) = node.parent()
+                && !self.nodes.contains_key(parent)
+            {
+                need(Required::Node(parent.clone()), "parent", &id);
             }
             if let ModelNodeKind::MotionResponse(r) = &node.kind {
                 for p in
@@ -271,14 +271,14 @@ impl Model {
                     }
                 }
                 for t in &r.inputs {
-                    if let crate::ResponseSource::PartSlot { part, slot, .. } = &t.source {
-                        if !self.nodes.contains_key(part) {
-                            need(
-                                Required::Slot(part.clone(), slot.clone()),
-                                "motion response slot",
-                                &id,
-                            );
-                        }
+                    if let crate::ResponseSource::PartSlot { part, slot, .. } = &t.source
+                        && !self.nodes.contains_key(part)
+                    {
+                        need(
+                            Required::Slot(part.clone(), slot.clone()),
+                            "motion response slot",
+                            &id,
+                        );
                     }
                 }
             }
@@ -451,7 +451,7 @@ impl Model {
                 None => {
                     return Err(InstallError::ExtensionNotRegistered {
                         key: key.to_string(),
-                    })
+                    });
                 }
             };
             let (merged, receipt) = match self.extensions.map.get(key) {
@@ -465,7 +465,7 @@ impl Model {
                         None => {
                             return Err(InstallError::ExtensionNotRegistered {
                                 key: key.to_string(),
-                            })
+                            });
                         }
                     };
                     ours.data.dyn_merge_addon(&*theirs.data)
@@ -707,10 +707,10 @@ impl Model {
         let textures: HashSet<&TexId> = installed.textures.iter().collect();
         let bindings: HashSet<&BindingKey> = installed.bindings.iter().collect();
         for node in self.nodes.values_mut() {
-            if let ModelNodeKind::Part(p) = &mut node.kind {
-                if p.albedo.as_ref().is_some_and(|t| textures.contains(t)) {
-                    p.albedo = None;
-                }
+            if let ModelNodeKind::Part(p) = &mut node.kind
+                && p.albedo.as_ref().is_some_and(|t| textures.contains(t))
+            {
+                p.albedo = None;
             }
         }
         self.bindings.retain(|b| !bindings.contains(&b.key));

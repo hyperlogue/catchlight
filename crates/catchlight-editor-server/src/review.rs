@@ -256,11 +256,7 @@ fn require(model: &Model, target: &ReviewTarget) -> Result<(), EditorError> {
 /// `target` as `rename` leaves it, run forward or (`back`) undone.
 fn renamed(target: &ReviewTarget, rename: &Rename, back: bool) -> Option<ReviewTarget> {
     fn pick<'a, T>(from: &'a T, to: &'a T, back: bool) -> (&'a T, &'a T) {
-        if back {
-            (to, from)
-        } else {
-            (from, to)
-        }
+        if back { (to, from) } else { (from, to) }
     }
     match (target, rename) {
         (ReviewTarget::Node { node }, Rename::Node { from, to }) => {
@@ -500,10 +496,10 @@ impl ReviewState {
                 requested: bytes.len() as u64,
             });
         }
-        if self.held.len() == MAX_HELD_IMAGES {
-            if let Some(oldest) = self.held.pop_front() {
-                self.images.remove(&oldest);
-            }
+        if self.held.len() == MAX_HELD_IMAGES
+            && let Some(oldest) = self.held.pop_front()
+        {
+            self.images.remove(&oldest);
         }
         let total: usize = self.images.values().map(|i| i.byte_length).sum();
         if total + bytes.len() > MAX_SESSION_IMAGE_BYTES {
@@ -1858,12 +1854,13 @@ mod tests {
             thread: ThreadId(1),
         });
         assert_eq!(f.review_events(), 5);
-        assert!(f
-            .events
-            .lock()
-            .unwrap()
-            .iter()
-            .all(|e| !matches!(e, Event::ModelChanged { .. })));
+        assert!(
+            f.events
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|e| !matches!(e, Event::ModelChanged { .. }))
+        );
     }
 
     #[test]

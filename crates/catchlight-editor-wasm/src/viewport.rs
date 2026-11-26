@@ -17,8 +17,8 @@ use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
 use catchlight_wgpu::{
-    configure_surface, create_orthographic_camera_at, FrameTargets, RenderList, RenderTarget,
-    RendererError, SurfaceContext,
+    FrameTargets, RenderList, RenderTarget, RendererError, SurfaceContext, configure_surface,
+    create_orthographic_camera_at,
 };
 use wasm_bindgen::prelude::*;
 
@@ -181,10 +181,10 @@ impl GlStage {
     }
 
     fn halt(&self) {
-        if let Some(handle) = self.pending.take() {
-            if let Some(window) = web_sys::window() {
-                window.cancel_animation_frame(handle).ok();
-            }
+        if let Some(handle) = self.pending.take()
+            && let Some(window) = web_sys::window()
+        {
+            window.cancel_animation_frame(handle).ok();
         }
         // Taken out before it drops: the closure holds an `Rc` to this stage,
         // so leaving it in place would be a cycle nothing ever breaks.
@@ -1054,10 +1054,10 @@ impl Viewport {
                     // handler, a React unmount racing the callback) has to win
                     // over the reschedule below.
                     pending_for_closure.set(None);
-                    if let Ok(mut borrowed) = inner.try_borrow_mut() {
-                        if let Err(message) = borrowed.frame(now_ms) {
-                            web_sys::console::error_1(&JsValue::from_str(&message));
-                        }
+                    if let Ok(mut borrowed) = inner.try_borrow_mut()
+                        && let Err(message) = borrowed.frame(now_ms)
+                    {
+                        web_sys::console::error_1(&JsValue::from_str(&message));
                     }
                     if let Some(closure) = tick_for_closure.borrow().as_ref() {
                         pending_for_closure.set(request_frame(closure));
@@ -1074,10 +1074,10 @@ impl Viewport {
     pub fn stop(&self) {
         match &self.frames {
             Frames::Own { tick, pending } => {
-                if let Some(handle) = pending.take() {
-                    if let Some(window) = web_sys::window() {
-                        window.cancel_animation_frame(handle).ok();
-                    }
+                if let Some(handle) = pending.take()
+                    && let Some(window) = web_sys::window()
+                {
+                    window.cancel_animation_frame(handle).ok();
                 }
                 // Taken out before it drops: the browser is no longer holding
                 // a call to it, and the closure captures this same cell, so

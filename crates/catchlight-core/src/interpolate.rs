@@ -47,10 +47,8 @@ pub(crate) fn binding_bracket(
     normalized: f32,
     neutral_output: bool,
 ) -> (usize, usize) {
-    if neutral_output {
-        if let Some(index) = neutral_key(axis, normalized) {
-            return (index, index);
-        }
+    if neutral_output && let Some(index) = neutral_key(axis, normalized) {
+        return (index, index);
     }
     bracket(axis, normalized)
 }

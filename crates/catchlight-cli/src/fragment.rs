@@ -10,7 +10,7 @@ use catchlight_core::formats::clm::{ClmExtension, ClmFile, ClmNodeKind, ClmStruc
 use catchlight_core::id::NodeId;
 use catchlight_core::{Required, Requirement};
 
-use crate::{file, Error};
+use crate::{Error, file};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Extracted {
@@ -133,10 +133,10 @@ pub fn scan(clm: &ClmFile) -> Vec<Requirement> {
 
     for node in &doc.nodes {
         let owner = node.id.to_string();
-        if let Some(parent) = &node.parent {
-            if !has_node(parent) {
-                need(Required::Node(parent.clone()), "parent", owner.clone());
-            }
+        if let Some(parent) = &node.parent
+            && !has_node(parent)
+        {
+            need(Required::Node(parent.clone()), "parent", owner.clone());
         }
         let masks = match &node.kind {
             ClmNodeKind::Part(p) => p.masks.as_slice(),
@@ -160,14 +160,13 @@ pub fn scan(clm: &ClmFile) -> Vec<Requirement> {
                 }
                 for t in &r.inputs {
                     if let catchlight_core::ResponseSource::PartSlot { part, slot, .. } = &t.source
+                        && !has_node(part)
                     {
-                        if !has_node(part) {
-                            need(
-                                Required::Slot(part.clone(), slot.clone()),
-                                "motion response slot",
-                                owner.clone(),
-                            );
-                        }
+                        need(
+                            Required::Slot(part.clone(), slot.clone()),
+                            "motion response slot",
+                            owner.clone(),
+                        );
                     }
                 }
                 &[]

@@ -674,11 +674,11 @@ impl WgpuRenderer {
             } else {
                 self.flush_pending_parts(encoder, sink, &pending_parts);
                 pending_parts.clear();
-                if let Some(first) = pending_masked.first() {
-                    if !same_mask_signature(first.mask_sources, mask_sources) {
-                        self.flush_pending_masked(encoder, sink, &pending_masked);
-                        pending_masked.clear();
-                    }
+                if let Some(first) = pending_masked.first()
+                    && !same_mask_signature(first.mask_sources, mask_sources)
+                {
+                    self.flush_pending_masked(encoder, sink, &pending_masked);
+                    pending_masked.clear();
                 }
                 pending_masked.push(PreparedMaskedPartDraw {
                     draw: PreparedPartDraw {
@@ -715,13 +715,11 @@ impl WgpuRenderer {
             clear_color,
             ..
         } = sink
+            && !**has_rendered
+            && let Some(color) = *clear_color
         {
-            if !**has_rendered {
-                if let Some(color) = *clear_color {
-                    self.explicit_clear_pass(encoder, view, color, label);
-                    **has_rendered = true;
-                }
-            }
+            self.explicit_clear_pass(encoder, view, color, label);
+            **has_rendered = true;
         }
     }
 }

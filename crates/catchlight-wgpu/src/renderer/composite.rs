@@ -411,7 +411,7 @@ impl WgpuRenderer {
             opacity,
             tint,
             screen_tint,
-            ref mask_sources,
+            mask_sources,
             mask_threshold,
             ..
         } = drawable
@@ -461,47 +461,47 @@ impl WgpuRenderer {
 
         // Without a texture or pool, fall through to the Normal-OVER blit.
         let mut blitted = false;
-        if let Some(shader_blend) = ShaderBlend::of(*blend_mode) {
-            if let (Some(main_tex), Some(snap_pool)) = (target.texture, snapshots.as_deref_mut()) {
-                let mut source = slot.clone();
-                let mut source_uniform_offset = part_uniform_offset;
-                if !mask_sources.is_empty() {
-                    let masked = composites.acquire(&self.shared, &self.device);
-                    self.explicit_clear_pass(
-                        encoder,
-                        &masked.view,
-                        wgpu::Color::TRANSPARENT,
-                        "Masked Composite Source Clear",
-                    );
-                    self.blit_composite_with_masks(
-                        encoder,
-                        &slot,
-                        &masked.view,
-                        stencil,
-                        BlendMode::Normal,
-                        mask_sources,
-                        part_uniform_offset,
-                        union,
-                    );
-                    source = masked;
-                    source_uniform_offset =
-                        self.write_part_uniform(1.0, glam::Vec3::ONE, glam::Vec3::ZERO, 0.5);
-                }
-                let snapshot = snap_pool.acquire(&self.shared, &self.device);
-                self.blit_composite_dst_in_shader(
+        if let Some(shader_blend) = ShaderBlend::of(*blend_mode)
+            && let (Some(main_tex), Some(snap_pool)) = (target.texture, snapshots.as_deref_mut())
+        {
+            let mut source = slot.clone();
+            let mut source_uniform_offset = part_uniform_offset;
+            if !mask_sources.is_empty() {
+                let masked = composites.acquire(&self.shared, &self.device);
+                self.explicit_clear_pass(
                     encoder,
-                    &source,
-                    target.view,
-                    main_tex,
-                    snapshot,
-                    shader_blend,
-                    source_uniform_offset,
-                    width,
-                    height,
+                    &masked.view,
+                    wgpu::Color::TRANSPARENT,
+                    "Masked Composite Source Clear",
+                );
+                self.blit_composite_with_masks(
+                    encoder,
+                    &slot,
+                    &masked.view,
+                    stencil,
+                    BlendMode::Normal,
+                    mask_sources,
+                    part_uniform_offset,
                     union,
                 );
-                blitted = true;
+                source = masked;
+                source_uniform_offset =
+                    self.write_part_uniform(1.0, glam::Vec3::ONE, glam::Vec3::ZERO, 0.5);
             }
+            let snapshot = snap_pool.acquire(&self.shared, &self.device);
+            self.blit_composite_dst_in_shader(
+                encoder,
+                &source,
+                target.view,
+                main_tex,
+                snapshot,
+                shader_blend,
+                source_uniform_offset,
+                width,
+                height,
+                union,
+            );
+            blitted = true;
         }
 
         if !blitted {
@@ -593,10 +593,8 @@ impl WgpuRenderer {
             composites,
             snapshots,
         );
-        if !has_rendered {
-            if let Some(color) = clear_color {
-                self.explicit_clear_pass(encoder, target.view, color, labels.fallback_clear);
-            }
+        if !has_rendered && let Some(color) = clear_color {
+            self.explicit_clear_pass(encoder, target.view, color, labels.fallback_clear);
         }
     }
 
@@ -666,7 +664,7 @@ impl WgpuRenderer {
                     opacity,
                     tint,
                     screen_tint,
-                    ref mask_sources,
+                    mask_sources,
                     mask_threshold,
                     ..
                 } => {

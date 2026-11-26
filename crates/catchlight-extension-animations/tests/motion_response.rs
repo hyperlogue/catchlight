@@ -93,8 +93,8 @@ fn model(damping: f32) -> Model {
 
 fn slot_model() -> (Model, catchlight_core::SlotId) {
     use catchlight_core::{
-        formats::clm::{ClmIndices, ClmMesh},
         ModelPart, SlotId,
+        formats::clm::{ClmIndices, ClmMesh},
     };
     let mut m = model(0.7);
     let root = m.root().unwrap().clone();

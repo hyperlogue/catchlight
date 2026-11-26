@@ -13,7 +13,7 @@ mod plugin;
 mod prepare;
 mod update;
 
-pub use asset::{model_from_bytes, CatchlightModel, CatchlightModelLoader, ModelAssetError};
+pub use asset::{CatchlightModel, CatchlightModelLoader, ModelAssetError, model_from_bytes};
 pub use camera_controls::{CameraControls, CameraControlsPlugin};
 pub use catchlight_core::{Model, Pose, Puppet};
 pub use components::{CatchlightCamera, CatchlightPuppet};

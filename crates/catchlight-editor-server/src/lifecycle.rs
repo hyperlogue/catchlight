@@ -290,12 +290,12 @@ fn check_source_attachments(
         Some(SessionSource::Json { .. }) => (Some("structure"), true),
         Some(SessionSource::Manifest {}) => (Some("manifest"), true),
     };
-    if let Some(required) = required {
-        if !attachments.0.contains_key(required) {
-            return Err(EditorError::BadRequest(format!(
-                "missing attachment {required}"
-            )));
-        }
+    if let Some(required) = required
+        && !attachments.0.contains_key(required)
+    {
+        return Err(EditorError::BadRequest(format!(
+            "missing attachment {required}"
+        )));
     }
     for name in attachments.names() {
         if Some(name) != required && !(textures && name.starts_with("texture:")) {

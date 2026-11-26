@@ -13,7 +13,7 @@ use catchlight_core::{
     ModelTexture, Name, NodeId, ParamId, ScalarTarget, TexId,
 };
 use image::ImageEncoder;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::path::Path;
 
 fn model() -> Model {
@@ -144,9 +144,11 @@ fn retained_child_survives_excluded_parent_and_disabled_mask_contributes() {
     let a = rgba(&dir.join("images/a.png"));
     assert_eq!(a.get_pixel(36, 16).0, [0, 255, 0, 255]);
     assert_eq!(a.get_pixel(16, 16).0, [0, 0, 0, 0]);
-    assert!(rgba(&dir.join("images/b.png"))
-        .pixels()
-        .all(|p| p.0 == [0, 0, 0, 0]));
+    assert!(
+        rgba(&dir.join("images/b.png"))
+            .pixels()
+            .all(|p| p.0 == [0, 0, 0, 0])
+    );
     let c = rgba(&dir.join("images/c.png"));
     let d = rgba(&dir.join("images/d.png"));
     assert_eq!(c.get_pixel(48, 16).0, [0, 255, 0, 255]);
@@ -256,9 +258,11 @@ fn animation_decimation_reuses_native_clock_and_preserves_motion_responses_and_i
     assert_eq!(traces[0]["clip"]["frame"], 0.0);
     assert_eq!(traces[6]["clip"]["frame"], 2.0);
     assert_eq!(traces[6]["elapsed"], 0.75);
-    assert!(traces
-        .iter()
-        .any(|t| t["effective"]["response"].as_f64().unwrap().abs() > 0.001));
+    assert!(
+        traces
+            .iter()
+            .any(|t| t["effective"]["response"].as_f64().unwrap().abs() > 0.001)
+    );
     assert!(traces.iter().all(|t| t["requested"]["response"] == 0.0));
     for frame in [0, 3, 6, 9] {
         let file = format!("a--{frame:06}.png");
@@ -363,17 +367,19 @@ fn existing_output_and_cancelled_run_keep_an_honest_incomplete_manifest() {
     let run: Value = serde_json::from_slice(&before).unwrap();
     assert_eq!(run["complete"], false);
     assert_eq!(run["failure"]["kind"], "cancelled");
-    assert!(execute::run(
-        &m,
-        document.resolve(&m).unwrap(),
-        Destination::Directory(destination.clone()),
-        Some(InputIdentity {
-            model_sha256: execute::hash(b"model"),
-            spec_sha256: None
-        }),
-        &Cancellation::default()
-    )
-    .is_err());
+    assert!(
+        execute::run(
+            &m,
+            document.resolve(&m).unwrap(),
+            Destination::Directory(destination.clone()),
+            Some(InputIdentity {
+                model_sha256: execute::hash(b"model"),
+                spec_sha256: None
+            }),
+            &Cancellation::default()
+        )
+        .is_err()
+    );
     assert_eq!(std::fs::read(destination.join("run.json")).unwrap(), before);
 }
 
@@ -434,11 +440,13 @@ fn interrupt_after_a_frame_preserves_valid_artifacts_and_marks_manifest_incomple
         let _ = child.kill();
         panic!("first frame did not appear");
     }
-    assert!(Command::new("kill")
-        .args(["-INT", &child.id().to_string()])
-        .status()
-        .unwrap()
-        .success());
+    assert!(
+        Command::new("kill")
+            .args(["-INT", &child.id().to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
     let output = child.wait_with_output().unwrap();
     assert_eq!(
         output.status.code(),

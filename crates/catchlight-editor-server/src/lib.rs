@@ -23,16 +23,16 @@ mod transport;
 mod versions;
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use http::{bind_http, serve_http, HttpOptions, HttpServer, UiFiles};
-#[cfg(not(target_arch = "wasm32"))]
-pub use kept_store::{user_kept_dir, SidecarKeptStore, UnusedKept, UserKeptStore};
+pub use http::{HttpOptions, HttpServer, UiFiles, bind_http, serve_http};
 pub use kept_store::{KeptStore, NoKeptStore};
+#[cfg(not(target_arch = "wasm32"))]
+pub use kept_store::{SidecarKeptStore, UnusedKept, UserKeptStore, user_kept_dir};
 #[cfg(not(target_arch = "wasm32"))]
 pub use preview::PreviewError;
 pub use query::{extension_value_info, replica_query, replica_reply};
 #[cfg(not(target_arch = "wasm32"))]
 pub use storage::FileStorage;
-pub use storage::{join_key, key_stem, parent_key, NoStorage, Storage};
+pub use storage::{NoStorage, Storage, join_key, key_stem, parent_key};
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -54,9 +54,9 @@ use catchlight_core::{
 // The wire's camera and the renderer's framing are the same shape and not the
 // same type; the conversion happens here, at the edge.
 use catchlight_editor_core::{
-    contour_automesh, fit_strand, grid_automesh, AlphaMask, ContourKnobs, GridKnobs, HistoryError,
-    HistoryLimits, HistoryNavigation, Manifest, ManifestError, MeshError, ModelHistory,
-    ModelManifestExt as _, ModelMeshExt as _, StrandError, TextureData, UvMap,
+    AlphaMask, ContourKnobs, GridKnobs, HistoryError, HistoryLimits, HistoryNavigation, Manifest,
+    ManifestError, MeshError, ModelHistory, ModelManifestExt as _, ModelMeshExt as _, StrandError,
+    TextureData, UvMap, contour_automesh, fit_strand, grid_automesh,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use catchlight_wgpu::Framing;
@@ -734,10 +734,10 @@ impl Editor {
     fn insert_session(&self, id: SessionId, session: Session) -> Result<(), EditorError> {
         {
             let mut sessions = lock(&self.sessions);
-            if let Some(viewing) = session.viewing {
-                if !sessions.contains_key(&viewing.session) {
-                    return Err(EditorError::NoSession(viewing.session));
-                }
+            if let Some(viewing) = session.viewing
+                && !sessions.contains_key(&viewing.session)
+            {
+                return Err(EditorError::NoSession(viewing.session));
             }
             sessions.insert(id, Arc::new(Mutex::new(session)));
         }
@@ -1687,14 +1687,14 @@ impl Editor {
                             "a json extension carries its value inline; the `value` attachment \
                              is for kind \"bytes\""
                                 .into(),
-                        ))
+                        ));
                     }
                     (ExtensionSet::Json { value }, None) => ExtensionValue::Json(value),
                     (ExtensionSet::Bytes, Some(bytes)) => ExtensionValue::Bytes(bytes.into()),
                     (ExtensionSet::Bytes, None) => {
                         return Err(EditorError::BadRequest(
                             "a bytes extension needs the `value` attachment".into(),
-                        ))
+                        ));
                     }
                     (
                         ExtensionSet::Maintained {
@@ -1712,14 +1712,14 @@ impl Editor {
                                     "a maintained extension's payload is its inline `value` \
                                      or the `value` attachment, not both"
                                         .into(),
-                                ))
+                                ));
                             }
                             (None, None) => {
                                 return Err(EditorError::BadRequest(
                                     "a maintained extension needs an inline `value` or the \
                                      `value` attachment"
                                         .into(),
-                                ))
+                                ));
                             }
                         };
                         let refs = refs
@@ -1891,8 +1891,8 @@ pub use catchlight_editor_protocol::default_socket_path;
 pub use transport::serve_unix;
 #[cfg(all(unix, test))]
 use transport::{
-    bind_unix_listener, ensure_private_dir, serve_connection, socket_lock_path, ConnectionLimiter,
-    MAX_REQUEST_BYTES, MAX_SOCKET_CONNECTIONS,
+    ConnectionLimiter, MAX_REQUEST_BYTES, MAX_SOCKET_CONNECTIONS, bind_unix_listener,
+    ensure_private_dir, serve_connection, socket_lock_path,
 };
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -2312,15 +2312,15 @@ fn apply_patch(model: &mut Model, id: &NodeId, patch: &NodePatch) -> Result<(), 
                 _ => {}
             }
         }
-        if let Some(v) = patch.propagate_meshgroup {
-            if let ModelNodeKind::Composite(c) = kind {
-                c.propagate_meshgroup = v;
-            }
+        if let Some(v) = patch.propagate_meshgroup
+            && let ModelNodeKind::Composite(c) = kind
+        {
+            c.propagate_meshgroup = v;
         }
-        if let Some(v) = patch.mg_translate_children {
-            if let ModelNodeKind::MeshGroup(mg) = kind {
-                mg.translate_children = v;
-            }
+        if let Some(v) = patch.mg_translate_children
+            && let ModelNodeKind::MeshGroup(mg) = kind
+        {
+            mg.translate_children = v;
         }
     })?;
     Ok(())
@@ -2412,13 +2412,13 @@ fn check_attachments(cmd: &Command, attachments: &Attachments) -> Result<(), Edi
         }
     }
     for a in declared {
-        if let Attachment::Fixed(name) = a {
-            if !attachments.names().contains(name) {
-                return Err(EditorError::BadRequest(format!(
-                    "{} needs the attachment {name:?}",
-                    cmd.tag()
-                )));
-            }
+        if let Attachment::Fixed(name) = a
+            && !attachments.names().contains(name)
+        {
+            return Err(EditorError::BadRequest(format!(
+                "{} needs the attachment {name:?}",
+                cmd.tag()
+            )));
         }
     }
     Ok(())

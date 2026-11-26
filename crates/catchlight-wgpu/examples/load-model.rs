@@ -3,13 +3,13 @@
 //! winit viewer for a `.clm` model. `--control` (or `C`) opens per-param
 //! sliders and stops animation playback.
 
-use catchlight_core::{load_model, Model, ModelFormat, ParamId, Puppet};
+use catchlight_core::{Model, ModelFormat, ParamId, Puppet, load_model};
 use catchlight_extension_animations::{
     AnimationPlayer, Animations, Clip, Keyframe, Lane, LaneTarget, LiveInputs, Rig,
 };
 use catchlight_wgpu::{
-    create_orthographic_camera_at, create_surface_context, PrepareOptions, RenderCache, RenderList,
-    SurfaceContext, WgpuRenderer,
+    PrepareOptions, RenderCache, RenderList, SurfaceContext, WgpuRenderer,
+    create_orthographic_camera_at, create_surface_context,
 };
 use std::path::Path;
 use std::sync::Arc;
@@ -319,15 +319,15 @@ impl ApplicationHandler for App {
         }
 
         // The panel gets input first so a slider drag doesn't also pan.
-        if self.control_enabled {
-            if let (Some(control), Some(window)) = (self.control.as_mut(), self.window.as_ref()) {
-                let response = control.egui_state.on_window_event(window, &event);
-                if response.repaint {
-                    window.request_redraw();
-                }
-                if response.consumed {
-                    return;
-                }
+        if self.control_enabled
+            && let (Some(control), Some(window)) = (self.control.as_mut(), self.window.as_ref())
+        {
+            let response = control.egui_state.on_window_event(window, &event);
+            if response.repaint {
+                window.request_redraw();
+            }
+            if response.consumed {
+                return;
             }
         }
 
@@ -358,17 +358,17 @@ impl ApplicationHandler for App {
                 }
             },
             WindowEvent::CursorMoved { position, .. } => {
-                if self.dragging {
-                    if let Some((lx, ly)) = self.last_cursor {
-                        let (_, h) = self.last_window_size;
-                        let world_per_pixel = self.camera_height / h.max(1) as f32;
-                        let dx = (position.x - lx) as f32 * world_per_pixel;
-                        let dy = (position.y - ly) as f32 * world_per_pixel;
-                        // World is Y-up, screen Y grows down.
-                        self.camera_center.x -= dx;
-                        self.camera_center.y += dy;
-                        self.update_camera();
-                    }
+                if self.dragging
+                    && let Some((lx, ly)) = self.last_cursor
+                {
+                    let (_, h) = self.last_window_size;
+                    let world_per_pixel = self.camera_height / h.max(1) as f32;
+                    let dx = (position.x - lx) as f32 * world_per_pixel;
+                    let dy = (position.y - ly) as f32 * world_per_pixel;
+                    // World is Y-up, screen Y grows down.
+                    self.camera_center.x -= dx;
+                    self.camera_center.y += dy;
+                    self.update_camera();
                 }
                 self.last_cursor = Some((position.x, position.y));
             }

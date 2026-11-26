@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use catchlight_editor_protocol::{Command as Wire, Reply, Request, ResponseBody};
-use catchlight_editor_server::{serve_unix, Editor, FileStorage};
+use catchlight_editor_server::{Editor, FileStorage, serve_unix};
 
 /// Removes the directory and stops a worker the test left behind.
 struct Dir(PathBuf);

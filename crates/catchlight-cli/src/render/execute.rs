@@ -4,7 +4,7 @@ use super::{
     artifacts::*,
     frame::{self, FrameRuntime},
     overlay,
-    spec::{bad, Framing, ResolvedRequest, ResolvedSpec},
+    spec::{Framing, ResolvedRequest, ResolvedSpec, bad},
     terminal,
     video::{self, VideoSink},
 };
@@ -15,8 +15,8 @@ use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc,
+    atomic::{AtomicBool, Ordering},
 };
 
 #[derive(Debug, Clone)]
@@ -153,17 +153,17 @@ pub fn run(
     };
     persist_manifest(&directory, &manifest)?;
     let mut active_request = None;
-    if plan.requests.values().any(|r| r.video.is_some()) {
-        if let Err(error) = video::preflight() {
-            if let Some(run) = &mut manifest {
-                run.failure = Some(RunFailure {
-                    kind: "render_failed".into(),
-                    request: None,
-                });
-            }
-            persist_failed_manifest(&directory, &manifest);
-            return Err(error);
+    if plan.requests.values().any(|r| r.video.is_some())
+        && let Err(error) = video::preflight()
+    {
+        if let Some(run) = &mut manifest {
+            run.failure = Some(RunFailure {
+                kind: "render_failed".into(),
+                request: None,
+            });
         }
+        persist_failed_manifest(&directory, &manifest);
+        return Err(error);
     }
     let result = (|| {
         cancel.check()?;
@@ -274,7 +274,9 @@ pub fn run(
                                 terminal::present(&png(&pixels, framing.size)?, std::io::stdout())
                                     .map_err(|e| bad(format!("terminal image: {e}")))?;
                             } else {
-                                eprintln!("Use --out image.png or --out-dir directory to save this render.");
+                                eprintln!(
+                                    "Use --out image.png or --out-dir directory to save this render."
+                                );
                             }
                         }
                         Destination::Directory(dir) => {
@@ -322,12 +324,12 @@ pub fn run(
                 crate::file::persist(trace.into_temp_path(), &dir.join(&filename))?;
                 record(&mut manifest, name, filename, None, OutputKind::Trace);
             }
-            if let Some(run) = &mut manifest {
-                if let Some(result) = run.requests.get_mut(name) {
-                    result.complete = true;
-                    if request.animation.is_none() {
-                        result.pose = Some(effective_pose(&model, &runtime.puppet)?);
-                    }
+            if let Some(run) = &mut manifest
+                && let Some(result) = run.requests.get_mut(name)
+            {
+                result.complete = true;
+                if request.animation.is_none() {
+                    result.pose = Some(effective_pose(&model, &runtime.puppet)?);
                 }
             }
             persist_manifest(&directory, &manifest)?;

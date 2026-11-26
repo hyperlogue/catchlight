@@ -13,7 +13,7 @@ use catchlight_core::{
 };
 use catchlight_editor_protocol::*;
 
-use crate::{image_dims, EditorError};
+use crate::{EditorError, image_dims};
 
 /// The one conversion, so a listing and a get agree and the hash matches what
 /// the structure feed carries.
@@ -301,18 +301,19 @@ fn binding_cells(model: &Model, command: &Command) -> Result<ResponseBody, Edito
         .collect();
     // A derived hole fills the grid over this vertex page, so bound cumulative
     // fill work as well as returned vertices.
-    if *include_derived && !deforms.is_empty() {
-        if let Some(range) = range {
-            let holes = cells
-                .iter()
-                .filter(|cell| !deforms.contains_key(*cell))
-                .count();
-            let work = (width as usize)
-                .saturating_mul(height as usize)
-                .saturating_mul(range.count as usize)
-                .saturating_mul(holes);
-            check_count("derived_cell_vertices", work, MAX_QUERY_ITEMS)?;
-        }
+    if *include_derived
+        && !deforms.is_empty()
+        && let Some(range) = range
+    {
+        let holes = cells
+            .iter()
+            .filter(|cell| !deforms.contains_key(*cell))
+            .count();
+        let work = (width as usize)
+            .saturating_mul(height as usize)
+            .saturating_mul(range.count as usize)
+            .saturating_mul(holes);
+        check_count("derived_cell_vertices", work, MAX_QUERY_ITEMS)?;
     }
     let offsets = |flat: &[f32]| -> BindingCellValue {
         let range = range.unwrap_or(IndexRange { start: 0, count: 0 });

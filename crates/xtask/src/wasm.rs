@@ -7,7 +7,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
 const OUT_DIR: &str = "packages/wasm";
 const OUT_NAME: &str = "catchlight";
@@ -132,10 +132,8 @@ fn locked_version(lock: &str, name: &str) -> Option<String> {
             in_block = false;
         } else if line == format!("name = \"{name}\"") {
             in_block = true;
-        } else if in_block {
-            if let Some(rest) = line.strip_prefix("version = ") {
-                return Some(rest.trim_matches('"').to_string());
-            }
+        } else if in_block && let Some(rest) = line.strip_prefix("version = ") {
+            return Some(rest.trim_matches('"').to_string());
         }
     }
     None

@@ -7,7 +7,7 @@ use catchlight_core::formats::clm::{self, ClmExtension, ClmPayload};
 use catchlight_core::id::ExtensionKey;
 use catchlight_core::{Model, ModelParam, Name, ParamId};
 use catchlight_extension_humanoid::authoring::{
-    map, standard_control, unmap, AuthoringError, Mapped,
+    AuthoringError, Mapped, map, standard_control, unmap,
 };
 use catchlight_extension_humanoid::{ControlMapping, Humanoid};
 

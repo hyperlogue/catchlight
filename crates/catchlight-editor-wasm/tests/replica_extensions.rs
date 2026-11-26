@@ -6,7 +6,7 @@
 use catchlight_core::{Model, ModelParam, Name, ParamId};
 use catchlight_editor_wasm::ReplicaState;
 use catchlight_extension_humanoid::{ControlMapping, Humanoid};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 #[test]
 fn a_replica_reports_official_extensions_as_checked() {

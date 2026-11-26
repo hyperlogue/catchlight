@@ -72,10 +72,10 @@ pub(crate) fn harness_names(harness: &str, executable: Option<&Path>) -> Vec<Str
         "antigravity" => vec!["agy".into(), ".agy-wrapped".into(), "antigravity".into()],
         _ => Vec::new(),
     };
-    if harness != "claude" {
-        if let Some(name) = executable.and_then(Path::file_name) {
-            names.push(name.to_string_lossy().into_owned());
-        }
+    if harness != "claude"
+        && let Some(name) = executable.and_then(Path::file_name)
+    {
+        names.push(name.to_string_lossy().into_owned());
     }
     names
 }
@@ -98,12 +98,11 @@ pub(crate) fn find_ancestor(
     while pid > 0 && seen.len() < 64 && !seen.contains(&pid) {
         seen.push(pid);
         let entry = read(pid).flatten().filter(|e| !e.dead)?;
-        if names.iter().any(|n| n == basename(&entry.name)) {
-            if let Some(invoked) = command_name(pid) {
-                if names.iter().any(|n| n == basename(&invoked)) {
-                    return Some(pid);
-                }
-            }
+        if names.iter().any(|n| n == basename(&entry.name))
+            && let Some(invoked) = command_name(pid)
+            && names.iter().any(|n| n == basename(&invoked))
+        {
+            return Some(pid);
         }
         pid = entry.parent;
     }

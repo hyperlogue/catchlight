@@ -8,7 +8,7 @@
 mod common;
 
 use catchlight_core::{BlendMode, Model, ModelComposite, ModelNodeKind};
-use catchlight_wgpu::{collect, PrepareOptions, RenderCache, WgpuRenderer};
+use catchlight_wgpu::{PrepareOptions, RenderCache, WgpuRenderer, collect};
 
 const W: u32 = 8;
 const H: u32 = 8;

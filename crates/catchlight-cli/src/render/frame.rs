@@ -1,6 +1,6 @@
 //! One continuing Puppet per request. Bounds, sidecars, overlays and traces
 //! observe the same evaluated frame; capture decimation never changes ticks.
-use super::spec::{bad, MotionResponseMode, ResolvedRequest};
+use super::spec::{MotionResponseMode, ResolvedRequest, bad};
 use crate::Error;
 use catchlight_core::{Model, NodeId, Pose, Puppet};
 use catchlight_extension_animations::{AnimationPlayer, LiveInputs, Rig};

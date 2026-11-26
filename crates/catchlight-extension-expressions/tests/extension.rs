@@ -2,7 +2,7 @@
 //! `catchlight.expressions` as a maintained extension: its codec, the core's
 //! upkeep of its reference table, its check, and addon merging.
 
-use catchlight_core::extension::{register, Extension, IdRef, Payload, RawExtension, RemovedRef};
+use catchlight_core::extension::{Extension, IdRef, Payload, RawExtension, RemovedRef, register};
 use catchlight_core::formats::clm::{ClmIndices, ClmMesh};
 use catchlight_core::{
     ExtensionValue, InstallError, Model, ModelNode, ModelNodeKind, ModelParam, ModelPart, Name,
@@ -278,11 +278,13 @@ fn check_leaves_missing_and_removed_params_to_the_core() {
     })
     .unwrap();
     assert!(removed.check(&rig()).is_empty());
-    assert!(removed
-        .get(Group::Expression, "a")
-        .unwrap()
-        .settings
-        .is_empty());
+    assert!(
+        removed
+            .get(Group::Expression, "a")
+            .unwrap()
+            .settings
+            .is_empty()
+    );
 }
 
 #[test]
@@ -474,11 +476,13 @@ fn reconcile_drops_a_removed_params_settings_from_both_groups() {
     );
     model.delete_param(&pid("tears")).unwrap();
     let expressions = model.extension::<Expressions>().unwrap();
-    assert!(expressions
-        .get(Group::Expression, "cry")
-        .unwrap()
-        .settings
-        .is_empty());
+    assert!(
+        expressions
+            .get(Group::Expression, "cry")
+            .unwrap()
+            .settings
+            .is_empty()
+    );
     assert_eq!(
         expressions.get(Group::Viseme, "aa").unwrap().settings,
         [Setting::control("mouth_open", 1.0)]

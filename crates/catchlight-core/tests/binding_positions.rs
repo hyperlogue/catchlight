@@ -133,13 +133,15 @@ fn two_param_axis_edits_keep_other_bindings_holes_and_values() {
     );
     assert_eq!(model.binding_grid(&binding).unwrap(), (3, 4));
     model.key_delete(&binding, &y, 3).unwrap();
-    assert!(model
-        .binding(&binding)
-        .unwrap()
-        .values()
-        .scalar_cells()
-        .unwrap()
-        .is_empty());
+    assert!(
+        model
+            .binding(&binding)
+            .unwrap()
+            .values()
+            .scalar_cells()
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
@@ -201,13 +203,15 @@ fn raw_writes_author_only_the_selected_scalar_or_empty_deform_cell() {
     assert_eq!(cells.len(), 1);
     assert!(cells[0].value.is_empty());
     model.unset_binding_key(&deform, [1, 0]).unwrap();
-    assert!(model
-        .binding(&deform)
-        .unwrap()
-        .values()
-        .deform_cells()
-        .unwrap()
-        .is_empty());
+    assert!(
+        model
+            .binding(&deform)
+            .unwrap()
+            .values()
+            .deform_cells()
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]

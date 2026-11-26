@@ -5,7 +5,7 @@ use super::spec::{
     self, AnimationRef, AnimationSource, Background, Document, Frames, MaskEdge,
     MotionResponseMode, Request, Setting, Video, VideoFormat,
 };
-use crate::{print_json, Error};
+use crate::{Error, print_json};
 use catchlight_core::{Model, ModelNodeKind, NodeId};
 use clap::{Args, ValueEnum};
 use std::collections::{BTreeMap, BTreeSet};
@@ -408,7 +408,7 @@ impl BoundsArgs {
         let frame = match (&request.animation, self.frame) {
             (Some(animation), Some(frame)) if frame < animation.frames.count => frame,
             (Some(_), Some(_)) => {
-                return Err(spec::bad("--frame is outside the request's export range"))
+                return Err(spec::bad("--frame is outside the request's export range"));
             }
             (Some(_), None) => return Err(spec::bad("animated bounds requires --frame")),
             (None, Some(_)) => return Err(spec::bad("--frame requires an animated request")),

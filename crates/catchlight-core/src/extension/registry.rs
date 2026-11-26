@@ -5,9 +5,9 @@ use std::any::TypeId;
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
-use super::store::{decode_as, Typed};
+use super::store::{Typed, decode_as};
 use super::{Extension, RawExtension, Unread};
-use crate::id::{ExtensionKey, IdError, EXTENSION_RESERVED_PREFIX};
+use crate::id::{EXTENSION_RESERVED_PREFIX, ExtensionKey, IdError};
 
 /// The crate-name prefix `std::any::type_name` reports for a type defined in
 /// a catchlight crate; only those may register a reserved key.
