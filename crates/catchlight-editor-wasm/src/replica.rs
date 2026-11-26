@@ -49,6 +49,14 @@ pub struct LiveInputsJson {
     pub visemes: BTreeMap<String, f32>,
 }
 
+/// Straight-alpha sRGB artwork, tightly packed (`4 * width` bytes per row).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextureImage {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+
 /// One session's model and pose, in the tab. No GPU, so it tests natively.
 ///
 /// Live inputs and the playing clip are the tab's own, like its pose:
@@ -499,18 +507,11 @@ impl ReplicaState {
     }
 
     /// Bounded artwork preview in straight-alpha sRGB, for a browser `ImageData`.
-    pub fn texture_thumbnail(
-        &self,
-        texture: &str,
-    ) -> Option<catchlight_core::components::DecodedTexture> {
+    pub fn texture_thumbnail(&self, texture: &str) -> Option<TextureImage> {
         self.texture_image(texture, 128)
     }
 
-    pub fn texture_image(
-        &self,
-        texture: &str,
-        limit: u32,
-    ) -> Option<catchlight_core::components::DecodedTexture> {
+    pub fn texture_image(&self, texture: &str, limit: u32) -> Option<TextureImage> {
         let id = TexId::new(texture).ok()?;
         let encoded = catchlight_core::texture::EncodedTexture::from(self.model.texture(&id)?);
         let mut decoded = encoded.decode().ok()?;
@@ -519,8 +520,11 @@ impl ReplicaState {
         }
         let mut rgba = decoded.rgba.to_vec();
         catchlight_core::texture::unpremultiply_linear_from_srgb_inplace(&mut rgba);
-        decoded.rgba = rgba.into();
-        Some(decoded)
+        Some(TextureImage {
+            width: decoded.width,
+            height: decoded.height,
+            rgba,
+        })
     }
 
     /// Editing pauses motion responses in this tab and stops the playing
@@ -860,8 +864,19 @@ pub(crate) mod browser {
 
     #[wasm_bindgen]
     impl TextureThumbnail {
-        pub fn pixels(&self) -> Vec<u8> {
-            self.rgba.clone()
+        /// Copied straight into a JavaScript array, never through a Rust clone.
+        pub fn pixels(&self) -> js_sys::Uint8Array {
+            js_sys::Uint8Array::from(self.rgba.as_slice())
+        }
+    }
+
+    impl From<super::TextureImage> for TextureThumbnail {
+        fn from(image: super::TextureImage) -> Self {
+            Self {
+                width: image.width,
+                height: image.height,
+                rgba: image.rgba,
+            }
         }
     }
 
@@ -1130,22 +1145,14 @@ pub(crate) mod browser {
 
         #[wasm_bindgen(js_name = textureImage)]
         pub fn texture_image(&self, texture: &str) -> Option<TextureThumbnail> {
-            let decoded = self.inner.borrow().state.texture_image(texture, 0)?;
-            Some(TextureThumbnail {
-                width: decoded.width,
-                height: decoded.height,
-                rgba: decoded.rgba.to_vec(),
-            })
+            let image = self.inner.borrow().state.texture_image(texture, 0)?;
+            Some(image.into())
         }
 
         #[wasm_bindgen(js_name = textureThumbnail)]
         pub fn texture_thumbnail(&self, texture: &str) -> Option<TextureThumbnail> {
-            let decoded = self.inner.borrow().state.texture_thumbnail(texture)?;
-            Some(TextureThumbnail {
-                width: decoded.width,
-                height: decoded.height,
-                rgba: decoded.rgba.to_vec(),
-            })
+            let image = self.inner.borrow().state.texture_thumbnail(texture)?;
+            Some(image.into())
         }
 
         #[wasm_bindgen(js_name = nodeWorldTransform)]
