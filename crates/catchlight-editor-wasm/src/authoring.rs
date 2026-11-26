@@ -166,6 +166,17 @@ pub mod browser {
         pub fn view(&self) -> Result<String, JsValue> {
             serde_json::to_string(&self.state.view().map_err(js)?).map_err(js)
         }
+        pub fn dirty(&self) -> bool {
+            self.state.draft.dirty()
+        }
+        #[wasm_bindgen(js_name = canUndo)]
+        pub fn can_undo(&self) -> bool {
+            self.state.draft.can_undo()
+        }
+        #[wasm_bindgen(js_name = canRedo)]
+        pub fn can_redo(&self) -> bool {
+            self.state.draft.can_redo()
+        }
         pub fn finish(&self) -> Result<String, JsValue> {
             serde_json::to_string(&self.state.finish().map_err(js)?).map_err(js)
         }

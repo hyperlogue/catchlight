@@ -215,7 +215,7 @@ function useEditingController(
   const applyMesh = async (then?: () => void) => {
     const current = draft.current;
     if (!current || busy) return;
-    if (!current.view().dirty) {
+    if (!current.dirty) {
       discardMesh();
       then?.();
       return;

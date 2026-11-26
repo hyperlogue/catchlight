@@ -103,16 +103,13 @@ impl MeshDraft {
         indices: &[u32],
         delta: [f32; 2],
     ) -> Result<(), MeshError> {
-        let start = self.before.as_ref().unwrap_or(&self.mesh);
-        let mut positions = Vec::with_capacity(indices.len());
-        for &i in indices {
-            if i as usize >= start.vertex_count() {
-                return Err(MeshError::NoSuchVertex);
+        match &self.before {
+            Some(start) => self.mesh.translate_from(start, indices, delta),
+            None => {
+                let start = self.mesh.clone();
+                self.mesh.translate_from(&start, indices, delta)
             }
-            let p = start.pos(i);
-            positions.push((i, [p[0] + delta[0], p[1] + delta[1]]));
         }
-        self.mesh.move_vertices(&positions)
     }
 
     pub fn add_vertex(&mut self, position: [f32; 2]) -> Result<u32, MeshError> {
@@ -266,6 +263,26 @@ mod tests {
         assert_eq!(d.working().pos(4), [60.0, 5.0]);
         d.end_gesture(false);
         assert!(!d.dirty());
+    }
+
+    #[test]
+    fn a_partial_selection_cannot_drag_an_edge_across_a_fixed_one() {
+        let mut d = draft();
+        d.begin_gesture();
+        d.translate_vertices(&[1, 2], [5.0, 0.0]).unwrap();
+        assert_eq!(
+            d.translate_vertices(&[0, 1], [0.0, 50.0]),
+            Err(MeshError::ConstraintCross)
+        );
+        assert_eq!(
+            d.translate_vertices(&[4], [40.0, 0.0]),
+            Err(MeshError::ConstraintCross)
+        );
+        assert_eq!(
+            d.translate_vertices(&[4], [-20.0, -20.0]),
+            Err(MeshError::Coincident)
+        );
+        assert_eq!(d.working().pos(1), [25.0, -20.0]);
     }
 
     #[test]

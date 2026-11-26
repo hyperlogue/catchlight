@@ -58,8 +58,11 @@ export class MeshDraft {
   view(): MeshDraftView {
     return JSON.parse(this.handle.view()) as MeshDraftView;
   }
+  get dirty(): boolean {
+    return this.handle.dirty();
+  }
   async apply() {
-    if (!this.view().dirty) return undefined;
+    if (!this.dirty) return undefined;
     if (this.stale)
       throw new Error(
         "The model changed. Reload the mesh draft before applying it.",

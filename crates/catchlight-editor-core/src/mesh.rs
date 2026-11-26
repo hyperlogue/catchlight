@@ -154,20 +154,91 @@ impl WorkingMesh {
         Ok(())
     }
 
-    /// Final positions are validated together, so adjacent vertices cannot
-    /// collide with an intermediate state.
-    pub fn move_vertices(&mut self, positions: &[(u32, [f32; 2])]) -> Result<(), MeshError> {
-        let mut next = self.clone();
-        for &(index, point) in positions {
-            if index as usize >= next.vertex_count() {
+    /// Move each of `indices` to its position in `start` plus `delta`. Final
+    /// positions are validated together, so adjacent vertices cannot collide
+    /// with an intermediate state.
+    pub fn translate_from(
+        &mut self,
+        start: &Self,
+        indices: &[u32],
+        delta: [f32; 2],
+    ) -> Result<(), MeshError> {
+        let mut positions = Vec::with_capacity(indices.len());
+        for &i in indices {
+            if i as usize >= start.vertex_count() {
                 return Err(MeshError::NoSuchVertex);
             }
-            next.verts[index as usize * 2..index as usize * 2 + 2].copy_from_slice(&point);
+            let p = start.pos(i);
+            positions.push((i, [p[0] + delta[0], p[1] + delta[1]]));
         }
-        for &(index, point) in positions {
-            next.move_vertex(index, point)?;
+        // Two edges with every end moved keep the shape they had in `start`,
+        // where no constraints crossed, so they cannot cross each other now.
+        let rigid = start.constraints == self.constraints;
+        self.place(&positions, rigid)
+    }
+
+    /// `rigid`: every moved vertex moved by one delta from a state with these
+    /// constraints.
+    fn place(&mut self, positions: &[(u32, [f32; 2])], rigid: bool) -> Result<(), MeshError> {
+        let n = self.vertex_count();
+        let mut moved = vec![false; n];
+        let mut verts = self.verts.clone();
+        for &(i, p) in positions {
+            if i as usize >= n {
+                return Err(MeshError::NoSuchVertex);
+            }
+            if !p[0].is_finite() || !p[1].is_finite() {
+                return Err(MeshError::NotFinite);
+            }
+            verts[i as usize * 2..i as usize * 2 + 2].copy_from_slice(&p);
+            moved[i as usize] = true;
         }
-        *self = next;
+        let at = |i: u32| [verts[i as usize * 2], verts[i as usize * 2 + 1]];
+
+        let mut grid = PointGrid::new(MIN_VERTEX_DISTANCE);
+        for i in 0..n as u32 {
+            grid.insert(i, at(i));
+        }
+        for &(i, _) in positions {
+            let p = at(i);
+            if grid
+                .near(p)
+                .any(|(j, q)| j != i && dist2(q, p) < MIN_VERTEX_DISTANCE * MIN_VERTEX_DISTANCE)
+            {
+                return Err(MeshError::Coincident);
+            }
+        }
+
+        let is_moved = |&(a, b): &(u32, u32)| moved[a as usize] || moved[b as usize];
+        let is_rigid = |&(a, b): &(u32, u32)| rigid && moved[a as usize] && moved[b as usize];
+        // Every pair with a moved edge is tested once: a rigid edge against the
+        // loose ones, and a loose moved edge against the loose ones after it.
+        let loose: Vec<(usize, (u32, u32))> = self
+            .constraints
+            .iter()
+            .copied()
+            .enumerate()
+            .filter(|(_, e)| !is_rigid(e))
+            .collect();
+        for (k, e) in self.constraints.iter().enumerate() {
+            if !is_moved(e) {
+                continue;
+            }
+            let (a, b) = *e;
+            for &(l, f) in &loose {
+                if !is_rigid(e) && is_moved(&f) && l < k {
+                    continue;
+                }
+                let (c, d) = f;
+                if c == a || c == b || d == a || d == b {
+                    continue;
+                }
+                if segments_cross(at(a), at(b), at(c), at(d)) {
+                    return Err(MeshError::ConstraintCross);
+                }
+            }
+        }
+        self.verts = verts;
         Ok(())
     }
 

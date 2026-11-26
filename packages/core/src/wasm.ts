@@ -156,6 +156,10 @@ export interface WasmReplica extends WasmOwned {
 /** Releasing one never changes the model. */
 export interface WasmMeshDraft extends WasmOwned {
   view(): string;
+  /** The flags `view` carries, without serialising the mesh. */
+  dirty(): boolean;
+  canUndo(): boolean;
+  canRedo(): boolean;
   finish(): string;
   vertices(): Float32Array;
   triangles(): Uint32Array;
