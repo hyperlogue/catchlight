@@ -498,6 +498,7 @@ fn a_puppet_of_a_fragment_holds_nothing() {
     let (_, addon, param, _) = puppet_rig();
     let mut puppet = Puppet::new(&addon);
     assert_eq!(puppet.len(), 1, "just the arena's own empty root slot");
+    assert!(puppet.is_empty());
     assert!(puppet.param_ids().next().is_none());
     puppet.set_param_value(&param, 0.5);
     puppet.reset_motion_responses(&addon);

@@ -126,10 +126,6 @@ impl Arena {
         self.nodes.len()
     }
 
-    pub(crate) fn is_empty(&self) -> bool {
-        self.nodes.is_empty()
-    }
-
     pub(crate) fn get(&self, id: NodeIdx) -> Option<&Node> {
         self.nodes.get(id.0 as usize)
     }

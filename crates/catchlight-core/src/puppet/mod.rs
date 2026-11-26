@@ -290,8 +290,10 @@ impl Puppet {
         self.arena.len()
     }
 
+    /// Whether the puppet holds nothing but its root slot, which every
+    /// puppet has.
     pub fn is_empty(&self) -> bool {
-        self.arena.is_empty()
+        self.len() <= 1
     }
 
     pub fn get(&self, id: NodeIdx) -> Option<&Node> {
