@@ -4,54 +4,21 @@ use glam::Vec2;
 
 use crate::components::NodeKind;
 use crate::deform::DeformSource;
-use crate::interpolate::{InterpolateMode, cubic, frac};
+use crate::interpolate::{GridPoint, InterpolateMode, Stencil, bicubic, bilinear};
 use crate::model::{BindingTarget, DenseGrid, ScalarTarget};
 
 use super::bake::BakedBinding;
 use super::{Located, Puppet};
 
-fn lerp(a: f32, b: f32, t: f32) -> f32 {
-    a + (b - a) * t
-}
-
-/// The lower cell, except at the very top of an axis, where the last cell
-/// would otherwise be unreachable.
-fn stepped_cell(
-    b: &BakedBinding,
-    x: (usize, usize),
-    y: (usize, usize),
-    f: (f32, f32),
-) -> (usize, usize) {
-    let cx = if f.0 >= 1.0 && x.1 + 1 >= b.width {
-        x.1
-    } else {
-        x.0
-    };
-    let cy = if f.1 >= 1.0 && y.1 + 1 >= b.height {
-        y.1
-    } else {
-        y.0
-    };
-    (cx, cy)
-}
-
-fn interpolated_cell_zero(
-    b: &BakedBinding,
-    x: (usize, usize),
-    y: (usize, usize),
-    f: (f32, f32),
-) -> bool {
-    let (x0, x1) = x;
-    let (y0, y1) = y;
-    let (fx, fy) = f;
+fn interpolated_cell_zero(b: &BakedBinding, point: &GridPoint) -> bool {
+    let ((x0, x1), (y0, y1), (fx, fy)) = (point.x, point.y, point.f);
     match b.mode {
         InterpolateMode::Nearest => {
-            let cx = if fx < 0.5 { x0 } else { x1 };
-            let cy = if fy < 0.5 { y0 } else { y1 };
+            let (cx, cy) = point.nearest_cell();
             b.cell_zero_at(cx, cy)
         }
         InterpolateMode::Stepped => {
-            let (cx, cy) = stepped_cell(b, x, y, f);
+            let (cx, cy) = point.stepped_cell(b.width, b.height);
             b.cell_zero_at(cx, cy)
         }
         InterpolateMode::Linear => {
@@ -90,12 +57,13 @@ impl Puppet {
             Some(slot) => self.located_at(slot, &b.key_positions[1]),
             None => Located::REST,
         };
-        // Clamp to the grid's own dims so a malformed model evaluates approximately
-        // instead of indexing out of bounds.
-        let xs = (x.lo.min(b.width - 1), x.hi.min(b.width - 1));
-        let ys = (y.lo.min(b.height - 1), y.hi.min(b.height - 1));
-        let f = (x.frac, y.frac);
-        if interpolated_cell_zero(b, xs, ys, f) {
+        let point = GridPoint::new(
+            (x.lo, x.hi, x.frac),
+            (y.lo, y.hi, y.frac),
+            b.width,
+            b.height,
+        );
+        if interpolated_cell_zero(b, &point) {
             return;
         }
         match (&*b.grid, b.target) {
@@ -103,14 +71,14 @@ impl Puppet {
                 if dense.len() < b.width * b.height {
                     return;
                 }
-                let value = sample(b, dense, xs, ys, f);
+                let value = Stencil::new(b.mode, b.width, b.height, &point, dense).sample();
                 self.write_scalar(b, target, value);
             }
             (DenseGrid::Deform(dense), BindingTarget::Deform) => {
                 if dense.len() < b.width * b.height {
                     return;
                 }
-                self.write_deform(b, dense, xs, ys, f, Vec2::new(x.value, y.value));
+                self.write_deform(b, dense, &point, Vec2::new(x.value, y.value));
             }
             // A shape mismatch is a model bug; render the rest of the frame.
             _ => {}
@@ -123,7 +91,7 @@ impl Puppet {
             .get(slot as usize)
             .copied()
             .unwrap_or(Located::REST);
-        let (lo, hi) = crate::interpolate::binding_bracket(
+        let (lo, hi, frac) = crate::interpolate::locate(
             axis,
             input.normalized,
             input.value == 0. && self.responses.owns(slot),
@@ -131,7 +99,7 @@ impl Puppet {
         Located {
             lo,
             hi,
-            frac: frac(input.normalized, axis[lo], axis[hi]),
+            frac,
             ..input
         }
     }
@@ -181,9 +149,7 @@ impl Puppet {
         &mut self,
         b: &BakedBinding,
         dense: &[Vec<f32>],
-        x: (usize, usize),
-        y: (usize, usize),
-        f: (f32, f32),
+        point: &GridPoint,
         memo_key: Vec2,
     ) {
         let Some(node) = self.arena.get_mut(b.node) else {
@@ -201,59 +167,30 @@ impl Puppet {
         let Some(out) = stack.param_buf_mut(b.source, memo_key) else {
             return;
         };
-        let (x0, x1) = x;
-        let (y0, y1) = y;
-        let (fx, fy) = f;
-        let w = b.width;
-        let at = |cx: usize, cy: usize| &dense[cy * w + cx];
         let comp = |cell: &Vec<f32>, i: usize| {
             Vec2::new(
                 cell.get(2 * i).copied().unwrap_or(0.0),
                 cell.get(2 * i + 1).copied().unwrap_or(0.0),
             )
         };
-        match b.mode {
-            InterpolateMode::Cubic => {
-                let cx = [x0.saturating_sub(1), x0, x1, (x1 + 1).min(w - 1)];
-                let cy = [y0.saturating_sub(1), y0, y1, (y1 + 1).min(b.height - 1)];
-                let cells: [[&Vec<f32>; 4]; 4] =
-                    std::array::from_fn(|k| std::array::from_fn(|j| at(cx[j], cy[k])));
-                for (i, o) in out.iter_mut().enumerate().take(vert_len) {
-                    let row = |k: usize| {
-                        cubic(
-                            comp(cells[k][0], i),
-                            comp(cells[k][1], i),
-                            comp(cells[k][2], i),
-                            comp(cells[k][3], i),
-                            fx,
-                        )
-                    };
-                    *o = cubic(row(0), row(1), row(2), row(3), fy);
+        let out = out.iter_mut().enumerate().take(vert_len);
+        match Stencil::new(b.mode, b.width, b.height, point, dense) {
+            Stencil::One(cell) => {
+                for (i, o) in out {
+                    *o = comp(cell, i);
                 }
             }
-            InterpolateMode::Nearest => {
-                let src = at(
-                    if fx < 0.5 { x0 } else { x1 },
-                    if fy < 0.5 { y0 } else { y1 },
-                );
-                for (i, o) in out.iter_mut().enumerate().take(vert_len) {
-                    *o = comp(src, i);
+            Stencil::Linear(cells, f) => {
+                for (i, o) in out {
+                    *o = bilinear(cells.map(|c| comp(c, i)), f);
                 }
             }
-            InterpolateMode::Stepped => {
-                let (sx, sy) = stepped_cell(b, x, y, f);
-                let src = at(sx, sy);
-                for (i, o) in out.iter_mut().enumerate().take(vert_len) {
-                    *o = comp(src, i);
-                }
-            }
-            InterpolateMode::Linear => {
-                let (a, b2, c, d) = (at(x0, y0), at(x1, y0), at(x0, y1), at(x1, y1));
-                for (i, o) in out.iter_mut().enumerate().take(vert_len) {
-                    let (a, b2, c, d) = (comp(a, i), comp(b2, i), comp(c, i), comp(d, i));
-                    let top = a + (b2 - a) * fx;
-                    let bot = c + (d - c) * fx;
-                    *o = top + (bot - top) * fy;
+            Stencil::Cubic(cells, f) => {
+                for (i, o) in out {
+                    *o = bicubic(
+                        std::array::from_fn(|k| std::array::from_fn(|j| comp(cells[k][j], i))),
+                        f,
+                    );
                 }
             }
         }
@@ -276,42 +213,6 @@ fn write_colour(
         ScalarTarget::ScreenTintG => screen_tint.y += value,
         ScalarTarget::ScreenTintB => screen_tint.z += value,
         _ => {}
-    }
-}
-
-fn sample(
-    b: &BakedBinding,
-    dense: &[f32],
-    x: (usize, usize),
-    y: (usize, usize),
-    f: (f32, f32),
-) -> f32 {
-    let (x0, x1) = x;
-    let (y0, y1) = y;
-    let (fx, fy) = f;
-    let w = b.width;
-    let at = |cx: usize, cy: usize| dense[cy * w + cx];
-    match b.mode {
-        InterpolateMode::Nearest => at(
-            if fx < 0.5 { x0 } else { x1 },
-            if fy < 0.5 { y0 } else { y1 },
-        ),
-        InterpolateMode::Stepped => {
-            let (cx, cy) = stepped_cell(b, x, y, f);
-            at(cx, cy)
-        }
-        InterpolateMode::Linear => {
-            let top = lerp(at(x0, y0), at(x1, y0), fx);
-            let bottom = lerp(at(x0, y1), at(x1, y1), fx);
-            lerp(top, bottom, fy)
-        }
-        InterpolateMode::Cubic => {
-            // Clamping the outer indices degrades edge cells to linear.
-            let cx = [x0.saturating_sub(1), x0, x1, (x1 + 1).min(w - 1)];
-            let cy = [y0.saturating_sub(1), y0, y1, (y1 + 1).min(b.height - 1)];
-            let row = |r: usize| cubic(at(cx[0], r), at(cx[1], r), at(cx[2], r), at(cx[3], r), fx);
-            cubic(row(cy[0]), row(cy[1]), row(cy[2]), row(cy[3]), fy)
-        }
     }
 }
 

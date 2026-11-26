@@ -889,15 +889,9 @@ impl Puppet {
             return Located::REST;
         };
         let value = self.resolved(slot);
-        let span = p.max - p.min;
-        let normed = if span.abs() > 1e-9 {
-            ((value.clamp(p.min, p.max) - p.min) / span).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
         Located {
             value,
-            normalized: normed,
+            normalized: crate::interpolate::normalize(value, p.min, p.max),
             ..Located::REST
         }
     }
