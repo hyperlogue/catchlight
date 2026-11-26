@@ -27,11 +27,11 @@ impl NodeTree {
     }
 
     #[must_use]
-    pub fn root(&self) -> NodeIdx {
+    pub const fn root(&self) -> NodeIdx {
         NodeIdx(0)
     }
 
-    pub(crate) fn len(&self) -> usize {
+    pub(crate) const fn len(&self) -> usize {
         self.parent.len()
     }
 

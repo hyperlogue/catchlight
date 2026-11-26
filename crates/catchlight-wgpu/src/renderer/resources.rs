@@ -268,7 +268,7 @@ impl WgpuRenderer {
     }
 
     #[doc(hidden)]
-    pub fn reserved_deform_bytes(&self) -> u64 {
+    pub const fn reserved_deform_bytes(&self) -> u64 {
         self.deform_buffer_len
     }
 

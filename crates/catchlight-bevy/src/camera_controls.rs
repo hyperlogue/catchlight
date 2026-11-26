@@ -133,7 +133,7 @@ fn apply_zoom(
     }
 }
 
-fn ortho_scale(projection: &Projection) -> f32 {
+const fn ortho_scale(projection: &Projection) -> f32 {
     match projection {
         Projection::Orthographic(o) => o.scale,
         _ => 1.0,

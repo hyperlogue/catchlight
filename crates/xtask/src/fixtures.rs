@@ -942,7 +942,7 @@ fn encode_png(img: &image::RgbaImage) -> Vec<u8> {
     data
 }
 
-fn identity_transform() -> ClmTransform {
+const fn identity_transform() -> ClmTransform {
     ClmTransform {
         translation: [0.0; 3],
         rotation: [0.0; 3],

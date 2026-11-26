@@ -47,14 +47,14 @@ pub enum MaskSourceData {
 
 impl MaskSourceData {
     #[must_use]
-    pub fn mode(&self) -> MaskMode {
+    pub const fn mode(&self) -> MaskMode {
         match self {
             Self::Part { mode, .. } | Self::Composite { mode, .. } => *mode,
         }
     }
 
     #[must_use]
-    pub fn is_part(&self) -> bool {
+    pub const fn is_part(&self) -> bool {
         matches!(self, Self::Part { .. })
     }
 }
@@ -102,7 +102,7 @@ pub enum DrawableInfo {
 
 impl DrawableInfo {
     #[must_use]
-    pub fn z_order(&self) -> f32 {
+    pub const fn z_order(&self) -> f32 {
         match self {
             Self::Part { z_order, .. } => *z_order,
             Self::Composite { z_order, .. } => *z_order,
@@ -110,7 +110,7 @@ impl DrawableInfo {
     }
 
     #[must_use]
-    pub fn blend_mode(&self) -> BlendMode {
+    pub const fn blend_mode(&self) -> BlendMode {
         match self {
             Self::Part { blend_mode, .. } => *blend_mode,
             Self::Composite { blend_mode, .. } => *blend_mode,
@@ -168,7 +168,7 @@ impl RenderList {
     /// The set [`crate::RenderCache::refresh_puppet`] collected this list
     /// for; `None` for the renderer's first set.
     #[must_use]
-    pub fn deform_set(&self) -> Option<DeformSet> {
+    pub const fn deform_set(&self) -> Option<DeformSet> {
         self.deform_set
     }
 

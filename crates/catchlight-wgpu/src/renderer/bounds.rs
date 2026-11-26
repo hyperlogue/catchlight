@@ -34,7 +34,7 @@ impl ScreenBounds {
         }
     }
 
-    pub(super) fn scissor(self) -> Option<ScreenRect> {
+    pub(super) const fn scissor(self) -> Option<ScreenRect> {
         match self {
             Self::Rect(rect) => Some(rect),
             Self::Empty | Self::Unbounded => None,

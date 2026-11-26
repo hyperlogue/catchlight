@@ -23,7 +23,7 @@ enum AlphaArg {
 }
 
 impl AlphaArg {
-    fn alpha(self) -> TextureAlpha {
+    const fn alpha(self) -> TextureAlpha {
         match self {
             Self::Premultiplied => TextureAlpha::PremultipliedSrgb,
             Self::Straight => TextureAlpha::Straight,

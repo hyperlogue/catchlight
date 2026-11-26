@@ -217,6 +217,6 @@ fn write_colour(
 }
 
 /// One per binding, so two bindings on one node never share a buffer.
-pub(super) fn deform_source(index: usize) -> DeformSource {
+pub(super) const fn deform_source(index: usize) -> DeformSource {
     DeformSource::Param(index as u32)
 }

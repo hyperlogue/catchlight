@@ -45,7 +45,7 @@ fn editor() -> Editor {
     Editor::with_storage(Arc::new(MemStorage::default()))
 }
 
-fn req(id: u64, command: Command) -> Request {
+const fn req(id: u64, command: Command) -> Request {
     Request { id, command }
 }
 

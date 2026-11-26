@@ -69,14 +69,14 @@ impl Group {
 
     /// What one member is called: `expression` or `viseme`.
     #[must_use]
-    pub fn noun(self) -> &'static str {
+    pub const fn noun(self) -> &'static str {
         match self {
             Self::Expression => "expression",
             Self::Viseme => "viseme",
         }
     }
 
-    fn index(self) -> usize {
+    const fn index(self) -> usize {
         self as usize
     }
 }
@@ -104,7 +104,7 @@ impl Setting {
     }
 
     #[must_use]
-    pub fn param(param: ParamId, value: f32) -> Self {
+    pub const fn param(param: ParamId, value: f32) -> Self {
         Self {
             target: Target::Param(param),
             value,
@@ -286,7 +286,7 @@ mod stored {
     }
 
     impl Setting {
-        pub(crate) fn value(&self) -> f32 {
+        pub(crate) const fn value(&self) -> f32 {
             match self {
                 Self::Control(s) => s.value,
                 Self::Param(s) => s.value,

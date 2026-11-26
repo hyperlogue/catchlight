@@ -15,7 +15,7 @@ pub struct GlobalTransforms {
 
 impl GlobalTransforms {
     #[must_use]
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             transforms: Vec::new(),
         }
@@ -30,7 +30,7 @@ impl GlobalTransforms {
     }
 
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.transforms.is_empty()
     }
 
@@ -124,7 +124,7 @@ impl Arena {
         self.tree.root()
     }
 
-    pub(crate) fn len(&self) -> usize {
+    pub(crate) const fn len(&self) -> usize {
         self.nodes.len()
     }
 

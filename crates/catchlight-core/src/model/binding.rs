@@ -64,14 +64,14 @@ pub enum BindingParams {
 
 impl BindingParams {
     #[must_use]
-    pub fn x(&self) -> &ParamId {
+    pub const fn x(&self) -> &ParamId {
         match self {
             Self::One(p) | Self::Two(p, _) => p,
         }
     }
 
     #[must_use]
-    pub fn y(&self) -> Option<&ParamId> {
+    pub const fn y(&self) -> Option<&ParamId> {
         match self {
             Self::One(_) => None,
             Self::Two(_, p) => Some(p),
@@ -108,7 +108,7 @@ pub struct BindingKey {
 
 impl BindingKey {
     #[must_use]
-    pub fn new(param: ParamId, node: NodeId, target: BindingTarget) -> Self {
+    pub const fn new(param: ParamId, node: NodeId, target: BindingTarget) -> Self {
         Self {
             params: BindingParams::One(param),
             node,
@@ -117,7 +117,7 @@ impl BindingKey {
     }
 
     #[must_use]
-    pub fn pair(x: ParamId, y: ParamId, node: NodeId, target: BindingTarget) -> Self {
+    pub const fn pair(x: ParamId, y: ParamId, node: NodeId, target: BindingTarget) -> Self {
         Self {
             params: BindingParams::Two(x, y),
             node,
@@ -127,7 +127,7 @@ impl BindingKey {
 }
 
 impl BindingTarget {
-    pub(crate) fn moves_geometry(self) -> bool {
+    pub(crate) const fn moves_geometry(self) -> bool {
         match self {
             Self::Deform => true,
             Self::Scalar(s) => s.moves_geometry(),
@@ -142,14 +142,14 @@ impl BindingTarget {
     }
 
     #[must_use]
-    pub fn name(self) -> &'static str {
+    pub const fn name(self) -> &'static str {
         match self {
             Self::Deform => "deform",
             Self::Scalar(t) => t.name(),
         }
     }
 
-    fn scalar(self) -> Result<ScalarTarget, ModelError> {
+    const fn scalar(self) -> Result<ScalarTarget, ModelError> {
         match self {
             Self::Scalar(t) => Ok(t),
             Self::Deform => Err(ModelError::WrongTarget),
@@ -158,7 +158,7 @@ impl BindingTarget {
 }
 
 impl ScalarTarget {
-    pub(crate) fn moves_geometry(self) -> bool {
+    pub(crate) const fn moves_geometry(self) -> bool {
         match self {
             Self::Tx
             | Self::Ty
@@ -203,7 +203,7 @@ impl ScalarTarget {
     }
 
     #[must_use]
-    pub fn name(self) -> &'static str {
+    pub const fn name(self) -> &'static str {
         match self {
             Self::Tx => "tx",
             Self::Ty => "ty",
@@ -226,7 +226,7 @@ impl ScalarTarget {
 
     /// A mesh group is never drawn, so a colour target cannot aim at one.
     #[must_use]
-    pub fn is_color(self) -> bool {
+    pub const fn is_color(self) -> bool {
         matches!(
             self,
             Self::Opacity
@@ -241,14 +241,14 @@ impl ScalarTarget {
 
     /// Multiplicative targets (scale, opacity, tint) rest at 1; additive at 0.
     #[must_use]
-    pub fn identity(self) -> f32 {
+    pub const fn identity(self) -> f32 {
         match self {
             Self::Sx | Self::Sy | Self::Opacity | Self::TintR | Self::TintG | Self::TintB => 1.0,
             _ => 0.0,
         }
     }
 
-    fn wrap(self, c: ClmCells<f32>) -> ClmBindingValues {
+    const fn wrap(self, c: ClmCells<f32>) -> ClmBindingValues {
         use ClmBindingValues as V;
         match self {
             Self::Tx => V::TransformTX(c),
@@ -273,7 +273,7 @@ impl ScalarTarget {
 
 impl ClmBindingValues {
     #[must_use]
-    pub fn target(&self) -> BindingTarget {
+    pub const fn target(&self) -> BindingTarget {
         BindingTarget::Scalar(match self {
             Self::Deform(_) => return BindingTarget::Deform,
             Self::TransformTX(_) => ScalarTarget::Tx,
@@ -327,7 +327,7 @@ impl ClmBindingValues {
     }
 }
 
-fn scalar_cells_mut(v: &mut ClmBindingValues) -> Option<&mut Vec<ClmCell<f32>>> {
+const fn scalar_cells_mut(v: &mut ClmBindingValues) -> Option<&mut Vec<ClmCell<f32>>> {
     use ClmBindingValues as V;
     match v {
         V::Deform(_) => None,
@@ -1211,23 +1211,23 @@ impl ModelBinding {
         &self.key_positions
     }
 
-    pub fn key(&self) -> &BindingKey {
+    pub const fn key(&self) -> &BindingKey {
         &self.key
     }
 
-    pub fn params(&self) -> &BindingParams {
+    pub const fn params(&self) -> &BindingParams {
         &self.key.params
     }
 
-    pub fn node(&self) -> &NodeId {
+    pub const fn node(&self) -> &NodeId {
         &self.key.node
     }
 
-    pub fn target(&self) -> BindingTarget {
+    pub const fn target(&self) -> BindingTarget {
         self.key.target
     }
 
-    pub fn interpolate_mode(&self) -> InterpolateMode {
+    pub const fn interpolate_mode(&self) -> InterpolateMode {
         self.interpolate_mode
     }
 

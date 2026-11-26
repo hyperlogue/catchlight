@@ -64,7 +64,7 @@ pub(crate) enum Stored {
 }
 
 impl Stored {
-    pub(crate) fn value(value: ExtensionValue) -> Self {
+    pub(crate) const fn value(value: ExtensionValue) -> Self {
         Self::Value {
             value,
             decoded: OnceLock::new(),

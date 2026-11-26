@@ -66,7 +66,7 @@ pub struct Subscription {
 
 impl Subscription {
     /// Keeps the observer subscribed for as long as the editor lives.
-    pub fn detach(self) {
+    pub const fn detach(self) {
         std::mem::forget(self);
     }
 }
@@ -165,6 +165,10 @@ fn system_clock() -> u64 {
 
 /// `SystemTime` panics on wasm32-unknown-unknown; the host supplies a clock.
 #[cfg(target_arch = "wasm32")]
+#[expect(
+    clippy::missing_const_for_fn,
+    reason = "shares the signature of the native clock, which cannot be const"
+)]
 fn system_clock() -> u64 {
     0
 }
@@ -221,7 +225,7 @@ impl Editor {
     }
 
     #[cfg(test)]
-    pub(crate) fn with_version_limits(mut self, versions: u64, bytes: u64) -> Self {
+    pub(crate) const fn with_version_limits(mut self, versions: u64, bytes: u64) -> Self {
         self.version_limits = versions::VersionLimits { versions, bytes };
         self
     }

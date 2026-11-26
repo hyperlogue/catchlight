@@ -119,7 +119,7 @@ pub enum MeshSpec {
     },
 }
 
-fn one() -> u32 {
+const fn one() -> u32 {
     1
 }
 
@@ -137,7 +137,7 @@ pub struct ManifestParam {
     pub defaults: [f32; 2],
 }
 
-fn unit2() -> [f32; 2] {
+const fn unit2() -> [f32; 2] {
     [1.0, 1.0]
 }
 

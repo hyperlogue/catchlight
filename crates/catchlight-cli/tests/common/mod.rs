@@ -74,7 +74,7 @@ pub fn write_clm(dir: &Path, name: &str, file: &ClmFile) -> PathBuf {
     path
 }
 
-pub fn bin() -> &'static str {
+pub const fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_catchlight-cli")
 }
 

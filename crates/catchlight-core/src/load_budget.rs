@@ -47,7 +47,7 @@ impl LoadResource {
 
     /// The name editor clients receive in a limit error.
     #[must_use]
-    pub fn name(self) -> &'static str {
+    pub const fn name(self) -> &'static str {
         match self {
             Self::EncodedBytes => "encoded bytes",
             Self::Textures => "textures",
@@ -133,7 +133,7 @@ impl Default for LoadLimits {
 }
 
 impl LoadLimits {
-    fn of(&self, resource: LoadResource) -> u64 {
+    const fn of(&self, resource: LoadResource) -> u64 {
         match resource {
             LoadResource::EncodedBytes => self.encoded_bytes,
             LoadResource::Textures => self.textures,
@@ -187,7 +187,7 @@ impl Default for LoadBudget {
 
 impl LoadBudget {
     #[must_use]
-    pub fn new(limits: LoadLimits) -> Self {
+    pub const fn new(limits: LoadLimits) -> Self {
         Self {
             limits,
             used: [0; LoadResource::COUNT],
@@ -272,7 +272,7 @@ pub(crate) fn binding_grid_cells(
 /// is one level deep.
 pub const MAX_TREE_DEPTH: u64 = 256;
 
-pub(crate) fn tree_depth(levels: usize) -> Result<(), LoadLimitError> {
+pub(crate) const fn tree_depth(levels: usize) -> Result<(), LoadLimitError> {
     let got = levels as u64;
     if got > MAX_TREE_DEPTH {
         return Err(LoadLimitError {
@@ -409,7 +409,7 @@ pub fn charge_clm_structure(
     Ok(())
 }
 
-fn index_count(mesh: &crate::formats::clm::ClmMesh) -> usize {
+const fn index_count(mesh: &crate::formats::clm::ClmMesh) -> usize {
     match &mesh.indices {
         crate::formats::clm::ClmIndices::U16(indices) => indices.len(),
         crate::formats::clm::ClmIndices::U32(indices) => indices.len(),

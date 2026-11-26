@@ -468,7 +468,7 @@ fn edit_json(body: &ResponseBody) -> String {
     }
 }
 
-fn noun(group: ExpressionGroup) -> &'static str {
+const fn noun(group: ExpressionGroup) -> &'static str {
     match group {
         ExpressionGroup::Expression => "expression",
         ExpressionGroup::Viseme => "viseme",

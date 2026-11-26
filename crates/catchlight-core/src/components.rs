@@ -6,7 +6,7 @@ pub struct NodeIdx(pub u32);
 
 impl NodeIdx {
     #[must_use]
-    pub fn new(id: u32) -> Self {
+    pub const fn new(id: u32) -> Self {
         Self(id)
     }
 }
@@ -17,7 +17,7 @@ pub struct TextureIdx(pub u32);
 
 impl TextureIdx {
     #[must_use]
-    pub fn new(id: u32) -> Self {
+    pub const fn new(id: u32) -> Self {
         Self(id)
     }
 }
@@ -317,7 +317,7 @@ pub enum MeshIndices {
 
 impl MeshIndices {
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         match self {
             Self::U16(v) => v.len(),
             Self::U32(v) => v.len(),
@@ -325,7 +325,7 @@ impl MeshIndices {
     }
 
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
@@ -433,7 +433,12 @@ impl Default for Mesh {
 
 impl Mesh {
     #[must_use]
-    pub fn new(vertices: Vec<Vec2>, uvs: Vec<Vec2>, indices: MeshIndices, origin: Vec2) -> Self {
+    pub const fn new(
+        vertices: Vec<Vec2>,
+        uvs: Vec<Vec2>,
+        indices: MeshIndices,
+        origin: Vec2,
+    ) -> Self {
         Self {
             vertices,
             uvs,
@@ -534,7 +539,7 @@ impl BlendMode {
 
 impl BlendMode {
     #[must_use]
-    pub fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Normal => "Normal",
             Self::Multiply => "Multiply",
@@ -574,7 +579,7 @@ pub enum MaskMode {
 
 impl MaskMode {
     #[must_use]
-    pub fn name(self) -> &'static str {
+    pub const fn name(self) -> &'static str {
         match self {
             Self::Mask => "mask",
             Self::DodgeMask => "dodge",

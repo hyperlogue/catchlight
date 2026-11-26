@@ -89,7 +89,7 @@ pub enum Payload {
 
 impl Payload {
     #[must_use]
-    pub fn json(&self) -> Option<&serde_json::Value> {
+    pub const fn json(&self) -> Option<&serde_json::Value> {
         match self {
             Self::Json(value) => Some(value),
             Self::Bytes(_) => None,
@@ -106,7 +106,7 @@ impl Payload {
     }
 
     #[must_use]
-    pub fn bytes(&self) -> Option<&Arc<[u8]>> {
+    pub const fn bytes(&self) -> Option<&Arc<[u8]>> {
         match self {
             Self::Bytes(data) => Some(data),
             Self::Json(_) => None,
@@ -150,7 +150,7 @@ impl IdRef {
     }
 
     #[must_use]
-    pub fn is_removed(&self) -> bool {
+    pub const fn is_removed(&self) -> bool {
         matches!(self, Self::Removed(_))
     }
 

@@ -122,7 +122,7 @@ struct Neck {
     #[serde(default = "neck_reach")]
     reach: f64,
 }
-fn neck_reach() -> f64 {
+const fn neck_reach() -> f64 {
     0.45
 }
 #[derive(Deserialize)]

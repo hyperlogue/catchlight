@@ -465,7 +465,7 @@ pub struct BindingParams {
 
 impl BindingParams {
     #[must_use]
-    pub fn one(param: ParamId) -> Self {
+    pub const fn one(param: ParamId) -> Self {
         Self {
             param,
             param_y: None,
@@ -473,7 +473,7 @@ impl BindingParams {
     }
 
     #[must_use]
-    pub fn two(x: ParamId, y: ParamId) -> Self {
+    pub const fn two(x: ParamId, y: ParamId) -> Self {
         Self {
             param: x,
             param_y: Some(y),

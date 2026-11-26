@@ -135,11 +135,11 @@ impl FramebufferSnapshotPool {
         }
     }
 
-    pub fn reset(&mut self) {
+    pub const fn reset(&mut self) {
         self.cursor = 0;
     }
 
-    pub fn mark(&self) -> usize {
+    pub const fn mark(&self) -> usize {
         self.cursor
     }
 
@@ -206,13 +206,13 @@ impl CompositePool {
         }
     }
 
-    pub fn reset(&mut self) {
+    pub const fn reset(&mut self) {
         self.cursor = 0;
         self.peak = 0;
     }
 
     /// Lets non-nested composites share a slot instead of each growing the pool.
-    pub fn mark(&self) -> usize {
+    pub const fn mark(&self) -> usize {
         self.cursor
     }
 
@@ -238,7 +238,7 @@ impl CompositePool {
     }
 
     /// `(peak_this_frame, capacity, width, height)`.
-    pub fn stats(&self) -> (usize, usize, u32, u32) {
+    pub const fn stats(&self) -> (usize, usize, u32, u32) {
         (self.peak, self.slots.len(), self.width, self.height)
     }
 }
@@ -399,11 +399,11 @@ impl<'a> RenderTarget<'a> {
         self
     }
 
-    pub(super) fn view(&self) -> &'a wgpu::TextureView {
+    pub(super) const fn view(&self) -> &'a wgpu::TextureView {
         self.view
     }
 
-    pub(super) fn viewport(&self) -> ScreenRect {
+    pub(super) const fn viewport(&self) -> ScreenRect {
         self.viewport
     }
 
@@ -502,7 +502,7 @@ impl FrameTargets {
     /// Composite slots allocated so far; they are reused across frames.
     #[doc(hidden)]
     #[must_use]
-    pub fn composite_slots(&self) -> usize {
+    pub const fn composite_slots(&self) -> usize {
         self.composites.stats().1
     }
 }

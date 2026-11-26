@@ -17,7 +17,7 @@ pub enum Shape {
 
 impl Shape {
     /// A binding's *node* never may dangle, in either shape.
-    fn allows_dangling(self) -> bool {
+    const fn allows_dangling(self) -> bool {
         matches!(self, Self::Fragment)
     }
 }
@@ -81,7 +81,7 @@ pub struct ReadOptions<'a> {
 
 impl<'a> ReadOptions<'a> {
     #[must_use]
-    pub fn fragment() -> Self {
+    pub const fn fragment() -> Self {
         Self {
             shape: Shape::Fragment,
             budget: None,
@@ -89,7 +89,7 @@ impl<'a> ReadOptions<'a> {
     }
 
     #[must_use]
-    pub fn budget(self, budget: &'a mut LoadBudget) -> Self {
+    pub const fn budget(self, budget: &'a mut LoadBudget) -> Self {
         Self {
             budget: Some(budget),
             ..self

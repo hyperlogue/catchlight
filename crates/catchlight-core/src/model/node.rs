@@ -32,7 +32,7 @@ pub enum ModelNodeKind {
 
 impl ModelNodeKind {
     #[must_use]
-    pub fn name(&self) -> &'static str {
+    pub const fn name(&self) -> &'static str {
         match self {
             Self::Group => "group",
             Self::Part(_) => "part",
@@ -43,7 +43,7 @@ impl ModelNodeKind {
         }
     }
 
-    pub(super) fn id_kind(&self) -> NodeIdKind {
+    pub(super) const fn id_kind(&self) -> NodeIdKind {
         match self {
             Self::Group => NodeIdKind::Group,
             Self::Part(_) => NodeIdKind::Part,
@@ -142,7 +142,7 @@ impl ModelPart {
     }
 
     #[must_use]
-    pub fn albedo(&self) -> Option<&TexId> {
+    pub const fn albedo(&self) -> Option<&TexId> {
         self.albedo.as_ref()
     }
 
@@ -204,12 +204,12 @@ pub struct ModelMask {
 
 impl ModelMask {
     #[must_use]
-    pub fn source(&self) -> &NodeId {
+    pub const fn source(&self) -> &NodeId {
         &self.source
     }
 
     #[must_use]
-    pub fn mode(&self) -> MaskMode {
+    pub const fn mode(&self) -> MaskMode {
         self.mode
     }
 }
@@ -284,7 +284,7 @@ impl ModelNode {
     }
 
     #[must_use]
-    pub fn parent(&self) -> Option<&NodeId> {
+    pub const fn parent(&self) -> Option<&NodeId> {
         self.parent.as_ref()
     }
 
@@ -328,7 +328,7 @@ impl ModelNode {
         }
     }
 
-    fn mesh_mut(&mut self) -> Option<&mut ModelMesh> {
+    const fn mesh_mut(&mut self) -> Option<&mut ModelMesh> {
         match &mut self.kind {
             ModelNodeKind::Part(p) => Some(&mut p.mesh),
             ModelNodeKind::MeshGroup(mg) => Some(&mut mg.mesh),
@@ -365,12 +365,12 @@ fn kind_edit_fault(before: &ModelNodeKind, after: &ModelNodeKind) -> Option<&'st
     }
 }
 
-pub(crate) fn is_mask_source(kind: &ModelNodeKind) -> bool {
+pub(crate) const fn is_mask_source(kind: &ModelNodeKind) -> bool {
     matches!(kind, ModelNodeKind::Part(_) | ModelNodeKind::Composite(_))
 }
 
 /// A part's albedo is a texture's only user.
-pub(crate) fn albedo_of(node: &ModelNode) -> Option<&TexId> {
+pub(crate) const fn albedo_of(node: &ModelNode) -> Option<&TexId> {
     match &node.kind {
         ModelNodeKind::Part(p) => p.albedo.as_ref(),
         _ => None,

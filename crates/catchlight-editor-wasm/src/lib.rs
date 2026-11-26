@@ -125,7 +125,7 @@ impl CatchlightEditor {
     }
 
     /// Not on the JS surface; a replica names it by being passed this object.
-    pub fn editor(&self) -> &Editor {
+    pub const fn editor(&self) -> &Editor {
         &self.editor
     }
 

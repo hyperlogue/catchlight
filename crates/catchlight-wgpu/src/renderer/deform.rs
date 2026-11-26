@@ -12,7 +12,7 @@ pub struct DeformSet {
 impl DeformSet {
     #[doc(hidden)]
     #[must_use]
-    pub fn index(self) -> u32 {
+    pub const fn index(self) -> u32 {
         self.index
     }
 }
@@ -95,7 +95,7 @@ impl WgpuRenderer {
 
     /// Padded so every set's base stays 16-byte aligned (`set_vertex_buffer`
     /// needs 4).
-    pub(super) fn deform_stride(&self) -> u64 {
+    pub(super) const fn deform_stride(&self) -> u64 {
         self.deform_buffer_len.next_multiple_of(16)
     }
 
@@ -107,14 +107,14 @@ impl WgpuRenderer {
 
     /// The set [`crate::RenderCache::refresh`] uploads into. It is never
     /// released.
-    pub fn first_deform_set(&self) -> DeformSet {
+    pub const fn first_deform_set(&self) -> DeformSet {
         DeformSet {
             renderer: self.id,
             index: 0,
         }
     }
 
-    fn check_deform_set(&self, set: DeformSet) -> RendererResult<()> {
+    const fn check_deform_set(&self, set: DeformSet) -> RendererResult<()> {
         if set.renderer == self.id {
             Ok(())
         } else {

@@ -57,7 +57,7 @@ fn bad_document(why: impl std::fmt::Display) -> io::Error {
 }
 
 impl ReviewState {
-    fn blank(&self) -> bool {
+    const fn blank(&self) -> bool {
         self.threads.is_empty()
             && self.last_thread == 0
             && self.last_comment == 0

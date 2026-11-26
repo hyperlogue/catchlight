@@ -19,7 +19,7 @@ pub struct Framing {
 
 impl Framing {
     #[must_use]
-    pub fn centered(height: f32) -> Self {
+    pub const fn centered(height: f32) -> Self {
         Self {
             center: glam::Vec2::ZERO,
             height,
@@ -67,7 +67,7 @@ impl RenderContext {
     }
 
     /// The texture [`Self::render`] draws into.
-    pub fn target(&self) -> &wgpu::Texture {
+    pub const fn target(&self) -> &wgpu::Texture {
         &self.target
     }
 

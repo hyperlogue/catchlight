@@ -62,7 +62,7 @@ fn clm_bytes() -> Vec<u8> {
     store.get("scratch.clm").expect("save wrote the key")
 }
 
-fn req(id: u64, command: Command) -> Request {
+const fn req(id: u64, command: Command) -> Request {
     Request { id, command }
 }
 

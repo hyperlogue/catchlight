@@ -31,7 +31,7 @@ pub struct EvaluatedGeometry<'a> {
 }
 
 impl<'a> EvaluatedGeometry<'a> {
-    pub fn new(model: &'a Model, puppet: &'a Puppet) -> Result<Self, GeometryError> {
+    pub const fn new(model: &'a Model, puppet: &'a Puppet) -> Result<Self, GeometryError> {
         if model.identity() != puppet.model_identity() {
             return Err(GeometryError::ModelMismatch);
         }
@@ -93,12 +93,12 @@ pub struct EvaluatedVertex {
 
 impl<'a> EvaluatedMesh<'a> {
     #[must_use]
-    pub fn node(&self) -> &'a NodeId {
+    pub const fn node(&self) -> &'a NodeId {
         self.node
     }
 
     #[must_use]
-    pub fn is_part(&self) -> bool {
+    pub const fn is_part(&self) -> bool {
         self.is_part
     }
 
@@ -114,22 +114,22 @@ impl<'a> EvaluatedMesh<'a> {
     }
 
     #[must_use]
-    pub fn origin(&self) -> Vec2 {
+    pub const fn origin(&self) -> Vec2 {
         self.mesh.origin
     }
 
     #[must_use]
-    pub fn local_to_world(&self) -> Mat4 {
+    pub const fn local_to_world(&self) -> Mat4 {
         self.local_to_world
     }
 
     #[must_use]
-    pub fn vertex_count(&self) -> usize {
+    pub const fn vertex_count(&self) -> usize {
         self.mesh.vertices.len()
     }
 
     #[must_use]
-    pub fn triangle_count(&self) -> usize {
+    pub const fn triangle_count(&self) -> usize {
         self.mesh.indices.len() / 3
     }
 

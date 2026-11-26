@@ -213,7 +213,7 @@ struct DenseMap<V> {
 }
 
 impl<V> DenseMap<V> {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self { slots: Vec::new() }
     }
 
@@ -448,16 +448,16 @@ impl WgpuRenderer {
         }
     }
 
-    pub fn pipelines(&self) -> &std::sync::Arc<Pipelines> {
+    pub const fn pipelines(&self) -> &std::sync::Arc<Pipelines> {
         &self.shared
     }
 
     /// Reset at each frame entry; read it after the render call returns.
-    pub fn frame_stats(&self) -> FrameStats {
+    pub const fn frame_stats(&self) -> FrameStats {
         self.frame_stats
     }
 
-    fn note_queue_write(&mut self, buffer: RenderBuffer) {
+    const fn note_queue_write(&mut self, buffer: RenderBuffer) {
         self.frame_stats.queue_writes += 1;
         match buffer {
             RenderBuffer::Instance => self.frame_stats.instance_buffer_writes += 1,
@@ -588,12 +588,12 @@ impl WgpuRenderer {
     }
 
     /// Uploaded into a camera slot of its own by the next render call.
-    pub fn update_camera(&mut self, view_proj: glam::Mat4) {
+    pub const fn update_camera(&mut self, view_proj: glam::Mat4) {
         self.camera_view_proj = view_proj;
     }
 
     #[doc(hidden)]
-    pub fn camera_dynamic_offset(&self) -> u32 {
+    pub const fn camera_dynamic_offset(&self) -> u32 {
         self.camera_offset
     }
 

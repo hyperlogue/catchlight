@@ -15,7 +15,7 @@ pub(super) enum WeldEnd {
 
 impl WeldEnd {
     /// `may_dangle`: true for a fragment, false for a complete or merged model.
-    pub(super) fn of(kind: Option<&ModelNodeKind>, may_dangle: bool) -> Self {
+    pub(super) const fn of(kind: Option<&ModelNodeKind>, may_dangle: bool) -> Self {
         match kind {
             Some(ModelNodeKind::Part(_)) => Self::Part,
             Some(other) => Self::NotAPart(other.name()),
@@ -24,7 +24,7 @@ impl WeldEnd {
         }
     }
 
-    pub(super) fn is_sound(self) -> bool {
+    pub(super) const fn is_sound(self) -> bool {
         matches!(self, Self::Part | Self::Deferred)
     }
 }
@@ -160,7 +160,7 @@ pub(super) enum BindingFault {
     ColorOnMeshGroup(ScalarTarget),
 }
 
-pub(super) fn binding_target(
+pub(super) const fn binding_target(
     kind: &ModelNodeKind,
     target: BindingTarget,
 ) -> Result<(), BindingFault> {
@@ -235,7 +235,7 @@ pub(super) enum PlacementFault {
 }
 
 impl PlacementFault {
-    pub(super) fn field(self) -> &'static str {
+    pub(super) const fn field(self) -> &'static str {
         match self {
             Self::ZOrder => "z-order",
             Self::Transform => "transform",
@@ -273,7 +273,7 @@ pub(super) enum AppearanceFault {
 }
 
 impl AppearanceFault {
-    pub(super) fn field(self) -> &'static str {
+    pub(super) const fn field(self) -> &'static str {
         match self {
             Self::Opacity => "opacity",
             Self::Tint => "tint",

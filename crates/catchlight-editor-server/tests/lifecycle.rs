@@ -20,7 +20,7 @@ use catchlight_core::{
 use catchlight_editor_protocol::*;
 use catchlight_editor_server::{Attachments, Editor, Payload, Storage};
 
-fn request(command: Command) -> Request {
+const fn request(command: Command) -> Request {
     Request { id: 1, command }
 }
 

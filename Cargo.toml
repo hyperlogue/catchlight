@@ -158,6 +158,7 @@ match_bool = "warn"
 if_not_else = "warn"
 enum_glob_use = "warn"
 must_use_candidate = "warn"
+missing_const_for_fn = "warn"
 
 # Size-optimized profile for a future wasm bundle. Kept separate so the
 # default `release` profile stays untouched.

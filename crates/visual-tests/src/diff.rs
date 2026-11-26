@@ -42,7 +42,7 @@ pub(super) fn diff_images(expected: &RgbaImage, actual: &RgbaImage) -> DiffOutpu
     DiffOutput { overlay, metrics }
 }
 
-fn pixel_at(raw: &[u8], width: u32, x: u32, y: u32) -> [u8; 4] {
+const fn pixel_at(raw: &[u8], width: u32, x: u32, y: u32) -> [u8; 4] {
     let index = ((y * width + x) * 4) as usize;
     [raw[index], raw[index + 1], raw[index + 2], raw[index + 3]]
 }

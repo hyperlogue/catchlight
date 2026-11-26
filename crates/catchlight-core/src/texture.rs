@@ -25,7 +25,7 @@ pub enum TextureFormat {
 
 impl TextureFormat {
     #[must_use]
-    pub fn to_image_format(self) -> image::ImageFormat {
+    pub const fn to_image_format(self) -> image::ImageFormat {
         match self {
             Self::Png => image::ImageFormat::Png,
             Self::Tga => image::ImageFormat::Tga,
@@ -389,11 +389,11 @@ fn crop(tex: &DecodedTexture, x: i64, y: i64, w: u32, h: u32) -> DecodedTexture 
     }
 }
 
-fn align_down(v: i64) -> i64 {
+const fn align_down(v: i64) -> i64 {
     v.div_euclid(ALIGN) * ALIGN
 }
 
-fn align_up(v: i64) -> i64 {
+const fn align_up(v: i64) -> i64 {
     (v + ALIGN - 1).div_euclid(ALIGN) * ALIGN
 }
 

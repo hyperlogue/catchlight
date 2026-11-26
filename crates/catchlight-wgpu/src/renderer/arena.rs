@@ -53,7 +53,7 @@ impl FrameArena {
         })
     }
 
-    pub(super) fn buffer(&self) -> &wgpu::Buffer {
+    pub(super) const fn buffer(&self) -> &wgpu::Buffer {
         &self.buffer
     }
 

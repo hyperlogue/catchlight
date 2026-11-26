@@ -105,7 +105,7 @@ pub enum Setting<T> {
     Value(T),
 }
 impl<T> Setting<T> {
-    fn is_inherit(&self) -> bool {
+    const fn is_inherit(&self) -> bool {
         matches!(self, Self::Inherit)
     }
     fn override_with(&mut self, child: &Self)
@@ -365,10 +365,10 @@ impl Default for Frames {
         }
     }
 }
-fn one() -> u32 {
+const fn one() -> u32 {
     1
 }
-fn is_zero(v: &u32) -> bool {
+const fn is_zero(v: &u32) -> bool {
     *v == 0
 }
 
@@ -388,7 +388,7 @@ pub struct CameraKey {
     #[serde(default)]
     pub ease: Ease,
 }
-fn unit_zoom() -> f32 {
+const fn unit_zoom() -> f32 {
     1.0
 }
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -423,7 +423,7 @@ pub enum VideoFormat {
 }
 impl VideoFormat {
     #[must_use]
-    pub fn extension(self) -> &'static str {
+    pub const fn extension(self) -> &'static str {
         match self {
             Self::Mp4 => "mp4",
             Self::Webm => "webm",
@@ -630,7 +630,7 @@ impl ResolvedFrames {
         u64::from((self.count - 1 - self.start) / self.every + 1)
     }
     #[must_use]
-    pub fn is_captured(&self, index: u32) -> bool {
+    pub const fn is_captured(&self, index: u32) -> bool {
         index >= self.start && (index - self.start).is_multiple_of(self.every)
     }
 }
@@ -1393,7 +1393,7 @@ pub fn model_clip(model: &Model, name: &str) -> Result<Clip, Error> {
         .and_then(|a| a.clip(name))
         .ok_or_else(|| bad(format!("unknown model animation {name}")))
 }
-fn limit(budget: &'static str, limit: u64, requested: u64, hint: &'static str) -> Error {
+const fn limit(budget: &'static str, limit: u64, requested: u64, hint: &'static str) -> Error {
     Error::RenderLimit {
         budget,
         limit,
@@ -1401,7 +1401,7 @@ fn limit(budget: &'static str, limit: u64, requested: u64, hint: &'static str) -
         hint,
     }
 }
-pub(super) fn check_limit(
+pub(super) const fn check_limit(
     budget: &'static str,
     requested: u64,
     max: u64,

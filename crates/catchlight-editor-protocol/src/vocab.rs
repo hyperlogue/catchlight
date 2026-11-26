@@ -29,7 +29,7 @@ pub enum NodeKind {
 
 impl NodeKind {
     #[must_use]
-    pub fn wire_name(self) -> &'static str {
+    pub const fn wire_name(self) -> &'static str {
         match self {
             Self::Group => "group",
             Self::Part => "part",
@@ -41,7 +41,7 @@ impl NodeKind {
     }
 
     #[must_use]
-    pub fn of(kind: &catchlight_core::ModelNodeKind) -> Self {
+    pub const fn of(kind: &catchlight_core::ModelNodeKind) -> Self {
         use catchlight_core::ModelNodeKind as K;
         match kind {
             K::Group => Self::Group,
@@ -64,7 +64,7 @@ pub enum MaskMode {
 
 impl MaskMode {
     #[must_use]
-    pub fn wire_name(self) -> &'static str {
+    pub const fn wire_name(self) -> &'static str {
         match self {
             Self::Mask => "mask",
             Self::Dodge => "dodge",
@@ -102,7 +102,7 @@ pub enum Interpolate {
 
 impl Interpolate {
     #[must_use]
-    pub fn wire_name(self) -> &'static str {
+    pub const fn wire_name(self) -> &'static str {
         match self {
             Self::Nearest => "nearest",
             Self::Stepped => "stepped",
@@ -219,7 +219,7 @@ pub enum BlendMode {
 impl BlendMode {
     /// `Snake_case`; the model file spells the same modes in `PascalCase`.
     #[must_use]
-    pub fn wire_name(self) -> &'static str {
+    pub const fn wire_name(self) -> &'static str {
         match self {
             Self::Normal => "normal",
             Self::Multiply => "multiply",
@@ -400,7 +400,7 @@ macro_rules! scalar_targets {
         }
 
         impl BindingTarget {
-            pub fn scalar(self) -> Option<ScalarTarget> {
+            pub const fn scalar(self) -> Option<ScalarTarget> {
                 match self {
                     $(Self::$variant => Some(ScalarTarget::$variant),)*
                     Self::Deform => None,

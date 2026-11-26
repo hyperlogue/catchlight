@@ -148,22 +148,22 @@ impl RenderCache {
     }
 
     #[must_use]
-    pub fn generation(&self) -> u64 {
+    pub const fn generation(&self) -> u64 {
         self.generation
     }
 
     #[must_use]
-    pub fn model_identity(&self) -> u64 {
+    pub const fn model_identity(&self) -> u64 {
         self.identity
     }
 
     #[must_use]
-    pub fn texture_count(&self) -> usize {
+    pub const fn texture_count(&self) -> usize {
         self.texture_count as usize
     }
 
     #[must_use]
-    pub fn stats(&self) -> CacheStats {
+    pub const fn stats(&self) -> CacheStats {
         self.stats
     }
 

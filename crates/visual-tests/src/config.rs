@@ -72,7 +72,7 @@ impl Thresholds {
     /// Baselines are rendered on lavapipe. A hardware rasterizer differs from
     /// it only in pixels along part edges, which the defaults do not allow.
     #[must_use]
-    pub fn hardware() -> Self {
+    pub const fn hardware() -> Self {
         Self {
             mean: 0.75,
             p99: 8,

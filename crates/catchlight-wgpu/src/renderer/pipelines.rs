@@ -17,7 +17,7 @@ const FIXED_BLENDS: [BlendMode; 12] = [
     BlendMode::Subtract,
 ];
 
-fn blend_slot(mode: BlendMode) -> usize {
+const fn blend_slot(mode: BlendMode) -> usize {
     match mode {
         BlendMode::Normal | BlendMode::Overlay | BlendMode::ColorBurn | BlendMode::LinearBurn => 0,
         BlendMode::Multiply => 1,
@@ -42,7 +42,7 @@ impl BlendPipelines {
         Self(FIXED_BLENDS.map(make))
     }
 
-    pub(crate) fn get(&self, mode: BlendMode) -> &wgpu::RenderPipeline {
+    pub(crate) const fn get(&self, mode: BlendMode) -> &wgpu::RenderPipeline {
         &self.0[blend_slot(mode)]
     }
 }
@@ -59,7 +59,7 @@ pub(crate) enum ShaderBlend {
 impl ShaderBlend {
     const ALL: [Self; 3] = [Self::Overlay, Self::ColorBurn, Self::LinearBurn];
 
-    pub(crate) fn of(mode: BlendMode) -> Option<Self> {
+    pub(crate) const fn of(mode: BlendMode) -> Option<Self> {
         match mode {
             BlendMode::Overlay => Some(Self::Overlay),
             BlendMode::ColorBurn => Some(Self::ColorBurn),
@@ -68,7 +68,7 @@ impl ShaderBlend {
         }
     }
 
-    fn fragment_entry(self) -> &'static str {
+    const fn fragment_entry(self) -> &'static str {
         match self {
             Self::Overlay => "fs_overlay",
             Self::ColorBurn => "fs_color_burn",
@@ -108,28 +108,28 @@ pub(crate) struct SampledMasks {
 }
 
 impl MaskPipelines {
-    pub(crate) fn stencil(&self) -> Option<&StencilMasks> {
+    pub(crate) const fn stencil(&self) -> Option<&StencilMasks> {
         match self {
             Self::Stencil(masks) => Some(masks),
             Self::Sampled(_) => None,
         }
     }
 
-    pub(crate) fn sampled(&self) -> Option<&SampledMasks> {
+    pub(crate) const fn sampled(&self) -> Option<&SampledMasks> {
         match self {
             Self::Stencil(_) => None,
             Self::Sampled(masks) => Some(masks),
         }
     }
 
-    pub(crate) fn masked(&self) -> &BlendPipelines {
+    pub(crate) const fn masked(&self) -> &BlendPipelines {
         match self {
             Self::Stencil(masks) => &masks.masked,
             Self::Sampled(masks) => &masks.masked,
         }
     }
 
-    pub(crate) fn masked_blit(&self) -> &BlendPipelines {
+    pub(crate) const fn masked_blit(&self) -> &BlendPipelines {
         match self {
             Self::Stencil(masks) => &masks.masked_blit,
             Self::Sampled(masks) => &masks.masked_blit,
@@ -241,11 +241,11 @@ fn stencil_only(
 }
 
 impl Pipelines {
-    pub(crate) fn has_stencil(&self) -> bool {
+    pub(crate) const fn has_stencil(&self) -> bool {
         matches!(self.masks, MaskPipelines::Stencil(_))
     }
 
-    pub(crate) fn blit_dst_in_shader(&self, blend: ShaderBlend) -> &wgpu::RenderPipeline {
+    pub(crate) const fn blit_dst_in_shader(&self, blend: ShaderBlend) -> &wgpu::RenderPipeline {
         &self.blit_dst_in_shader_pipelines[blend as usize]
     }
 

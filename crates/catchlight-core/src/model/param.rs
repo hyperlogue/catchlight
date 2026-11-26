@@ -13,7 +13,7 @@ pub struct ModelParam {
 
 impl ModelParam {
     #[must_use]
-    pub fn new(name: Name, min: f32, max: f32, default: f32) -> Self {
+    pub const fn new(name: Name, min: f32, max: f32, default: f32) -> Self {
         Self {
             name,
             min,

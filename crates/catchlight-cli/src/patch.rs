@@ -18,7 +18,7 @@ pub enum Kind {
 }
 
 impl Kind {
-    fn as_str(self) -> &'static str {
+    const fn as_str(self) -> &'static str {
         match self {
             Self::Node => "node",
             Self::Param => "param",
@@ -247,7 +247,7 @@ pub fn node_fields(kind: &ClmNodeKind) -> Vec<&'static str> {
     all
 }
 
-fn kind_fields(kind: &ClmNodeKind) -> &'static [&'static str] {
+const fn kind_fields(kind: &ClmNodeKind) -> &'static [&'static str] {
     match kind {
         ClmNodeKind::MotionResponse(_) => &["period_s", "damping_ratio"],
         ClmNodeKind::Group | ClmNodeKind::Spine(_) => &[],
@@ -257,7 +257,7 @@ fn kind_fields(kind: &ClmNodeKind) -> &'static [&'static str] {
     }
 }
 
-fn kind_name(kind: &ClmNodeKind) -> &'static str {
+const fn kind_name(kind: &ClmNodeKind) -> &'static str {
     match kind {
         ClmNodeKind::MotionResponse(_) => "motion response",
         ClmNodeKind::Group => "group",

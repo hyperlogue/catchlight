@@ -27,7 +27,7 @@ impl From<expressions::AuthoringError> for EditorError {
     }
 }
 
-pub(crate) fn humanoid_code(e: &humanoid::AuthoringError) -> ErrorCode {
+pub(crate) const fn humanoid_code(e: &humanoid::AuthoringError) -> ErrorCode {
     use humanoid::AuthoringError as E;
     match e {
         E::EmptyControlName | E::NonFiniteStop { .. } => ErrorCode::BadRequest,
@@ -38,7 +38,7 @@ pub(crate) fn humanoid_code(e: &humanoid::AuthoringError) -> ErrorCode {
     }
 }
 
-pub(crate) fn expressions_code(e: &expressions::AuthoringError) -> ErrorCode {
+pub(crate) const fn expressions_code(e: &expressions::AuthoringError) -> ErrorCode {
     use expressions::AuthoringError as E;
     match e {
         E::EmptyName(_) | E::NoSettings { .. } | E::ControlValue { .. } | E::ParamValue { .. } => {
@@ -51,7 +51,7 @@ pub(crate) fn expressions_code(e: &expressions::AuthoringError) -> ErrorCode {
     }
 }
 
-fn group(group: ExpressionGroup) -> Group {
+const fn group(group: ExpressionGroup) -> Group {
     match group {
         ExpressionGroup::Expression => Group::Expression,
         ExpressionGroup::Viseme => Group::Viseme,
@@ -98,7 +98,7 @@ fn setting(setting: ExpressionSetting) -> Result<Setting, EditorError> {
     }
 }
 
-fn control_names(nonstandard: bool) -> humanoid::ControlNames {
+const fn control_names(nonstandard: bool) -> humanoid::ControlNames {
     if nonstandard {
         humanoid::ControlNames::AllowNonstandard
     } else {

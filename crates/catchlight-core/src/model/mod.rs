@@ -127,13 +127,13 @@ impl Model {
         }
     }
 
-    pub fn generation(&self) -> u64 {
+    pub const fn generation(&self) -> u64 {
         self.generation
     }
 
     /// Compared beside [`Self::generation`], which every loader starts at 0.
     /// A clone keeps it: an undo snapshot is the same model.
-    pub fn identity(&self) -> u64 {
+    pub const fn identity(&self) -> u64 {
         self.identity
     }
 
@@ -144,7 +144,7 @@ impl Model {
         self.bake.clear();
     }
 
-    pub(crate) fn bake_memo(&self) -> &crate::puppet::BakeMemo {
+    pub(crate) const fn bake_memo(&self) -> &crate::puppet::BakeMemo {
         &self.bake
     }
 
@@ -283,7 +283,7 @@ fn same<T: PartialEq + ?Sized>(a: &Arc<T>, b: &Arc<T>) -> bool {
     Arc::ptr_eq(a, b) || a == b
 }
 
-fn mesh_size(mesh: &ClmMesh) -> usize {
+const fn mesh_size(mesh: &ClmMesh) -> usize {
     let indices = match &mesh.indices {
         clm::ClmIndices::U16(indices) => indices.capacity().saturating_mul(size_of::<u16>()),
         clm::ClmIndices::U32(indices) => indices.capacity().saturating_mul(size_of::<u32>()),

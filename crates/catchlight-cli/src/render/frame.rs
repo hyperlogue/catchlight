@@ -90,7 +90,7 @@ impl FrameRuntime {
         self.index += 1;
     }
     #[must_use]
-    pub fn timestep(&self) -> f32 {
+    pub const fn timestep(&self) -> f32 {
         self.timestep
     }
 }

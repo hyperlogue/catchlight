@@ -1038,7 +1038,7 @@ impl Command {
 
     /// The session this command addresses; `None` for editor-level commands.
     #[must_use]
-    pub fn session(&self) -> Option<SessionId> {
+    pub const fn session(&self) -> Option<SessionId> {
         match self {
             Self::SessionNew { .. } | Self::SessionOpen { .. } | Self::SessionList => None,
             Self::SessionClose { session }
@@ -1149,7 +1149,7 @@ pub enum GeometryField {
     Triangles,
 }
 
-fn one() -> f32 {
+const fn one() -> f32 {
     1.0
 }
 

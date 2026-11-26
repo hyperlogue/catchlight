@@ -130,13 +130,13 @@ impl ReplicaState {
         self.rev.is_none_or(|held| rev > held)
     }
 
-    pub fn model(&self) -> &Model {
+    pub const fn model(&self) -> &Model {
         &self.model
     }
 
     /// The model the puppet was last baked against, which the render cache's
     /// generation gate checks.
-    pub fn model_and_puppet(&self) -> (&Model, &Puppet) {
+    pub const fn model_and_puppet(&self) -> (&Model, &Puppet) {
         (&self.model, &self.puppet)
     }
 
@@ -537,11 +537,11 @@ impl ReplicaState {
         self.apply_motion();
     }
 
-    pub fn motion_paused(&self) -> bool {
+    pub const fn motion_paused(&self) -> bool {
         self.motion_paused
     }
 
-    pub fn motion_running(&self) -> bool {
+    pub const fn motion_running(&self) -> bool {
         !self.editing && !self.motion_paused
     }
 

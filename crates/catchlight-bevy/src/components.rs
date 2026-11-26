@@ -41,7 +41,7 @@ impl CatchlightPuppet {
     }
 
     #[must_use]
-    pub fn model(&self) -> &Handle<CatchlightModel> {
+    pub const fn model(&self) -> &Handle<CatchlightModel> {
         &self.model
     }
 
@@ -58,30 +58,30 @@ impl CatchlightPuppet {
     }
 
     #[must_use]
-    pub fn puppet(&self) -> Option<&Puppet> {
+    pub const fn puppet(&self) -> Option<&Puppet> {
         self.puppet.as_ref()
     }
 
-    pub fn puppet_mut(&mut self) -> Option<&mut Puppet> {
+    pub const fn puppet_mut(&mut self) -> Option<&mut Puppet> {
         self.puppet.as_mut()
     }
 
     #[must_use]
-    pub fn player(&self) -> &AnimationPlayer {
+    pub const fn player(&self) -> &AnimationPlayer {
         &self.player
     }
 
-    pub fn player_mut(&mut self) -> &mut AnimationPlayer {
+    pub const fn player_mut(&mut self) -> &mut AnimationPlayer {
         &mut self.player
     }
 
     /// Both halves at once, for a caller that advances the player itself.
-    pub fn puppet_and_player_mut(&mut self) -> (Option<&mut Puppet>, &mut AnimationPlayer) {
+    pub const fn puppet_and_player_mut(&mut self) -> (Option<&mut Puppet>, &mut AnimationPlayer) {
         (self.puppet.as_mut(), &mut self.player)
     }
 
     #[must_use]
-    pub fn is_baked(&self) -> bool {
+    pub const fn is_baked(&self) -> bool {
         self.puppet.is_some()
     }
 

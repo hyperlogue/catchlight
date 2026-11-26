@@ -22,7 +22,7 @@ pub const MAX_EDIT_OPS: usize = 1024;
 pub const MAX_BINDING_CELLS: usize = 65_536;
 
 /// In-process and wire callers share count and encoded argument budgets.
-pub fn check_batch(edits: &[EditOp]) -> Result<(), EditorError> {
+pub const fn check_batch(edits: &[EditOp]) -> Result<(), EditorError> {
     if edits.len() > MAX_EDIT_OPS {
         return Err(EditorError::Limit {
             resource: "edit_ops",

@@ -58,11 +58,11 @@ impl MeshDraft {
     }
 
     #[must_use]
-    pub fn working(&self) -> &WorkingMesh {
+    pub const fn working(&self) -> &WorkingMesh {
         &self.mesh
     }
     #[must_use]
-    pub fn uv_map(&self) -> UvMap {
+    pub const fn uv_map(&self) -> UvMap {
         self.uv
     }
     #[must_use]
@@ -74,7 +74,7 @@ impl MeshDraft {
         !self.undo.is_empty()
     }
     #[must_use]
-    pub fn can_redo(&self) -> bool {
+    pub const fn can_redo(&self) -> bool {
         !self.redo.is_empty()
     }
 

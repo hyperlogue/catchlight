@@ -14,12 +14,12 @@ pub struct Slot {
 
 impl Slot {
     #[must_use]
-    pub fn id(&self) -> &SlotId {
+    pub const fn id(&self) -> &SlotId {
         &self.id
     }
 
     #[must_use]
-    pub fn vertex(&self) -> Option<u32> {
+    pub const fn vertex(&self) -> Option<u32> {
         self.vertex
     }
 }
@@ -51,12 +51,12 @@ impl ModelWeld {
     }
 
     #[must_use]
-    pub fn a(&self) -> &NodeId {
+    pub const fn a(&self) -> &NodeId {
         &self.a
     }
 
     #[must_use]
-    pub fn b(&self) -> &NodeId {
+    pub const fn b(&self) -> &NodeId {
         &self.b
     }
 

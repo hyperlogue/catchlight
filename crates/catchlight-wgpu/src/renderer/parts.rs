@@ -40,7 +40,7 @@ pub(super) struct StencilPassState<'v> {
 }
 
 impl<'v> StencilPassState<'v> {
-    pub(super) fn new(
+    pub(super) const fn new(
         target: Dest<'v>,
         clear_color: Option<wgpu::Color>,
         label: &'static str,
@@ -73,7 +73,7 @@ pub(super) enum PartSink<'a, 'v> {
 
 impl PartSink<'_, '_> {
     /// A pass outside the sink wrote the target, spending the frame clear.
-    pub(super) fn mark_rendered(&mut self) {
+    pub(super) const fn mark_rendered(&mut self) {
         match self {
             PartSink::Stencil(s) => s.next_load = wgpu::LoadOp::Load,
             PartSink::Alpha { has_rendered, .. } => **has_rendered = true,

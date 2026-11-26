@@ -71,7 +71,7 @@ impl Session {
         }
     }
 
-    pub(crate) fn writable(&self) -> Result<(), EditorError> {
+    pub(crate) const fn writable(&self) -> Result<(), EditorError> {
         match self.viewing {
             Some(viewing) => Err(EditorError::ReadOnly(viewing)),
             None => Ok(()),
@@ -87,7 +87,7 @@ impl Session {
             .write(store, self.file.as_deref(), &self.review);
     }
 
-    pub(crate) fn ensure_open(&self, id: SessionId) -> Result<(), EditorError> {
+    pub(crate) const fn ensure_open(&self, id: SessionId) -> Result<(), EditorError> {
         if self.closed {
             return Err(EditorError::NoSession(id));
         }
@@ -171,7 +171,7 @@ impl Session {
         Ok(model.duplicate_subtree(node, hex)?)
     }
 
-    pub(crate) fn dirty(&self) -> bool {
+    pub(crate) const fn dirty(&self) -> bool {
         self.rev != self.saved_rev
     }
 
@@ -218,14 +218,14 @@ pub(crate) struct Captured<T> {
 }
 
 impl<T> Captured<T> {
-    pub(crate) fn at(value: T, rev: u64) -> Self {
+    pub(crate) const fn at(value: T, rev: u64) -> Self {
         Self {
             value,
             rev: Some(rev),
         }
     }
 
-    pub(crate) fn unscoped(value: T) -> Self {
+    pub(crate) const fn unscoped(value: T) -> Self {
         Self { value, rev: None }
     }
 }

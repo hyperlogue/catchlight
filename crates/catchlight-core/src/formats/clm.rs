@@ -62,12 +62,12 @@ pub struct ClmMesh {
 
 impl ClmMesh {
     #[must_use]
-    pub fn vertex_count(&self) -> usize {
+    pub const fn vertex_count(&self) -> usize {
         self.verts.len() / 2
     }
 
     #[must_use]
-    pub fn triangle_count(&self) -> usize {
+    pub const fn triangle_count(&self) -> usize {
         match &self.indices {
             ClmIndices::U16(v) => v.len() / 3,
             ClmIndices::U32(v) => v.len() / 3,
@@ -282,7 +282,7 @@ pub enum ClmPayload {
 impl ClmExtension {
     /// The marker of the bytes this value keeps in the `Extensions` section.
     #[must_use]
-    pub fn marker(&self) -> Option<&ClmExtensionMarker> {
+    pub const fn marker(&self) -> Option<&ClmExtensionMarker> {
         match self {
             Self::Bytes(marker)
             | Self::Maintained {
@@ -299,7 +299,7 @@ impl ClmExtension {
 
     /// The inline JSON this value carries in the structure.
     #[must_use]
-    pub fn inline_json(&self) -> Option<&serde_json::Value> {
+    pub const fn inline_json(&self) -> Option<&serde_json::Value> {
         match self {
             Self::Json(json)
             | Self::Maintained {
@@ -519,7 +519,7 @@ pub struct ClmNode {
     pub kind: ClmNodeKind,
 }
 
-fn default_true() -> bool {
+const fn default_true() -> bool {
     true
 }
 
@@ -736,7 +736,7 @@ pub fn encode_borrowed(
     encode_sections(doc, textures, payloads, extensions, unknown_sections)
 }
 
-fn is_known_section(kind: u32) -> bool {
+const fn is_known_section(kind: u32) -> bool {
     matches!(
         kind,
         SECTION_STRUCTURE | SECTION_TEXTURES | SECTION_TEXTURE_MANIFEST | SECTION_EXTENSIONS

@@ -18,7 +18,7 @@ use catchlight_core::{
 struct Rng(SeededHex);
 
 impl Rng {
-    fn new(seed: u32) -> Self {
+    const fn new(seed: u32) -> Self {
         Self(SeededHex::new(seed))
     }
 

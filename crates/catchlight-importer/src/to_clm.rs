@@ -207,7 +207,7 @@ impl Slot {
     }
 
     /// inochi2d reads a lane `target` of 0 as x and anything else as y.
-    fn axis(&self, target: u8) -> Option<&ParamId> {
+    const fn axis(&self, target: u8) -> Option<&ParamId> {
         match (self, target) {
             (Self::One(id), 0) => Some(id),
             (Self::One(_), _) => None,
@@ -216,7 +216,7 @@ impl Slot {
         }
     }
 
-    fn head(&self) -> &ParamId {
+    const fn head(&self) -> &ParamId {
         match self {
             Self::One(id) | Self::Pair(id, _) => id,
         }
@@ -322,7 +322,7 @@ fn usable_range(id: &ParamId, name: &str, min: f32, max: f32) -> Result<(f32, f3
     Ok(widened)
 }
 
-fn mesh_of(kind: &ClmNodeKind) -> Option<&ClmMesh> {
+const fn mesh_of(kind: &ClmNodeKind) -> Option<&ClmMesh> {
     match kind {
         ClmNodeKind::Part(p) => Some(&p.mesh),
         ClmNodeKind::MeshGroup(mg) => Some(&mg.mesh),

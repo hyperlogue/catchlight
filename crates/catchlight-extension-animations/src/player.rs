@@ -204,13 +204,13 @@ impl AnimationPlayer {
     /// Lets the playing clip run out: at the loop's end playback goes on into
     /// the lead-out, plays it once and holds the clip's last frame. A clip
     /// without a lead-out holds the loop's last frame.
-    pub fn release(&mut self) {
+    pub const fn release(&mut self) {
         if let Some(state) = &mut self.state {
             state.looping = false;
         }
     }
 
-    pub fn stop(&mut self) {
+    pub const fn stop(&mut self) {
         self.state = None;
         self.sampled = None;
     }
@@ -232,7 +232,7 @@ impl AnimationPlayer {
     }
 
     #[must_use]
-    pub fn is_playing(&self) -> bool {
+    pub const fn is_playing(&self) -> bool {
         self.state.is_some()
     }
 

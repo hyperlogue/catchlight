@@ -178,6 +178,10 @@ pub mod browser {
         }
         #[wasm_bindgen(js_name = canRedo)]
         #[must_use]
+        #[expect(
+            clippy::missing_const_for_fn,
+            reason = "wasm_bindgen cannot export a const fn"
+        )]
         pub fn can_redo(&self) -> bool {
             self.state.draft.can_redo()
         }

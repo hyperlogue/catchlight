@@ -204,12 +204,12 @@ impl Puppet {
     }
 
     #[must_use]
-    pub fn baked_generation(&self) -> u64 {
+    pub const fn baked_generation(&self) -> u64 {
         self.baked_generation
     }
 
     #[must_use]
-    pub fn model_identity(&self) -> u64 {
+    pub const fn model_identity(&self) -> u64 {
         self.model_identity
     }
 
@@ -303,14 +303,14 @@ impl Puppet {
     }
 
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.arena.len()
     }
 
     /// Whether the puppet holds nothing but its root slot, which every
     /// puppet has.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.len() <= 1
     }
 
@@ -338,7 +338,7 @@ impl Puppet {
     }
 
     #[must_use]
-    pub fn transforms(&self) -> &GlobalTransforms {
+    pub const fn transforms(&self) -> &GlobalTransforms {
         &self.transforms
     }
 
@@ -469,7 +469,7 @@ impl Puppet {
 
     /// The fold is memoized on the pose generation, which a scratch edit does
     /// not move.
-    fn invalidate_fold(&mut self) {
+    const fn invalidate_fold(&mut self) {
         self.mesh_groups_dirty = true;
         self.last_tick_folded_param_generation = None;
     }
@@ -812,7 +812,7 @@ impl Puppet {
     }
 
     #[must_use]
-    pub fn motion_responses_enabled(&self) -> bool {
+    pub const fn motion_responses_enabled(&self) -> bool {
         self.motion_responses_enabled
     }
 

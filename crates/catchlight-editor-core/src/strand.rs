@@ -129,7 +129,7 @@ fn dot(a: [f32; 2], b: [f32; 2]) -> f32 {
     a[0] * b[0] + a[1] * b[1]
 }
 
-fn finite2(v: [f32; 2]) -> bool {
+const fn finite2(v: [f32; 2]) -> bool {
     v[0].is_finite() && v[1].is_finite()
 }
 

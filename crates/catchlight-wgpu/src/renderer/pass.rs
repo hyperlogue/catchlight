@@ -46,11 +46,11 @@ pub(super) struct Dest<'a> {
 }
 
 impl Dest<'_> {
-    pub(super) fn width(&self) -> u32 {
+    pub(super) const fn width(&self) -> u32 {
         self.viewport.width
     }
 
-    pub(super) fn height(&self) -> u32 {
+    pub(super) const fn height(&self) -> u32 {
         self.viewport.height
     }
 
@@ -108,7 +108,7 @@ impl PassCtx<'_> {
     }
 
     /// `slot` as a target: the viewport's size, at its origin.
-    pub(super) fn slot<'s>(&self, slot: &'s CompositeTexture) -> Dest<'s>
+    pub(super) const fn slot<'s>(&self, slot: &'s CompositeTexture) -> Dest<'s>
     where
         Self: 's,
     {
@@ -127,7 +127,7 @@ impl PassCtx<'_> {
 
     /// Dst-in-shader blends read the target only with a snapshot pool and a
     /// copyable target; otherwise they draw OVER.
-    pub(super) fn shader_blends(&self) -> bool {
+    pub(super) const fn shader_blends(&self) -> bool {
         self.snapshots.is_some() && self.target.texture.is_some()
     }
 }

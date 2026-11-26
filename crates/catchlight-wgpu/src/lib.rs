@@ -116,7 +116,7 @@ impl Readback {
         })
     }
 
-    pub(crate) fn buffer_size(&self) -> u64 {
+    pub(crate) const fn buffer_size(&self) -> u64 {
         self.layout.buffer_size
     }
 }

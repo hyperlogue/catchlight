@@ -358,7 +358,7 @@ impl Role {
     }
 
     /// Opacity before any binding moves it.
-    fn rest_opacity(self) -> f32 {
+    const fn rest_opacity(self) -> f32 {
         match self {
             Self::Mouth | Self::Expr | Self::ExprBrows | Self::Lid => 1.0,
             Self::Blush

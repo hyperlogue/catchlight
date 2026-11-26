@@ -282,7 +282,7 @@ impl FixtureParam {
         }
     }
 
-    fn pair(
+    const fn pair(
         name: &'static str,
         min: [f32; 2],
         max: [f32; 2],
@@ -328,7 +328,7 @@ fn two(i: usize) -> Vec<ParamId> {
     ]
 }
 
-fn transform() -> ClmTransform {
+const fn transform() -> ClmTransform {
     ClmTransform {
         translation: [0.0; 3],
         rotation: [0.0; 3],
@@ -345,7 +345,7 @@ fn quad(w: f32, h: f32) -> ClmMesh {
     }
 }
 
-fn part(mesh: ClmMesh) -> ClmPart {
+const fn part(mesh: ClmMesh) -> ClmPart {
     ClmPart {
         mesh,
         albedo: None,

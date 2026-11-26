@@ -31,6 +31,13 @@ const MAX_RENAMES: usize = 256;
 pub(super) struct Stamp(#[cfg(not(target_arch = "wasm32"))] pub(super) std::time::Instant);
 
 impl Stamp {
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(
+            clippy::missing_const_for_fn,
+            reason = "reads the clock on every other target"
+        )
+    )]
     fn now() -> Self {
         Self(
             #[cfg(not(target_arch = "wasm32"))]
@@ -44,6 +51,10 @@ impl Stamp {
     }
 
     #[cfg(target_arch = "wasm32")]
+    #[expect(
+        clippy::missing_const_for_fn,
+        reason = "shares the signature of the native age, which cannot be const"
+    )]
     fn age(self) -> Option<Duration> {
         None
     }
@@ -215,7 +226,7 @@ fn require(model: &Model, target: &ReviewTarget) -> Result<(), EditorError> {
 
 /// `target` as `rename` leaves it, run forward or (`back`) undone.
 fn renamed(target: &ReviewTarget, rename: &Rename, back: bool) -> Option<ReviewTarget> {
-    fn pick<'a, T>(from: &'a T, to: &'a T, back: bool) -> (&'a T, &'a T) {
+    const fn pick<'a, T>(from: &'a T, to: &'a T, back: bool) -> (&'a T, &'a T) {
         if back { (to, from) } else { (from, to) }
     }
     match (target, rename) {

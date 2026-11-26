@@ -194,7 +194,7 @@ impl EditorError {
     }
 }
 
-fn model_load_limit(e: &ModelError) -> Option<&LoadLimitError> {
+const fn model_load_limit(e: &ModelError) -> Option<&LoadLimitError> {
     match e {
         ModelError::LoadLimit(limit) => Some(limit),
         _ => None,
@@ -209,7 +209,7 @@ fn load_limit_info(limit: &LoadLimitError) -> LimitInfo {
     }
 }
 
-fn model_error_code(e: &ModelError) -> ErrorCode {
+const fn model_error_code(e: &ModelError) -> ErrorCode {
     match e {
         ModelError::UnknownNode(_) => ErrorCode::NoNode,
         ModelError::UnknownParam(_) => ErrorCode::NoParam,

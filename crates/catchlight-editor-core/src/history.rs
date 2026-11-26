@@ -191,7 +191,7 @@ impl ModelHistory {
 
     /// Distinct from the current entry identity.
     #[must_use]
-    pub fn live_revision(&self) -> u64 {
+    pub const fn live_revision(&self) -> u64 {
         self.live_revision
     }
 
@@ -316,7 +316,7 @@ impl ModelHistory {
         }
     }
 
-    fn check_revision(&self, supplied: u64) -> Result<(), HistoryError> {
+    const fn check_revision(&self, supplied: u64) -> Result<(), HistoryError> {
         if supplied <= self.live_revision {
             return Err(HistoryError::InvalidPublicationRevision {
                 supplied,

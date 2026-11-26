@@ -12,17 +12,17 @@ pub struct Control {
 
 impl Control {
     #[must_use]
-    pub fn min(&self) -> f32 {
+    pub const fn min(&self) -> f32 {
         if self.one_sided { 0.0 } else { -1.0 }
     }
 
     #[must_use]
-    pub fn max(&self) -> f32 {
+    pub const fn max(&self) -> f32 {
         1.0
     }
 
     #[must_use]
-    pub fn clamp(&self, value: f32) -> f32 {
+    pub const fn clamp(&self, value: f32) -> f32 {
         value.clamp(self.min(), self.max())
     }
 }

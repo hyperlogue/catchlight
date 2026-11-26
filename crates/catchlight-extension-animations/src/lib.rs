@@ -119,7 +119,7 @@ impl Lane {
 
     /// The param a param lane drives.
     #[must_use]
-    pub fn param(&self) -> Option<&ParamId> {
+    pub const fn param(&self) -> Option<&ParamId> {
         match &self.target {
             LaneTarget::Param(param) => Some(param),
             _ => None,
@@ -292,12 +292,12 @@ impl Animations {
     }
 
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.clips.len()
     }
 
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.clips.is_empty()
     }
 

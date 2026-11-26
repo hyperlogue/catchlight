@@ -8,7 +8,7 @@ pub(super) struct Vertex {
 }
 
 impl Vertex {
-    pub(super) fn desc() -> wgpu::VertexBufferLayout<'static> {
+    pub(super) const fn desc() -> wgpu::VertexBufferLayout<'static> {
         wgpu::VertexBufferLayout {
             array_stride: size_of::<Self>() as wgpu::BufferAddress,
             step_mode: wgpu::VertexStepMode::Vertex,
@@ -35,7 +35,7 @@ pub(super) struct DeformAttr {
 }
 
 impl DeformAttr {
-    pub(super) fn desc() -> wgpu::VertexBufferLayout<'static> {
+    pub(super) const fn desc() -> wgpu::VertexBufferLayout<'static> {
         wgpu::VertexBufferLayout {
             array_stride: size_of::<Self>() as wgpu::BufferAddress,
             step_mode: wgpu::VertexStepMode::Vertex,
@@ -59,7 +59,7 @@ pub(super) struct InstanceRaw {
 }
 
 impl InstanceRaw {
-    pub(super) fn from_transform(transform: glam::Mat4) -> Self {
+    pub(super) const fn from_transform(transform: glam::Mat4) -> Self {
         let cols = transform.to_cols_array_2d();
         Self {
             col_x: cols[0],
@@ -68,7 +68,7 @@ impl InstanceRaw {
         }
     }
 
-    pub(super) fn desc() -> wgpu::VertexBufferLayout<'static> {
+    pub(super) const fn desc() -> wgpu::VertexBufferLayout<'static> {
         wgpu::VertexBufferLayout {
             array_stride: size_of::<Self>() as wgpu::BufferAddress,
             step_mode: wgpu::VertexStepMode::Instance,
@@ -147,7 +147,7 @@ pub(super) struct PartUniform {
 }
 
 impl PartUniform {
-    pub(super) fn new(
+    pub(super) const fn new(
         opacity: f32,
         tint: glam::Vec3,
         screen_tint: glam::Vec3,

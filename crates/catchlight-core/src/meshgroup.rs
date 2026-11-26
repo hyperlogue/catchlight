@@ -195,7 +195,7 @@ fn triangle_vertices_raw(
     Some((*vertices.get(i0)?, *vertices.get(i1)?, *vertices.get(i2)?))
 }
 
-fn triangle_count(indices: &MeshIndices) -> u32 {
+const fn triangle_count(indices: &MeshIndices) -> u32 {
     (indices.len() / 3) as u32
 }
 
@@ -282,6 +282,13 @@ fn local_positions(mesh: &Mesh) -> Vec<Vec2> {
     mesh.vertices.iter().map(|v| *v - mesh.origin).collect()
 }
 
+#[cfg_attr(
+    target_arch = "wasm32",
+    expect(
+        clippy::missing_const_for_fn,
+        reason = "glam's SIMD `Mat2::from_cols` on native targets is not const"
+    )
+)]
 pub(crate) fn linear_mat2(m: Mat4) -> Mat2 {
     Mat2::from_cols(
         Vec2::new(m.x_axis.x, m.x_axis.y),

@@ -91,7 +91,7 @@ impl Call {
         self
     }
 
-    pub(crate) fn remembered(mut self) -> Self {
+    pub(crate) const fn remembered(mut self) -> Self {
         self.remember = true;
         self
     }

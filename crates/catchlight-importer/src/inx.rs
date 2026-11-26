@@ -86,7 +86,7 @@ fn check_texture_dims(width: u32, height: u32) -> Result<(), InxParseError> {
     Ok(())
 }
 
-fn check_size(what: &'static str, size: usize, limit: usize) -> Result<(), InxParseError> {
+const fn check_size(what: &'static str, size: usize, limit: usize) -> Result<(), InxParseError> {
     if size > limit {
         Err(InxParseError::SizeExceedsLimit { what, size, limit })
     } else {

@@ -578,7 +578,7 @@ pub struct TreeNode {
     pub children: Vec<TreeNode>,
 }
 
-fn yes() -> bool {
+const fn yes() -> bool {
     true
 }
 

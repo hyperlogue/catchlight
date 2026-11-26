@@ -42,7 +42,7 @@ pub(crate) enum Target {
 }
 
 impl Target {
-    pub fn harness(&self) -> &'static str {
+    pub const fn harness(&self) -> &'static str {
         match self {
             Self::Claude { .. } => "claude",
             Self::Codex { .. } => "codex",

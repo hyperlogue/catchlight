@@ -107,7 +107,7 @@ impl WorkingMesh {
     }
 
     #[must_use]
-    pub fn vertex_count(&self) -> usize {
+    pub const fn vertex_count(&self) -> usize {
         self.verts.len() / 2
     }
 
@@ -467,12 +467,12 @@ impl AlphaMask {
     }
 
     #[must_use]
-    pub fn width(&self) -> u32 {
+    pub const fn width(&self) -> u32 {
         self.width
     }
 
     #[must_use]
-    pub fn height(&self) -> u32 {
+    pub const fn height(&self) -> u32 {
         self.height
     }
 
@@ -721,7 +721,7 @@ impl Generated {
 }
 
 /// A point that cannot be placed is skipped; only the vertex cap stops a trace.
-fn skip_unplaceable(placed: Result<u32, MeshError>) -> Result<Option<u32>, MeshError> {
+const fn skip_unplaceable(placed: Result<u32, MeshError>) -> Result<Option<u32>, MeshError> {
     match placed {
         Ok(id) => Ok(Some(id)),
         Err(e @ MeshError::Limit(_)) => Err(e),

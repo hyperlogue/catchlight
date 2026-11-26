@@ -1178,7 +1178,7 @@ impl From<Arc<[u8]>> for Body {
 }
 
 impl Response {
-    fn new(status: u16, reason: &'static str) -> Self {
+    const fn new(status: u16, reason: &'static str) -> Self {
         Self {
             status,
             reason,
@@ -1244,7 +1244,7 @@ fn cors(response: Response, origin: Option<&str>) -> Response {
     }
 }
 
-fn peer_allowed(allow_remote: bool, peer: SocketAddr) -> bool {
+const fn peer_allowed(allow_remote: bool, peer: SocketAddr) -> bool {
     allow_remote || peer.ip().to_canonical().is_loopback()
 }
 

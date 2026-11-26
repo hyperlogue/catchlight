@@ -197,7 +197,7 @@ fn bounds(verts: &[f32]) -> [f32; 4] {
         })
 }
 
-fn triangles(mesh: &ClmMesh) -> usize {
+const fn triangles(mesh: &ClmMesh) -> usize {
     use catchlight_core::formats::clm::ClmIndices;
     match &mesh.indices {
         ClmIndices::U16(i) => i.len() / 3,

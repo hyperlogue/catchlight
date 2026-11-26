@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn blend_mode_to_wgpu(mode: BlendMode) -> wgpu::BlendState {
+pub(super) const fn blend_mode_to_wgpu(mode: BlendMode) -> wgpu::BlendState {
     match mode {
         // Premultiplied alpha: src already has RGB * A, so use One for src factor
         BlendMode::Normal => wgpu::BlendState {
@@ -158,12 +158,12 @@ pub(super) fn blend_mode_to_wgpu(mode: BlendMode) -> wgpu::BlendState {
     }
 }
 
-pub(super) fn is_dst_in_shader(mode: BlendMode) -> bool {
+pub(super) const fn is_dst_in_shader(mode: BlendMode) -> bool {
     ShaderBlend::of(mode).is_some()
 }
 
 /// The dst-in-shader trio draws its source through Normal's OVER pipeline.
-pub(super) fn canonical_part_blend(mode: BlendMode) -> BlendMode {
+pub(super) const fn canonical_part_blend(mode: BlendMode) -> BlendMode {
     if is_dst_in_shader(mode) {
         BlendMode::Normal
     } else {
@@ -188,6 +188,6 @@ pub(super) fn renders_as_over(mode: BlendMode) -> bool {
 /// A transparent src leaves dst unchanged, so a scissored composite blit
 /// matches the full-screen one. `Darken` (`min(0, dst) = 0`) is the sole
 /// exclusion; a unit test replays `blend_mode_to_wgpu` to keep this in sync.
-pub(super) fn blend_transparent_src_is_identity(mode: BlendMode) -> bool {
+pub(super) const fn blend_transparent_src_is_identity(mode: BlendMode) -> bool {
     !matches!(mode, BlendMode::Darken)
 }

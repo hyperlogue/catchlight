@@ -25,7 +25,7 @@ fn is_git_lfs_pointer(bytes: &[u8]) -> bool {
     bytes.starts_with(b"version https://git-lfs.github.com/spec/v1\n")
 }
 
-fn is_bad_magic(error: &ClmError) -> bool {
+const fn is_bad_magic(error: &ClmError) -> bool {
     matches!(error, ClmError::Container(ContainerError::BadMagic))
 }
 

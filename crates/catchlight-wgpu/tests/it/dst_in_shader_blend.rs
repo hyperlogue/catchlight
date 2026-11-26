@@ -153,16 +153,16 @@ fn make_nested_burn_model(pad_rgba: [u8; 4], src_rgba: [u8; 4]) -> Model {
     build.model
 }
 
-fn pixel_at(buf: &[u8], x: usize, y: usize) -> [u8; 4] {
+const fn pixel_at(buf: &[u8], x: usize, y: usize) -> [u8; 4] {
     let i = (y * W as usize + x) * 4;
     [buf[i], buf[i + 1], buf[i + 2], buf[i + 3]]
 }
 
-fn center_pixel(buf: &[u8]) -> [u8; 4] {
+const fn center_pixel(buf: &[u8]) -> [u8; 4] {
     pixel_at(buf, (W / 2) as usize, (H / 2) as usize)
 }
 
-fn approx_eq(a: u8, b: u8, tol: u8) -> bool {
+const fn approx_eq(a: u8, b: u8, tol: u8) -> bool {
     a.abs_diff(b) <= tol
 }
 

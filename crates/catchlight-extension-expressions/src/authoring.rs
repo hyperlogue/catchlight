@@ -38,7 +38,7 @@ pub enum AuthoringError {
     Unreadable(ExtensionError),
 }
 
-fn article(group: Group) -> &'static str {
+const fn article(group: Group) -> &'static str {
     match group {
         Group::Expression => "an expression",
         Group::Viseme => "a viseme",

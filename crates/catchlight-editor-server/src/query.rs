@@ -208,7 +208,7 @@ pub(crate) fn check_revision(command: &Command, rev: u64) -> Result<(), EditorEr
     }
 }
 
-fn check_count(
+const fn check_count(
     resource: &'static str,
     requested: usize,
     maximum: usize,

@@ -120,7 +120,7 @@ struct PrepareAttempt {
 pub(crate) struct PrepareFailures(HashMap<ModelKey, PrepareAttempt>);
 
 impl PrepareFailures {
-    fn attempt(model: &Model, options: PrepareOptions) -> PrepareAttempt {
+    const fn attempt(model: &Model, options: PrepareOptions) -> PrepareAttempt {
         PrepareAttempt {
             identity: model.identity(),
             generation: model.generation(),

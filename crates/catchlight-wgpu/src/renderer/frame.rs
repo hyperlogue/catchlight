@@ -28,7 +28,7 @@ pub struct Submission {
 impl Submission {
     #[doc(hidden)]
     #[must_use]
-    pub fn views_issued(&self) -> u32 {
+    pub const fn views_issued(&self) -> u32 {
         self.views
     }
 }
@@ -85,7 +85,7 @@ impl Recorded<'_> {
     }
 
     #[must_use]
-    pub fn stats(&self) -> RenderStats {
+    pub const fn stats(&self) -> RenderStats {
         self.stats
     }
 
@@ -136,7 +136,7 @@ impl WgpuRenderer {
     }
 
     /// Make a fresh one per submit; see [`Submission`].
-    pub fn submission(&self) -> Submission {
+    pub const fn submission(&self) -> Submission {
         Submission {
             renderer: self.id,
             views: 0,

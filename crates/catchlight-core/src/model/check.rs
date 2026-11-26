@@ -181,7 +181,7 @@ pub struct ExtensionWarning {
     pub warning: crate::extension::Warning,
 }
 
-fn warn(node: NodeId, message: String) -> CheckWarning {
+const fn warn(node: NodeId, message: String) -> CheckWarning {
     CheckWarning {
         node: Some(node),
         message,

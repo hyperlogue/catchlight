@@ -320,7 +320,7 @@ pub(crate) fn automesh(
     Ok(working.to_mesh(&uv_map, Some(&alpha))?)
 }
 
-pub(crate) fn emptied_reply(node: NodeId, emptied: Vec<SlotId>) -> ResponseBody {
+pub(crate) const fn emptied_reply(node: NodeId, emptied: Vec<SlotId>) -> ResponseBody {
     ResponseBody::Emptied {
         node,
         slots: emptied,
@@ -455,7 +455,7 @@ pub(crate) fn apply_patch(
     Ok(())
 }
 
-fn set_opacity(kind: &mut ModelNodeKind, op: f32) {
+const fn set_opacity(kind: &mut ModelNodeKind, op: f32) {
     match kind {
         ModelNodeKind::Part(p) => p.opacity = op,
         ModelNodeKind::Composite(c) => c.opacity = op,

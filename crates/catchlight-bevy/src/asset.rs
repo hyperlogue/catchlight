@@ -32,7 +32,7 @@ impl CatchlightModel {
     }
 
     #[must_use]
-    pub fn shared(&self) -> &Arc<Model> {
+    pub const fn shared(&self) -> &Arc<Model> {
         &self.model
     }
 }

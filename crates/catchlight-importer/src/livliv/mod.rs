@@ -258,7 +258,7 @@ impl Package {
 impl ValidatedPackage {
     /// Original manifest, including author, license, watermark and extensions.
     #[must_use]
-    pub fn manifest(&self) -> &Value {
+    pub const fn manifest(&self) -> &Value {
         &self.manifest
     }
     #[must_use]
@@ -267,7 +267,7 @@ impl ValidatedPackage {
     }
     /// Before any part splitting.
     #[must_use]
-    pub fn layer_count(&self) -> usize {
+    pub const fn layer_count(&self) -> usize {
         self.model.layers.len()
     }
     /// Exact source resource bytes after path and existence validation.

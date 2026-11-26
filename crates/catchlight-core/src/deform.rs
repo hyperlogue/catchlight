@@ -71,7 +71,7 @@ impl DeformStack {
     }
 
     #[must_use]
-    pub fn vert_count(&self) -> usize {
+    pub const fn vert_count(&self) -> usize {
         self.vert_count
     }
 
@@ -308,7 +308,7 @@ impl DeformStack {
     }
 
     #[must_use]
-    pub fn generation(&self) -> u64 {
+    pub const fn generation(&self) -> u64 {
         self.generation
     }
 
