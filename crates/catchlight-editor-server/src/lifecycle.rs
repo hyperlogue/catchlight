@@ -213,7 +213,7 @@ impl Editor {
         let title = name.unwrap_or_else(|| format!("untitled-{}", session.0));
         let mut opened = Session::new(session, model, title, file);
         kept(&mut opened);
-        self.insert_session(session, opened);
+        self.insert_session(session, opened)?;
         let body = match source {
             Some(source) => ResponseBody::SessionFork { session, source },
             None => ResponseBody::Session { session },

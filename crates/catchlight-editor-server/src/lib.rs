@@ -737,9 +737,21 @@ impl Editor {
         SessionId(self.next_id.fetch_add(1, Ordering::Relaxed))
     }
 
-    fn insert_session(&self, id: SessionId, session: Session) {
-        lock(&self.sessions).insert(id, Arc::new(Mutex::new(session)));
+    /// A view of a version is refused once the session it is of has left
+    /// the registry: its close looks for views only after that, so it would
+    /// never find this one.
+    fn insert_session(&self, id: SessionId, session: Session) -> Result<(), EditorError> {
+        {
+            let mut sessions = lock(&self.sessions);
+            if let Some(viewing) = session.viewing {
+                if !sessions.contains_key(&viewing.session) {
+                    return Err(EditorError::NoSession(viewing.session));
+                }
+            }
+            sessions.insert(id, Arc::new(Mutex::new(session)));
+        }
         self.notify_sessions();
+        Ok(())
     }
 
     fn session(&self, id: SessionId) -> Result<Arc<Mutex<Session>>, EditorError> {
@@ -1034,9 +1046,11 @@ impl Editor {
                 }
                 // A version open for viewing goes with the session it is of.
                 for view in self.views_of(session) {
-                    let handle = self.session(view)?;
-                    lock(&handle).closed = true;
-                    lock(&self.sessions).remove(&view);
+                    // A view closed meanwhile is already gone.
+                    if let Ok(handle) = self.session(view) {
+                        lock(&handle).closed = true;
+                        lock(&self.sessions).remove(&view);
+                    }
                 }
                 self.notify_sessions();
                 Ok(Captured::unscoped(ResponseBody::Empty))

@@ -1098,6 +1098,35 @@ mod tests {
         );
     }
 
+    /// A version open that read its bytes before the session closed must
+    /// not leave a view the close never saw.
+    #[test]
+    fn a_view_published_after_its_session_closed_is_refused() {
+        let mut f = Fixture::new(Editor::with_storage(Arc::new(crate::NoStorage)));
+        let live = f.session;
+        f.saved(None);
+        let bytes = f.bytes(1);
+        f.ok(Command::SessionClose { session: live });
+
+        let viewing = VersionViewing {
+            session: live,
+            version: 1,
+        };
+        let published = f.editor.publish_viewing(
+            Model::from_clm_bytes(&bytes).unwrap(),
+            "late v1".into(),
+            viewing,
+        );
+        assert!(
+            matches!(published, Err(EditorError::NoSession(s)) if s == live),
+            "{published:?}"
+        );
+        match f.ok(Command::SessionList) {
+            ResponseBody::Sessions { sessions } => assert!(sessions.is_empty(), "{sessions:?}"),
+            other => panic!("{other:?}"),
+        }
+    }
+
     trait IsOk {
         fn is_ok_reply(&self) -> bool;
     }

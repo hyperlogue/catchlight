@@ -14,10 +14,12 @@ use catchlight_core::Vec2;
 
 fn new_session(editor: &Editor) -> SessionId {
     let id = editor.alloc_id();
-    editor.insert_session(
-        id,
-        Session::new(id, Model::new(), "history test".into(), None),
-    );
+    editor
+        .insert_session(
+            id,
+            Session::new(id, Model::new(), "history test".into(), None),
+        )
+        .unwrap();
     id
 }
 
@@ -561,10 +563,12 @@ fn navigation_keeps_preview_pose_but_resets_scratch_and_motion_responses() {
             ),
         )
         .unwrap();
-    editor.insert_session(
-        session,
-        Session::new(session, model, "preview history".into(), None),
-    );
+    editor
+        .insert_session(
+            session,
+            Session::new(session, model, "preview history".into(), None),
+        )
+        .unwrap();
     rename(&editor, session, "Changed");
     editor
         .with_puppet(session, |model, puppet| {
