@@ -44,7 +44,7 @@ use catchlight_core::formats::clm::{
     self as clm, ClmIndices, ClmMesh, TextureAlpha, TextureEncoding as CoreTextureEncoding,
 };
 use catchlight_core::id::{HexSource as _, Name, SeededHex};
-use catchlight_core::{LoadBudget, LoadLimits};
+use catchlight_core::{LoadBudget, LoadLimitError, LoadLimits};
 
 use catchlight_core::{
     BindingKey, BindingTarget as CoreBindingTarget, ExtensionValue, InstallError, Mat4, Model,
@@ -177,20 +177,12 @@ impl EditorError {
                 limit: *limit,
                 requested: *requested,
             }),
-            Self::Edit(
-                ModelError::LoadLimit(limit) | ModelError::Clm(clm::ClmError::LoadLimit(limit)),
-            )
-            | Self::Mesh(MeshError::Limit(limit))
-            | Self::Manifest(
-                ManifestError::LoadLimit(limit)
-                | ManifestError::Model(
-                    ModelError::LoadLimit(limit) | ModelError::Clm(clm::ClmError::LoadLimit(limit)),
-                ),
-            ) => Some(LimitInfo {
-                resource: limit.resource.name().into(),
-                limit: limit.limit,
-                requested: limit.got,
-            }),
+            Self::Mesh(MeshError::Limit(limit))
+            | Self::Manifest(ManifestError::LoadLimit(limit)) => Some(load_limit_info(limit)),
+            Self::Edit(e) | Self::Manifest(ManifestError::Model(e)) => {
+                model_load_limit(e).map(load_limit_info)
+            }
+            Self::Install(InstallError::Model(e)) => model_load_limit(e).map(load_limit_info),
             _ => None,
         }
     }
@@ -262,6 +254,23 @@ impl EditorError {
             },
             Self::Edit(e) => model_error_code(e),
         }
+    }
+}
+
+fn model_load_limit(e: &ModelError) -> Option<&LoadLimitError> {
+    match e {
+        ModelError::LoadLimit(limit) | ModelError::Clm(clm::ClmError::LoadLimit(limit)) => {
+            Some(limit)
+        }
+        _ => None,
+    }
+}
+
+fn load_limit_info(limit: &LoadLimitError) -> LimitInfo {
+    LimitInfo {
+        resource: limit.resource.name().into(),
+        limit: limit.limit,
+        requested: limit.got,
     }
 }
 
@@ -2998,6 +3007,21 @@ mod tests {
             ResponseBody::Session { session } => session,
             other => panic!("expected session, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_load_limit_inside_an_install_is_answered_as_a_limit() {
+        let limit = LoadLimitError {
+            resource: catchlight_core::LoadResource::Nodes,
+            limit: 4,
+            got: 5,
+        };
+        let error =
+            EditorError::Install(InstallError::Model(Box::new(ModelError::LoadLimit(limit))));
+        assert_eq!(error.code(), ErrorCode::LimitExceeded);
+        let info = error.limit_info().unwrap();
+        assert_eq!(info.resource, limit.resource.name());
+        assert_eq!((info.limit, info.requested), (4, 5));
     }
 
     #[test]
