@@ -301,6 +301,12 @@ pub struct WgpuRenderer {
     camera_view_proj: glam::Mat4,
     draw_filter_scratch: Vec<usize>,
     instance_scratch: Vec<InstanceRaw>,
+    pending_parts_scratch: Vec<PreparedPartDraw>,
+    /// A drawable by the composite holding it (`None` for the root list)
+    /// and its index there.
+    drawable_walk_scratch: Vec<(Option<u32>, usize)>,
+    mask_source_ids_scratch: Vec<u32>,
+    uniform_offset_scratch: Vec<u32>,
     composite_mask_textures: DenseMap<PreparedCompositeMask>,
     composite_bounds: DenseMap<Option<[f32; 4]>>,
 }
@@ -420,6 +426,10 @@ impl WgpuRenderer {
             camera_view_proj: glam::Mat4::IDENTITY,
             draw_filter_scratch: Vec::new(),
             instance_scratch: Vec::new(),
+            pending_parts_scratch: Vec::new(),
+            drawable_walk_scratch: Vec::new(),
+            mask_source_ids_scratch: Vec::new(),
+            uniform_offset_scratch: Vec::new(),
             composite_mask_textures: DenseMap::new(),
             composite_bounds: DenseMap::new(),
         }

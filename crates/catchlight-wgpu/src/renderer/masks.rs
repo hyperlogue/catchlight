@@ -70,9 +70,19 @@ impl WgpuRenderer {
         {
             return;
         }
-        let mut source_ids = Vec::new();
-        let mut pending: Vec<_> = render_list.root_drawables.iter().collect();
-        while let Some(drawable) = pending.pop() {
+        let mut source_ids = std::mem::take(&mut self.mask_source_ids_scratch);
+        source_ids.clear();
+        let mut pending = std::mem::take(&mut self.drawable_walk_scratch);
+        pending.clear();
+        pending.extend((0..render_list.root_drawables.len()).map(|i| (None, i)));
+        while let Some((parent, index)) = pending.pop() {
+            let siblings = match parent {
+                None => render_list.root_drawables.as_slice(),
+                Some(node_id) => render_list.composite_children(node_id),
+            };
+            let Some(drawable) = siblings.get(index) else {
+                continue;
+            };
             if self.drawable_screen_bounds(drawable, render_list, width, height)
                 == ScreenBounds::Empty
             {
@@ -85,7 +95,8 @@ impl WgpuRenderer {
                     mask_sources,
                     ..
                 } => {
-                    pending.extend(render_list.composite_children(*node_id));
+                    let children = render_list.composite_children(*node_id).len();
+                    pending.extend((0..children).map(|i| (Some(*node_id), i)));
                     mask_sources
                 }
             };
@@ -94,33 +105,36 @@ impl WgpuRenderer {
                 MaskSourceData::Part { .. } => None,
             }));
         }
+        self.drawable_walk_scratch = pending;
         source_ids.sort_unstable();
         source_ids.dedup();
 
-        for node_id in source_ids {
+        for &node_id in &source_ids {
             let Some(source) = render_list.composite_mask_source(node_id) else {
                 continue;
             };
             let slot = composites.acquire(&self.shared, &self.device);
             let base_offset = self.reserve_instances(source.parts.len());
-            let instances: Vec<_> = source
-                .parts
-                .iter()
-                .map(|part| InstanceRaw::from_transform(part.transform))
-                .collect();
+            let mut instances = std::mem::take(&mut self.instance_scratch);
+            instances.clear();
+            instances.extend(
+                source
+                    .parts
+                    .iter()
+                    .map(|part| InstanceRaw::from_transform(part.transform)),
+            );
             self.write_instances(base_offset, &instances);
-            let uniform_offsets: Vec<_> = source
-                .parts
-                .iter()
-                .map(|part| {
-                    self.write_part_uniform(
-                        1.0,
-                        glam::Vec3::ONE,
-                        glam::Vec3::ZERO,
-                        part.mask_threshold,
-                    )
-                })
-                .collect();
+            self.instance_scratch = instances;
+            let mut uniform_offsets = std::mem::take(&mut self.uniform_offset_scratch);
+            uniform_offsets.clear();
+            for part in &source.parts {
+                uniform_offsets.push(self.write_part_uniform(
+                    1.0,
+                    glam::Vec3::ONE,
+                    glam::Vec3::ZERO,
+                    part.mask_threshold,
+                ));
+            }
 
             let mut pass = self.counted_begin_pass(
                 encoder,
@@ -166,6 +180,7 @@ impl WgpuRenderer {
                 self.emit_part_draw(&mut pass, mesh.num_indices, base_offset + i as u64 * stride);
             }
             drop(pass);
+            self.uniform_offset_scratch = uniform_offsets;
             self.composite_mask_textures.insert(
                 node_id as usize,
                 PreparedCompositeMask {
@@ -175,6 +190,7 @@ impl WgpuRenderer {
                 },
             );
         }
+        self.mask_source_ids_scratch = source_ids;
     }
 
     /// Sampled-mask path. Each source's instance must already be at

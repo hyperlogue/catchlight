@@ -517,7 +517,7 @@ impl WgpuRenderer {
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         sink: &mut PartSink<'_, '_>,
-        pending: &mut Vec<PreparedPartDraw>,
+        pending: &[PreparedPartDraw],
     ) {
         if pending.is_empty() {
             return;
@@ -550,14 +550,13 @@ impl WgpuRenderer {
                 **has_rendered |= drew;
             }
         }
-        pending.clear();
     }
 
     pub(super) fn flush_pending_masked(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         sink: &mut PartSink<'_, '_>,
-        pending: &mut Vec<PreparedMaskedPartDraw<'_>>,
+        pending: &[PreparedMaskedPartDraw<'_>],
     ) {
         if pending.is_empty() {
             return;
@@ -621,7 +620,6 @@ impl WgpuRenderer {
                 **has_rendered |= drew;
             }
         }
-        pending.clear();
     }
 
     // At most one pending run is non-empty at a time, preserving z-order.
@@ -636,7 +634,8 @@ impl WgpuRenderer {
     ) {
         use crate::collect::DrawableInfo;
 
-        let mut pending_parts: Vec<PreparedPartDraw> = Vec::new();
+        let mut pending_parts = std::mem::take(&mut self.pending_parts_scratch);
+        pending_parts.clear();
         let mut pending_masked: Vec<PreparedMaskedPartDraw> = Vec::new();
         for child in children {
             let DrawableInfo::Part {
@@ -661,7 +660,8 @@ impl WgpuRenderer {
                 self.write_part_uniform(*opacity, *tint, *screen_tint, *mask_threshold);
 
             if mask_sources.is_empty() {
-                self.flush_pending_masked(encoder, sink, &mut pending_masked);
+                self.flush_pending_masked(encoder, sink, &pending_masked);
+                pending_masked.clear();
                 pending_parts.push(PreparedPartDraw {
                     draw: PartDraw {
                         mesh_id: *mesh_id,
@@ -672,10 +672,12 @@ impl WgpuRenderer {
                     part_uniform_offset,
                 });
             } else {
-                self.flush_pending_parts(encoder, sink, &mut pending_parts);
+                self.flush_pending_parts(encoder, sink, &pending_parts);
+                pending_parts.clear();
                 if let Some(first) = pending_masked.first() {
                     if !same_mask_signature(first.mask_sources, mask_sources) {
-                        self.flush_pending_masked(encoder, sink, &mut pending_masked);
+                        self.flush_pending_masked(encoder, sink, &pending_masked);
+                        pending_masked.clear();
                     }
                 }
                 pending_masked.push(PreparedMaskedPartDraw {
@@ -693,8 +695,10 @@ impl WgpuRenderer {
             }
         }
 
-        self.flush_pending_parts(encoder, sink, &mut pending_parts);
-        self.flush_pending_masked(encoder, sink, &mut pending_masked);
+        self.flush_pending_parts(encoder, sink, &pending_parts);
+        self.flush_pending_masked(encoder, sink, &pending_masked);
+        pending_parts.clear();
+        self.pending_parts_scratch = pending_parts;
     }
 
     /// Alpha sink only: a pending clear must land before a barrier reads the

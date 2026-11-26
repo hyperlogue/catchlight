@@ -237,12 +237,12 @@ impl WgpuRenderer {
             );
             let mut sink = PartSink::Stencil(&mut state);
             if mask_sources.is_empty() {
-                self.flush_pending_parts(encoder, &mut sink, &mut vec![draw]);
+                self.flush_pending_parts(encoder, &mut sink, std::slice::from_ref(&draw));
             } else {
                 self.flush_pending_masked(
                     encoder,
                     &mut sink,
-                    &mut vec![PreparedMaskedPartDraw { draw, mask_sources }],
+                    std::slice::from_ref(&PreparedMaskedPartDraw { draw, mask_sources }),
                 );
             }
             // If the draw filtered out, this emits the still-pending
