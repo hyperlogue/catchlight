@@ -286,7 +286,7 @@ fn bounds_runs_more_than_once_in_one_process() {
         let command =
             <BoundsCommand as clap::Parser>::try_parse_from(["bounds", path.to_str().unwrap()])
                 .unwrap();
-        command.args.run(&cancel).unwrap();
+        command.args.run(&mut std::io::sink(), &cancel).unwrap();
     }
 }
 

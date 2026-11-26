@@ -68,6 +68,8 @@ pub enum Error {
     },
     #[error("JSON encoding: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("writing output: {0}")]
+    Stdout(#[source] std::io::Error),
     #[error(
         "{} is a Git LFS pointer, not the file it names; fetch it with `git lfs pull`",
         .path.display()
@@ -224,6 +226,15 @@ pub enum Error {
     /// Every in-memory edit names an already-checked node, so this is a bug.
     #[error("editing the model in memory failed: {0}")]
     Model(#[from] ModelError),
+}
+
+/// Pretty JSON and a newline, the shape every JSON-printing command emits.
+pub fn print_json(
+    out: &mut dyn std::io::Write,
+    value: &impl serde::Serialize,
+) -> Result<(), Error> {
+    let text = serde_json::to_string_pretty(value)?;
+    writeln!(out, "{text}").map_err(Error::Stdout)
 }
 
 impl Error {

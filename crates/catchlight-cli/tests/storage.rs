@@ -9,6 +9,23 @@ use catchlight_cli::storage;
 use catchlight_core::formats::{clm, container};
 
 #[test]
+fn a_reader_that_closes_the_pipe_ends_the_command_quietly() {
+    // The report is far larger than a pipe buffer, so the writer meets the
+    // closed end whenever it starts writing.
+    let mut child = std::process::Command::new(common::bin())
+        .args(["storage", common::fixture("lan").to_str().unwrap()])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    drop(child.stdout.take());
+    let output = child.wait_with_output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(141), "{stderr}");
+    assert!(stderr.is_empty(), "{stderr}");
+}
+
+#[test]
 fn canonical_categories_partition_every_byte_without_decoding_textures() {
     let mut model = common::decode(&common::fixture("welded_seam"));
     // No pixels or CRCs: a decoder would reject it.

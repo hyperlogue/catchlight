@@ -1,12 +1,13 @@
 //! `catchlight-cli` — argument parsing, printing and exit statuses over [`catchlight_cli`].
 
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use catchlight_cli::render::execute::Cancellation;
 use catchlight_cli::{
-    diff, expression, extension, fragment, humanoid, patch, poses, render, storage, texture, Error,
-    EXIT_DIFFERS, EXIT_ERROR,
+    diff, expression, extension, fragment, humanoid, patch, poses, print_json, render, storage,
+    texture, Error, EXIT_DIFFERS, EXIT_ERROR,
 };
 use catchlight_core::formats::clm::TextureAlpha;
 use catchlight_extension_animations::Animations;
@@ -332,9 +333,26 @@ struct RemoveArgs {
     name: String,
 }
 
+/// What a process killed by SIGPIPE reports, so a closed pipe never reads
+/// as success, or for `diff` as "identical".
+const EXIT_BROKEN_PIPE: u8 = 141;
+
+/// `writeln!` onto the command's output, failing rather than panicking on a
+/// closed pipe.
+macro_rules! say {
+    ($out:expr, $($arg:tt)*) => {
+        writeln!($out, $($arg)*).map_err(Error::Stdout)?
+    };
+}
+
 fn main() -> ExitCode {
-    match run() {
+    let mut out = std::io::stdout().lock();
+    let result = run(&mut out).and_then(|code| out.flush().map(|()| code).map_err(Error::Stdout));
+    match result {
         Ok(code) => ExitCode::from(code),
+        Err(Error::Stdout(e)) if e.kind() == std::io::ErrorKind::BrokenPipe => {
+            ExitCode::from(EXIT_BROKEN_PIPE)
+        }
         Err(error) => {
             eprintln!("catchlight-cli: {error}");
             ExitCode::from(EXIT_ERROR)
@@ -342,16 +360,16 @@ fn main() -> ExitCode {
     }
 }
 
-fn run_extension(cmd: ExtensionCmd) -> Result<u8, Error> {
+fn run_extension(cmd: ExtensionCmd, stdout: &mut dyn Write) -> Result<u8, Error> {
     match cmd {
         ExtensionCmd::List { file } => {
             for listed in extension::list(&file)? {
-                println!("{listed}");
+                say!(stdout, "{listed}");
             }
         }
         ExtensionCmd::Get { file, key, out } => {
             match extension::get(&file, &key, out.as_deref())? {
-                extension::Got::Json(text) if !text.is_empty() => println!("{text}"),
+                extension::Got::Json(text) if !text.is_empty() => say!(stdout, "{text}"),
                 extension::Got::Json(_) | extension::Got::Bytes(_) => {}
             }
         }
@@ -390,32 +408,30 @@ fn run_extension(cmd: ExtensionCmd) -> Result<u8, Error> {
                     extension::set_bytes(&file, &key, source)?
                 }
             };
-            println!("{changed}");
+            say!(stdout, "{changed}");
         }
         ExtensionCmd::Delete { file, key } => {
-            println!("{}", extension::delete(&file, &key)?);
+            say!(stdout, "{}", extension::delete(&file, &key)?);
         }
     }
     Ok(0)
 }
 
-fn print_json(value: &impl serde::Serialize) -> Result<(), Error> {
-    println!("{}", serde_json::to_string_pretty(value)?);
-    Ok(())
-}
-
-fn print_edit<T: serde::Serialize>(edited: humanoid::Edited<T>) -> Result<(), Error> {
-    print_json(&edited.result)?;
+fn print_edit<T: serde::Serialize>(
+    stdout: &mut dyn Write,
+    edited: humanoid::Edited<T>,
+) -> Result<(), Error> {
+    print_json(stdout, &edited.result)?;
     for warning in &edited.warnings {
         eprintln!("catchlight-cli: {warning}");
     }
     Ok(())
 }
 
-fn run_humanoid(cmd: HumanoidCmd) -> Result<(), Error> {
+fn run_humanoid(cmd: HumanoidCmd, stdout: &mut dyn Write) -> Result<(), Error> {
     match cmd {
-        HumanoidCmd::Controls => print_json(&humanoid::controls()),
-        HumanoidCmd::List { file } => print_json(&humanoid::list(&file)?),
+        HumanoidCmd::Controls => print_json(stdout, &humanoid::controls()),
+        HumanoidCmd::List { file } => print_json(stdout, &humanoid::list(&file)?),
         HumanoidCmd::Map {
             file,
             control,
@@ -424,42 +440,60 @@ fn run_humanoid(cmd: HumanoidCmd) -> Result<(), Error> {
             nonstandard,
         } => {
             let stops = stops.as_deref().map(humanoid::parse_stops).transpose()?;
-            print_edit(humanoid::map(&file, &control, &param, stops, nonstandard)?)
+            print_edit(
+                stdout,
+                humanoid::map(&file, &control, &param, stops, nonstandard)?,
+            )
         }
-        HumanoidCmd::Unmap { file, control } => print_edit(humanoid::unmap(&file, &control)?),
+        HumanoidCmd::Unmap { file, control } => {
+            print_edit(stdout, humanoid::unmap(&file, &control)?)
+        }
     }
 }
 
-fn run_expression(cmd: ExpressionCmd, matches: Option<&ArgMatches>) -> Result<(), Error> {
+fn run_expression(
+    cmd: ExpressionCmd,
+    matches: Option<&ArgMatches>,
+    stdout: &mut dyn Write,
+) -> Result<(), Error> {
     let group = Group::Expression;
     match cmd {
-        ExpressionCmd::Names => print_json(&expression::names(group)),
-        ExpressionCmd::List { file } => print_json(&expression::list(&file, group)?),
-        ExpressionCmd::Set(args) => set_member(group, args, matches),
+        ExpressionCmd::Names => print_json(stdout, &expression::names(group)),
+        ExpressionCmd::List { file } => print_json(stdout, &expression::list(&file, group)?),
+        ExpressionCmd::Set(args) => set_member(group, args, matches, stdout),
         ExpressionCmd::Remove(RemoveArgs { file, name }) => {
-            print_edit(expression::remove(&file, group, &name)?)
+            print_edit(stdout, expression::remove(&file, group, &name)?)
         }
     }
 }
 
-fn run_viseme(cmd: VisemeCmd, matches: Option<&ArgMatches>) -> Result<(), Error> {
+fn run_viseme(
+    cmd: VisemeCmd,
+    matches: Option<&ArgMatches>,
+    stdout: &mut dyn Write,
+) -> Result<(), Error> {
     let group = Group::Viseme;
     match cmd {
-        VisemeCmd::Names => print_json(&expression::names(group)),
-        VisemeCmd::List { file } => print_json(&expression::list(&file, group)?),
-        VisemeCmd::Set(args) => set_member(group, args, matches),
+        VisemeCmd::Names => print_json(stdout, &expression::names(group)),
+        VisemeCmd::List { file } => print_json(stdout, &expression::list(&file, group)?),
+        VisemeCmd::Set(args) => set_member(group, args, matches, stdout),
         VisemeCmd::Remove(RemoveArgs { file, name }) => {
-            print_edit(expression::remove(&file, group, &name)?)
+            print_edit(stdout, expression::remove(&file, group, &name)?)
         }
         VisemeCmd::AddStandard { file, replace } => {
-            print_edit(expression::add_standard_visemes(&file, replace)?)
+            print_edit(stdout, expression::add_standard_visemes(&file, replace)?)
         }
     }
 }
 
 /// `matches` are the `set` arguments, which say where each `--control` and
 /// `--param` stood so the settings keep their given order.
-fn set_member(group: Group, args: SetArgs, matches: Option<&ArgMatches>) -> Result<(), Error> {
+fn set_member(
+    group: Group,
+    args: SetArgs,
+    matches: Option<&ArgMatches>,
+    stdout: &mut dyn Write,
+) -> Result<(), Error> {
     let SetArgs {
         file,
         name,
@@ -487,13 +521,10 @@ fn set_member(group: Group, args: SetArgs, matches: Option<&ArgMatches>) -> Resu
     }
     settings.sort_by_key(|(index, _)| *index);
     let settings: Vec<_> = settings.into_iter().map(|(_, s)| s).collect();
-    print_edit(expression::set(
-        &file,
-        group,
-        &name,
-        &settings,
-        nonstandard,
-    )?)
+    print_edit(
+        stdout,
+        expression::set(&file, group, &name, &settings, nonstandard)?,
+    )
 }
 
 /// Only the long-running commands take Ctrl-C as a request to stop cleanly;
@@ -504,7 +535,7 @@ fn interruptible() -> Result<Cancellation, Error> {
     Ok(cancel)
 }
 
-fn run() -> Result<u8, Error> {
+fn run(stdout: &mut dyn Write) -> Result<u8, Error> {
     catchlight_core::extension::register::<Animations>()?;
     catchlight_core::extension::register::<Humanoid>()?;
     catchlight_core::extension::register::<Expressions>()?;
@@ -527,9 +558,9 @@ fn run() -> Result<u8, Error> {
             };
             let change = patch::run(&file, &id, &field, &value, want, out.as_deref())?;
             if change.changed() {
-                println!("{change}");
+                say!(stdout, "{change}");
             } else {
-                println!("{change} (unchanged)");
+                say!(stdout, "{change} (unchanged)");
             }
         }
         Cmd::ReplaceTexture {
@@ -546,50 +577,50 @@ fn run() -> Result<u8, Error> {
                 alpha.map(AlphaArg::alpha),
                 out.as_deref(),
             )?;
-            println!("{replaced}");
+            say!(stdout, "{replaced}");
         }
         Cmd::Extract { file, ids, out } => {
             let extracted = fragment::extract(&file, &ids, &out)?;
-            println!("{extracted}");
+            say!(stdout, "{extracted}");
         }
         Cmd::Merge { base, addon, out } => {
             let merged = fragment::merge(&base, &addon, &out)?;
-            println!("{merged}");
+            say!(stdout, "{merged}");
         }
         Cmd::Requirements { addon, json } => {
             let requirements = fragment::requirements(&addon)?;
             if json {
-                println!("{}", fragment::render_json(&requirements));
+                say!(stdout, "{}", fragment::render_json(&requirements));
             } else {
                 for requirement in &requirements {
-                    println!("{}", fragment::render_line(requirement));
+                    say!(stdout, "{}", fragment::render_line(requirement));
                 }
             }
         }
         Cmd::Poses { file, out } => {
             let written = poses::run(&file, &out)?;
-            println!("{written}");
+            say!(stdout, "{written}");
         }
-        Cmd::Render(args) => args.run(&interruptible()?)?,
-        Cmd::Bounds(args) => args.run(&interruptible()?)?,
-        Cmd::Extension(cmd) => return run_extension(cmd),
-        Cmd::Humanoid(cmd) => run_humanoid(cmd)?,
+        Cmd::Render(args) => args.run(stdout, &interruptible()?)?,
+        Cmd::Bounds(args) => args.run(stdout, &interruptible()?)?,
+        Cmd::Extension(cmd) => return run_extension(cmd, stdout),
+        Cmd::Humanoid(cmd) => run_humanoid(cmd, stdout)?,
         Cmd::Expression(cmd) => {
             let set = matches
                 .subcommand_matches("expression")
                 .and_then(|m| m.subcommand_matches("set"));
-            run_expression(cmd, set)?
+            run_expression(cmd, set, stdout)?
         }
         Cmd::Viseme(cmd) => {
             let set = matches
                 .subcommand_matches("viseme")
                 .and_then(|m| m.subcommand_matches("set"));
-            run_viseme(cmd, set)?
+            run_viseme(cmd, set, stdout)?
         }
         Cmd::Diff { a, b } => {
             let lines = diff::run(&a, &b)?;
             for line in &lines {
-                println!("{line}");
+                say!(stdout, "{line}");
             }
             if !lines.is_empty() {
                 return Ok(EXIT_DIFFERS);
@@ -597,7 +628,7 @@ fn run() -> Result<u8, Error> {
         }
         Cmd::Storage { file } => {
             let report = storage::run(&file)?;
-            println!("{}", serde_json::to_string_pretty(&report)?);
+            print_json(stdout, &report)?;
         }
     }
     Ok(0)

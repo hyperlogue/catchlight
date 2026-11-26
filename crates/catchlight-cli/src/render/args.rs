@@ -5,10 +5,11 @@ use super::spec::{
     self, AnimationRef, AnimationSource, Background, Document, Frames, MaskEdge,
     MotionResponseMode, Request, Setting, Video, VideoFormat,
 };
-use crate::Error;
+use crate::{print_json, Error};
 use catchlight_core::{Model, ModelNodeKind, NodeId};
 use clap::{Args, ValueEnum};
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::Write;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -272,7 +273,11 @@ pub struct RenderArgs {
     pub clip: ClipArgs,
 }
 impl RenderArgs {
-    pub fn run(self, cancel: &super::execute::Cancellation) -> Result<(), Error> {
+    pub fn run(
+        self,
+        out: &mut dyn Write,
+        cancel: &super::execute::Cancellation,
+    ) -> Result<(), Error> {
         if let Some(kind) = self.schema {
             let schema = match kind {
                 SchemaKind::Spec => spec::schema(false),
@@ -281,7 +286,7 @@ impl RenderArgs {
                 SchemaKind::Trace => super::artifacts::json_schema("trace"),
                 SchemaKind::Run => super::artifacts::json_schema("run"),
             }?;
-            print_json(&schema)?;
+            print_json(out, &schema)?;
             return Ok(());
         }
         let file = self
@@ -326,7 +331,7 @@ impl RenderArgs {
         };
         let plan = document.resolve(&loaded.model)?;
         if self.validate {
-            return print_json(&plan);
+            return print_json(out, &plan);
         }
         let output = self.out;
         if let Some(output) = &output {
@@ -348,13 +353,14 @@ impl RenderArgs {
             });
         let result = super::execute::run(&loaded.model, plan, destination, input, cancel)?;
         for listing in result.listings {
-            println!("{listing}");
+            writeln!(out, "{listing}").map_err(Error::Stdout)?;
         }
         if let Some(path) = output {
-            println!("wrote {}", path.display());
+            writeln!(out, "wrote {}", path.display()).map_err(Error::Stdout)?;
         }
         if let Some(dir) = self.out_dir {
-            println!("wrote {}", dir.join("run.json").display());
+            let manifest = dir.join("run.json");
+            writeln!(out, "wrote {}", manifest.display()).map_err(Error::Stdout)?;
         }
         Ok(())
     }
@@ -380,9 +386,13 @@ pub struct BoundsArgs {
     pub image: ImageArgs,
 }
 impl BoundsArgs {
-    pub fn run(self, cancel: &super::execute::Cancellation) -> Result<(), Error> {
+    pub fn run(
+        self,
+        out: &mut dyn Write,
+        cancel: &super::execute::Cancellation,
+    ) -> Result<(), Error> {
         if self.schema {
-            return print_json(&super::artifacts::json_schema("bounds")?);
+            return print_json(out, &super::artifacts::json_schema("bounds")?);
         }
         let file = self
             .file
@@ -411,14 +421,9 @@ impl BoundsArgs {
             }
             runtime.advance(&loaded.model);
         }
-        print_json(&super::artifacts::BoundsOutput::observe(
-            &request,
-            &loaded.model,
-            &runtime,
-        )?)
+        print_json(
+            out,
+            &super::artifacts::BoundsOutput::observe(&request, &loaded.model, &runtime)?,
+        )
     }
-}
-fn print_json(value: &impl serde::Serialize) -> Result<(), Error> {
-    println!("{}", serde_json::to_string_pretty(value)?);
-    Ok(())
 }
