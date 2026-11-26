@@ -347,7 +347,7 @@ pub(super) struct FrameScratch<'a> {
 
 /// What a frame draws into: a view of a texture's first mip level, sized by
 /// that texture, and the rectangle of it the frame covers.
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub struct RenderTarget<'a> {
     view: &'a wgpu::TextureView,
     copyable: bool,
@@ -459,6 +459,14 @@ pub struct FrameTargets {
     snapshots: FramebufferSnapshotPool,
     /// Composite slots and snapshots are textures of this format.
     format: Option<wgpu::TextureFormat>,
+}
+
+impl std::fmt::Debug for FrameTargets {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FrameTargets")
+            .field("format", &self.format)
+            .finish_non_exhaustive()
+    }
 }
 
 impl FrameTargets {

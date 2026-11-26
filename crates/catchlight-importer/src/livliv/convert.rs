@@ -34,6 +34,7 @@ pub struct Options {
 
 /// Model and report returned together so callers cannot mistake conversion for
 /// a fidelity guarantee. Rights and findings also survive save/load in .clm.
+#[derive(Debug)]
 pub struct Conversion {
     pub model: Model,
     pub report: Report,

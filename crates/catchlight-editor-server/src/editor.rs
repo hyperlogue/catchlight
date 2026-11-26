@@ -59,6 +59,7 @@ type Observers = Mutex<Vec<(u64, SharedObserver)>>;
 
 /// Its observer hears events until this is dropped.
 #[must_use = "dropping a subscription unsubscribes its observer"]
+#[derive(Debug)]
 pub struct Subscription {
     observers: Weak<Observers>,
     id: u64,
@@ -154,6 +155,17 @@ pub struct Editor {
     pub(crate) version_limits: versions::VersionLimits,
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) preview: Mutex<Option<PreviewRenderer>>,
+}
+
+/// Reads no lock, so it is safe while a session is held.
+impl std::fmt::Debug for Editor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Editor")
+            .field("instance", &self.instance)
+            .field("next_id", &self.next_id)
+            .field("version_limits", &self.version_limits)
+            .finish_non_exhaustive()
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]

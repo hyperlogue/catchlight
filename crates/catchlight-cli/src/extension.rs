@@ -17,6 +17,7 @@ use catchlight_extension_animations::Animations;
 
 use crate::{Error, file};
 
+#[derive(Debug)]
 pub struct Listed {
     pub key: ExtensionKey,
     pub kind: &'static str,
@@ -33,6 +34,7 @@ impl std::fmt::Display for Listed {
     }
 }
 
+#[derive(Debug)]
 pub struct Changed {
     pub key: ExtensionKey,
     pub what: &'static str,
@@ -47,6 +49,15 @@ impl std::fmt::Display for Changed {
 pub enum Got {
     Json(String),
     Bytes(Vec<u8>),
+}
+
+impl std::fmt::Debug for Got {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Json(text) => f.debug_tuple("Json").field(text).finish(),
+            Self::Bytes(bytes) => f.debug_struct("Bytes").field("len", &bytes.len()).finish(),
+        }
+    }
 }
 
 pub fn list(path: &Path) -> Result<Vec<Listed>, Error> {
@@ -222,6 +233,7 @@ fn push_blob(file: &mut ClmFile, key: &ExtensionKey, data: Vec<u8>) {
 }
 
 /// What a value set from the command line holds: JSON text, or a file's bytes.
+#[derive(Debug)]
 pub enum Source<'a> {
     Json(&'a str),
     Bytes(&'a Path),

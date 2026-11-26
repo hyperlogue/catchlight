@@ -118,6 +118,7 @@ pub enum RecordingValue {
     Offsets(Vec<[f32; 2]>),
 }
 
+#[derive(Debug)]
 pub struct Recording {
     pub posed: RecordProperties,
     base: RecordProperties,

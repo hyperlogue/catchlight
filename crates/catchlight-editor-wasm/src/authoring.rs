@@ -34,12 +34,13 @@ pub enum AuthoringError {
     Json(#[from] serde_json::Error),
 }
 
+#[derive(Debug)]
 pub struct MeshDraftState {
     pub draft: MeshDraft,
     pub texture: String,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub struct MeshDraftView {
     pub mesh: MeshInfo,
     pub constraints: Vec<(u32, u32)>,
@@ -146,6 +147,7 @@ pub mod browser {
     }
 
     #[wasm_bindgen]
+    #[derive(Debug)]
     pub struct MeshEditDraft {
         pub(crate) state: MeshDraftState,
     }
@@ -244,6 +246,7 @@ pub mod browser {
     }
 
     #[wasm_bindgen]
+    #[derive(Debug)]
     pub struct RecordingGesture {
         pub(crate) state: Recording,
     }

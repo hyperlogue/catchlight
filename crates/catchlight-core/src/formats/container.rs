@@ -117,6 +117,16 @@ pub struct Writer {
     written: usize,
 }
 
+impl std::fmt::Debug for Writer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Writer")
+            .field("bytes", &self.out.len())
+            .field("declared", &self.declared)
+            .field("written", &self.written)
+            .finish()
+    }
+}
+
 impl Writer {
     pub fn new(magic: &[u8; 8], version: u16, sections: usize) -> Result<Self, ContainerError> {
         let count = check_section_count(sections)?;
@@ -171,6 +181,14 @@ impl Writer {
 }
 
 pub struct SectionWriter<'a>(&'a mut Vec<u8>);
+
+impl std::fmt::Debug for SectionWriter<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SectionWriter")
+            .field("bytes", &self.0.len())
+            .finish()
+    }
+}
 
 impl SectionWriter<'_> {
     pub fn extend_from_slice(&mut self, bytes: &[u8]) {

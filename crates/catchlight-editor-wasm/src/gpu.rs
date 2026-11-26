@@ -28,6 +28,14 @@ pub struct Gpu {
     pub(crate) gl: Option<Rc<GlStage>>,
 }
 
+impl std::fmt::Debug for Gpu {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Gpu")
+            .field("webgl2", &self.gl.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
 #[wasm_bindgen]
 impl Gpu {
     /// Request an adapter and device: WebGPU first, then WebGL2 from a second

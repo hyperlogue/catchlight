@@ -65,6 +65,7 @@ pub struct Mapped {
 
 /// An edit's result, and the edited extension's warnings for the model it
 /// leaves, which never fail the edit.
+#[derive(Debug)]
 pub struct Edited<T> {
     pub result: T,
     pub warnings: Vec<WarningLine>,

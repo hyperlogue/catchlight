@@ -26,6 +26,7 @@ pub enum CatchlightSystems {
     Tick,
 }
 
+#[derive(Debug)]
 pub struct CatchlightPlugin;
 
 impl Plugin for CatchlightPlugin {

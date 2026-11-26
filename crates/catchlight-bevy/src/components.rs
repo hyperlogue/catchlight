@@ -12,7 +12,7 @@ use crate::asset::CatchlightModel;
 /// control mappings, expressions and visemes, with no inputs of its own.
 // `SyncToRenderWorld` comes from `SyncComponentPlugin`, not `#[require]`:
 // registering the same direct requirement twice panics.
-#[derive(Component)]
+#[derive(Debug, Component)]
 #[require(Visibility)]
 pub struct CatchlightPuppet {
     model: Handle<CatchlightModel>,
@@ -132,5 +132,5 @@ impl CatchlightPuppet {
     }
 }
 
-#[derive(Component, Default, Clone, Copy)]
+#[derive(Debug, Component, Default, Clone, Copy)]
 pub struct CatchlightCamera;

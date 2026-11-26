@@ -8,6 +8,7 @@ use catchlight_extension_expressions::Weights;
 use catchlight_extension_humanoid::ControlValues;
 use std::collections::BTreeMap;
 
+#[derive(Debug)]
 pub struct FrameRuntime {
     pub puppet: Puppet,
     pub player: AnimationPlayer,

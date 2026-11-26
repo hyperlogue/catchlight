@@ -167,6 +167,21 @@ pub struct ModelHistory {
     own_bytes: usize,
 }
 
+/// Each entry holds a whole model; the summary leaves them out.
+impl std::fmt::Debug for ModelHistory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ModelHistory")
+            .field("entries", &self.entries.len())
+            .field("root", &self.root)
+            .field("current", &self.current)
+            .field("live_revision", &self.live_revision)
+            .field("pruned", &self.pruned)
+            .field("limits", &self.limits)
+            .field("own_bytes", &self.own_bytes)
+            .finish_non_exhaustive()
+    }
+}
+
 impl ModelHistory {
     /// The loaded model is revision zero.
     pub fn new(model: Model, limits: HistoryLimits) -> Self {

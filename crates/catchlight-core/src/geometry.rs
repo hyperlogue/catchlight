@@ -26,6 +26,7 @@ pub enum GeometryError {
 }
 
 /// A read-only view of one evaluated frame, sharing its mesh and deform data.
+#[derive(Debug)]
 pub struct EvaluatedGeometry<'a> {
     puppet: &'a Puppet,
 }

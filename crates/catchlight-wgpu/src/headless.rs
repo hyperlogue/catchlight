@@ -27,6 +27,7 @@ impl Framing {
     }
 }
 
+#[derive(Debug)]
 pub struct RenderContext {
     pub renderer: WgpuRenderer,
     targets: FrameTargets,

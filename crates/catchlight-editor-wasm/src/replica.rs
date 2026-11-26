@@ -90,6 +90,22 @@ pub struct ReplicaState {
     motion_paused: bool,
 }
 
+/// The model and the texture and extension bytes it shares are left out.
+impl std::fmt::Debug for ReplicaState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReplicaState")
+            .field("puppet", &self.puppet)
+            .field("textures", &self.textures.len())
+            .field("extensions", &self.extension_bytes.len())
+            .field("rev", &self.rev)
+            .field("last_frame_ms", &self.last_frame_ms)
+            .field("moving", &self.moving)
+            .field("editing", &self.editing)
+            .field("motion_paused", &self.motion_paused)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Default for ReplicaState {
     fn default() -> Self {
         Self::new()
@@ -898,6 +914,15 @@ pub(crate) mod browser {
         rgba: Vec<u8>,
     }
 
+    impl std::fmt::Debug for TextureThumbnail {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("TextureThumbnail")
+                .field("width", &self.width)
+                .field("height", &self.height)
+                .finish_non_exhaustive()
+        }
+    }
+
     #[wasm_bindgen]
     impl TextureThumbnail {
         /// Copied straight into a JavaScript array, never through a Rust clone.
@@ -925,6 +950,16 @@ pub(crate) mod browser {
     #[wasm_bindgen]
     pub struct Replica {
         inner: Rc<RefCell<ReplicaInner>>,
+    }
+
+    impl std::fmt::Debug for Replica {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            let mut s = f.debug_struct("Replica");
+            if let Ok(inner) = self.inner.try_borrow() {
+                s.field("state", &inner.state);
+            }
+            s.finish_non_exhaustive()
+        }
     }
 
     impl Replica {

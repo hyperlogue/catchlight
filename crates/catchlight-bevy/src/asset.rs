@@ -55,7 +55,7 @@ impl fmt::Debug for CatchlightModel {
 }
 
 /// Loads a `.clm` into a [`CatchlightModel`].
-#[derive(Default, TypePath)]
+#[derive(Debug, Default, TypePath)]
 pub struct CatchlightModelLoader;
 
 impl AssetLoader for CatchlightModelLoader {

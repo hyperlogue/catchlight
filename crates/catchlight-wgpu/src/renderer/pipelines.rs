@@ -240,6 +240,15 @@ fn stencil_only(
     }
 }
 
+impl std::fmt::Debug for Pipelines {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Pipelines")
+            .field("surface_format", &self.surface_format)
+            .field("stencil", &self.has_stencil())
+            .finish_non_exhaustive()
+    }
+}
+
 impl Pipelines {
     pub(crate) const fn has_stencil(&self) -> bool {
         matches!(self.masks, MaskPipelines::Stencil(_))

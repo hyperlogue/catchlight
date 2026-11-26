@@ -57,6 +57,7 @@ impl Cancellation {
         }
     }
 }
+#[derive(Debug)]
 pub struct LoadedModel {
     pub model: Model,
     pub hash: Option<String>,
@@ -97,6 +98,7 @@ pub fn hash(bytes: &[u8]) -> String {
     out
 }
 
+#[derive(Debug)]
 pub struct Execution {
     pub listings: Vec<String>,
     pub manifest: Option<RunManifest>,

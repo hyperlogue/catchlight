@@ -144,6 +144,7 @@ impl GpuContext {
     }
 }
 
+#[derive(Debug)]
 pub struct SurfaceContext {
     pub surface: wgpu::Surface<'static>,
     pub config: wgpu::SurfaceConfiguration,
@@ -179,6 +180,7 @@ impl SurfaceContext {
 }
 
 /// What [`SurfaceContext::acquire`] found.
+#[derive(Debug)]
 pub enum Acquired {
     /// Draw through `view` (in `render_format`), then present `frame`.
     Frame {

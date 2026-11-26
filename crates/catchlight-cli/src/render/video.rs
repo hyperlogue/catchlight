@@ -25,6 +25,7 @@ pub fn preflight() -> Result<(), Error> {
     }
 }
 
+#[derive(Debug)]
 pub struct VideoSink {
     child: Child,
     stdin: Option<ChildStdin>,

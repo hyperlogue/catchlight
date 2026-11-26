@@ -39,6 +39,7 @@ impl Submission {
 /// Recording is the one thing a `Frame` does, and it does it once:
 /// [`Self::render`] takes `self` by value and hands back a [`Recorded`]. A frame that errs is consumed with nothing submitted.
 #[must_use = "a frame draws nothing until render() records it"]
+#[derive(Debug)]
 pub struct Frame<'r> {
     pub(super) renderer: &'r mut WgpuRenderer,
     pub(super) encoder: wgpu::CommandEncoder,
@@ -66,6 +67,7 @@ impl<'r> Frame<'r> {
 /// A recorded frame, waiting for its submit. Add caller work through
 /// [`Self::encoder`]; a second render call would reset the spent cursors.
 #[must_use = "a recorded frame reaches the queue only through submit()"]
+#[derive(Debug)]
 pub struct Recorded<'r> {
     pub(super) renderer: &'r mut WgpuRenderer,
     pub(super) encoder: Option<wgpu::CommandEncoder>,

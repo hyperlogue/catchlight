@@ -125,6 +125,7 @@ unused_qualifications = "warn"
 unused_lifetimes = "warn"
 unused_macro_rules = "warn"
 redundant_lifetimes = "warn"
+missing_debug_implementations = "warn"
 
 [workspace.lints.clippy]
 unwrap_used = "deny"

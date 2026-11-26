@@ -315,6 +315,17 @@ pub struct WgpuRenderer {
     composite_bounds: DenseMap<Option<[f32; 4]>>,
 }
 
+impl std::fmt::Debug for WgpuRenderer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WgpuRenderer")
+            .field("id", &self.id)
+            .field("surface_format", &self.shared.surface_format)
+            .field("deform_buffer_capacity", &self.deform_buffer_capacity)
+            .field("stats", &self.current_stats)
+            .finish_non_exhaustive()
+    }
+}
+
 impl WgpuRenderer {
     /// Builds default-option pipelines. Prefer `from_pipelines` to share
     /// pipelines across renderers; each `Pipelines::new` compiles every

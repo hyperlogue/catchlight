@@ -12,7 +12,7 @@ use crate::prepare::{CatchlightRenderState, ModelGpu, PuppetKey};
 
 /// Render-world half of a `CatchlightPuppet`, retained across frames. `pub`
 /// only because `SyncComponent::Target` names it; the module is private.
-#[derive(Component)]
+#[derive(Debug, Component)]
 pub struct ExtractedPuppet {
     pub(crate) model: Arc<Model>,
     pub(crate) model_id: AssetId<CatchlightModel>,

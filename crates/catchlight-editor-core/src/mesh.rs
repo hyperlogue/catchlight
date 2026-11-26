@@ -1228,10 +1228,12 @@ fn point_segment_dist(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
 /// of the old offsets in the old rest triangle containing it, clamped to the
 /// nearest triangle outside. It depends only on the two meshes, so one plan
 /// serves every cell of every binding an edit refits.
+#[derive(Debug)]
 pub struct RefitPlan {
     sources: Vec<RefitSource>,
 }
 
+#[derive(Debug)]
 enum RefitSource {
     Exact(u32),
     /// An old triangle and the clamped barycentric weights of its corners.

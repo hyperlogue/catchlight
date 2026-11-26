@@ -7,6 +7,7 @@ use catchlight_core::formats::clm::ClmMesh;
 
 use crate::{AlphaMask, ContourKnobs, GridKnobs, MeshError, UvMap, WorkingMesh};
 
+#[derive(Debug)]
 pub struct MeshDraft {
     original: WorkingMesh,
     mesh: WorkingMesh,

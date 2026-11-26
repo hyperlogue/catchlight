@@ -858,6 +858,16 @@ pub struct Viewport {
     frames: Frames,
 }
 
+impl std::fmt::Debug for Viewport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = f.debug_struct("Viewport");
+        if let Ok(inner) = self.inner.try_borrow() {
+            s.field("size", &inner.size).field("dirty", &inner.dirty);
+        }
+        s.finish_non_exhaustive()
+    }
+}
+
 enum Frames {
     Own {
         tick: FrameCallback,

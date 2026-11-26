@@ -26,6 +26,18 @@ pub struct CatchlightRenderState {
     live_models: HashSet<ModelKey>,
 }
 
+impl std::fmt::Debug for CatchlightRenderState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CatchlightRenderState")
+            .field("models", &self.gpus.len())
+            .field("puppets", &self.puppets.len())
+            .field("formats", &self.formats.len())
+            .field("options", &self.options)
+            .field("failures", &self.failures.0.len())
+            .finish_non_exhaustive()
+    }
+}
+
 impl CatchlightRenderState {
     /// Summed top-level GPU pass time in nanoseconds, lagging 2-3 frames.
     /// Call from a render-world system in `Cleanup`, after the graph submits.

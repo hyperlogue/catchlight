@@ -94,6 +94,15 @@ pub struct HttpServer {
     state: Arc<ServerState>,
 }
 
+/// Leaves out the token, which grants the editor.
+impl std::fmt::Debug for HttpServer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HttpServer")
+            .field("addr", &self.addr)
+            .finish_non_exhaustive()
+    }
+}
+
 struct ServerState {
     editor: Arc<Editor>,
     token: String,

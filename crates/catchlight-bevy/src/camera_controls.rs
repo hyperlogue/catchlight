@@ -5,6 +5,7 @@ use bevy::prelude::*;
 use crate::components::CatchlightCamera;
 
 /// Scroll/pinch zoom and drag/touch pan for `CatchlightCamera` entities.
+#[derive(Debug)]
 pub struct CameraControlsPlugin;
 
 impl Plugin for CameraControlsPlugin {
@@ -15,7 +16,7 @@ impl Plugin for CameraControlsPlugin {
     }
 }
 
-#[derive(Resource)]
+#[derive(Debug, Resource)]
 pub struct CameraControls {
     /// Scale multiplier per scroll line: `zoom_per_line^-delta.y`.
     pub zoom_per_line: f32,

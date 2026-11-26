@@ -87,6 +87,7 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
+#[derive(Debug)]
 pub struct CatchlightEditor {
     editor: Editor,
     written: Arc<WrittenBytes>,

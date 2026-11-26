@@ -77,6 +77,7 @@ pub struct Poses {
     pub pairs: Vec<PairPoses>,
 }
 
+#[derive(Debug)]
 pub struct Written {
     pub out: PathBuf,
     pub bytes: usize,

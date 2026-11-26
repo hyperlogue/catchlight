@@ -21,6 +21,7 @@ pub const CLEAR_COLOR: wgpu::Color = wgpu::Color {
     a: 1.0,
 };
 
+#[derive(Debug)]
 pub struct CachedModel {
     pub model: Model,
     pub puppet: Puppet,
