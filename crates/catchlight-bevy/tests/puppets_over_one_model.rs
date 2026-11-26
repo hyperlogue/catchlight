@@ -10,7 +10,7 @@
 use std::path::PathBuf;
 
 use bevy::prelude::*;
-use catchlight_bevy::{CatchlightModel, CatchlightPlugin, CatchlightPuppet};
+use catchlight_bevy::{CatchlightModel, CatchlightPlugin, CatchlightPuppet, CatchlightSystems};
 use catchlight_core::{InterpolateMode, Model, ParamId, Pose, Puppet};
 use catchlight_extension_animations::{Animations, Clip, Keyframe, Lane, LaneTarget};
 use catchlight_extension_humanoid::{ControlMapping, Humanoid};
@@ -538,5 +538,40 @@ fn a_malformed_model_reports_the_core_error() {
     assert_eq!(
         error.to_string(),
         format!("could not parse the model: {core}")
+    );
+}
+
+#[test]
+fn a_system_ordered_before_the_tick_poses_the_same_frame() {
+    #[derive(Resource, Default)]
+    struct Pull(Option<ParamId>);
+
+    fn pull(pull: Res<Pull>, mut puppets: Query<&mut CatchlightPuppet>) {
+        let Some(param) = &pull.0 else {
+            return;
+        };
+        for mut puppet in &mut puppets {
+            if let Some(puppet) = puppet.puppet_mut() {
+                puppet.set_param_value(param, 1.0);
+            }
+        }
+    }
+
+    let model = fixture("welded_seam");
+    let param = deform_param(&model);
+    let mut app = headless_app();
+    app.init_resource::<Pull>()
+        .add_systems(PostUpdate, pull.before(CatchlightSystems::Tick));
+    let handle = add_model(&mut app, model);
+    let entity = spawn(&mut app, &handle);
+    app.update();
+    let rest = deforms(puppet(&app, entity));
+
+    app.insert_resource(Pull(Some(param)));
+    app.update();
+    assert_ne!(
+        deforms(puppet(&app, entity)),
+        rest,
+        "the tick in the frame the param was set folded it",
     );
 }

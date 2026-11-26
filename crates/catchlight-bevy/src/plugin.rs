@@ -19,6 +19,13 @@ pub struct CatchlightSettings {
     pub prepare: PrepareOptions,
 }
 
+/// Order systems that set params or poses `.before(CatchlightSystems::Tick)`
+/// in `PostUpdate` so this frame's tick sees them.
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CatchlightSystems {
+    Tick,
+}
+
 pub struct CatchlightPlugin;
 
 impl Plugin for CatchlightPlugin {
@@ -27,10 +34,11 @@ impl Plugin for CatchlightPlugin {
             .init_asset_loader::<CatchlightModelLoader>()
             .init_resource::<CatchlightSettings>();
         // Earlier than propagation would bake a one-frame-stale root.
-        app.add_systems(
+        app.configure_sets(
             PostUpdate,
-            update_puppets.after(TransformSystems::Propagate),
-        );
+            CatchlightSystems::Tick.after(TransformSystems::Propagate),
+        )
+        .add_systems(PostUpdate, update_puppets.in_set(CatchlightSystems::Tick));
         app.add_plugins(SyncComponentPlugin::<CatchlightPuppet>::default());
         // Pipelines are sample_count=1 and MSAA draws silently blank;
         // #[require(Msaa::Off)] cannot replace an already-present Msaa.

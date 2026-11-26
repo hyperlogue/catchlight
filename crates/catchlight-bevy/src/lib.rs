@@ -18,5 +18,5 @@ pub use camera_controls::{CameraControls, CameraControlsPlugin};
 pub use catchlight_core::{Model, Pose, Puppet};
 pub use components::{CatchlightCamera, CatchlightPuppet};
 pub use extract::ExtractedPuppet;
-pub use plugin::{CatchlightPlugin, CatchlightSettings};
+pub use plugin::{CatchlightPlugin, CatchlightSettings, CatchlightSystems};
 pub use prepare::CatchlightRenderState;
