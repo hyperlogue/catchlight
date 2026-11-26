@@ -364,26 +364,24 @@ impl Arena {
         // DFS covers every reachable node, so no post-walk clear is needed.
         out.ensure_size(self.nodes.len());
 
-        self.tree.with_dfs_order(|order| {
-            for &id in order {
-                let slot = id.0 as usize;
-                let node = self.nodes.get(slot);
-                let local_matrix = self.local_matrix(slot, node);
-                let lock_to_root = node.map(|n| n.lock_to_root).unwrap_or(false);
+        for &id in self.tree.dfs_order() {
+            let slot = id.0 as usize;
+            let node = self.nodes.get(slot);
+            let local_matrix = self.local_matrix(slot, node);
+            let lock_to_root = node.map(|n| n.lock_to_root).unwrap_or(false);
 
-                let parent_matrix = if lock_to_root {
-                    root
-                } else {
-                    self.tree
-                        .get_parent(id)
-                        .map(|parent| out.get(parent))
-                        .unwrap_or(root)
-                };
+            let parent_matrix = if lock_to_root {
+                root
+            } else {
+                self.tree
+                    .get_parent(id)
+                    .map(|parent| out.get(parent))
+                    .unwrap_or(root)
+            };
 
-                let global_matrix = parent_matrix * local_matrix;
-                out.insert(id, global_matrix);
-            }
-        });
+            let global_matrix = parent_matrix * local_matrix;
+            out.insert(id, global_matrix);
+        }
     }
 
     /// Skips `Transform::to_matrix()` when the fold didn't write this frame and

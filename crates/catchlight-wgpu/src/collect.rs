@@ -245,14 +245,14 @@ fn composite_passthrough_static<S: DrawSource + ?Sized>(
     if composite.blend_mode != BlendMode::Normal || !composite.masks.is_empty() {
         return false;
     }
-    let mut stack = source.tree().get_children(node_id);
+    let mut stack: Vec<NodeIdx> = source.tree().children(node_id).collect();
     while let Some(id) = stack.pop() {
         match source.node(id).map(|n| &n.kind) {
             Some(NodeKind::Composite(_)) => return false,
             Some(NodeKind::Part(part)) if part.blend_mode != BlendMode::Normal => return false,
             _ => {}
         }
-        stack.extend(source.tree().get_children(id));
+        stack.extend(source.tree().children(id));
     }
     true
 }
@@ -298,7 +298,7 @@ fn collect_mask_sources<S: DrawSource + ?Sized>(
                 };
                 slot.get_or_insert_with(|| {
                     let mut parts = Vec::new();
-                    let mut stack = source.tree().get_children(mask_node_id);
+                    let mut stack: Vec<NodeIdx> = source.tree().children(mask_node_id).collect();
                     while let Some(descendant) = stack.pop() {
                         if let Some(node) = source.node(descendant) {
                             if let NodeKind::Part(part) = &node.kind {
@@ -313,7 +313,7 @@ fn collect_mask_sources<S: DrawSource + ?Sized>(
                                 }
                             }
                         }
-                        stack.extend(source.tree().get_children(descendant));
+                        stack.extend(source.tree().children(descendant));
                     }
                     CompositeMaskSourceData {
                         opacity: composite.opacity,

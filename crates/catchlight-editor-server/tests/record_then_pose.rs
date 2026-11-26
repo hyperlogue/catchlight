@@ -94,7 +94,7 @@ fn recorded_binding_moves_the_rebaked_puppet() {
             assert!(model.param(&param).is_some(), "the param survived");
             puppet.set_param_value(&param, pose);
             puppet.tick(model, 0.0);
-            let order = puppet.tree().with_dfs_order(|o| o.to_vec());
+            let order = puppet.tree().dfs_order().to_vec();
             let id = order
                 .into_iter()
                 .find(|&id| puppet.get(id).is_some_and(|n| n.name == "probe"))

@@ -1,10 +1,10 @@
 use indextree::{Arena, NodeEdge, NodeId as TreeNodeId};
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::OnceLock;
 
 use crate::components::NodeIdx;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct NodeTree {
     pub root: NodeIdx,
     arena: Arena<NodeIdx>,
@@ -12,20 +12,8 @@ pub struct NodeTree {
     // Dense parent lookup indexed by NodeIdx slot, maintained by add_child.
     // Avoids a hash probe on the per-node transform walk.
     parent: Vec<Option<NodeIdx>>,
-    // Pre-order DFS cache, invalidated by add_child. Mutex so the tree is Sync.
-    dfs_cache: Mutex<Option<Vec<NodeIdx>>>,
-}
-
-impl Clone for NodeTree {
-    fn clone(&self) -> Self {
-        Self {
-            root: self.root,
-            arena: self.arena.clone(),
-            node_to_tree: self.node_to_tree.clone(),
-            parent: self.parent.clone(),
-            dfs_cache: Mutex::new(None),
-        }
-    }
+    // Pre-order DFS cache, invalidated by add_child.
+    dfs_cache: OnceLock<Box<[NodeIdx]>>,
 }
 
 impl NodeTree {
@@ -41,7 +29,7 @@ impl NodeTree {
             arena,
             node_to_tree,
             parent: Vec::new(),
-            dfs_cache: Mutex::new(None),
+            dfs_cache: OnceLock::new(),
         }
     }
 
@@ -63,22 +51,21 @@ impl NodeTree {
         parent_tree.append(child_tree, &mut self.arena);
         self.node_to_tree.insert(child, child_tree);
         self.set_parent_slot(child, parent);
-        *self.dfs_cache.get_mut().unwrap_or_else(|e| e.into_inner()) = None;
+        self.dfs_cache = OnceLock::new();
 
         Ok(())
     }
 
-    // Invariant: indextree ids returned by children() all live in self.arena.
-    #[allow(clippy::unwrap_used)]
+    pub fn children(&self, node: NodeIdx) -> impl Iterator<Item = NodeIdx> + '_ {
+        self.node_to_tree
+            .get(&node)
+            .into_iter()
+            .flat_map(|&tree_node| tree_node.children(&self.arena))
+            .map(|id| *self.arena[id].get())
+    }
+
     pub fn get_children(&self, node: NodeIdx) -> Vec<NodeIdx> {
-        if let Some(&tree_node) = self.node_to_tree.get(&node) {
-            tree_node
-                .children(&self.arena)
-                .map(|child_id| *self.arena.get(child_id).unwrap().get())
-                .collect()
-        } else {
-            Vec::new()
-        }
+        self.children(node).collect()
     }
 
     pub fn get_parent(&self, node: NodeIdx) -> Option<NodeIdx> {
@@ -144,16 +131,12 @@ impl NodeTree {
         }
     }
 
-    // A panic in `f` poisons the mutex. The cache is a pure function of the tree
-    // written whole, so poison is recovered rather than propagated.
-    pub fn with_dfs_order<R>(&self, f: impl FnOnce(&[NodeIdx]) -> R) -> R {
-        let mut guard = self.dfs_cache.lock().unwrap_or_else(|e| e.into_inner());
-        let order = guard.get_or_insert_with(|| {
+    pub fn dfs_order(&self) -> &[NodeIdx] {
+        self.dfs_cache.get_or_init(|| {
             let mut order = Vec::new();
             self.traverse_depth_first(|id| order.push(id));
-            order
-        });
-        f(order)
+            order.into()
+        })
     }
 }
 
@@ -233,29 +216,15 @@ mod tests {
         let mut tree = NodeTree::new(root);
         tree.add_child(root, NodeIdx::new(1)).unwrap();
 
-        let first_len = tree.with_dfs_order(|o| o.len());
-        assert_eq!(first_len, 2);
+        assert_eq!(tree.dfs_order().len(), 2);
 
         tree.add_child(root, NodeIdx::new(2)).unwrap();
-        assert_eq!(tree.with_dfs_order(|o| o.len()), 3);
+        assert_eq!(tree.dfs_order().len(), 3);
     }
 
     #[test]
-    fn panicking_visitor_does_not_wedge_later_traversals() {
-        let root = NodeIdx::new(0);
-        let mut tree = NodeTree::new(root);
-        tree.add_child(root, NodeIdx::new(1)).unwrap();
-
-        let prev = std::panic::take_hook();
-        std::panic::set_hook(Box::new(|_| {}));
-        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            tree.with_dfs_order(|_| panic!("visitor blew up"));
-        }));
-        std::panic::set_hook(prev);
-        assert!(caught.is_err());
-
-        assert_eq!(tree.with_dfs_order(|o| o.len()), 2);
-        tree.add_child(root, NodeIdx::new(2)).unwrap();
-        assert_eq!(tree.with_dfs_order(|o| o.len()), 3);
+    fn children_of_a_missing_node_are_empty() {
+        let tree = NodeTree::new(NodeIdx::new(0));
+        assert_eq!(tree.children(NodeIdx::new(7)).count(), 0);
     }
 }

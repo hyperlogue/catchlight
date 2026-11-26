@@ -47,7 +47,7 @@ fn posing_a_param_changes_the_ticked_state() {
 
 fn state_signature(puppet: &catchlight_core::Puppet) -> Vec<[i64; 2]> {
     let mut sig = Vec::new();
-    let order = puppet.tree().with_dfs_order(|o| o.to_vec());
+    let order = puppet.tree().dfs_order().to_vec();
     for id in order {
         let m = puppet.transforms().get(id);
         let t = m.transform_point3(glam::vec3(0.0, 0.0, 0.0));
