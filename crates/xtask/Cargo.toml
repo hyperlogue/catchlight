@@ -20,8 +20,7 @@ image.workspace = true
 # The Python generator parses Rust source because `ts-rs` output loses the
 # `u32`/`f32` distinction.
 syn = { version = "2.0", features = ["full", "extra-traits"] }
-
-[dev-dependencies]
+# Reads `cargo metadata` for the target directory.
 serde_json.workspace = true
 
 [lints]

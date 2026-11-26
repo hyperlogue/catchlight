@@ -3,7 +3,8 @@
 //! The `wasm-bindgen` CLI must match the crate version exactly; a mismatch
 //! otherwise surfaces only in the browser as an unresolved import.
 
-use std::path::Path;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{bail, Context, Result};
@@ -26,7 +27,8 @@ pub fn run(args: &[String]) -> Result<()> {
     let root = crate::workspace_root()?;
     check_versions(&root)?;
 
-    let mut build = Command::new("cargo");
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
+    let mut build = Command::new(&cargo);
     build
         .current_dir(&root)
         .args(["build", "-p", CRATE, "--target", TARGET]);
@@ -35,8 +37,7 @@ pub fn run(args: &[String]) -> Result<()> {
     }
     run_to_completion(&mut build, "cargo build")?;
 
-    let wasm = root
-        .join("target")
+    let wasm = target_directory(&cargo, &root)?
         .join(TARGET)
         .join(profile)
         .join(CRATE.replace('-', "_"))
@@ -70,6 +71,32 @@ pub fn run(args: &[String]) -> Result<()> {
         bytes as f64 / (1024.0 * 1024.0)
     );
     Ok(())
+}
+
+/// Where cargo puts build output, honouring `CARGO_TARGET_DIR` and
+/// `build.target-dir`.
+fn target_directory(cargo: &OsString, root: &Path) -> Result<PathBuf> {
+    let out = Command::new(cargo)
+        .current_dir(root)
+        .args(["metadata", "--no-deps", "--format-version", "1"])
+        .output()
+        .context("running `cargo metadata`")?;
+    if !out.status.success() {
+        bail!(
+            "`cargo metadata` failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    target_directory_of(&out.stdout)
+}
+
+fn target_directory_of(metadata: &[u8]) -> Result<PathBuf> {
+    let metadata: serde_json::Value =
+        serde_json::from_slice(metadata).context("parsing `cargo metadata` output")?;
+    metadata["target_directory"]
+        .as_str()
+        .map(PathBuf::from)
+        .context("`cargo metadata` names no target_directory")
 }
 
 fn check_versions(root: &Path) -> Result<()> {
@@ -162,6 +189,16 @@ dependencies = []
         );
         assert_eq!(locked_version(lock, "serde").as_deref(), Some("1.0.228"));
         assert_eq!(locked_version(lock, "nope"), None);
+    }
+
+    #[test]
+    fn the_target_directory_comes_from_cargo_metadata() {
+        let metadata = br#"{"packages":[],"target_directory":"/elsewhere/target","version":1}"#;
+        assert_eq!(
+            target_directory_of(metadata).unwrap(),
+            Path::new("/elsewhere/target")
+        );
+        assert!(target_directory_of(b"{}").is_err());
     }
 
     #[test]
