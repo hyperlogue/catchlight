@@ -94,6 +94,20 @@ struct Serve {
     model: Option<PathBuf>,
 }
 
+impl Serve {
+    /// The flags only a newly started server reads.
+    fn server_flags(&self) -> Vec<&'static str> {
+        [
+            ("--port", self.port.is_some()),
+            ("--store", self.store.is_some()),
+            ("--keep", self.keep.is_some()),
+        ]
+        .into_iter()
+        .filter_map(|(flag, given)| given.then_some(flag))
+        .collect()
+    }
+}
+
 fn main() -> Result<()> {
     let args: Vec<OsString> = std::env::args_os().collect();
     let first = args.get(1).and_then(|a| a.to_str());
@@ -182,6 +196,13 @@ fn serve(options: Serve) -> Result<()> {
     if let Some(running) = read_connection(&connection_path).filter(is_live) {
         drop(lock);
         eprintln!("{NAME}: an editor is already running at {}", running.url);
+        let ignored = options.server_flags();
+        if !ignored.is_empty() {
+            eprintln!(
+                "{NAME}: ignoring {} because that editor is already running; stop it to change them",
+                ignored.join(", ")
+            );
+        }
         if let Some(model) = model {
             open_in_running(&running, &model)?;
         }
@@ -594,6 +615,16 @@ mod tests {
         assert!(parse_serve(&args(&["a.clm", "b.clm"])).is_err());
         assert!(parse_serve(&args(&["--port", "x"])).is_err());
         assert!(parse_serve(&args(&["--bogus"])).is_err());
+    }
+
+    #[test]
+    fn only_server_flags_are_named_when_an_editor_already_runs() {
+        let flags = |list: &[&str]| parse_serve(&args(list)).unwrap().server_flags();
+        assert!(flags(&["--no-open", "a.clm"]).is_empty());
+        assert_eq!(
+            flags(&["--keep", "user", "--port", "9000", "--store", "s"]),
+            ["--port", "--store", "--keep"]
+        );
     }
 
     #[test]
