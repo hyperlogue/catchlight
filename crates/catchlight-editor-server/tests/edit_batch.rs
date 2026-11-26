@@ -295,7 +295,12 @@ fn exact_cells_preserve_holes_page_authored_vertices_and_accept_empty_deforms() 
     ));
     let model = snapshot(&editor, session);
     let key = BindingKey::new(param(), node("empty"), Target::Deform);
-    let cells = catchlight_core::deform_cells(model.binding(&key).unwrap().values()).unwrap();
+    let cells = model
+        .binding(&key)
+        .unwrap()
+        .values()
+        .deform_cells()
+        .unwrap();
     assert_eq!(cells.len(), 1);
     assert_eq!([cells[0].x, cells[0].y], [1, 0]);
     assert!(cells[0].value.is_empty());
@@ -376,7 +381,7 @@ fn binding_axis_edits_and_values_compose_with_single_undo() {
         m.binding(&key).unwrap().key_positions(),
         &[vec![0., 0.75, 1.]]
     );
-    let cells = catchlight_core::deform_cells(m.binding(&key).unwrap().values()).unwrap();
+    let cells = m.binding(&key).unwrap().values().deform_cells().unwrap();
     assert_eq!(cells.len(), 1);
     assert_eq!(cells[0].x, 0);
     ok(send(&editor, Command::Undo { session, if_rev: 1 }));
@@ -492,7 +497,7 @@ fn mapped_topology_refills_slots_and_preserves_welds_in_one_undo() {
     let binding = after
         .binding(&BindingKey::new(param(), node("panel"), Target::Deform))
         .unwrap();
-    let authored = catchlight_core::deform_cells(binding.values()).unwrap();
+    let authored = binding.values().deform_cells().unwrap();
     assert_eq!(authored.len(), 1, "holes remain holes");
     assert_eq!([authored[0].x, authored[0].y], [2, 0]);
     assert_eq!(authored[0].value, vec![0., 0., 2., 4., 4., 8., 1., 2.]);

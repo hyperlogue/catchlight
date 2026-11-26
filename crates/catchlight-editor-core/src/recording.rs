@@ -4,8 +4,8 @@
 //! cell; raw writes retain exact caller data.
 
 use catchlight_core::{
-    deform_cells, scalar_cells, BindingKey, BindingParams, BindingTarget, Model, ModelNodeKind,
-    NodeId, NodeKind, Pose, Puppet, ScalarTarget,
+    BindingKey, BindingParams, BindingTarget, Model, ModelNodeKind, NodeId, NodeKind, Pose, Puppet,
+    ScalarTarget,
 };
 use serde::{Deserialize, Serialize};
 
@@ -280,8 +280,8 @@ impl Recording {
             target,
         };
         let unauthored = self.model.binding(&key).is_none_or(|b| {
-            scalar_cells(b.values()).map_or_else(
-                || deform_cells(b.values()).is_none_or(|c| c.is_empty()),
+            b.values().scalar_cells().map_or_else(
+                || b.values().deform_cells().is_none_or(|c| c.is_empty()),
                 |c| c.is_empty(),
             )
         });

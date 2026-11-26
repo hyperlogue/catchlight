@@ -277,7 +277,7 @@ mod tests {
         let binding = model.binding(&key).unwrap();
         assert_eq!(binding.key_positions(), &[vec![0., 0.5, 1.]]);
         assert_eq!(binding.interpolate_mode(), InterpolateMode::Stepped);
-        let cells = crate::deform_cells(binding.values()).unwrap();
+        let cells = binding.values().deform_cells().unwrap();
         assert_eq!(cells.len(), 1);
         assert_eq!([cells[0].x, cells[0].y], [2, 0]);
         assert_eq!(cells[0].value, vec![1., 2., 2., 4., 3., 6.]);

@@ -13,8 +13,7 @@ mod validate;
 
 pub use addon::{InstallError, Installed, Required, Requirement, Requirements};
 pub use binding::{
-    deform_cells, mask_mode_name, param_range_is_valid, scalar_cells, target_of, BindingKey,
-    BindingParams, BindingTarget, DenseGrid, ScalarTarget,
+    param_range_is_valid, BindingKey, BindingParams, BindingTarget, DenseGrid, ScalarTarget,
 };
 pub use check::{CheckWarning, ExtensionWarning};
 pub use correspondence::{DeformMapping, MeshMappingError, VertexWeight, MAX_MAPPING_ENTRIES};
@@ -4022,7 +4021,11 @@ mod tests {
         // The snapshot taken before the edits is byte-identical afterwards.
         assert_eq!(model.node_mesh(&node).unwrap().verts, quad().verts);
         assert_eq!(
-            deform_cells(model.binding(&key).unwrap().values())
+            model
+                .binding(&key)
+                .unwrap()
+                .values()
+                .deform_cells()
                 .unwrap()
                 .iter()
                 .map(|c| (c.x, c.y, c.value.clone()))

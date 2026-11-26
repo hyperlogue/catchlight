@@ -636,7 +636,9 @@ fn a_deform_cell_that_disagrees_with_the_mesh_is_zipped_against_it() {
     )
     .expect("a ragged deform matrix is repaired, not refused");
 
-    let cells = catchlight_core::model::deform_cells(&file.doc.bindings[0].values)
+    let cells = file.doc.bindings[0]
+        .values
+        .deform_cells()
         .expect("the deform binding");
     assert_eq!(
         cells.iter().map(|c| c.value.clone()).collect::<Vec<_>>(),

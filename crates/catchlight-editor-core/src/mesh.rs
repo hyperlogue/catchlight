@@ -1647,7 +1647,7 @@ mod tests {
         m.set_mesh_with_refit(&part, new_mesh).unwrap();
 
         let b = m.binding(&key).unwrap();
-        let cells = catchlight_core::deform_cells(b.values()).unwrap();
+        let cells = b.values().deform_cells().unwrap();
         assert_eq!(
             cells.len(),
             1,

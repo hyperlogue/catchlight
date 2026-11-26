@@ -488,6 +488,15 @@ pub enum MaskMode {
     DodgeMask,
 }
 
+impl MaskMode {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Mask => "mask",
+            Self::DodgeMask => "dodge",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Mask {
     pub source: NodeIdx,

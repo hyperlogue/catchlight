@@ -111,7 +111,12 @@ fn two_param_axis_edits_keep_other_bindings_holes_and_values() {
         .set_binding_interpolate(&binding, InterpolateMode::Cubic)
         .unwrap();
     assert_eq!(model.key_insert(&binding, &y, 0.25).unwrap(), 1);
-    let cells = catchlight_core::scalar_cells(model.binding(&binding).unwrap().values()).unwrap();
+    let cells = model
+        .binding(&binding)
+        .unwrap()
+        .values()
+        .scalar_cells()
+        .unwrap();
     assert_eq!(cells.len(), 1);
     assert_eq!((cells[0].x, cells[0].y, cells[0].value), (1, 3, 0.4));
     model.key_delete(&binding, &x, 0).unwrap();
@@ -128,11 +133,13 @@ fn two_param_axis_edits_keep_other_bindings_holes_and_values() {
     );
     assert_eq!(model.binding_grid(&binding).unwrap(), (3, 4));
     model.key_delete(&binding, &y, 3).unwrap();
-    assert!(
-        catchlight_core::scalar_cells(model.binding(&binding).unwrap().values())
-            .unwrap()
-            .is_empty()
-    );
+    assert!(model
+        .binding(&binding)
+        .unwrap()
+        .values()
+        .scalar_cells()
+        .unwrap()
+        .is_empty());
 }
 
 #[test]
@@ -179,21 +186,28 @@ fn raw_writes_author_only_the_selected_scalar_or_empty_deform_cell() {
     let (mut model, param, node) = fixture();
     let tx = key(&param, &node, ScalarTarget::Tx);
     model.set_binding_key(&tx, [1, 0], 8.0).unwrap();
-    let cells = catchlight_core::scalar_cells(model.binding(&tx).unwrap().values()).unwrap();
+    let cells = model.binding(&tx).unwrap().values().scalar_cells().unwrap();
     assert_eq!(cells.len(), 1);
     assert_eq!(cells[0].x, 1);
     assert_eq!(model.eval_scalar(&tx, &Pose::new()), Some(8.0));
     let deform = BindingKey::new(param, node, BindingTarget::Deform);
     model.set_deform_vertices(&deform, [1, 0], vec![]).unwrap();
-    let cells = catchlight_core::deform_cells(model.binding(&deform).unwrap().values()).unwrap();
+    let cells = model
+        .binding(&deform)
+        .unwrap()
+        .values()
+        .deform_cells()
+        .unwrap();
     assert_eq!(cells.len(), 1);
     assert!(cells[0].value.is_empty());
     model.unset_binding_key(&deform, [1, 0]).unwrap();
-    assert!(
-        catchlight_core::deform_cells(model.binding(&deform).unwrap().values())
-            .unwrap()
-            .is_empty()
-    );
+    assert!(model
+        .binding(&deform)
+        .unwrap()
+        .values()
+        .deform_cells()
+        .unwrap()
+        .is_empty());
 }
 
 #[test]

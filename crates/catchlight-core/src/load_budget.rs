@@ -338,7 +338,7 @@ pub fn charge_clm_structure(
         let cells = binding_grid_cells(binding.key_positions.iter().map(|axis| axis.len() as u64))?;
         let authored = match &binding.values {
             ClmBindingValues::Deform(values) => values.cells.len(),
-            other => crate::model::scalar_cells(other).map_or(0, <[_]>::len),
+            other => other.scalar_cells().map_or(0, <[_]>::len),
         };
         budget.charge(LoadResource::BindingCells, cells)?;
         budget.charge(LoadResource::BindingCells, authored as u64)?;

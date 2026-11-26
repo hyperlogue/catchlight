@@ -259,27 +259,59 @@ impl ScalarTarget {
     }
 }
 
-pub fn target_of(v: &ClmBindingValues) -> BindingTarget {
-    use ClmBindingValues as V;
-    BindingTarget::Scalar(match v {
-        V::Deform(_) => return BindingTarget::Deform,
-        V::TransformTX(_) => ScalarTarget::Tx,
-        V::TransformTY(_) => ScalarTarget::Ty,
-        V::TransformTZ(_) => ScalarTarget::Tz,
-        V::TransformSX(_) => ScalarTarget::Sx,
-        V::TransformSY(_) => ScalarTarget::Sy,
-        V::TransformRX(_) => ScalarTarget::Rx,
-        V::TransformRY(_) => ScalarTarget::Ry,
-        V::TransformRZ(_) => ScalarTarget::Rz,
-        V::ZOrder(_) => ScalarTarget::ZOrder,
-        V::Opacity(_) => ScalarTarget::Opacity,
-        V::TintR(_) => ScalarTarget::TintR,
-        V::TintG(_) => ScalarTarget::TintG,
-        V::TintB(_) => ScalarTarget::TintB,
-        V::ScreenTintR(_) => ScalarTarget::ScreenTintR,
-        V::ScreenTintG(_) => ScalarTarget::ScreenTintG,
-        V::ScreenTintB(_) => ScalarTarget::ScreenTintB,
-    })
+impl ClmBindingValues {
+    pub fn target(&self) -> BindingTarget {
+        use ClmBindingValues as V;
+        BindingTarget::Scalar(match self {
+            V::Deform(_) => return BindingTarget::Deform,
+            V::TransformTX(_) => ScalarTarget::Tx,
+            V::TransformTY(_) => ScalarTarget::Ty,
+            V::TransformTZ(_) => ScalarTarget::Tz,
+            V::TransformSX(_) => ScalarTarget::Sx,
+            V::TransformSY(_) => ScalarTarget::Sy,
+            V::TransformRX(_) => ScalarTarget::Rx,
+            V::TransformRY(_) => ScalarTarget::Ry,
+            V::TransformRZ(_) => ScalarTarget::Rz,
+            V::ZOrder(_) => ScalarTarget::ZOrder,
+            V::Opacity(_) => ScalarTarget::Opacity,
+            V::TintR(_) => ScalarTarget::TintR,
+            V::TintG(_) => ScalarTarget::TintG,
+            V::TintB(_) => ScalarTarget::TintB,
+            V::ScreenTintR(_) => ScalarTarget::ScreenTintR,
+            V::ScreenTintG(_) => ScalarTarget::ScreenTintG,
+            V::ScreenTintB(_) => ScalarTarget::ScreenTintB,
+        })
+    }
+
+    pub fn scalar_cells(&self) -> Option<&[ClmCell<f32>]> {
+        use ClmBindingValues as V;
+        match self {
+            V::Deform(_) => None,
+            V::ZOrder(c)
+            | V::TransformTX(c)
+            | V::TransformTY(c)
+            | V::TransformTZ(c)
+            | V::TransformSX(c)
+            | V::TransformSY(c)
+            | V::TransformRX(c)
+            | V::TransformRY(c)
+            | V::TransformRZ(c)
+            | V::Opacity(c)
+            | V::TintR(c)
+            | V::TintG(c)
+            | V::TintB(c)
+            | V::ScreenTintR(c)
+            | V::ScreenTintG(c)
+            | V::ScreenTintB(c) => Some(&c.cells),
+        }
+    }
+
+    pub fn deform_cells(&self) -> Option<&[ClmCell<Vec<f32>>]> {
+        match self {
+            ClmBindingValues::Deform(c) => Some(&c.cells),
+            _ => None,
+        }
+    }
 }
 
 fn scalar_cells_mut(v: &mut ClmBindingValues) -> Option<&mut Vec<ClmCell<f32>>> {
@@ -302,43 +334,6 @@ fn scalar_cells_mut(v: &mut ClmBindingValues) -> Option<&mut Vec<ClmCell<f32>>> 
         | V::ScreenTintR(c)
         | V::ScreenTintG(c)
         | V::ScreenTintB(c) => Some(&mut c.cells),
-    }
-}
-
-pub fn scalar_cells(v: &ClmBindingValues) -> Option<&[ClmCell<f32>]> {
-    use ClmBindingValues as V;
-    match v {
-        V::Deform(_) => None,
-        V::ZOrder(c)
-        | V::TransformTX(c)
-        | V::TransformTY(c)
-        | V::TransformTZ(c)
-        | V::TransformSX(c)
-        | V::TransformSY(c)
-        | V::TransformRX(c)
-        | V::TransformRY(c)
-        | V::TransformRZ(c)
-        | V::Opacity(c)
-        | V::TintR(c)
-        | V::TintG(c)
-        | V::TintB(c)
-        | V::ScreenTintR(c)
-        | V::ScreenTintG(c)
-        | V::ScreenTintB(c) => Some(&c.cells),
-    }
-}
-
-pub fn mask_mode_name(m: crate::components::MaskMode) -> &'static str {
-    match m {
-        crate::components::MaskMode::Mask => "mask",
-        crate::components::MaskMode::DodgeMask => "dodge",
-    }
-}
-
-pub fn deform_cells(v: &ClmBindingValues) -> Option<&[ClmCell<Vec<f32>>]> {
-    match v {
-        ClmBindingValues::Deform(c) => Some(&c.cells),
-        _ => None,
     }
 }
 
@@ -487,12 +482,16 @@ impl Model {
             zero[0].is_none_or(|i| x as usize == i) && zero[1].is_none_or(|i| y as usize == i)
         };
         let invalid = match b.key.target {
-            BindingTarget::Deform => deform_cells(b.values())
+            BindingTarget::Deform => b
+                .values()
+                .deform_cells()
                 .unwrap_or_default()
                 .iter()
                 .filter(|c| is_rest(c.x, c.y))
                 .any(|c| !missing.remove(&[c.x, c.y]) || c.value.iter().any(|v| *v != 0.)),
-            BindingTarget::Scalar(t) => scalar_cells(b.values())
+            BindingTarget::Scalar(t) => b
+                .values()
+                .scalar_cells()
                 .unwrap_or_default()
                 .iter()
                 .filter(|c| is_rest(c.x, c.y))
@@ -835,7 +834,7 @@ impl Model {
                     BindingTarget::Deform => 0.0,
                 };
                 let authored: Vec<((u32, u32), f32)> = other
-                    .and_then(scalar_cells)
+                    .and_then(ClmBindingValues::scalar_cells)
                     .unwrap_or(&[])
                     .iter()
                     .map(|c| ((c.x, c.y), c.value))
@@ -910,7 +909,7 @@ impl Model {
         let Some(binding) = self.binding(key) else {
             return Ok(identity);
         };
-        let Some(cells) = deform_cells(binding.values()) else {
+        let Some(cells) = binding.values().deform_cells() else {
             return Err(ModelError::WrongTarget);
         };
         if let Some(authored) = cells.iter().find(|entry| [entry.x, entry.y] == cell) {
@@ -1307,7 +1306,10 @@ mod tests {
     }
 
     fn cells_of(m: &Model, key: &BindingKey) -> Vec<(u32, f32)> {
-        scalar_cells(m.binding(key).unwrap().values())
+        m.binding(key)
+            .unwrap()
+            .values()
+            .scalar_cells()
             .unwrap()
             .iter()
             .map(|c| (c.x, c.value))
@@ -1449,7 +1451,7 @@ mod tests {
             .unwrap();
         r.m.set_deform_from_transform(&key, [2, 0], [10.0, 0.0], 0.0, [1.0, 1.0])
             .unwrap();
-        let cells = deform_cells(r.m.binding(&key).unwrap().values()).unwrap();
+        let cells = r.m.binding(&key).unwrap().values().deform_cells().unwrap();
         // The rest key is caller-owned; raw writes do not seed one.
         assert_eq!(cells.len(), 1);
         assert_eq!(

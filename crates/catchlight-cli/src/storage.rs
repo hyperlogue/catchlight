@@ -11,7 +11,6 @@ use catchlight_core::formats::{
     clm::{self, ClmNodeKind},
     container,
 };
-use catchlight_core::{deform_cells, scalar_cells, target_of};
 use serde::Serialize;
 
 use crate::{file, Error};
@@ -149,7 +148,7 @@ pub fn inspect(bytes: &[u8], path: &Path) -> Result<Report, Error> {
         let mut row = Binding {
             node: binding.node.to_string(),
             params: binding.params.iter().map(ToString::to_string).collect(),
-            target: target_of(&binding.values).name(),
+            target: binding.values.target().name(),
             bytes: size,
             cells: 0,
             key_positions: binding.key_positions.iter().map(Vec::len).collect(),
@@ -157,7 +156,7 @@ pub fn inspect(bytes: &[u8], path: &Path) -> Result<Report, Error> {
             zero_deform_vectors: 0,
             uniform_deform_cells: 0,
         };
-        if let Some(cells) = deform_cells(&binding.values) {
+        if let Some(cells) = binding.values.deform_cells() {
             deform_bytes += size;
             row.cells = cells.len();
             for cell in cells {
@@ -170,7 +169,7 @@ pub fn inspect(bytes: &[u8], path: &Path) -> Result<Report, Error> {
                         .is_some_and(|first| pairs.iter().all(|p| p == first)),
                 );
             }
-        } else if let Some(cells) = scalar_cells(&binding.values) {
+        } else if let Some(cells) = binding.values.scalar_cells() {
             row.cells = cells.len();
         }
         if let Some(element) = elements.get_mut(binding.node.as_str()) {

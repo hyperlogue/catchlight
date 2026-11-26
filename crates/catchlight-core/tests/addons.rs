@@ -9,7 +9,7 @@ use catchlight_core::formats::clm::{
 };
 use catchlight_core::id::{Name, NodeId, ParamId, SeededHex, SlotId, TexId};
 use catchlight_core::{
-    target_of, BindingKey, BindingTarget, HexSource, InstallError, MaskMode, Model, ModelComposite,
+    BindingKey, BindingTarget, HexSource, InstallError, MaskMode, Model, ModelComposite,
     ModelMeshGroup, ModelNode, ModelNodeKind, ModelParam, ModelPart, ModelTexture, ModelWeld,
     Puppet, ScalarTarget, SlotPair,
 };
@@ -243,7 +243,7 @@ fn binding_key(b: &ClmBinding) -> (String, Vec<String>, String) {
     (
         b.node.to_string(),
         b.params.iter().map(|p| p.to_string()).collect(),
-        format!("{:?}", target_of(&b.values)),
+        format!("{:?}", b.values.target()),
     )
 }
 

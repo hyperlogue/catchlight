@@ -838,7 +838,9 @@ mod tests {
             "every binding names the one scalar param"
         );
 
-        let deform = catchlight_core::model::deform_cells(&bindings[0].values)
+        let deform = bindings[0]
+            .values
+            .deform_cells()
             .expect("binding 0 is the deform");
         assert_eq!(
             deform.iter().map(|c| c.value.clone()).collect::<Vec<_>>(),
@@ -851,11 +853,13 @@ mod tests {
 
         let scalar = |i: usize, target: ScalarTarget| -> Vec<f32> {
             assert_eq!(
-                catchlight_core::model::target_of(&bindings[i].values),
+                bindings[i].values.target(),
                 BindingTarget::Scalar(target),
                 "binding {i} target"
             );
-            catchlight_core::model::scalar_cells(&bindings[i].values)
+            bindings[i]
+                .values
+                .scalar_cells()
                 .expect("a scalar binding")
                 .iter()
                 .map(|c| c.value)

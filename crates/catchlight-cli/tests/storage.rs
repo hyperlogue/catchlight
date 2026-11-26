@@ -93,7 +93,7 @@ fn authored_deform_values_are_counted_without_generating_unset_cells() {
         .doc
         .bindings
         .iter()
-        .filter_map(|binding| catchlight_core::deform_cells(&binding.values));
+        .filter_map(|binding| binding.values.deform_cells());
     let expected_cells: usize = authored.clone().map(<[_]>::len).sum();
     let expected_vectors: usize = authored.flatten().map(|cell| cell.value.len() / 2).sum();
     assert!(expected_cells > 0);

@@ -9,8 +9,7 @@ mod geometry;
 
 use catchlight_core::formats::clm::extension_hash;
 use catchlight_core::{
-    deform_cells, scalar_cells, ExtensionValue, Model, ModelBinding, ModelError, ModelNode,
-    ModelNodeKind, ModelWeld,
+    ExtensionValue, Model, ModelBinding, ModelError, ModelNode, ModelNodeKind, ModelWeld,
 };
 use catchlight_editor_protocol::*;
 
@@ -286,12 +285,16 @@ fn binding_cells(model: &Model, command: &Command) -> Result<ResponseBody, Edito
             MAX_QUERY_ITEMS,
         )?;
     }
-    let scalars: std::collections::HashMap<_, _> = scalar_cells(binding.values())
+    let scalars: std::collections::HashMap<_, _> = binding
+        .values()
+        .scalar_cells()
         .unwrap_or_default()
         .iter()
         .map(|entry| ([entry.x, entry.y], entry.value))
         .collect();
-    let deforms: std::collections::HashMap<_, _> = deform_cells(binding.values())
+    let deforms: std::collections::HashMap<_, _> = binding
+        .values()
+        .deform_cells()
         .unwrap_or_default()
         .iter()
         .map(|entry| ([entry.x, entry.y], entry.value.as_slice()))
@@ -536,14 +539,14 @@ fn binding_info(model: &Model, binding: &ModelBinding) -> Result<BindingInfo, Ed
             authored[y][x] = true;
         }
     };
-    match scalar_cells(binding.values()) {
+    match binding.values().scalar_cells() {
         Some(cells) => {
             for c in cells {
                 set(c.x, c.y, Some(c.value));
             }
         }
         None => {
-            for c in deform_cells(binding.values()).unwrap_or(&[]) {
+            for c in binding.values().deform_cells().unwrap_or(&[]) {
                 set(c.x, c.y, None);
             }
         }

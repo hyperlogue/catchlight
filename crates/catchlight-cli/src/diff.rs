@@ -11,7 +11,6 @@ use catchlight_core::formats::clm::{
     ClmBinding, ClmFile, ClmIndices, ClmMask, ClmMesh, ClmNode, ClmNodeKind, ClmParam,
     ClmStructure, ClmTexture, ClmWeld,
 };
-use catchlight_core::{deform_cells, mask_mode_name, scalar_cells, target_of};
 use catchlight_extension_animations::{Animations, Clip};
 use serde::Serialize;
 
@@ -298,7 +297,7 @@ fn colours(f: &mut Fields, tint: [f32; 3], screen_tint: [f32; 3]) {
 fn masks(masks: &[ClmMask]) -> String {
     let rendered: Vec<String> = masks
         .iter()
-        .map(|m| format!("{}:{}", m.source, mask_mode_name(m.mode)))
+        .map(|m| format!("{}:{}", m.source, m.mode.name()))
         .collect();
     format!("[{}]", rendered.join(", "))
 }
@@ -353,7 +352,7 @@ fn binding_key(b: &ClmBinding) -> String {
         "[{}] {:?} {}",
         params.join(", "),
         b.node.as_str(),
-        target_of(&b.values).name()
+        b.values.target().name()
     )
 }
 
@@ -361,9 +360,11 @@ fn binding_fields(b: &ClmBinding) -> Fields {
     let mut f = Fields::new();
     f.insert("key_positions".into(), format!("{:?}", b.key_positions));
     f.insert("interpolate_mode".into(), enum_name(&b.interpolate_mode));
-    let cells = scalar_cells(&b.values)
+    let cells = b
+        .values
+        .scalar_cells()
         .map(<[_]>::len)
-        .or_else(|| deform_cells(&b.values).map(<[_]>::len))
+        .or_else(|| b.values.deform_cells().map(<[_]>::len))
         .unwrap_or(0);
     f.insert(
         "cells".into(),

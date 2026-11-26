@@ -705,7 +705,7 @@ impl Model {
                     .into());
                 }
             }
-            let target = target_of(&b.values);
+            let target = b.values.target();
             // Otherwise a meshless deform slips past `check_deform_cells`,
             // whose expected length for it is zero.
             match validate::binding_target(&bound.kind, target) {
@@ -775,7 +775,7 @@ impl Model {
                     }
                 }
                 values => {
-                    for cell in scalar_cells(values).unwrap_or(&[]) {
+                    for cell in values.scalar_cells().unwrap_or(&[]) {
                         check(cell.x, cell.y, cell.value.is_finite())?;
                     }
                 }
@@ -955,7 +955,7 @@ fn check_deform_cells(
     expected: usize,
     values: &ClmBindingValues,
 ) -> Result<(), ModelError> {
-    let Some(cells) = deform_cells(values) else {
+    let Some(cells) = values.deform_cells() else {
         return Ok(());
     };
     for cell in cells {
