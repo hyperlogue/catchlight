@@ -232,9 +232,7 @@ impl ModelManifestExt for Model {
                     scale: mn.scale.unwrap_or([1.0, 1.0]),
                 };
                 node.z_order = mn.z_order;
-                let id = m
-                    .add_node(&parent, node, &mut hex)
-                    .map_err(|_| ManifestError::UnknownParent(mn.id.clone(), "<root>".into()))?;
+                let id = m.add_node(&parent, node, &mut hex)?;
                 if let Some(name) = albedo {
                     match tex_ids.get(name) {
                         Some(tid) => m.set_part_albedo(&id, Some(tid.clone()))?,
@@ -639,6 +637,27 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn a_refused_node_reports_why_rather_than_an_unknown_parent() {
+        let manifest = Manifest {
+            nodes: vec![ManifestNode {
+                id: "g".into(),
+                parent: None,
+                name: None,
+                kind: "group".into(),
+                translate: None,
+                rotate: None,
+                scale: None,
+                z_order: f32::NAN,
+                texture: None,
+                mesh: None,
+            }],
+            ..Manifest::default()
+        };
+        let err = Model::from_manifest(&manifest, &HashMap::new()).unwrap_err();
+        assert!(matches!(err, ManifestError::Model(_)), "{err:?}");
     }
 
     #[test]
