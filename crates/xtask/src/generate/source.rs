@@ -46,6 +46,16 @@ impl Source {
 
     fn add(&mut self, file: &Path, dir: &Path, items: Vec<Item>, follow: bool) -> Result<()> {
         for item in items {
+            // `commands! { … }` wraps the written-out `Command` enum; its
+            // `#[command(…)]` attributes are not serde's and are skipped.
+            let item = match item {
+                Item::Macro(m) if m.mac.path.is_ident("commands") => {
+                    Item::Enum(syn::parse2(m.mac.tokens).with_context(|| {
+                        format!("{}: `commands!` does not hold one enum", file.display())
+                    })?)
+                }
+                other => other,
+            };
             let ident = match item {
                 Item::Struct(ref s) => s.ident.to_string(),
                 Item::Enum(ref e) => e.ident.to_string(),
@@ -267,8 +277,9 @@ mod tests {
         write(
             "proto/lib.rs",
             "mod flat; mod inline { mod deep; } mod nested; #[cfg(test)] mod tests; \
-             #[derive(Serialize)] #[serde(tag = \"cmd\", rename_all = \"snake_case\")] \
-             enum Command { NodeAdd, #[serde(rename = \"other\")] Moved }",
+             commands! { #[derive(Serialize)] #[serde(tag = \"cmd\", rename_all = \"snake_case\")] \
+             enum Command { #[command(Edit)] NodeAdd, #[serde(rename = \"other\")] \
+             #[command(Edit, payload)] Moved } }",
         );
         write("proto/flat.rs", "struct Flat; mod below;");
         write("proto/flat/below.rs", "enum Below {}");

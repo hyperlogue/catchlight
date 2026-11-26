@@ -38,11 +38,95 @@ pub struct RequestId {
     pub id: u64,
 }
 
+/// Declares [`Command`] and the tables read from it. Each variant carries,
+/// in this order, its docs, its `#[serde(rename)]` wire tag and
+/// `#[command(<CommandKind>)]`, with `, attach(<Attachment>, ...)` for the
+/// attachments it takes or `, payload` when its reply carries bytes.
+///
+/// The enum stays written out so `xtask generate` can parse it with `syn`.
+macro_rules! commands {
+    (@bytes attach($($attachment:ident($name:literal)),+ $(,)?)) => {
+        CommandBytes {
+            attachments: &[$(Attachment::$attachment($name)),+],
+            payload: false,
+        }
+    };
+    (@bytes payload) => {
+        CommandBytes {
+            attachments: &[],
+            payload: true,
+        }
+    };
+    (@carried) => { None };
+    (@carried $($bytes:tt)+) => { Some(&commands!(@bytes $($bytes)+)) };
+    (
+        $(#[$meta:meta])*
+        pub enum Command {
+            $(
+                $(#[doc = $doc:literal])*
+                #[serde(rename = $tag:literal)]
+                #[command($kind:ident $(, $($bytes:tt)+)?)]
+                $variant:ident $({ $($fields:tt)* })?,
+            )*
+        }
+    ) => {
+        $(#[$meta])*
+        pub enum Command {
+            $(
+                $(#[doc = $doc])*
+                #[serde(rename = $tag)]
+                $variant $({ $($fields)* })?,
+            )*
+        }
+
+        /// Every command's wire tag paired with its [`CommandKind`].
+        pub const COMMAND_KINDS: &[(&str, CommandKind)] = &[$(($tag, CommandKind::$kind)),*];
+
+        /// Every command that carries bytes; a command absent here carries none.
+        pub const COMMAND_BYTES: &[(&str, CommandBytes)] = &[
+            $($(($tag, commands!(@bytes $($bytes)+)),)?)*
+        ];
+
+        impl Command {
+            /// The `cmd` tag.
+            pub const fn tag(&self) -> &'static str {
+                match self {
+                    $(Self::$variant { .. } => $tag,)*
+                }
+            }
+
+            /// What applying this command does to the session's model.
+            pub const fn kind(&self) -> CommandKind {
+                match self {
+                    $(Self::$variant { .. } => CommandKind::$kind,)*
+                }
+            }
+
+            /// The bytes a command of this tag may carry.
+            pub const fn bytes(&self) -> Option<&'static CommandBytes> {
+                match self {
+                    $(Self::$variant { .. } => commands!(@carried $($($bytes)+)?),)*
+                }
+            }
+        }
+    };
+}
+
+commands! {
 #[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(tag = "cmd", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "cmd", deny_unknown_fields)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub enum Command {
     #[serde(rename = "session_create")]
+    #[command(
+        Edit,
+        attach(
+            Optional("model"),
+            Optional("structure"),
+            Optional("manifest"),
+            Family("texture"),
+        )
+    )]
     SessionNew {
         #[serde(default)]
         name: Option<String>,
@@ -50,62 +134,84 @@ pub enum Command {
         source: Option<SessionSource>,
     },
     /// Open the `.clm` the server's store holds at `path`.
+    #[serde(rename = "session_open")]
+    #[command(Edit)]
     SessionOpen {
         path: String,
     },
+    #[serde(rename = "session_fork")]
+    #[command(Edit)]
     SessionFork {
         session: SessionId,
         if_rev: u64,
         #[serde(default)]
         name: Option<String>,
     },
+    #[serde(rename = "model_export")]
+    #[command(ServerQuery, payload)]
     ModelExport {
         session: SessionId,
         if_rev: u64,
     },
+    #[serde(rename = "session_list")]
+    #[command(ServerQuery)]
     SessionList,
+    #[serde(rename = "session_close")]
+    #[command(Edit)]
     SessionClose {
         session: SessionId,
     },
     #[serde(rename = "session_save")]
+    #[command(Edit)]
     Save {
         session: SessionId,
         #[serde(default)]
         path: Option<String>,
     },
     #[serde(rename = "manifest_export")]
+    #[command(ServerQuery)]
     ExportManifest {
         session: SessionId,
         path: String,
     },
     #[serde(rename = "session_get")]
+    #[command(ServerQuery)]
     Status {
         session: SessionId,
     },
     #[serde(rename = "model_check")]
+    #[command(ReplicaQuery)]
     Check {
         session: SessionId,
     },
     #[serde(rename = "node_tree_get")]
+    #[command(ReplicaQuery)]
     NodeTree {
         session: SessionId,
     },
     #[serde(rename = "node_get")]
+    #[command(ReplicaQuery)]
     NodeInfo {
         session: SessionId,
         node: NodeId,
     },
+    #[serde(rename = "mesh_get")]
+    #[command(ReplicaQuery)]
     MeshGet {
         session: SessionId,
         node: NodeId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         if_rev: Option<u64>,
     },
+    #[serde(rename = "model_get")]
+    #[command(ReplicaQuery)]
     ModelGet {
         session: SessionId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         if_rev: Option<u64>,
     },
+    #[serde(rename = "geometry_get")]
+    #[command(ReplicaQuery)]
     GeometryGet {
         session: SessionId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -119,6 +225,8 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         triangles: Option<IndexRange>,
     },
+    #[serde(rename = "node_add")]
+    #[command(Edit)]
     NodeAdd {
         session: SessionId,
         parent: NodeId,
@@ -129,18 +237,24 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         node: Option<NodeId>,
     },
+    #[serde(rename = "node_set")]
+    #[command(Edit)]
     NodeSet {
         session: SessionId,
         node: NodeId,
         #[serde(flatten)]
         patch: NodePatch,
     },
+    #[serde(rename = "node_reparent")]
+    #[command(Edit)]
     NodeReparent {
         session: SessionId,
         node: NodeId,
         to: NodeId,
     },
     /// Move a node within its parent's children (clamped to the end).
+    #[serde(rename = "node_reorder")]
+    #[command(Edit)]
     NodeReorder {
         session: SessionId,
         node: NodeId,
@@ -148,6 +262,8 @@ pub enum Command {
     },
 
     /// Deep-copy a node's subtree as its next sibling; copies get fresh Ids.
+    #[serde(rename = "node_duplicate")]
+    #[command(Edit)]
     NodeDuplicate {
         session: SessionId,
         node: NodeId,
@@ -155,10 +271,13 @@ pub enum Command {
     /// Change an Id and every reference this model holds to it. Breaks addons:
     /// nothing outside the model is rewritten and no alias remains.
     #[serde(rename = "id_rename")]
+    #[command(Edit)]
     RenameId {
         session: SessionId,
         rename: Rename,
     },
+    #[serde(rename = "mask_add")]
+    #[command(Edit)]
     MaskAdd {
         session: SessionId,
         node: NodeId,
@@ -166,22 +285,30 @@ pub enum Command {
         mode: MaskMode,
     },
 
+    #[serde(rename = "mask_delete")]
+    #[command(Edit)]
     MaskDelete {
         session: SessionId,
         node: NodeId,
         index: u32,
     },
+    #[serde(rename = "motion_response_set")]
+    #[command(Edit)]
     MotionResponseSet {
         session: SessionId,
         node: NodeId,
         response: MotionResponse,
     },
+    #[serde(rename = "node_delete")]
+    #[command(Edit)]
     NodeDelete {
         session: SessionId,
         node: NodeId,
     },
     /// Add a texture from attachment `texture` and assign it to part `node` in
     /// one edit, dropping the old texture if nothing else draws it.
+    #[serde(rename = "texture_add")]
+    #[command(Edit, attach(Fixed("texture")))]
     TextureAdd {
         session: SessionId,
         node: NodeId,
@@ -191,9 +318,13 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         texture: Option<TexId>,
     },
+    #[serde(rename = "texture_list")]
+    #[command(ReplicaQuery)]
     TextureList {
         session: SessionId,
     },
+    #[serde(rename = "param_add")]
+    #[command(Edit)]
     ParamAdd {
         session: SessionId,
         name: String,
@@ -207,11 +338,15 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         param: Option<ParamId>,
     },
+    #[serde(rename = "param_list")]
+    #[command(ReplicaQuery)]
     ParamList {
         session: SessionId,
     },
     /// Change param metadata; absent = unchanged. Key positions are
     /// normalized, so a range change doesn't move them.
+    #[serde(rename = "param_set")]
+    #[command(Edit)]
     ParamSet {
         session: SessionId,
         param: ParamId,
@@ -224,11 +359,15 @@ pub enum Command {
         #[serde(default)]
         default: Option<f32>,
     },
+    #[serde(rename = "param_delete")]
+    #[command(Edit)]
     ParamDelete {
         session: SessionId,
         param: ParamId,
     },
     /// Insert a distinct key position at normalized `value` in [0, 1].
+    #[serde(rename = "binding_key_insert")]
+    #[command(Edit)]
     BindingKeyInsert {
         session: SessionId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -241,6 +380,8 @@ pub enum Command {
         value: f32,
     },
     /// Remove a key position while retaining at least one position on the axis.
+    #[serde(rename = "binding_key_delete")]
+    #[command(Edit)]
     BindingKeyDelete {
         session: SessionId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -254,6 +395,8 @@ pub enum Command {
     },
     /// Move a key position to normalized `value` in [0, 1], preserving
     /// strict ordering with its neighbors.
+    #[serde(rename = "binding_key_move")]
+    #[command(Edit)]
     BindingKeyMove {
         session: SessionId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -268,17 +411,23 @@ pub enum Command {
     },
 
     /// Atomically execute a bounded list against one revision of the model.
+    #[serde(rename = "edit_apply")]
+    #[command(Edit)]
     EditApply {
         session: SessionId,
         if_rev: u64,
         edits: Vec<EditOp>,
     },
     /// Evaluate the same list on a captured clone without publishing it.
+    #[serde(rename = "edit_validate")]
+    #[command(ServerQuery)]
     EditValidate {
         session: SessionId,
         if_rev: u64,
         edits: Vec<EditOp>,
     },
+    #[serde(rename = "binding_cells_get")]
+    #[command(ReplicaQuery)]
     BindingCellsGet {
         session: SessionId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -294,6 +443,8 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         vertices: Option<IndexRange>,
     },
+    #[serde(rename = "binding_cells_set")]
+    #[command(Edit)]
     BindingCellsSet {
         session: SessionId,
         if_rev: u64,
@@ -303,6 +454,8 @@ pub enum Command {
         target: BindingTarget,
         cells: Vec<BindingCellWrite>,
     },
+    #[serde(rename = "binding_cells_unset")]
+    #[command(Edit)]
     BindingCellsUnset {
         session: SessionId,
         if_rev: u64,
@@ -312,6 +465,8 @@ pub enum Command {
         target: BindingTarget,
         cells: Vec<[u32; 2]>,
     },
+    #[serde(rename = "binding_add")]
+    #[command(Edit)]
     BindingAdd {
         session: SessionId,
         #[serde(flatten)]
@@ -322,6 +477,8 @@ pub enum Command {
         key_positions: Option<Vec<Vec<f32>>>,
     },
 
+    #[serde(rename = "binding_delete")]
+    #[command(Edit)]
     BindingDelete {
         session: SessionId,
         #[serde(flatten)]
@@ -330,6 +487,7 @@ pub enum Command {
         target: BindingTarget,
     },
     #[serde(rename = "binding_interpolation_set")]
+    #[command(Edit)]
     BindingInterpolate {
         session: SessionId,
         #[serde(flatten)]
@@ -339,6 +497,8 @@ pub enum Command {
         mode: Interpolate,
     },
 
+    #[serde(rename = "binding_list")]
+    #[command(ReplicaQuery)]
     BindingList {
         session: SessionId,
         node: NodeId,
@@ -346,6 +506,8 @@ pub enum Command {
 
     /// Replace a Part/MeshGroup mesh, re-fitting its deform bindings in the same
     /// step. Answers with the slots the new mesh emptied.
+    #[serde(rename = "mesh_set")]
+    #[command(Edit)]
     MeshSet {
         session: SessionId,
         /// Refuse a stale draft or gesture while holding the session lock.
@@ -364,6 +526,7 @@ pub enum Command {
     /// Trace a part's mesh from its texture's alpha and apply it like
     /// [`Command::MeshSet`].
     #[serde(rename = "mesh_generate")]
+    #[command(Edit)]
     MeshAuto {
         session: SessionId,
         node: NodeId,
@@ -372,6 +535,8 @@ pub enum Command {
         mode: AutoMesh,
     },
 
+    #[serde(rename = "slot_add")]
+    #[command(Edit)]
     SlotAdd {
         session: SessionId,
         node: NodeId,
@@ -380,6 +545,8 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         slot: Option<SlotId>,
     },
+    #[serde(rename = "slot_fill")]
+    #[command(Edit)]
     SlotFill {
         session: SessionId,
         node: NodeId,
@@ -388,23 +555,29 @@ pub enum Command {
     },
     /// Unfill a slot. The weld pairs that name it keep it and skip it until it
     /// is filled again.
+    #[serde(rename = "slot_clear")]
+    #[command(Edit)]
     SlotClear {
         session: SessionId,
         node: NodeId,
         slot: SlotId,
     },
     /// Remove a slot from a part, and with it the weld pairs that named it.
+    #[serde(rename = "slot_delete")]
+    #[command(Edit)]
     SlotDelete {
         session: SessionId,
         node: NodeId,
         slot: SlotId,
     },
     #[serde(rename = "slot_list")]
+    #[command(ReplicaQuery)]
     Slots {
         session: SessionId,
         node: NodeId,
     },
     #[serde(rename = "weld_list")]
+    #[command(ReplicaQuery)]
     Welds {
         session: SessionId,
     },
@@ -412,6 +585,8 @@ pub enum Command {
     /// Weld two parts together, replacing any weld already pairing them. Each
     /// pair names a slot on `a` and a slot on `b`; empty `pairs` records the
     /// two parts as welded and joins nothing yet.
+    #[serde(rename = "weld_set")]
+    #[command(Edit)]
     WeldSet {
         session: SessionId,
         a: NodeId,
@@ -420,6 +595,8 @@ pub enum Command {
         pairs: Vec<SlotPair>,
     },
     /// Unmake the weld pairing two parts, named in either order.
+    #[serde(rename = "weld_delete")]
+    #[command(Edit)]
     WeldDelete {
         session: SessionId,
         a: NodeId,
@@ -427,6 +604,8 @@ pub enum Command {
     },
     /// Add a spine node. Empty `joints`, or a joint repeating the point above
     /// it, is refused.
+    #[serde(rename = "spine_add")]
+    #[command(Edit)]
     SpineAdd {
         session: SessionId,
         parent: NodeId,
@@ -448,6 +627,8 @@ pub enum Command {
     /// `joints` and `targets` in one command apply in that order, so `targets`
     /// is measured against the length `joints` just set rather than the one it
     /// replaced.
+    #[serde(rename = "spine_set")]
+    #[command(Edit)]
     SpineSet {
         session: SessionId,
         node: NodeId,
@@ -461,6 +642,8 @@ pub enum Command {
     /// Rig a strand of art to a spine and its bend params in one edit, with no
     /// bindings. The spine goes between the part and its parent, keeping the
     /// part's world placement; a re-fit retains params of surviving links.
+    #[serde(rename = "spine_fit")]
+    #[command(Edit)]
     SpineFit {
         session: SessionId,
         part: NodeId,
@@ -477,20 +660,26 @@ pub enum Command {
         name: Option<String>,
     },
     #[serde(rename = "edit_undo")]
+    #[command(Edit)]
     Undo {
         session: SessionId,
         if_rev: u64,
     },
     #[serde(rename = "edit_redo")]
+    #[command(Edit)]
     Redo {
         session: SessionId,
         if_rev: u64,
     },
+    #[serde(rename = "edit_goto")]
+    #[command(Edit)]
     EditGoto {
         session: SessionId,
         if_rev: u64,
         revision: u64,
     },
+    #[serde(rename = "edit_history_get")]
+    #[command(ServerQuery)]
     EditHistoryGet {
         session: SessionId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -498,12 +687,16 @@ pub enum Command {
     },
     /// Publish ephemeral view state (pose / camera / selection) — a separate
     /// path from the model: never bumps rev, never undone, never saved.
+    #[serde(rename = "presence_set")]
+    #[command(Presence)]
     PresenceSet {
         session: SessionId,
         #[serde(flatten)]
         presence: Presence,
     },
     /// Read the session's current shared presence (latest publisher wins).
+    #[serde(rename = "presence_get")]
+    #[command(ServerQuery)]
     PresenceGet {
         session: SessionId,
     },
@@ -511,6 +704,7 @@ pub enum Command {
     /// Render one frame as the reply's PNG payload. An absent camera is the
     /// default, never a tab's last view.
     #[serde(rename = "preview_render")]
+    #[command(ServerQuery, payload)]
     Preview {
         session: SessionId,
         #[serde(default)]
@@ -525,6 +719,7 @@ pub enum Command {
     /// undoable edit. Attachment `structure` is the JSON; each `textures` entry
     /// arrives as `texture:<texture>`. Byte-extension markers are refused.
     #[serde(rename = "structure_json_import")]
+    #[command(Edit, attach(Fixed("structure"), Family("texture")))]
     ImportJson {
         session: SessionId,
         parent: NodeId,
@@ -534,6 +729,8 @@ pub enum Command {
     },
     /// Set the extension under `key`. The `catchlight.` prefix is
     /// [`ErrorCode::ReservedExtension`].
+    #[serde(rename = "extension_set")]
+    #[command(Edit, attach(Optional("value")))]
     ExtensionSet {
         session: SessionId,
         key: ExtensionKey,
@@ -541,16 +738,21 @@ pub enum Command {
     },
     /// Drop the extension under `key`; a missing key is
     /// [`ErrorCode::NoExtension`].
+    #[serde(rename = "extension_delete")]
+    #[command(Edit)]
     ExtensionDelete {
         session: SessionId,
         key: ExtensionKey,
     },
     /// Every extension in key order; a byte value as its size and hash.
     #[serde(rename = "extension_list")]
+    #[command(ReplicaQuery)]
     Extensions {
         session: SessionId,
     },
     /// One extension's value; bytes come back as the reply's payload.
+    #[serde(rename = "extension_get")]
+    #[command(ServerQuery, payload)]
     ExtensionGet {
         session: SessionId,
         key: ExtensionKey,
@@ -558,6 +760,8 @@ pub enum Command {
     /// Every finding about the model's maintained extensions: references
     /// that no longer resolve, each extension's own check, and data this
     /// editor cannot read or check.
+    #[serde(rename = "extension_warnings")]
+    #[command(ReplicaQuery)]
     ExtensionWarnings {
         session: SessionId,
     },
@@ -567,6 +771,8 @@ pub enum Command {
     /// and a one-sided control rests at the default and reaches the end of
     /// the range farther from it. A control outside the standard list is
     /// [`ErrorCode::NonstandardControl`] unless `nonstandard`.
+    #[serde(rename = "humanoid_map")]
+    #[command(Edit)]
     HumanoidMap {
         session: SessionId,
         control: String,
@@ -578,16 +784,22 @@ pub enum Command {
         nonstandard: bool,
     },
     /// Remove a control's mapping; removing the last removes the extension.
+    #[serde(rename = "humanoid_unmap")]
+    #[command(Edit)]
     HumanoidUnmap {
         session: SessionId,
         control: String,
     },
     /// The control mappings, and the standard controls.
+    #[serde(rename = "humanoid_get")]
+    #[command(ReplicaQuery)]
     HumanoidGet {
         session: SessionId,
     },
     /// Create or replace an expression or viseme from its settings, kept in
     /// the order given. A control value must lie in its control's range.
+    #[serde(rename = "expression_set")]
+    #[command(Edit)]
     ExpressionSet {
         session: SessionId,
         group: ExpressionGroup,
@@ -599,34 +811,46 @@ pub enum Command {
     },
     /// Remove an expression or viseme; removing the last of both groups
     /// removes the extension.
+    #[serde(rename = "expression_delete")]
+    #[command(Edit)]
     ExpressionDelete {
         session: SessionId,
         group: ExpressionGroup,
         name: String,
     },
     /// Both groups with their settings, and the standard names.
+    #[serde(rename = "expression_list")]
+    #[command(ReplicaQuery)]
     ExpressionList {
         session: SessionId,
     },
     /// Add the standard visemes with their default settings after the
     /// existing ones. An existing viseme of a standard name is skipped, or
     /// replaced in place when `replace`.
+    #[serde(rename = "viseme_add_standard")]
+    #[command(Edit)]
     VisemeAddStandard {
         session: SessionId,
         #[serde(default)]
         replace: bool,
     },
     /// The clips of `catchlight.animations`, with what each lane drives.
+    #[serde(rename = "clip_list")]
+    #[command(ReplicaQuery)]
     ClipList {
         session: SessionId,
     },
 
     /// The session's review: every thread, and the agents attending to it.
+    #[serde(rename = "review_get")]
+    #[command(ServerQuery)]
     ReviewGet {
         session: SessionId,
     },
     /// Open a thread on `target` with its first comment. `pose` is what the
     /// author was looking at.
+    #[serde(rename = "review_thread_add")]
+    #[command(Review)]
     ReviewThreadAdd {
         session: SessionId,
         target: ReviewTarget,
@@ -646,16 +870,22 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         version: Option<u64>,
     },
+    #[serde(rename = "review_thread_set")]
+    #[command(Review)]
     ReviewThreadSet {
         session: SessionId,
         thread: ThreadId,
         status: ThreadStatus,
     },
+    #[serde(rename = "review_thread_delete")]
+    #[command(Review)]
     ReviewThreadDelete {
         session: SessionId,
         thread: ThreadId,
     },
     /// Reply on a thread. An agent's reply releases its own claim on it.
+    #[serde(rename = "review_comment_add")]
+    #[command(Review)]
     ReviewCommentAdd {
         session: SessionId,
         thread: ThreadId,
@@ -673,6 +903,8 @@ pub enum Command {
         version: Option<u64>,
     },
     /// Removing a thread's only comment removes the thread.
+    #[serde(rename = "review_comment_delete")]
+    #[command(Review)]
     ReviewCommentDelete {
         session: SessionId,
         thread: ThreadId,
@@ -680,20 +912,28 @@ pub enum Command {
     },
     /// Hold attachment `image` (PNG, JPEG or WebP) for a comment about to be
     /// written. One no comment claims is dropped as newer ones arrive.
+    #[serde(rename = "review_image_add")]
+    #[command(Review, attach(Fixed("image")))]
     ReviewImageAdd {
         session: SessionId,
     },
     /// An image's bytes, as the reply's payload.
+    #[serde(rename = "review_image_get")]
+    #[command(ServerQuery, payload)]
     ReviewImageGet {
         session: SessionId,
         image: u64,
     },
     /// Hand every unsent human comment on an open thread to the agent.
+    #[serde(rename = "review_submit")]
+    #[command(Review)]
     ReviewSubmit {
         session: SessionId,
     },
     /// An agent's heartbeat while it waits for comments: keeps it shown as
     /// listening and answers how many threads wait for it.
+    #[serde(rename = "review_poll")]
+    #[command(Review)]
     ReviewPoll {
         session: SessionId,
         agent: ReviewIdentity,
@@ -701,6 +941,8 @@ pub enum Command {
     /// Read the threads waiting for `agent`: handed over and claimed by no
     /// other agent. Changes nothing but presence, so a second fetch before
     /// [`Command::ReviewAck`] returns the same comments.
+    #[serde(rename = "review_fetch")]
+    #[command(Review)]
     ReviewFetch {
         session: SessionId,
         agent: ReviewIdentity,
@@ -709,6 +951,8 @@ pub enum Command {
     /// has them, and claim their threads for it where nobody else holds them.
     /// Refused with `batch_stale`, changing nothing, when any of them was
     /// deleted, resolved or delivered since.
+    #[serde(rename = "review_ack")]
+    #[command(Review)]
     ReviewAck {
         session: SessionId,
         agent: ReviewIdentity,
@@ -716,12 +960,16 @@ pub enum Command {
     },
     /// Take or renew a lease on each thread for `agent`; all or none. A thread
     /// another agent holds is refused with `thread_claimed`.
+    #[serde(rename = "review_claim")]
+    #[command(Review)]
     ReviewClaim {
         session: SessionId,
         agent: ReviewIdentity,
         threads: Vec<ThreadId>,
     },
     /// Give up `agent`'s own claims on the threads; another's are left alone.
+    #[serde(rename = "review_release")]
+    #[command(Review)]
     ReviewRelease {
         session: SessionId,
         agent: ReviewIdentity,
@@ -730,6 +978,8 @@ pub enum Command {
 
     /// Keep the session's model as it is now as the next numbered version.
     /// Moves no revision, writes no file and leaves `dirty` alone.
+    #[serde(rename = "version_save")]
+    #[command(Version)]
     VersionSave {
         session: SessionId,
         /// One line each; blank is absent.
@@ -745,16 +995,22 @@ pub enum Command {
         key: Option<String>,
     },
     /// The session's versions, oldest first.
+    #[serde(rename = "version_list")]
+    #[command(ServerQuery)]
     VersionList {
         session: SessionId,
     },
     /// One version's `.clm`, byte for byte as it was saved, as the reply's
     /// payload.
+    #[serde(rename = "version_get")]
+    #[command(ServerQuery, payload)]
     VersionGet {
         session: SessionId,
         version: u64,
     },
     /// Replace the session's model with a version's, as one undoable edit.
+    #[serde(rename = "version_restore")]
+    #[command(Edit)]
     VersionRestore {
         session: SessionId,
         version: u64,
@@ -765,10 +1021,13 @@ pub enum Command {
     /// beside the live one; every edit to it is [`ErrorCode::ReadOnly`]. One
     /// already open on the same version is answered again. It closes with
     /// the session it came from.
+    #[serde(rename = "version_open")]
+    #[command(Edit)]
     VersionOpen {
         session: SessionId,
         version: u64,
     },
+}
 }
 
 /// What applying a [`Command`] does to the model it addresses.
@@ -788,107 +1047,6 @@ pub enum CommandKind {
     /// because what it writes lands in the store, not the session.
     ServerQuery,
 }
-
-/// Every command's wire tag paired with its [`CommandKind`]. Hand-maintained;
-/// `xtask generate` checks it against the enum.
-pub const COMMAND_KINDS: &[(&str, CommandKind)] = &[
-    ("model_export", CommandKind::ServerQuery),
-    ("session_fork", CommandKind::Edit),
-    ("geometry_get", CommandKind::ReplicaQuery),
-    ("model_get", CommandKind::ReplicaQuery),
-    ("mesh_get", CommandKind::ReplicaQuery),
-    ("binding_cells_unset", CommandKind::Edit),
-    ("binding_cells_set", CommandKind::Edit),
-    ("binding_cells_get", CommandKind::ReplicaQuery),
-    ("edit_validate", CommandKind::ServerQuery),
-    ("edit_apply", CommandKind::Edit),
-    ("session_create", CommandKind::Edit),
-    ("session_open", CommandKind::Edit),
-    ("session_list", CommandKind::ServerQuery),
-    ("session_close", CommandKind::Edit),
-    ("session_save", CommandKind::Edit),
-    ("manifest_export", CommandKind::ServerQuery),
-    ("session_get", CommandKind::ServerQuery),
-    ("model_check", CommandKind::ReplicaQuery),
-    ("node_tree_get", CommandKind::ReplicaQuery),
-    ("node_get", CommandKind::ReplicaQuery),
-    ("node_add", CommandKind::Edit),
-    ("node_set", CommandKind::Edit),
-    ("node_reparent", CommandKind::Edit),
-    ("node_reorder", CommandKind::Edit),
-    ("node_duplicate", CommandKind::Edit),
-    ("id_rename", CommandKind::Edit),
-    ("mask_add", CommandKind::Edit),
-    ("mask_delete", CommandKind::Edit),
-    ("motion_response_set", CommandKind::Edit),
-    ("node_delete", CommandKind::Edit),
-    ("texture_add", CommandKind::Edit),
-    ("texture_list", CommandKind::ReplicaQuery),
-    ("param_add", CommandKind::Edit),
-    ("param_list", CommandKind::ReplicaQuery),
-    ("param_set", CommandKind::Edit),
-    ("param_delete", CommandKind::Edit),
-    ("binding_key_insert", CommandKind::Edit),
-    ("binding_key_delete", CommandKind::Edit),
-    ("binding_key_move", CommandKind::Edit),
-    ("binding_add", CommandKind::Edit),
-    ("binding_delete", CommandKind::Edit),
-    ("binding_interpolation_set", CommandKind::Edit),
-    ("binding_list", CommandKind::ReplicaQuery),
-    ("mesh_set", CommandKind::Edit),
-    ("mesh_generate", CommandKind::Edit),
-    ("slot_add", CommandKind::Edit),
-    ("slot_fill", CommandKind::Edit),
-    ("slot_clear", CommandKind::Edit),
-    ("slot_delete", CommandKind::Edit),
-    ("slot_list", CommandKind::ReplicaQuery),
-    ("weld_list", CommandKind::ReplicaQuery),
-    ("weld_set", CommandKind::Edit),
-    ("weld_delete", CommandKind::Edit),
-    ("spine_add", CommandKind::Edit),
-    ("spine_set", CommandKind::Edit),
-    ("spine_fit", CommandKind::Edit),
-    ("edit_undo", CommandKind::Edit),
-    ("edit_redo", CommandKind::Edit),
-    ("edit_goto", CommandKind::Edit),
-    ("edit_history_get", CommandKind::ServerQuery),
-    ("presence_set", CommandKind::Presence),
-    ("presence_get", CommandKind::ServerQuery),
-    ("preview_render", CommandKind::ServerQuery),
-    ("structure_json_import", CommandKind::Edit),
-    ("extension_set", CommandKind::Edit),
-    ("extension_delete", CommandKind::Edit),
-    ("extension_list", CommandKind::ReplicaQuery),
-    ("extension_get", CommandKind::ServerQuery),
-    ("extension_warnings", CommandKind::ReplicaQuery),
-    ("humanoid_map", CommandKind::Edit),
-    ("humanoid_unmap", CommandKind::Edit),
-    ("humanoid_get", CommandKind::ReplicaQuery),
-    ("expression_set", CommandKind::Edit),
-    ("expression_delete", CommandKind::Edit),
-    ("expression_list", CommandKind::ReplicaQuery),
-    ("viseme_add_standard", CommandKind::Edit),
-    ("clip_list", CommandKind::ReplicaQuery),
-    ("review_get", CommandKind::ServerQuery),
-    ("review_thread_add", CommandKind::Review),
-    ("review_thread_set", CommandKind::Review),
-    ("review_thread_delete", CommandKind::Review),
-    ("review_comment_add", CommandKind::Review),
-    ("review_comment_delete", CommandKind::Review),
-    ("review_image_add", CommandKind::Review),
-    ("review_image_get", CommandKind::ServerQuery),
-    ("review_submit", CommandKind::Review),
-    ("review_poll", CommandKind::Review),
-    ("review_fetch", CommandKind::Review),
-    ("review_ack", CommandKind::Review),
-    ("review_claim", CommandKind::Review),
-    ("review_release", CommandKind::Review),
-    ("version_save", CommandKind::Version),
-    ("version_list", CommandKind::ServerQuery),
-    ("version_get", CommandKind::ServerQuery),
-    ("version_restore", CommandKind::Edit),
-    ("version_open", CommandKind::Edit),
-];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Attachment {
@@ -912,219 +1070,15 @@ impl Attachment {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Bytes {
+pub struct CommandBytes {
     pub attachments: &'static [Attachment],
     pub payload: bool,
 }
 
-/// Every command that carries bytes; a command absent here carries none.
-pub const COMMAND_BYTES: &[(&str, Bytes)] = &[
-    (
-        "review_image_add",
-        Bytes {
-            attachments: &[Attachment::Fixed("image")],
-            payload: false,
-        },
-    ),
-    (
-        "review_image_get",
-        Bytes {
-            attachments: &[],
-            payload: true,
-        },
-    ),
-    (
-        "texture_add",
-        Bytes {
-            attachments: &[Attachment::Fixed("texture")],
-            payload: false,
-        },
-    ),
-    (
-        "session_create",
-        Bytes {
-            attachments: &[
-                Attachment::Optional("model"),
-                Attachment::Optional("structure"),
-                Attachment::Optional("manifest"),
-                Attachment::Family("texture"),
-            ],
-            payload: false,
-        },
-    ),
-    (
-        "structure_json_import",
-        Bytes {
-            attachments: &[
-                Attachment::Fixed("structure"),
-                Attachment::Family("texture"),
-            ],
-            payload: false,
-        },
-    ),
-    (
-        "preview_render",
-        Bytes {
-            attachments: &[],
-            payload: true,
-        },
-    ),
-    (
-        "model_export",
-        Bytes {
-            attachments: &[],
-            payload: true,
-        },
-    ),
-    (
-        "extension_set",
-        Bytes {
-            attachments: &[Attachment::Optional("value")],
-            payload: false,
-        },
-    ),
-    (
-        "extension_get",
-        Bytes {
-            attachments: &[],
-            payload: true,
-        },
-    ),
-    (
-        "version_get",
-        Bytes {
-            attachments: &[],
-            payload: true,
-        },
-    ),
-];
-
 impl Command {
-    /// The `cmd` tag. Exhaustive so [`COMMAND_KINDS`] stays checkable.
-    pub fn tag(&self) -> &'static str {
-        match self {
-            Self::EditApply { .. } => "edit_apply",
-            Self::EditValidate { .. } => "edit_validate",
-            Self::BindingCellsGet { .. } => "binding_cells_get",
-            Self::BindingCellsSet { .. } => "binding_cells_set",
-            Self::BindingCellsUnset { .. } => "binding_cells_unset",
-            Self::MeshGet { .. } => "mesh_get",
-            Self::ModelGet { .. } => "model_get",
-            Self::GeometryGet { .. } => "geometry_get",
-            Self::SessionFork { .. } => "session_fork",
-            Self::ModelExport { .. } => "model_export",
-            Self::SessionNew { .. } => "session_create",
-            Self::SessionOpen { .. } => "session_open",
-            Self::SessionList => "session_list",
-            Self::SessionClose { .. } => "session_close",
-            Self::Save { .. } => "session_save",
-            Self::ExportManifest { .. } => "manifest_export",
-            Self::Status { .. } => "session_get",
-            Self::Check { .. } => "model_check",
-            Self::NodeTree { .. } => "node_tree_get",
-            Self::NodeInfo { .. } => "node_get",
-            Self::NodeAdd { .. } => "node_add",
-            Self::NodeSet { .. } => "node_set",
-            Self::NodeReparent { .. } => "node_reparent",
-            Self::NodeReorder { .. } => "node_reorder",
-            Self::NodeDuplicate { .. } => "node_duplicate",
-            Self::RenameId { .. } => "id_rename",
-            Self::MaskAdd { .. } => "mask_add",
-            Self::MaskDelete { .. } => "mask_delete",
-            Self::MotionResponseSet { .. } => "motion_response_set",
-            Self::NodeDelete { .. } => "node_delete",
-            Self::TextureAdd { .. } => "texture_add",
-            Self::TextureList { .. } => "texture_list",
-            Self::ParamAdd { .. } => "param_add",
-            Self::ParamList { .. } => "param_list",
-            Self::ParamSet { .. } => "param_set",
-            Self::ParamDelete { .. } => "param_delete",
-            Self::BindingKeyInsert { .. } => "binding_key_insert",
-            Self::BindingKeyDelete { .. } => "binding_key_delete",
-            Self::BindingKeyMove { .. } => "binding_key_move",
-            Self::BindingAdd { .. } => "binding_add",
-            Self::BindingDelete { .. } => "binding_delete",
-            Self::BindingInterpolate { .. } => "binding_interpolation_set",
-            Self::BindingList { .. } => "binding_list",
-            Self::MeshSet { .. } => "mesh_set",
-            Self::MeshAuto { .. } => "mesh_generate",
-            Self::SlotAdd { .. } => "slot_add",
-            Self::SlotFill { .. } => "slot_fill",
-            Self::SlotClear { .. } => "slot_clear",
-            Self::SlotDelete { .. } => "slot_delete",
-            Self::Slots { .. } => "slot_list",
-            Self::Welds { .. } => "weld_list",
-            Self::WeldSet { .. } => "weld_set",
-            Self::WeldDelete { .. } => "weld_delete",
-            Self::SpineAdd { .. } => "spine_add",
-            Self::SpineSet { .. } => "spine_set",
-            Self::SpineFit { .. } => "spine_fit",
-            Self::Undo { .. } => "edit_undo",
-            Self::Redo { .. } => "edit_redo",
-            Self::EditGoto { .. } => "edit_goto",
-            Self::EditHistoryGet { .. } => "edit_history_get",
-            Self::PresenceSet { .. } => "presence_set",
-            Self::PresenceGet { .. } => "presence_get",
-            Self::Preview { .. } => "preview_render",
-            Self::ImportJson { .. } => "structure_json_import",
-            Self::ExtensionSet { .. } => "extension_set",
-            Self::ExtensionDelete { .. } => "extension_delete",
-            Self::Extensions { .. } => "extension_list",
-            Self::ExtensionGet { .. } => "extension_get",
-            Self::ExtensionWarnings { .. } => "extension_warnings",
-            Self::HumanoidMap { .. } => "humanoid_map",
-            Self::HumanoidUnmap { .. } => "humanoid_unmap",
-            Self::HumanoidGet { .. } => "humanoid_get",
-            Self::ExpressionSet { .. } => "expression_set",
-            Self::ExpressionDelete { .. } => "expression_delete",
-            Self::ExpressionList { .. } => "expression_list",
-            Self::VisemeAddStandard { .. } => "viseme_add_standard",
-            Self::ClipList { .. } => "clip_list",
-            Self::ReviewGet { .. } => "review_get",
-            Self::ReviewThreadAdd { .. } => "review_thread_add",
-            Self::ReviewThreadSet { .. } => "review_thread_set",
-            Self::ReviewThreadDelete { .. } => "review_thread_delete",
-            Self::ReviewCommentAdd { .. } => "review_comment_add",
-            Self::ReviewCommentDelete { .. } => "review_comment_delete",
-            Self::ReviewImageAdd { .. } => "review_image_add",
-            Self::ReviewImageGet { .. } => "review_image_get",
-            Self::ReviewSubmit { .. } => "review_submit",
-            Self::ReviewPoll { .. } => "review_poll",
-            Self::ReviewFetch { .. } => "review_fetch",
-            Self::ReviewAck { .. } => "review_ack",
-            Self::ReviewClaim { .. } => "review_claim",
-            Self::ReviewRelease { .. } => "review_release",
-            Self::VersionSave { .. } => "version_save",
-            Self::VersionList { .. } => "version_list",
-            Self::VersionGet { .. } => "version_get",
-            Self::VersionRestore { .. } => "version_restore",
-            Self::VersionOpen { .. } => "version_open",
-        }
-    }
-
-    /// What applying this command does to the session's model.
-    ///
-    /// A tag missing from [`COMMAND_KINDS`] reads as [`CommandKind::Edit`], the
-    /// conservative fallback: a spurious redraw beats a lost notification.
-    pub fn kind(&self) -> CommandKind {
-        let tag = self.tag();
-        COMMAND_KINDS
-            .iter()
-            .find(|(name, _)| *name == tag)
-            .map_or(CommandKind::Edit, |(_, kind)| *kind)
-    }
-
-    pub fn bytes(&self) -> Option<&'static Bytes> {
-        let tag = self.tag();
-        COMMAND_BYTES
-            .iter()
-            .find(|(name, _)| *name == tag)
-            .map(|(_, bytes)| bytes)
-    }
-
     /// What bytes *this* command carries. Differs from [`Command::bytes`] only
     /// for an [`Attachment::Optional`], such as an `extension_set` of JSON.
-    pub fn carries_bytes(&self) -> Option<&'static Bytes> {
+    pub fn carries_bytes(&self) -> Option<&'static CommandBytes> {
         let carrying = match self {
             Self::SessionNew { source, .. } => source.is_some(),
             Self::ExtensionSet { value, .. } => matches!(

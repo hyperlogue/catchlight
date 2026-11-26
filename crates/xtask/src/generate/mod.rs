@@ -67,7 +67,6 @@ impl Protocol {
         let tags = source.command_tags()?;
         check_classified(&tags)?;
         check_aliased(&tags)?;
-        check_byte_bearing(&tags)?;
         Ok(Self {
             decls,
             source,
@@ -219,45 +218,18 @@ pub fn check_closed(decls: &[Decl]) -> Result<()> {
     Ok(())
 }
 
-/// Holds the `Command` enum's tags against `COMMAND_KINDS`, both directions.
+/// Holds the tags read from the source against the compiled `COMMAND_KINDS`,
+/// which `commands!` builds from the same variants: a difference means
+/// [`Source`] misread the enum.
 pub fn check_classified(tags: &[String]) -> Result<()> {
-    let known: BTreeSet<&str> = proto::COMMAND_KINDS.iter().map(|(tag, _)| *tag).collect();
-    let found: BTreeSet<&str> = tags.iter().map(String::as_str).collect();
-
-    let unclassified: Vec<&str> = found.difference(&known).copied().collect();
-    if !unclassified.is_empty() {
+    let compiled: Vec<&str> = proto::COMMAND_KINDS.iter().map(|(tag, _)| *tag).collect();
+    if compiled != tags {
         bail!(
-            "COMMAND_KINDS in crates/catchlight-editor-protocol/src/lib.rs does not \
-             classify {}.\nAdd each one — a command a generated module cannot place \
-             is a command a client cannot know how to send.",
-            unclassified.join(", ")
-        );
-    }
-    let stale: Vec<&str> = known.difference(&found).copied().collect();
-    if !stale.is_empty() {
-        bail!(
-            "COMMAND_KINDS classifies {}, which the Command enum no longer carries.\n\
-             Remove them.",
-            stale.join(", ")
-        );
-    }
-    Ok(())
-}
-
-/// Only one direction is checkable: commands without bytes are absent from
-/// [`COMMAND_BYTES`](catchlight_editor_protocol::COMMAND_BYTES) on purpose.
-pub fn check_byte_bearing(tags: &[String]) -> Result<()> {
-    let found: BTreeSet<&str> = tags.iter().map(String::as_str).collect();
-    let stale: Vec<&str> = proto::COMMAND_BYTES
-        .iter()
-        .map(|(tag, _)| *tag)
-        .filter(|tag| !found.contains(tag))
-        .collect();
-    if !stale.is_empty() {
-        bail!(
-            "COMMAND_BYTES in crates/catchlight-editor-protocol/src/lib.rs declares bytes for \
-             {}, which the Command enum does not carry.\nRemove them.",
-            stale.join(", ")
+            "the `Command` tags read from the protocol source ({}) differ from the \
+             compiled COMMAND_KINDS ({}); teach crates/xtask/src/generate/source.rs \
+             to read the enum as `commands!` declares it",
+            tags.join(", "),
+            compiled.join(", ")
         );
     }
     Ok(())
@@ -429,22 +401,23 @@ mod tests {
     }
 
     #[test]
-    fn every_command_is_classified_exactly_once() {
+    fn every_command_has_its_own_tag_and_lands_in_an_alias() {
         let tags = Protocol::load().expect("the protocol loads").tags;
-        assert_eq!(
-            tags.len(),
-            proto::COMMAND_KINDS.len(),
-            "COMMAND_KINDS and the Command enum disagree on how many commands there are",
-        );
-        // Duplicates could let a missing tag hide behind one.
-        let unique: BTreeSet<&str> = proto::COMMAND_KINDS.iter().map(|(tag, _)| *tag).collect();
-        assert_eq!(
-            unique.len(),
-            proto::COMMAND_KINDS.len(),
-            "a tag is listed twice"
-        );
-        check_classified(&tags).expect("every command is classified");
+        // serde accepts two variants renamed alike; the first would shadow the other.
+        let unique: BTreeSet<&str> = tags.iter().map(String::as_str).collect();
+        assert_eq!(unique.len(), tags.len(), "a tag is used twice");
+        check_classified(&tags).expect("the source reads as the compiled enum");
         check_aliased(&tags).expect("every command lands in an alias");
-        check_byte_bearing(&tags).expect("every byte-bearing tag is a command");
+    }
+
+    #[test]
+    fn a_misread_command_enum_is_refused() {
+        let mut tags: Vec<String> = proto::COMMAND_KINDS
+            .iter()
+            .map(|(tag, _)| tag.to_string())
+            .collect();
+        tags.pop();
+        let message = check_classified(&tags).unwrap_err().to_string();
+        assert!(message.contains("source.rs"), "{message}");
     }
 }

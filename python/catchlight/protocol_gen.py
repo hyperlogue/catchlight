@@ -2370,22 +2370,6 @@ COMMAND_KINDS: dict[str, CommandKind] = {
 # and a `family` admits any number of `<name>:<suffix>` attachments.
 # `payload` says the reply carries bytes back.
 COMMAND_BYTES: dict[str, CommandBytes] = {
-    "review_image_add": CommandBytes(
-        (
-            Attachment(AttachmentKind.FIXED, "image"),
-        ),
-        False,
-    ),
-    "review_image_get": CommandBytes(
-        (),
-        True,
-    ),
-    "texture_add": CommandBytes(
-        (
-            Attachment(AttachmentKind.FIXED, "texture"),
-        ),
-        False,
-    ),
     "session_create": CommandBytes(
         (
             Attachment(AttachmentKind.OPTIONAL, "model"),
@@ -2395,10 +2379,13 @@ COMMAND_BYTES: dict[str, CommandBytes] = {
         ),
         False,
     ),
-    "structure_json_import": CommandBytes(
+    "model_export": CommandBytes(
+        (),
+        True,
+    ),
+    "texture_add": CommandBytes(
         (
-            Attachment(AttachmentKind.FIXED, "structure"),
-            Attachment(AttachmentKind.FAMILY, "texture"),
+            Attachment(AttachmentKind.FIXED, "texture"),
         ),
         False,
     ),
@@ -2406,9 +2393,12 @@ COMMAND_BYTES: dict[str, CommandBytes] = {
         (),
         True,
     ),
-    "model_export": CommandBytes(
-        (),
-        True,
+    "structure_json_import": CommandBytes(
+        (
+            Attachment(AttachmentKind.FIXED, "structure"),
+            Attachment(AttachmentKind.FAMILY, "texture"),
+        ),
+        False,
     ),
     "extension_set": CommandBytes(
         (
@@ -2417,6 +2407,16 @@ COMMAND_BYTES: dict[str, CommandBytes] = {
         False,
     ),
     "extension_get": CommandBytes(
+        (),
+        True,
+    ),
+    "review_image_add": CommandBytes(
+        (
+            Attachment(AttachmentKind.FIXED, "image"),
+        ),
+        False,
+    ),
+    "review_image_get": CommandBytes(
         (),
         True,
     ),

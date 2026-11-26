@@ -2482,22 +2482,6 @@ export const COMMAND_BYTES: Record<
     payload: boolean;
   }
 > = {
-  review_image_add: {
-    attachments: [
-      { kind: "fixed", name: "image" },
-    ],
-    payload: false,
-  },
-  review_image_get: {
-    attachments: [],
-    payload: true,
-  },
-  texture_add: {
-    attachments: [
-      { kind: "fixed", name: "texture" },
-    ],
-    payload: false,
-  },
   session_create: {
     attachments: [
       { kind: "optional", name: "model" },
@@ -2507,10 +2491,13 @@ export const COMMAND_BYTES: Record<
     ],
     payload: false,
   },
-  structure_json_import: {
+  model_export: {
+    attachments: [],
+    payload: true,
+  },
+  texture_add: {
     attachments: [
-      { kind: "fixed", name: "structure" },
-      { kind: "family", name: "texture" },
+      { kind: "fixed", name: "texture" },
     ],
     payload: false,
   },
@@ -2518,9 +2505,12 @@ export const COMMAND_BYTES: Record<
     attachments: [],
     payload: true,
   },
-  model_export: {
-    attachments: [],
-    payload: true,
+  structure_json_import: {
+    attachments: [
+      { kind: "fixed", name: "structure" },
+      { kind: "family", name: "texture" },
+    ],
+    payload: false,
   },
   extension_set: {
     attachments: [
@@ -2529,6 +2519,16 @@ export const COMMAND_BYTES: Record<
     payload: false,
   },
   extension_get: {
+    attachments: [],
+    payload: true,
+  },
+  review_image_add: {
+    attachments: [
+      { kind: "fixed", name: "image" },
+    ],
+    payload: false,
+  },
+  review_image_get: {
     attachments: [],
     payload: true,
   },
