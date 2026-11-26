@@ -7,9 +7,9 @@ use catchlight_core::formats::clm::{self, ClmExtension, ClmPayload};
 use catchlight_core::id::ExtensionKey;
 use catchlight_core::{Model, ModelParam, Name, ParamId};
 use catchlight_extension_humanoid::authoring::{
-    map, nearest, standard_control, unmap, AuthoringError, Mapped,
+    map, standard_control, unmap, AuthoringError, Mapped,
 };
-use catchlight_extension_humanoid::{ControlMapping, Humanoid, CONTROLS};
+use catchlight_extension_humanoid::{ControlMapping, Humanoid};
 
 fn pid(s: &str) -> ParamId {
     ParamId::new(s).unwrap()
@@ -117,7 +117,10 @@ fn a_nonstandard_name_is_refused_with_the_nearest_unless_allowed() {
 
 #[test]
 fn a_near_miss_suggests_the_standard_name() {
-    let near = |n| nearest(n, CONTROLS.iter().map(|c| c.name));
+    let near = |n| match standard_control(n, false) {
+        Err(AuthoringError::NonstandardControl { nearest, .. }) => nearest,
+        other => panic!("{n} is refused: {other:?}"),
+    };
     assert_eq!(near("mouth_opn"), Some("mouth_open"));
     assert_eq!(near("head_yaww"), Some("head_yaw"));
     assert_eq!(near("tail_wag_speed"), None);

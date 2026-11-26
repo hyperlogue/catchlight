@@ -61,7 +61,7 @@ pub fn standard_control(
 }
 
 /// The candidate within a few edits of `name`, for a "did you mean".
-pub fn nearest(name: &str, candidates: impl Iterator<Item = &'static str>) -> Option<&'static str> {
+fn nearest(name: &str, candidates: impl Iterator<Item = &'static str>) -> Option<&'static str> {
     candidates
         .map(|c| (edit_distance(name, c), c))
         .filter(|(d, _)| *d <= 3)
