@@ -21,18 +21,19 @@ bevy = { version = "0.19", default-features = false, features = [
   "bevy_asset",
   "bevy_core_pipeline",
   "bevy_render",
+] }
+bytemuck = { workspace = true, features = ["derive"] }
+
+# The bevy_puppets example opens a window and uses bevy_log's diagnostics.
+# Listing the features here gives the example what it needs without growing
+# the library's runtime deps.
+[dev-dependencies]
+bevy = { version = "0.19", default-features = false, features = [
+  "bevy_log",
   "bevy_window",
   "bevy_winit",
   "x11",
 ] }
-bytemuck = { workspace = true, features = ["derive"] }
-
-# Example-only: the bevy_puppets stress test uses FrameTimeDiagnosticsPlugin /
-# LogDiagnosticsPlugin and bevy_log's info!() macro. Listing bevy here with
-# the extra features unifies cargo features so the example has what it needs
-# without growing the library's runtime deps.
-[dev-dependencies]
-bevy = { version = "0.19", default-features = false, features = ["bevy_log"] }
 catchlight-extension-humanoid.workspace = true
 wgpu-profiler.workspace = true
 
