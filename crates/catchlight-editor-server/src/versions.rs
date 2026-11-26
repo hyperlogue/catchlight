@@ -644,9 +644,11 @@ mod tests {
         fn on(editor: Editor, command: Command) -> Self {
             let events = Arc::new(Mutex::new(Vec::new()));
             let sink = events.clone();
-            editor.subscribe(Box::new(move |event| {
-                sink.lock().unwrap().push(event.clone());
-            }));
+            editor
+                .subscribe(Box::new(move |event| {
+                    sink.lock().unwrap().push(event.clone());
+                }))
+                .detach();
             let mut f = Self {
                 editor,
                 session: SessionId(0),

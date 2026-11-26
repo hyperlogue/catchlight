@@ -864,7 +864,7 @@ fn serve_websocket(
     });
 
     let events = tx.clone();
-    let observer = state.editor.subscribe(Box::new(move |event| {
+    let subscription = state.editor.subscribe(Box::new(move |event| {
         if let Ok(json) = serde_json::to_string(&Reply::Event(event.clone())) {
             let _ = events.send(Outbound::Text(json));
         }
@@ -931,7 +931,7 @@ fn serve_websocket(
         }
     }
 
-    state.editor.unsubscribe(observer);
+    drop(subscription);
     let _ = tx.send(Outbound::Close);
     drop(tx);
     let _ = pump.join();

@@ -182,7 +182,7 @@ fn noops_and_failures_preserve_revision_history_notifications_and_model() {
     rename(&editor, session, "A");
     let events = Arc::new(Mutex::new(Vec::new()));
     let seen = events.clone();
-    editor.subscribe(Box::new(move |event| lock(&seen).push(event.clone())));
+    let _subscription = editor.subscribe(Box::new(move |event| lock(&seen).push(event.clone())));
     let before = history(&editor, session);
     let identity = editor.with_model(session, Model::identity).unwrap();
     assert_eq!(rename(&editor, session, "A").rev, Some(1));
@@ -242,7 +242,7 @@ fn changed_publication_is_stamped_before_reentrant_observer_edits() {
     let editor = Arc::new(Editor::new());
     let session = new_session(&editor);
     let weak = Arc::downgrade(&editor);
-    editor.subscribe(Box::new(move |event| {
+    let _subscription = editor.subscribe(Box::new(move |event| {
         if matches!(event, Event::ModelChanged { rev: 1, .. }) {
             let editor = weak.upgrade().unwrap();
             rename(&editor, session, "observer edit");

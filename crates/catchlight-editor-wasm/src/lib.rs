@@ -110,11 +110,13 @@ impl CatchlightEditor {
         let sink = events.clone();
         // The observer holds only the queue; the subscription lives as long as the
         // editor.
-        editor.subscribe(Box::new(move |event| {
-            if let Ok(json) = serde_json::to_string(event) {
-                lock(&sink).push(json);
-            }
-        }));
+        editor
+            .subscribe(Box::new(move |event| {
+                if let Ok(json) = serde_json::to_string(event) {
+                    lock(&sink).push(json);
+                }
+            }))
+            .detach();
         Self {
             editor,
             written,

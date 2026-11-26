@@ -143,7 +143,7 @@ fn validation_is_inert_and_changed_batch_publishes_once() {
     let before = snapshot(&editor, session);
     let events = Arc::new(AtomicUsize::new(0));
     let observed = events.clone();
-    editor.subscribe(Box::new(move |_| {
+    let _subscription = editor.subscribe(Box::new(move |_| {
         observed.fetch_add(1, Ordering::SeqCst);
     }));
     let edits = vec![

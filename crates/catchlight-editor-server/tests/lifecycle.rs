@@ -185,7 +185,7 @@ fn empty_and_clm_creation_publish_finished_clean_roots_once() {
     let editor = Editor::new();
     let events = Arc::new(Mutex::new(Vec::new()));
     let received = events.clone();
-    editor.subscribe(Box::new(move |event| {
+    let _subscription = editor.subscribe(Box::new(move |event| {
         received.lock().unwrap().push(event.clone());
     }));
     let empty = create(&editor, None, None, Attachments::none());
@@ -248,7 +248,7 @@ fn all_source_failures_leave_no_visible_session_or_event() {
     let editor = Editor::new();
     let events = Arc::new(Mutex::new(Vec::new()));
     let received = events.clone();
-    editor.subscribe(Box::new(move |event| {
+    let _subscription = editor.subscribe(Box::new(move |event| {
         received.lock().unwrap().push(event.clone());
     }));
     let mut extra = Attachments::none();

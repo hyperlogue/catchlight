@@ -36,7 +36,7 @@ pub use storage::{NoStorage, Storage, join_key, key_stem, parent_key};
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
 use catchlight_core::components::BlendMode as CoreBlendMode;
 use catchlight_core::extension::{IdRef, Payload as ExtensionPayload, RawExtension};
@@ -518,6 +518,30 @@ pub type Observer = Box<dyn Fn(&Event) + Send + Sync>;
 
 type SharedObserver = Arc<dyn Fn(&Event) + Send + Sync>;
 
+type Observers = Mutex<Vec<(u64, SharedObserver)>>;
+
+/// Its observer hears events until this is dropped.
+#[must_use = "dropping a subscription unsubscribes its observer"]
+pub struct Subscription {
+    observers: Weak<Observers>,
+    id: u64,
+}
+
+impl Subscription {
+    /// Keeps the observer subscribed for as long as the editor lives.
+    pub fn detach(self) {
+        std::mem::forget(self);
+    }
+}
+
+impl Drop for Subscription {
+    fn drop(&mut self) {
+        if let Some(observers) = self.observers.upgrade() {
+            lock(&observers).retain(|(id, _)| *id != self.id);
+        }
+    }
+}
+
 /// Their names are checked against [`COMMAND_BYTES`] and their total against
 /// [`LoadLimits::encoded_bytes`] before any command runs.
 #[derive(Debug, Default)]
@@ -577,7 +601,7 @@ pub struct Payload {
 pub struct Editor {
     sessions: Mutex<HashMap<SessionId, Arc<Mutex<Session>>>>,
     next_id: AtomicU64,
-    observers: Mutex<Vec<(u64, SharedObserver)>>,
+    observers: Arc<Observers>,
     next_observer: AtomicU64,
     storage: Arc<dyn Storage>,
     kept_store: Arc<dyn KeptStore>,
@@ -638,7 +662,7 @@ impl Editor {
         Self {
             sessions: Mutex::new(HashMap::new()),
             next_id: AtomicU64::new(1),
-            observers: Mutex::new(Vec::new()),
+            observers: Arc::default(),
             next_observer: AtomicU64::new(1),
             storage,
             kept_store: Arc::new(NoKeptStore),
@@ -693,14 +717,13 @@ impl Editor {
     }
 
     /// The callback runs on the command's thread with no editor lock held.
-    pub fn subscribe(&self, observer: Observer) -> u64 {
-        let handle = self.next_observer.fetch_add(1, Ordering::Relaxed);
-        lock(&self.observers).push((handle, Arc::from(observer)));
-        handle
-    }
-
-    pub fn unsubscribe(&self, handle: u64) {
-        lock(&self.observers).retain(|(h, _)| *h != handle);
+    pub fn subscribe(&self, observer: Observer) -> Subscription {
+        let id = self.next_observer.fetch_add(1, Ordering::Relaxed);
+        lock(&self.observers).push((id, Arc::from(observer)));
+        Subscription {
+            observers: Arc::downgrade(&self.observers),
+            id,
+        }
     }
 
     /// The list is copied out before the first call so an observer may
@@ -2785,12 +2808,12 @@ mod tests {
     /// The observer re-enters the editor; an emission holding a lock would
     /// deadlock here.
     #[test]
-    fn an_observer_hears_every_change_until_it_unsubscribes() {
+    fn an_observer_hears_every_change_until_its_subscription_drops() {
         let ed = Arc::new(Editor::new());
         let seen: Arc<Mutex<Vec<Event>>> = Arc::new(Mutex::new(Vec::new()));
         let sink = seen.clone();
         let weak = Arc::downgrade(&ed);
-        let handle = ed.subscribe(Box::new(move |event| {
+        let subscription = ed.subscribe(Box::new(move |event| {
             if let (Event::ModelChanged { session, .. }, Some(ed)) = (event, weak.upgrade()) {
                 ed.with_model(*session, Model::node_count).unwrap();
             }
@@ -2833,7 +2856,7 @@ mod tests {
         assert!(matches!(lock(&seen).as_slice(), [Event::SessionsChanged]));
         lock(&seen).clear();
 
-        ed.unsubscribe(handle);
+        drop(subscription);
         let s = session_of(body(ed.handle(req(
             4,
             Command::SessionNew {

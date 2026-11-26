@@ -1541,9 +1541,11 @@ mod tests {
             };
             let events = Arc::new(Mutex::new(Vec::new()));
             let sink = events.clone();
-            editor.subscribe(Box::new(move |event| {
-                sink.lock().unwrap().push(event.clone());
-            }));
+            editor
+                .subscribe(Box::new(move |event| {
+                    sink.lock().unwrap().push(event.clone());
+                }))
+                .detach();
             Self {
                 editor,
                 session,
@@ -2707,9 +2709,11 @@ mod tests {
         fn on(editor: Editor, session: SessionId) -> Self {
             let events = Arc::new(Mutex::new(Vec::new()));
             let sink = events.clone();
-            editor.subscribe(Box::new(move |event| {
-                sink.lock().unwrap().push(event.clone());
-            }));
+            editor
+                .subscribe(Box::new(move |event| {
+                    sink.lock().unwrap().push(event.clone());
+                }))
+                .detach();
             Self {
                 editor,
                 session,
