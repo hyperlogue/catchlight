@@ -1937,8 +1937,8 @@ pub use catchlight_editor_protocol::default_socket_path;
 pub use transport::serve_unix;
 #[cfg(all(unix, test))]
 use transport::{
-    bind_unix_listener, serve_connection, socket_lock_path, ConnectionLimiter, MAX_REQUEST_BYTES,
-    MAX_SOCKET_CONNECTIONS,
+    bind_unix_listener, ensure_private_dir, serve_connection, socket_lock_path, ConnectionLimiter,
+    MAX_REQUEST_BYTES, MAX_SOCKET_CONNECTIONS,
 };
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -2557,6 +2557,34 @@ mod tests {
         assert_eq!(err.kind(), std::io::ErrorKind::WouldBlock);
         drop(held);
         std::fs::remove_file(lock).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_socket_directory_others_may_write_to_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = socket_test_path("private").with_extension("d");
+        std::fs::create_dir(&dir).unwrap();
+        let mode =
+            |mode| std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(mode)).unwrap();
+        let current = || std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+
+        for open in [0o777, 0o770, 0o702] {
+            mode(open);
+            let err = ensure_private_dir(&dir).unwrap_err();
+            assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied, "{open:o}");
+            assert_eq!(current(), open, "a refused directory is left as it was");
+        }
+        mode(0o755);
+        ensure_private_dir(&dir).unwrap();
+        assert_eq!(current(), 0o700);
+        std::fs::remove_dir(&dir).unwrap();
+
+        // Root owns `/`; no test runs as root.
+        if rustix::process::getuid().as_raw() != 0 {
+            let err = ensure_private_dir(Path::new("/")).unwrap_err();
+            assert!(err.to_string().contains("another user"), "{err}");
+        }
     }
 
     #[cfg(unix)]

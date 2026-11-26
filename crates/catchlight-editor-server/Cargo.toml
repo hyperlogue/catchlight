@@ -39,5 +39,9 @@ percent-encoding = "2.3"
 # The binary removes its `--connection-file` on Ctrl-C, SIGTERM and SIGHUP.
 ctrlc = { workspace = true, features = ["termination"] }
 
+[target.'cfg(unix)'.dependencies]
+# The default socket directory must belong to this user.
+rustix = { version = "1", features = ["process"] }
+
 [lints]
 workspace = true

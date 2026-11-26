@@ -1555,6 +1555,7 @@ dependencies = [
  "image",
  "percent-encoding",
  "pollster",
+ "rustix 1.1.6",
  "serde",
  "serde_json",
  "sha2",

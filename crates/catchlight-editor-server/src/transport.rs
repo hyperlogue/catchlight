@@ -5,7 +5,7 @@
 //! shares this process's filesystem, so bytes never ride in the line.
 
 use std::io::{BufRead, BufReader, Read, Write};
-use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
+use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use catchlight_core::LoadLimits;
-use catchlight_editor_protocol::{ErrorCode, Reply, Request, RequestId};
+use catchlight_editor_protocol::{default_socket_path, ErrorCode, Reply, Request, RequestId};
 use serde_json::Value;
 
 use super::{carries_bytes, Attachments, Editor, Payload};
@@ -74,8 +74,16 @@ impl Drop for ConnectionPermit {
 }
 
 pub(super) fn bind_unix_listener(path: &Path) -> std::io::Result<UnixListener> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(parent)?;
+        // The default may fall back to a shared temp dir, where another user
+        // could have made the directory first and swap the socket inside it.
+        if path == default_socket_path() {
+            ensure_private_dir(parent)?;
+        }
     }
 
     let _startup_lock = SocketStartupLock::acquire(path)?;
@@ -115,6 +123,33 @@ pub(super) fn bind_unix_listener(path: &Path) -> std::io::Result<UnixListener> {
 
     std::fs::remove_file(path)?;
     UnixListener::bind(path)
+}
+
+/// Refuses a directory another user owns or may write to. One this user
+/// owns that others may only read is narrowed to `0700`: nobody else can have
+/// put anything in it.
+pub(super) fn ensure_private_dir(dir: &Path) -> std::io::Result<()> {
+    let metadata = std::fs::symlink_metadata(dir)?;
+    let refuse = |why: &str| {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("refusing the socket directory {}: {why}", dir.display()),
+        ))
+    };
+    if !metadata.is_dir() {
+        return refuse("it is not a directory");
+    }
+    if metadata.uid() != rustix::process::getuid().as_raw() {
+        return refuse("another user owns it");
+    }
+    let mode = metadata.mode();
+    if mode & 0o022 != 0 {
+        return refuse("other users may write to it");
+    }
+    if mode & 0o077 != 0 {
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
 }
 
 /// Held while a server checks for and replaces a stale socket. The file is
