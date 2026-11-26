@@ -1,11 +1,17 @@
 //! Kitty support is confirmed by its graphics query, never inferred from TERM.
+//! The query is followed by a primary device attributes request (DA1), which
+//! every terminal answers after any graphics reply, so the read ends at the
+//! DA1 reply instead of waiting out a timeout and leaving a late reply behind.
 use base64::Engine;
 use std::io::{IsTerminal, Write};
 
 #[cfg(unix)]
-const QUERY: &[u8] = b"\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\";
+const QUERY: &[u8] = b"\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b[c";
 #[cfg(any(unix, test))]
 const OK: &[u8] = b"\x1b_Gi=31;OK\x1b\\";
+/// Only for a terminal that never answers DA1.
+#[cfg(unix)]
+const DEADLINE: std::time::Duration = std::time::Duration::from_secs(1);
 
 pub fn supported() -> bool {
     if !std::io::stdout().is_terminal() {
@@ -39,13 +45,13 @@ fn query() -> std::io::Result<bool> {
     let result = (|| {
         std::io::stdout().write_all(QUERY)?;
         std::io::stdout().flush()?;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(200);
+        let deadline = std::time::Instant::now() + DEADLINE;
         let mut response = Vec::new();
         while std::time::Instant::now() < deadline && response.len() < 4096 {
             let left = deadline.saturating_duration_since(std::time::Instant::now());
             let timeout = Timespec {
                 tv_sec: 0,
-                tv_nsec: left.as_nanos().min(200_000_000) as _,
+                tv_nsec: left.as_nanos().min(999_999_999) as _,
             };
             let mut fd = [PollFd::new(&tty, PollFlags::IN)];
             if poll(&mut fd, Some(&timeout))? == 0 {
@@ -57,8 +63,8 @@ fn query() -> std::io::Result<bool> {
                 break;
             }
             response.extend_from_slice(&bytes[..n]);
-            if acknowledged(&response) {
-                return Ok(true);
+            if let Some(supported) = answered(&response) {
+                return Ok(supported);
             }
         }
         Ok(false)
@@ -67,9 +73,21 @@ fn query() -> std::io::Result<bool> {
     let restore = tcsetattr(&tty, OptionalActions::Now, &original).map_err(std::io::Error::from);
     result.and_then(|value| restore.map(|()| value))
 }
+/// Whether the graphics query succeeded, once the DA1 reply
+/// (`ESC [ ? <digits and ;> c`) has arrived; `None` until then.
 #[cfg(any(unix, test))]
-fn acknowledged(bytes: &[u8]) -> bool {
-    bytes.windows(OK.len()).any(|window| window == OK)
+fn answered(bytes: &[u8]) -> Option<bool> {
+    let da1 = (0..bytes.len()).find(|&start| {
+        let Some(rest) = bytes[start..].strip_prefix(b"\x1b[?") else {
+            return false;
+        };
+        let params = rest
+            .iter()
+            .take_while(|b| b.is_ascii_digit() || **b == b';')
+            .count();
+        rest.get(params) == Some(&b'c')
+    })?;
+    Some(bytes[..da1].windows(OK.len()).any(|window| window == OK))
 }
 
 pub fn present(png: &[u8], mut out: impl Write) -> std::io::Result<()> {
@@ -92,16 +110,29 @@ pub fn present(png: &[u8], mut out: impl Write) -> std::io::Result<()> {
 mod tests {
     use super::*;
     #[test]
-    fn query_needs_an_explicit_matching_success_response() {
-        assert!(acknowledged(b"\x1b_Gi=31;OK\x1b\\"));
+    fn query_needs_an_explicit_matching_success_response_before_da1() {
+        assert_eq!(answered(b"\x1b_Gi=31;OK\x1b\\\x1b[?62;22;4c"), Some(true));
+        assert_eq!(answered(b"\x1b_Gi=31;OK\x1b\\\x1b[?6c"), Some(true));
         for bytes in [
-            &b"\x1b_Gi=32;OK\x1b\\"[..],
-            b"\x1b_Gi=31;ERROR\x1b\\",
+            &b"\x1b_Gi=32;OK\x1b\\\x1b[?1;2c"[..],
+            b"\x1b_Gi=31;ERROR\x1b\\\x1b[?1;2c",
             b"\x1b[?1;2c",
-            b"OK",
-            b"\x1b_Gi=31;OK",
+            b"OK\x1b[?1;2c",
+            b"\x1b_Gi=31;OK\x1b[?1;2c",
+            b"\x1b[?1;2c\x1b_Gi=31;OK\x1b\\",
         ] {
-            assert!(!acknowledged(bytes));
+            assert_eq!(answered(bytes), Some(false));
+        }
+    }
+    #[test]
+    fn query_waits_for_a_complete_da1_reply() {
+        for bytes in [
+            &b""[..],
+            b"\x1b_Gi=31;OK\x1b\\",
+            b"\x1b_Gi=31;OK\x1b\\\x1b[?62;22",
+            b"\x1b_Gi=31;OK\x1b\\\x1b[62c",
+        ] {
+            assert_eq!(answered(bytes), None);
         }
     }
     #[test]
