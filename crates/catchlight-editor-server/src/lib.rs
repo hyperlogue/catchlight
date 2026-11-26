@@ -2140,7 +2140,7 @@ fn automesh(model: &Model, node: &NodeId, mode: AutoMesh) -> Result<ClmMesh, Edi
 
     let mesh = part.mesh();
     let uv_map = UvMap::fit(&mesh.verts, &mesh.uvs)
-        .unwrap_or_else(|| UvMap::from_texture_size(alpha.width as f32, alpha.height as f32));
+        .unwrap_or_else(|| UvMap::from_texture_size(alpha.width() as f32, alpha.height() as f32));
     let origin = mesh.origin;
 
     let working = match mode {

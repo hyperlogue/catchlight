@@ -51,16 +51,26 @@ pub enum MeshError {
     Limit(#[from] LoadLimitError),
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct WorkingMesh {
     /// Flat `[x, y, …]` rest positions in node-local space.
-    pub verts: Vec<f32>,
-    /// Vertex index pairs, unordered. Always non-crossing.
-    pub constraints: Vec<(u32, u32)>,
+    verts: Vec<f32>,
+    /// Vertex index pairs, unordered, each in range. Always non-crossing.
+    constraints: Vec<(u32, u32)>,
     pub origin: [f32; 2],
 }
 
 impl WorkingMesh {
+    /// Flat `[x, y, …]` rest positions in node-local space.
+    pub fn verts(&self) -> &[f32] {
+        &self.verts
+    }
+
+    /// Vertex index pairs, unordered; no two cross.
+    pub fn constraints(&self) -> &[(u32, u32)] {
+        &self.constraints
+    }
+
     /// Every current triangle edge is seeded as a constraint, so the CDT
     /// preserves the topology until the user unpins.
     pub fn from_mesh(mesh: &ClmMesh) -> Self {
@@ -355,13 +365,33 @@ impl UvMap {
     }
 }
 
+/// One alpha byte per texel, row-major from the top left.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AlphaMask {
-    pub width: u32,
-    pub height: u32,
-    pub alpha: Vec<u8>,
+    width: u32,
+    height: u32,
+    alpha: Vec<u8>,
 }
 
 impl AlphaMask {
+    /// `None` unless `alpha` holds exactly `width * height` bytes.
+    pub fn new(width: u32, height: u32, alpha: Vec<u8>) -> Option<Self> {
+        let texels = u64::from(width) * u64::from(height);
+        (alpha.len() as u64 == texels).then_some(Self {
+            width,
+            height,
+            alpha,
+        })
+    }
+
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+
     pub fn decode(bytes: &[u8]) -> Option<Self> {
         let img = image::load_from_memory(bytes).ok()?.to_rgba8();
         Some(Self::from_rgba(&img))
@@ -1726,6 +1756,13 @@ mod tests {
             }))
         );
         assert!(trace(2).unwrap().vertex_count() < MAX_GENERATED_VERTICES as usize);
+    }
+
+    #[test]
+    fn an_alpha_mask_holds_one_byte_per_texel() {
+        assert!(AlphaMask::new(4, 2, vec![0; 8]).is_some());
+        assert_eq!(AlphaMask::new(4, 2, vec![0; 7]), None);
+        assert_eq!(AlphaMask::new(u32::MAX, u32::MAX, Vec::new()), None);
     }
 
     #[test]

@@ -75,7 +75,7 @@ impl MeshDraftState {
         let uv = d.uv_map();
         let a = uv.local([0., 0.]);
         let b = uv.local([1., 1.]);
-        let verts: Vec<_> = mesh.verts.as_chunks::<2>().0.to_vec();
+        let verts: Vec<_> = mesh.verts().as_chunks::<2>().0.to_vec();
         Ok(MeshDraftView {
             mesh: MeshInfo {
                 uvs: verts.iter().map(|v| uv.uv(*v)).collect(),
@@ -83,7 +83,7 @@ impl MeshDraftState {
                 indices: mesh.triangulate()?,
                 origin: mesh.origin,
             },
-            constraints: mesh.constraints.clone(),
+            constraints: mesh.constraints().to_vec(),
             texture_rect: [a[0], a[1], b[0], b[1]],
             texture: self.texture.clone(),
             dirty: d.dirty(),
@@ -153,7 +153,7 @@ pub mod browser {
     #[wasm_bindgen]
     impl MeshEditDraft {
         pub fn vertices(&self) -> Vec<f32> {
-            self.state.draft.working().verts.clone()
+            self.state.draft.working().verts().to_vec()
         }
         pub fn triangles(&self) -> Result<Vec<u32>, JsValue> {
             self.state

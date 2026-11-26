@@ -1,6 +1,8 @@
 //! An isolated mesh-edit transaction. The source texture mapping is captured
 //! once, so moving topology cannot become a texture deform.
 
+use std::collections::VecDeque;
+
 use catchlight_core::formats::clm::ClmMesh;
 
 use crate::{AlphaMask, ContourKnobs, GridKnobs, MeshError, UvMap, WorkingMesh};
@@ -11,18 +13,17 @@ pub struct MeshDraft {
     uv: UvMap,
     alpha: AlphaMask,
     before: Option<WorkingMesh>,
-    undo: Vec<WorkingMesh>,
+    /// Oldest first, capped at [`UNDO_DEPTH`].
+    undo: VecDeque<WorkingMesh>,
     redo: Vec<WorkingMesh>,
 }
 
-fn same(a: &WorkingMesh, b: &WorkingMesh) -> bool {
-    a.verts == b.verts && a.constraints == b.constraints && a.origin == b.origin
-}
+const UNDO_DEPTH: usize = 100;
 
 impl MeshDraft {
     pub fn new(mesh: &ClmMesh, alpha: AlphaMask) -> Result<Self, MeshError> {
         let uv = if mesh.verts.is_empty() {
-            UvMap::from_texture_size(alpha.width as f32, alpha.height as f32)
+            UvMap::from_texture_size(alpha.width() as f32, alpha.height() as f32)
         } else {
             UvMap::fit(&mesh.verts, &mesh.uvs).ok_or(MeshError::CustomTextureMapping)?
         };
@@ -51,7 +52,7 @@ impl MeshDraft {
             uv,
             alpha,
             before: None,
-            undo: Vec::new(),
+            undo: VecDeque::new(),
             redo: Vec::new(),
         })
     }
@@ -63,7 +64,7 @@ impl MeshDraft {
         self.uv
     }
     pub fn dirty(&self) -> bool {
-        !same(&self.mesh, &self.original)
+        self.mesh != self.original
     }
     pub fn can_undo(&self) -> bool {
         !self.undo.is_empty()
@@ -82,10 +83,10 @@ impl MeshDraft {
         if let Some(before) = self.before.take() {
             if !commit {
                 self.mesh = before;
-            } else if !same(&before, &self.mesh) {
-                self.undo.push(before);
-                if self.undo.len() > 100 {
-                    self.undo.remove(0);
+            } else if before != self.mesh {
+                self.undo.push_back(before);
+                if self.undo.len() > UNDO_DEPTH {
+                    self.undo.pop_front();
                 }
                 self.redo.clear();
             }
@@ -190,14 +191,14 @@ impl MeshDraft {
 
     pub fn undo(&mut self) {
         self.end_gesture(false);
-        if let Some(previous) = self.undo.pop() {
+        if let Some(previous) = self.undo.pop_back() {
             self.redo.push(std::mem::replace(&mut self.mesh, previous));
         }
     }
     pub fn redo(&mut self) {
         self.end_gesture(false);
         if let Some(next) = self.redo.pop() {
-            self.undo.push(std::mem::replace(&mut self.mesh, next));
+            self.undo.push_back(std::mem::replace(&mut self.mesh, next));
         }
     }
 
@@ -219,11 +220,7 @@ mod tests {
                 indices: ClmIndices::U16(vec![0, 1, 4, 1, 2, 4, 2, 3, 4, 3, 0, 4]),
                 origin: [0., 0.],
             },
-            AlphaMask {
-                width: 40,
-                height: 40,
-                alpha: vec![255; 1600],
-            },
+            AlphaMask::new(40, 40, vec![255; 1600]).unwrap(),
         )
         .unwrap()
     }
@@ -277,14 +274,7 @@ mod tests {
         let mut mesh = d.finish().unwrap();
         mesh.uvs[8] += 0.1;
         assert!(matches!(
-            MeshDraft::new(
-                &mesh,
-                AlphaMask {
-                    width: 40,
-                    height: 40,
-                    alpha: vec![255; 1600]
-                }
-            ),
+            MeshDraft::new(&mesh, AlphaMask::new(40, 40, vec![255; 1600]).unwrap()),
             Err(MeshError::CustomTextureMapping)
         ));
     }
