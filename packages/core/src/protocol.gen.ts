@@ -1737,6 +1737,7 @@ export type Reply =
 export type ErrorCode =
   | "revision_conflict"
   | "no_session"
+  | "session_poisoned"
   | "no_node"
   | "no_param"
   | "no_texture"

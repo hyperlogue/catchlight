@@ -131,10 +131,7 @@ impl Editor {
             .collect();
         let mut found: Vec<SessionId> = handles
             .into_iter()
-            .filter(|(_, handle)| {
-                let s = lock(handle);
-                !s.closed && wanted(&s)
-            })
+            .filter(|(id, handle)| self.enter(*id, handle).is_ok_and(|s| wanted(&s)))
             .map(|(id, _)| id)
             .collect();
         found.sort_by_key(|id| id.0);

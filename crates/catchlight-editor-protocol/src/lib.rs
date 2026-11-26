@@ -2192,6 +2192,9 @@ pub enum ErrorCode {
     /// The session changed after a draft or recording gesture began.
     RevisionConflict,
     NoSession,
+    /// The session was closed because an edit failed partway through it;
+    /// its model may be half-changed. Open its file again.
+    SessionPoisoned,
     NoNode,
     NoParam,
     NoTexture,

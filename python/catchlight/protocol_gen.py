@@ -4203,6 +4203,9 @@ class ErrorCode(StrEnum):
     # The session changed after a draft or recording gesture began.
     REVISION_CONFLICT = "revision_conflict"
     NO_SESSION = "no_session"
+    # The session was closed because an edit failed partway through it;
+    # its model may be half-changed. Open its file again.
+    SESSION_POISONED = "session_poisoned"
     NO_NODE = "no_node"
     NO_PARAM = "no_param"
     NO_TEXTURE = "no_texture"

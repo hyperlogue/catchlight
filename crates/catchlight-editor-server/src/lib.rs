@@ -34,7 +34,7 @@ pub use query::{extension_value_info, replica_query, replica_reply};
 pub use storage::FileStorage;
 pub use storage::{NoStorage, Storage, join_key, key_stem, parent_key};
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
@@ -90,6 +90,8 @@ pub enum EditorError {
     RevisionConflict,
     #[error("no session {}", .0.0)]
     NoSession(SessionId),
+    #[error("session {} was closed: an edit failed partway through it; open its file again", .0.0)]
+    SessionPoisoned(SessionId),
     #[error("no node {0}")]
     NoNode(NodeId),
     #[error("no param {0}")]
@@ -202,6 +204,7 @@ impl EditorError {
             Self::Limit { .. } => ErrorCode::LimitExceeded,
             Self::RevisionConflict => ErrorCode::RevisionConflict,
             Self::NoSession(_) => ErrorCode::NoSession,
+            Self::SessionPoisoned(_) => ErrorCode::SessionPoisoned,
             Self::NoNode(_) => ErrorCode::NoNode,
             Self::NoParam(_) => ErrorCode::NoParam,
             Self::NoTexture(_) => ErrorCode::NoTexture,
@@ -600,6 +603,9 @@ pub struct Payload {
 
 pub struct Editor {
     sessions: Mutex<HashMap<SessionId, Arc<Mutex<Session>>>>,
+    /// Closed because a panic poisoned their lock, so a command naming one
+    /// is told why rather than that it never existed.
+    poisoned: Mutex<HashSet<SessionId>>,
     next_id: AtomicU64,
     observers: Arc<Observers>,
     next_observer: AtomicU64,
@@ -661,6 +667,7 @@ impl Editor {
     pub fn with_storage(storage: Arc<dyn Storage>) -> Self {
         Self {
             sessions: Mutex::new(HashMap::new()),
+            poisoned: Mutex::new(HashSet::new()),
             next_id: AtomicU64::new(1),
             observers: Arc::default(),
             next_observer: AtomicU64::new(1),
@@ -768,10 +775,39 @@ impl Editor {
     }
 
     fn session(&self, id: SessionId) -> Result<Arc<Mutex<Session>>, EditorError> {
-        lock(&self.sessions)
-            .get(&id)
-            .cloned()
-            .ok_or(EditorError::NoSession(id))
+        let handle = lock(&self.sessions).get(&id).cloned();
+        handle.ok_or_else(|| {
+            if lock(&self.poisoned).contains(&id) {
+                EditorError::SessionPoisoned(id)
+            } else {
+                EditorError::NoSession(id)
+            }
+        })
+    }
+
+    /// The open session, locked. A panic while it was locked may have left
+    /// its model half-edited, so a poisoned one is closed for good instead.
+    /// Never call this holding the registry lock.
+    fn enter<'a>(
+        &self,
+        id: SessionId,
+        handle: &'a Mutex<Session>,
+    ) -> Result<MutexGuard<'a, Session>, EditorError> {
+        match handle.lock() {
+            Ok(session) => {
+                session.ensure_open(id)?;
+                Ok(session)
+            }
+            Err(poisoned) => {
+                poisoned.into_inner().closed = true;
+                lock(&self.poisoned).insert(id);
+                if lock(&self.sessions).remove(&id).is_some() {
+                    tracing::error!("closed session {} after an edit panicked", id.0);
+                    self.notify_sessions();
+                }
+                Err(EditorError::SessionPoisoned(id))
+            }
+        }
     }
 
     /// Leaves the dirty flag alone: the bytes have landed nowhere yet.
@@ -839,8 +875,7 @@ impl Editor {
         f: impl FnOnce(&mut Session) -> Result<R, EditorError>,
     ) -> Result<Captured<R>, EditorError> {
         let handle = self.session(id)?;
-        let mut session = lock(&handle);
-        session.ensure_open(id)?;
+        let mut session = self.enter(id, &handle)?;
         let rev = session.rev;
         let result = f(&mut session);
         debug_assert_eq!(session.rev, rev, "read helper published a model edit");
@@ -866,8 +901,7 @@ impl Editor {
     ) -> Result<Captured<R>, EditorError> {
         let handle = self.session(id)?;
         let (result, moved, reviewed) = {
-            let mut session = lock(&handle);
-            session.ensure_open(id)?;
+            let mut session = self.enter(id, &handle)?;
             session.writable()?;
             let before = session.rev;
             let snapshot = session.model.clone();
@@ -922,8 +956,7 @@ impl Editor {
     ) -> Result<Captured<ResponseBody>, EditorError> {
         let handle = self.session(id)?;
         let (captured, changed, reviewed) = {
-            let mut session = lock(&handle);
-            session.ensure_open(id)?;
+            let mut session = self.enter(id, &handle)?;
             session.writable()?;
             session.check_revision(Some(if_rev))?;
             let next = session.next_revision()?;
@@ -961,8 +994,7 @@ impl Editor {
         f: impl FnOnce(&Model, &mut Puppet) -> R,
     ) -> Result<R, EditorError> {
         let session = self.session(id)?;
-        let mut s = lock(&session);
-        s.ensure_open(id)?;
+        let mut s = self.enter(id, &session)?;
         let (model, puppet) = s.puppet();
         Ok(f(model, puppet))
     }
@@ -989,10 +1021,9 @@ impl Editor {
                     .collect();
                 let mut sessions = Vec::with_capacity(handles.len());
                 for (id, handle) in handles {
-                    let s = lock(&handle);
-                    if s.closed {
+                    let Ok(s) = self.enter(id, &handle) else {
                         continue;
-                    }
+                    };
                     sessions.push(SessionInfo {
                         session: id,
                         title: s.title.clone(),
@@ -1012,16 +1043,17 @@ impl Editor {
                 // makes those handles fail after this publication wins the lock.
                 let handle = self.session(session)?;
                 {
-                    let mut state = lock(&handle);
-                    state.ensure_open(session)?;
+                    let mut state = self.enter(session, &handle)?;
                     state.closed = true;
                     lock(&self.sessions).remove(&session);
                 }
                 // A version open for viewing goes with the session it is of.
                 for view in self.views_of(session) {
                     // A view closed meanwhile is already gone.
-                    if let Ok(handle) = self.session(view) {
-                        lock(&handle).closed = true;
+                    if let Ok(handle) = self.session(view)
+                        && let Ok(mut state) = self.enter(view, &handle)
+                    {
+                        state.closed = true;
                         lock(&self.sessions).remove(&view);
                     }
                 }
@@ -1031,8 +1063,7 @@ impl Editor {
             Command::Save { session, path } => {
                 let handle = self.session(session)?;
                 let (key, rev, moved, review, versions) = {
-                    let mut s = lock(&handle);
-                    s.ensure_open(session)?;
+                    let mut s = self.enter(session, &handle)?;
                     s.writable()?;
                     let key = match path {
                         Some(p) => p,
@@ -1090,8 +1121,7 @@ impl Editor {
             Command::ExportManifest { session, path } => {
                 let handle = self.session(session)?;
                 let (manifest, textures, rev) = {
-                    let s = lock(&handle);
-                    s.ensure_open(session)?;
+                    let s = self.enter(session, &handle)?;
                     let manifest = s.model.to_manifest().to_json()?;
                     let textures = s
                         .model
@@ -1860,8 +1890,7 @@ impl Editor {
         // Cloned (shallow, same identity and generation) so the session lock
         // is not held across the GPU render.
         let (model, mut puppet, rev) = {
-            let mut s = lock(&handle);
-            s.ensure_open(session)?;
+            let mut s = self.enter(session, &handle)?;
             let puppet = s.take_preview_puppet()?;
             (s.model.clone(), puppet, s.rev)
         };
@@ -1884,12 +1913,12 @@ impl Editor {
             Ok(pr.render_png(session, &model, &mut puppet, &pose, width, height, framing)?)
         })();
 
+        if let Ok(mut s) = self.enter(session, &handle)
+            && s.rev == rev
+            && s.puppet.is_none()
         {
-            let mut s = lock(&handle);
-            if !s.closed && s.rev == rev && s.puppet.is_none() {
-                s.puppet = Some(puppet);
-                s.pending_preview_pose = None;
-            }
+            s.puppet = Some(puppet);
+            s.pending_preview_pose = None;
         }
         *payload = Some(Payload {
             content_type: "image/png",
@@ -2410,8 +2439,7 @@ fn clm_file_from_json(
 /// Re-parents every root (a complete model's root or a fragment's unparented
 /// nodes) under `parent`; the wire's `parent` wins over what a fragment names.
 fn fragment_under(mut file: clm::ClmFile, parent: &NodeId) -> Result<Model, EditorError> {
-    let carried: std::collections::HashSet<&NodeId> =
-        file.doc.nodes.iter().map(|n| &n.id).collect();
+    let carried: HashSet<&NodeId> = file.doc.nodes.iter().map(|n| &n.id).collect();
     let roots: Vec<usize> = file
         .doc
         .nodes
@@ -2941,6 +2969,43 @@ mod tests {
             ResponseBody::Session { session } => session,
             other => panic!("expected session, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_session_an_edit_panicked_in_is_closed_and_refused_by_its_own_code() {
+        let ed = Editor::new();
+        let s = session_of(body(ed.handle(req(
+            1,
+            Command::SessionNew {
+                name: None,
+                source: None,
+            },
+        ))));
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            ed.edit_session(s, |session| -> Result<(), EditorError> {
+                let root = session.model.root().unwrap().clone();
+                session
+                    .model
+                    .update_node(&root, |node| node.name = Name::truncated("half-applied"))
+                    .unwrap();
+                panic!("an edit failed partway");
+            })
+        }));
+        assert!(panicked.is_err());
+
+        for id in [2, 3] {
+            assert!(matches!(
+                ed.handle(req(id, Command::Status { session: s })),
+                Reply::Err {
+                    code: ErrorCode::SessionPoisoned,
+                    ..
+                }
+            ));
+        }
+        assert!(matches!(
+            body(ed.handle(req(4, Command::SessionList))),
+            ResponseBody::Sessions { sessions } if sessions.is_empty()
+        ));
     }
 
     #[cfg(not(target_arch = "wasm32"))]
