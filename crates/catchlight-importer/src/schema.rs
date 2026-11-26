@@ -10,6 +10,8 @@ where
     Ok(serde_json::from_value(v).ok())
 }
 
+/// A list of records whose order carries no meaning: a malformed record is
+/// dropped and the rest are kept.
 fn de_lenient_vec<'de, T, D>(d: D) -> Result<Vec<T>, D::Error>
 where
     T: for<'a> Deserialize<'a>,
@@ -25,13 +27,58 @@ where
     }
 }
 
+/// An array whose elements mean something by position (coordinates,
+/// indices, texture slots): dropping a bad element would shift every later
+/// one, so it fails the field and the import. A non-array reads as absent.
+fn de_positional<'de, T, D>(d: D) -> Result<Vec<T>, D::Error>
+where
+    T: for<'a> Deserialize<'a>,
+    D: Deserializer<'de>,
+{
+    Ok(de_positional_opt(d)?.unwrap_or_default())
+}
+
+fn de_positional_opt<'de, T, D>(d: D) -> Result<Option<Vec<T>>, D::Error>
+where
+    T: for<'a> Deserialize<'a>,
+    D: Deserializer<'de>,
+{
+    let serde_json::Value::Array(arr) = serde_json::Value::deserialize(d)? else {
+        return Ok(None);
+    };
+    arr.iter()
+        .enumerate()
+        .map(|(i, item)| {
+            T::deserialize(item)
+                .map_err(|e| serde::de::Error::custom(format!("element {i} of an array: {e}")))
+        })
+        .collect::<Result<_, _>>()
+        .map(Some)
+}
+
+/// A non-object reads as absent; an object's own positional fields still
+/// fail the import.
+fn de_lenient_object<'de, T, D>(d: D) -> Result<Option<T>, D::Error>
+where
+    T: for<'a> Deserialize<'a>,
+    D: Deserializer<'de>,
+{
+    let v = serde_json::Value::deserialize(d)?;
+    if !v.is_object() {
+        return Ok(None);
+    }
+    T::deserialize(&v)
+        .map(Some)
+        .map_err(serde::de::Error::custom)
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 pub(super) struct SchemaTransform {
-    #[serde(default, deserialize_with = "de_lenient_vec")]
+    #[serde(default, deserialize_with = "de_positional")]
     pub(super) trans: Vec<f32>,
-    #[serde(default, deserialize_with = "de_lenient_vec")]
+    #[serde(default, deserialize_with = "de_positional")]
     pub(super) rot: Vec<f32>,
-    #[serde(default, deserialize_with = "de_lenient_vec")]
+    #[serde(default, deserialize_with = "de_positional")]
     pub(super) scale: Vec<f32>,
 }
 
@@ -45,13 +92,13 @@ pub(super) struct SchemaMask {
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub(super) struct SchemaMesh {
-    #[serde(default, deserialize_with = "de_lenient_vec")]
+    #[serde(default, deserialize_with = "de_positional")]
     pub(super) verts: Vec<f32>,
-    #[serde(default, deserialize_with = "de_lenient_vec")]
+    #[serde(default, deserialize_with = "de_positional")]
     pub(super) uvs: Vec<f32>,
-    #[serde(default, deserialize_with = "de_lenient_vec")]
+    #[serde(default, deserialize_with = "de_positional")]
     pub(super) indices: Vec<u32>,
-    #[serde(default, deserialize_with = "de_lenient_vec")]
+    #[serde(default, deserialize_with = "de_positional")]
     pub(super) origin: Vec<f32>,
 }
 
@@ -65,23 +112,23 @@ pub(super) struct SchemaNode {
     pub(super) enabled: Option<bool>,
     #[serde(default, deserialize_with = "de_lenient")]
     pub(super) zsort: Option<f32>,
-    #[serde(default, deserialize_with = "de_lenient")]
+    #[serde(default, deserialize_with = "de_lenient_object")]
     pub(super) transform: Option<SchemaTransform>,
     #[serde(default, rename = "lockToRoot", deserialize_with = "de_lenient")]
     pub(super) lock_to_root: Option<bool>,
     #[serde(default, rename = "type", deserialize_with = "de_lenient")]
     pub(super) ty: Option<String>,
-    #[serde(default, deserialize_with = "de_lenient_vec")]
+    #[serde(default, deserialize_with = "de_positional")]
     pub(super) textures: Vec<i64>,
-    #[serde(default, deserialize_with = "de_lenient")]
+    #[serde(default, deserialize_with = "de_lenient_object")]
     pub(super) mesh: Option<SchemaMesh>,
     #[serde(default, deserialize_with = "de_lenient")]
     pub(super) opacity: Option<f32>,
     #[serde(default, deserialize_with = "de_lenient")]
     pub(super) blend_mode: Option<String>,
-    #[serde(default, deserialize_with = "de_lenient_vec")]
+    #[serde(default, deserialize_with = "de_positional")]
     pub(super) tint: Vec<f32>,
-    #[serde(default, rename = "screenTint", deserialize_with = "de_lenient_vec")]
+    #[serde(default, rename = "screenTint", deserialize_with = "de_positional")]
     pub(super) screen_tint: Vec<f32>,
     #[serde(default, deserialize_with = "de_lenient")]
     pub(super) masks: Option<Vec<SchemaMask>>,
@@ -144,13 +191,13 @@ pub(super) struct SchemaParam {
     pub(super) name: Option<String>,
     #[serde(default, deserialize_with = "de_lenient")]
     pub(super) is_vec2: Option<bool>,
-    #[serde(default, deserialize_with = "de_lenient_vec")]
+    #[serde(default, deserialize_with = "de_positional")]
     pub(super) min: Vec<f32>,
-    #[serde(default, deserialize_with = "de_lenient_vec")]
+    #[serde(default, deserialize_with = "de_positional")]
     pub(super) max: Vec<f32>,
-    #[serde(default, deserialize_with = "de_lenient_vec")]
+    #[serde(default, deserialize_with = "de_positional")]
     pub(super) defaults: Vec<f32>,
-    #[serde(default, deserialize_with = "de_lenient")]
+    #[serde(default, deserialize_with = "de_positional_opt")]
     pub(super) axis_points: Option<Vec<Vec<f32>>>,
     #[serde(default, deserialize_with = "de_lenient_vec")]
     pub(super) bindings: Vec<SchemaBinding>,

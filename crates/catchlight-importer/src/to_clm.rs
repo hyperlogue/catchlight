@@ -49,20 +49,32 @@ pub fn from_inx_model(model: &InxModel) -> Result<ClmFile, ImportError> {
     let mut flat: Vec<(SchemaNode, Option<u32>)> = Vec::new();
     let mut uuid_node: HashMap<u32, u32> = HashMap::new();
     match obj.get("nodes") {
-        Some(n) => flatten(n, None, &mut flat, &mut uuid_node),
+        Some(n) => flatten(n, None, &mut flat, &mut uuid_node)?,
         None => flat.push((SchemaNode::default(), None)),
     }
     let node_ids = node_ids(flat.len())?;
 
-    let schema_params: Vec<SchemaParam> = obj
+    let mut schema_params: Vec<SchemaParam> = Vec::new();
+    for p in obj
         .get("param")
         .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|p| serde_json::from_value::<SchemaParam>(p.clone()).ok())
-                .collect()
-        })
-        .unwrap_or_default();
+        .into_iter()
+        .flatten()
+    {
+        // Every field but the positional arrays reads leniently, so an object
+        // fails only on a malformed positional array.
+        if !p.is_object() {
+            schema_params.extend(serde_json::from_value(p.clone()).ok());
+            continue;
+        }
+        schema_params.push(serde_json::from_value(p.clone()).map_err(|e| {
+            ImportError::MalformedPayload(format!(
+                "param {:?} (uuid {}): {e}",
+                p.get("name").and_then(|n| n.as_str()).unwrap_or_default(),
+                p.get("uuid").unwrap_or(&serde_json::Value::Null),
+            ))
+        })?);
+    }
     let mut uuid_param: HashMap<u32, u32> = HashMap::new();
     for (i, p) in schema_params.iter().enumerate() {
         if let Some(uuid) = p.uuid {

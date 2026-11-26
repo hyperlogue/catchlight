@@ -393,6 +393,74 @@ fn a_mesh_with_an_odd_coordinate_count_keeps_the_pairs_it_has() {
     assert_eq!(part.mesh.indices, ClmIndices::U16(vec![0, 1]));
 }
 
+#[test]
+fn a_bad_element_in_a_positional_array_refuses_the_import() {
+    for (field, mesh) in [
+        (
+            "indices",
+            json!({"verts": [0.0, 0.0, 1.0, 0.0, 0.0, 1.0], "uvs": [0.0, 0.0, 1.0, 0.0, 0.0, 1.0],
+                   "indices": [0, -1, 2]}),
+        ),
+        (
+            "verts",
+            json!({"verts": [0.0, null, 1.0, 0.0], "uvs": [0.0, 0.0, 1.0, 0.0], "indices": [0, 1]}),
+        ),
+    ] {
+        let err = try_doc(json!({
+            "uuid": 7, "name": "skin", "type": "Part", "textures": [0], "mesh": mesh
+        }))
+        .expect_err(field);
+        assert!(
+            matches!(&err, ImportError::MalformedPayload(m) if m.contains("skin") && m.contains("element 1")),
+            "{field}: {err}"
+        );
+    }
+
+    let err = try_doc(json!({"name": "moved", "transform": {"trans": [1.0, "2", 3.0]}}))
+        .expect_err("a transform component");
+    assert!(matches!(err, ImportError::MalformedPayload(_)), "{err}");
+}
+
+#[test]
+fn a_param_with_a_bad_range_element_is_refused_rather_than_dropped() {
+    let err = import(
+        json!({
+            "nodes": {"uuid": 1, "name": "root", "type": "Node"},
+            "param": [{"uuid": 100, "name": "p", "is_vec2": true, "min": [null, 0.0]}]
+        }),
+        0,
+    )
+    .expect_err("a vec2 param's min x");
+    assert!(
+        matches!(&err, ImportError::MalformedPayload(m) if m.contains("param \"p\"")),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_deform_point_that_is_not_two_numbers_is_refused() {
+    let err = import(
+        json!({
+            "nodes": {
+                "uuid": 1, "name": "root", "type": "Node",
+                "children": [two_vertex_part(2, "part")]
+            },
+            "param": one_binding(json!({
+                "node": 2, "param_name": "deform", "values": [
+                    [[[1.0, 2.0], [3.0, 4.0]]],
+                    [[[5.0, "x"], [7.0, 8.0]]]
+                ]
+            }))
+        }),
+        1,
+    )
+    .expect_err("a non-numeric coordinate");
+    assert!(
+        matches!(&err, ImportError::MalformedPayload(m) if m.contains("cell [1][0] point 0")),
+        "{err}"
+    );
+}
+
 fn two_vertex_part(uuid: u32, name: &str) -> serde_json::Value {
     json!({
         "uuid": uuid, "name": name, "type": "Part", "textures": [0],

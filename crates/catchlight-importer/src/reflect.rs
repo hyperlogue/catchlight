@@ -31,11 +31,11 @@ pub(crate) fn flatten(
     root_parent: Option<u32>,
     flat: &mut Vec<(SchemaNode, Option<u32>)>,
     node_index: &mut HashMap<u32, u32>,
-) {
+) -> Result<(), ImportError> {
     let mut stack: Vec<(&serde_json::Value, Option<u32>)> = vec![(root, root_parent)];
     while let Some((value, parent)) = stack.pop() {
         let idx = flat.len() as u32;
-        let schema = parse_node_shallow(value);
+        let schema = parse_node_shallow(value)?;
         if let Some(uuid) = schema.uuid {
             node_index.entry(uuid).or_insert(idx);
         }
@@ -44,11 +44,14 @@ pub(crate) fn flatten(
             stack.extend(children.iter().rev().map(|child| (child, Some(idx))));
         }
     }
+    Ok(())
 }
 
-fn parse_node_shallow(value: &serde_json::Value) -> SchemaNode {
+/// Every field but the positional arrays reads leniently, so an object fails
+/// only on a malformed positional array.
+fn parse_node_shallow(value: &serde_json::Value) -> Result<SchemaNode, ImportError> {
     let serde_json::Value::Object(map) = value else {
-        return SchemaNode::default();
+        return Ok(SchemaNode::default());
     };
     let mut sanitized = serde_json::Map::with_capacity(map.len());
     for (k, v) in map {
@@ -56,7 +59,13 @@ fn parse_node_shallow(value: &serde_json::Value) -> SchemaNode {
             sanitized.insert(k.clone(), v.clone());
         }
     }
-    serde_json::from_value(serde_json::Value::Object(sanitized)).unwrap_or_default()
+    serde_json::from_value(serde_json::Value::Object(sanitized)).map_err(|e| {
+        ImportError::MalformedPayload(format!(
+            "node {:?} (uuid {}): {e}",
+            map.get("name").and_then(|n| n.as_str()).unwrap_or_default(),
+            map.get("uuid").unwrap_or(&serde_json::Value::Null),
+        ))
+    })
 }
 
 // Short arrays fill missing components individually, so `"scale": [2.0]`
@@ -370,12 +379,7 @@ fn matrix_columns<'v>(
     let Some(rows) = v.as_array() else {
         return Ok(None);
     };
-    let malformed = |detail: String| {
-        ImportError::MalformedPayload(format!(
-            "node {} ({:?}): {kind:?} binding values {detail}",
-            node.id, node.name
-        ))
-    };
+    let malformed = |detail| malformed_values(node, kind, detail);
     let mut columns: Columns<'v> = Vec::with_capacity(rows.len());
     for (x, col) in rows.iter().enumerate() {
         let Some(col) = col.as_array() else {
@@ -407,6 +411,13 @@ fn matrix_columns<'v>(
     Ok(Some((columns, height)))
 }
 
+fn malformed_values(node: NodeRef<'_>, kind: &str, detail: String) -> ImportError {
+    ImportError::MalformedPayload(format!(
+        "node {} ({:?}): {kind:?} binding values {detail}",
+        node.id, node.name
+    ))
+}
+
 fn matrix_f32(
     v: &serde_json::Value,
     node: NodeRef<'_>,
@@ -419,7 +430,14 @@ fn matrix_f32(
     let mut data = vec![0.0f32; width * height];
     for (x, col) in columns.iter().enumerate() {
         for (y, cell) in col.iter().enumerate() {
-            data[y * width + x] = cell.as_f64().unwrap_or(0.0) as f32;
+            let Some(value) = cell.as_f64() else {
+                return Err(malformed_values(
+                    node,
+                    kind,
+                    format!("cell [{x}][{y}] is not a number"),
+                ));
+            };
+            data[y * width + x] = value as f32;
         }
     }
     Ok(Dense {
@@ -440,17 +458,22 @@ fn matrix_vec2_flat(
     let mut data: Vec<Vec<f32>> = vec![Vec::new(); width * height];
     for (x, col) in columns.iter().enumerate() {
         for (y, cell) in col.iter().enumerate() {
-            let mut flat = Vec::new();
-            if let Some(points) = cell.as_array() {
-                for p in points {
-                    let coords = p.as_array();
-                    let px = coords.and_then(|a| a.first()).and_then(|n| n.as_f64());
-                    let py = coords.and_then(|a| a.get(1)).and_then(|n| n.as_f64());
-                    if let (Some(px), Some(py)) = (px, py) {
-                        flat.push(px as f32);
-                        flat.push(py as f32);
-                    }
-                }
+            let malformed = |detail: &str| {
+                malformed_values(node, "deform", format!("cell [{x}][{y}] {detail}"))
+            };
+            let Some(points) = cell.as_array() else {
+                return Err(malformed("is not an array of points"));
+            };
+            let mut flat = Vec::with_capacity(points.len() * 2);
+            for (i, p) in points.iter().enumerate() {
+                let coords = p.as_array();
+                let px = coords.and_then(|a| a.first()).and_then(|n| n.as_f64());
+                let py = coords.and_then(|a| a.get(1)).and_then(|n| n.as_f64());
+                let (Some(px), Some(py)) = (px, py) else {
+                    return Err(malformed(&format!("point {i} is not two numbers")));
+                };
+                flat.push(px as f32);
+                flat.push(py as f32);
             }
             data[y * width + x] = flat;
         }
