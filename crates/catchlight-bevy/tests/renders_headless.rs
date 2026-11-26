@@ -13,7 +13,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use bevy::asset::RenderAssetUsages;
-use bevy::camera::RenderTarget;
+use bevy::camera::visibility::RenderLayers;
+use bevy::camera::{CameraOutputMode, RenderTarget, Viewport};
 use bevy::image::Image;
 use bevy::prelude::*;
 use bevy::render::RenderPlugin;
@@ -152,6 +153,19 @@ fn drawn_pixels(pixels: &[u8]) -> usize {
         .iter()
         .filter(|p| p[3] != 0)
         .count()
+}
+
+/// The drawn pixels' columns within `columns`, as `(first, last)`.
+fn drawn_columns(pixels: &[u8], columns: std::ops::Range<u32>) -> Option<(u32, u32)> {
+    let mut span: Option<(u32, u32)> = None;
+    for (i, p) in pixels.as_chunks::<4>().0.iter().enumerate() {
+        let x = (i as u32) % SIZE;
+        if p[3] == 0 || !columns.contains(&x) {
+            continue;
+        }
+        span = Some(span.map_or((x, x), |(first, last)| (first.min(x), last.max(x))));
+    }
+    span
 }
 
 /// Drawn pixels left and right of the target's centre column.
@@ -479,6 +493,111 @@ fn the_puppet_actually_lands_on_the_camera_target() {
          view target, a render list whose slots name another cache)",
         SIZE * SIZE,
     );
+}
+
+#[test]
+fn two_viewport_cameras_each_draw_the_puppet_inside_their_own_rectangle() {
+    let mut app = render_app();
+    let target = offscreen_target(&mut app);
+    let halves = [0..SIZE / 2, SIZE / 2..SIZE];
+    for (order, half) in halves.iter().enumerate() {
+        app.world_mut().spawn((
+            Camera2d,
+            Camera {
+                order: order as isize,
+                viewport: Some(Viewport {
+                    physical_position: UVec2::new(half.start, 0),
+                    physical_size: UVec2::new(SIZE / 2, SIZE),
+                    ..default()
+                }),
+                clear_color: ClearColorConfig::Custom(Color::NONE),
+                // The second camera blends its output over the first's, so the
+                // target starts transparent too.
+                output_mode: CameraOutputMode::Write {
+                    blend_state: None,
+                    clear_color: ClearColorConfig::Custom(Color::NONE),
+                },
+                ..default()
+            },
+            RenderTarget::Image(target.clone().into()),
+            CatchlightCamera,
+        ));
+    }
+    let model = app
+        .world_mut()
+        .resource_mut::<Assets<CatchlightModel>>()
+        .add(CatchlightModel::new(fixture("welded_seam")));
+    app.world_mut().spawn((
+        CatchlightPuppet::new(model),
+        Transform::from_scale(Vec3::splat(0.2)),
+    ));
+
+    for _ in 0..4 {
+        app.update();
+    }
+    let pixels = readback(&app, &target);
+    for half in halves {
+        let (first, last) = drawn_columns(&pixels, half.clone())
+            .unwrap_or_else(|| panic!("nothing drawn in columns {half:?}"));
+        assert!(
+            first > half.start && last < half.end - 1,
+            "the puppet in columns {first}..={last} spills out of its viewport {half:?}",
+        );
+        let centre = (first + last) / 2;
+        let viewport_centre = (half.start + half.end) / 2;
+        assert!(
+            centre.abs_diff(viewport_centre) <= 8,
+            "the puppet is centred on column {centre}, its viewport on {viewport_centre}",
+        );
+    }
+}
+
+#[test]
+fn a_camera_draws_only_the_puppets_on_its_layers() {
+    let mut app = render_app();
+    let targets = [offscreen_target(&mut app), offscreen_target(&mut app)];
+    for (target, layers) in targets
+        .iter()
+        .zip([RenderLayers::default(), RenderLayers::layer(1)])
+    {
+        app.world_mut().spawn((
+            Camera2d,
+            Camera {
+                clear_color: ClearColorConfig::Custom(Color::NONE),
+                ..default()
+            },
+            RenderTarget::Image(target.clone().into()),
+            layers,
+            CatchlightCamera,
+        ));
+    }
+    let model = app
+        .world_mut()
+        .resource_mut::<Assets<CatchlightModel>>()
+        .add(CatchlightModel::new(fixture("welded_seam")));
+    app.world_mut().spawn((
+        CatchlightPuppet::new(model.clone()),
+        Transform::from_xyz(-60.0, 0.0, 0.0).with_scale(Vec3::splat(0.25)),
+    ));
+    app.world_mut().spawn((
+        CatchlightPuppet::new(model),
+        Transform::from_xyz(60.0, 0.0, 0.0).with_scale(Vec3::splat(0.25)),
+        RenderLayers::layer(1),
+    ));
+
+    for _ in 0..5 {
+        app.update();
+    }
+
+    let (left, right) = drawn_per_half(&readback(&app, &targets[0]));
+    assert!(left > 1000, "the default-layer puppet drew {left} pixels");
+    assert_eq!(
+        right, 0,
+        "the layer-1 puppet is not on the default camera's layer"
+    );
+    let (left, right) = drawn_per_half(&readback(&app, &targets[1]));
+    assert_eq!(left, 0, "the default-layer puppet is not on layer 1");
+    assert!(right > 1000, "the layer-1 puppet drew {right} pixels");
 }
 
 #[test]

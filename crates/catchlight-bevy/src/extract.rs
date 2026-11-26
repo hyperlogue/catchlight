@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use bevy::camera::visibility::RenderLayers;
 use bevy::prelude::*;
 use bevy::render::{Extract, sync_world::RenderEntity};
 use catchlight_core::{Model, Puppet};
@@ -18,11 +19,21 @@ pub struct ExtractedPuppet {
     /// World-space z; higher renders in front.
     pub(crate) z: f32,
     pub(crate) visible: bool,
+    /// A camera draws the puppet only when their layers intersect.
+    pub(crate) layers: RenderLayers,
 }
 
 impl bevy::render::sync_component::SyncComponent for CatchlightPuppet {
     type Target = ExtractedPuppet;
 }
+
+type MainWorldPuppet = (
+    &'static CatchlightPuppet,
+    &'static GlobalTransform,
+    &'static InheritedVisibility,
+    Option<&'static RenderLayers>,
+    &'static RenderEntity,
+);
 
 /// Refreshes render caches here because only extract may read the live
 /// puppet: under pipelined rendering the next tick overwrites its deforms.
@@ -32,21 +43,14 @@ pub(crate) fn extract_puppets(
     mut state: ResMut<CatchlightRenderState>,
     settings: Extract<Res<CatchlightSettings>>,
     models: Extract<Res<Assets<CatchlightModel>>>,
-    query: Extract<
-        Query<(
-            &CatchlightPuppet,
-            &GlobalTransform,
-            &InheritedVisibility,
-            &RenderEntity,
-        )>,
-    >,
+    query: Extract<Query<MainWorldPuppet>>,
 ) {
     let state = &mut *state;
     state.options = settings.prepare;
     let formats = state.formats();
     reprepare_replaced(state, &models);
 
-    for (puppet_component, transform, visibility, render_entity) in query.iter() {
+    for (puppet_component, transform, visibility, layers, render_entity) in query.iter() {
         let Some(puppet) = puppet_component.puppet() else {
             continue;
         };
@@ -95,6 +99,7 @@ pub(crate) fn extract_puppets(
         }
 
         let z = transform.translation().z;
+        let layers = layers.cloned().unwrap_or_default();
         match existing.get_mut(render_entity.id()) {
             Ok(mut extracted) => {
                 if !Arc::ptr_eq(&extracted.model, asset.shared()) {
@@ -103,6 +108,7 @@ pub(crate) fn extract_puppets(
                 extracted.model_id = model_id;
                 extracted.z = z;
                 extracted.visible = visible;
+                extracted.layers = layers;
             }
             Err(_) => {
                 commands.entity(render_entity.id()).insert(ExtractedPuppet {
@@ -110,6 +116,7 @@ pub(crate) fn extract_puppets(
                     model_id,
                     z,
                     visible,
+                    layers,
                 });
             }
         }

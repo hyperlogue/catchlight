@@ -1,6 +1,6 @@
+use bevy::camera::visibility::RenderLayers;
 use bevy::prelude::*;
 use bevy::render::{
-    camera::ExtractedCamera,
     renderer::{RenderContext, ViewQuery},
     view::{ExtractedView, ViewTarget},
 };
@@ -13,27 +13,20 @@ pub(crate) fn catchlight_2d_pass(
     extracted: Query<&ExtractedPuppet>,
     view: ViewQuery<(
         Entity,
-        &'static ExtractedCamera,
         &'static ExtractedView,
         &'static ViewTarget,
+        Option<&'static RenderLayers>,
         &'static ExtractedCatchlightCamera,
     )>,
     mut render_context: RenderContext,
 ) {
-    let (view_entity, camera, view, target, _marked) = view.into_inner();
+    let (view_entity, view, target, layers, _marked) = view.into_inner();
+    let layers = layers.unwrap_or_default();
 
     // 2D cameras leave clip_from_world None; bevy derives it the same way.
     let view_proj = view
         .clip_from_world
         .unwrap_or_else(|| view.clip_from_view * view.world_from_view.to_matrix().inverse());
-
-    // Per view, not per window: render-to-texture cameras have their own size.
-    let (w, h) = camera
-        .physical_target_size
-        .map_or(state.size, |s| (s.x.max(1), s.y.max(1)));
-    if w == 0 || h == 0 {
-        return;
-    }
 
     let view_format = target.main_texture_format();
 
@@ -41,7 +34,6 @@ pub(crate) fn catchlight_2d_pass(
         gpus,
         puppets,
         formats,
-        size,
         missing_format_warned,
         ..
     } = &mut *state;
@@ -57,12 +49,14 @@ pub(crate) fn catchlight_2d_pass(
         return;
     };
     let targets = res.targets.entry(view_entity).or_default();
-    *size = (w, h);
 
     let encoder = render_context.command_encoder();
     // bevy's default main-texture usages include COPY_SRC, which the
-    // dst-in-shader blend modes need for framebuffer snapshots.
-    let color_target = catchlight_wgpu::RenderTarget::copyable(target.main_texture_view());
+    // dst-in-shader blend modes need for framebuffer snapshots. The main
+    // texture is the camera target's size, and the viewport a rectangle of it.
+    let viewport = view.viewport;
+    let color_target = catchlight_wgpu::RenderTarget::copyable(target.main_texture_view())
+        .with_viewport(viewport.x, viewport.y, viewport.z, viewport.w);
 
     // Entity tie-break: `puppets` is a HashMap, so equal z would flicker.
     let mut order: Vec<(ModelKey, f32, Entity)> = puppets
@@ -72,7 +66,11 @@ pub(crate) fn catchlight_2d_pass(
                 return None;
             }
             let ex = extracted.get(key.entity).ok()?;
-            ex.visible.then_some((puppet.model, ex.z, key.entity))
+            (ex.visible && layers.intersects(&ex.layers)).then_some((
+                puppet.model,
+                ex.z,
+                key.entity,
+            ))
         })
         .collect();
     order.sort_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.2.cmp(&b.2)));

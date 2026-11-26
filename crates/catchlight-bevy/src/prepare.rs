@@ -19,7 +19,6 @@ pub struct CatchlightRenderState {
     pub(crate) gpus: HashMap<ModelKey, ModelGpu>,
     pub(crate) puppets: HashMap<PuppetKey, PuppetGpu>,
     pub(crate) formats: HashMap<wgpu::TextureFormat, FormatResources>,
-    pub(crate) size: (u32, u32),
     pub(crate) options: PrepareOptions,
     pub(crate) missing_format_warned: bool,
     pub(crate) failures: PrepareFailures,
