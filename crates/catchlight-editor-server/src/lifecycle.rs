@@ -1,6 +1,7 @@
 //! Finished-session publication and captured model transfer.
 
 use std::collections::HashSet;
+use std::sync::OnceLock;
 
 use catchlight_extension_animations::Animations;
 use catchlight_extension_expressions::Expressions;
@@ -203,12 +204,7 @@ impl Editor {
         if let Some(name) = &name {
             validate_title(name)?;
         }
-        // A session installs addons and checks its model, which merge and
-        // check the official extensions through the registry.
-        catchlight_core::extension::register::<Animations>()
-            .and_then(|()| catchlight_core::extension::register::<Humanoid>())
-            .and_then(|()| catchlight_core::extension::register::<Expressions>())
-            .map_err(|e| EditorError::BadRequest(e.to_string()))?;
+        register_official_extensions()?;
         let session = self.alloc_id();
         let title = name.unwrap_or_else(|| format!("untitled-{}", session.0));
         let mut opened = Session::new(session, model, title, file);
@@ -309,4 +305,20 @@ fn check_source_attachments(
         }
     }
     Ok(())
+}
+
+/// A session installs addons and checks its model, which merge and check the
+/// official extensions through the process-wide registry; registering them
+/// once serves every session.
+fn register_official_extensions() -> Result<(), EditorError> {
+    static REGISTERED: OnceLock<Result<(), String>> = OnceLock::new();
+    REGISTERED
+        .get_or_init(|| {
+            catchlight_core::extension::register::<Animations>()
+                .and_then(|()| catchlight_core::extension::register::<Humanoid>())
+                .and_then(|()| catchlight_core::extension::register::<Expressions>())
+                .map_err(|e| e.to_string())
+        })
+        .clone()
+        .map_err(EditorError::BadRequest)
 }
