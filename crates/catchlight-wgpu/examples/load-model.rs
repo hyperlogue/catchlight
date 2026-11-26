@@ -8,7 +8,7 @@ use catchlight_extension_animations::{
     AnimationPlayer, Animations, Clip, Keyframe, Lane, LaneTarget, LiveInputs, Rig,
 };
 use catchlight_wgpu::{
-    collect, create_orthographic_camera_at, create_surface_context, PrepareOptions, RenderCache,
+    create_orthographic_camera_at, create_surface_context, PrepareOptions, RenderCache, RenderList,
     SurfaceContext, WgpuRenderer,
 };
 use std::path::Path;
@@ -194,6 +194,7 @@ struct App {
     renderer: Option<WgpuRenderer>,
     surface: Option<SurfaceContext>,
     targets: catchlight_wgpu::FrameTargets,
+    render_list: RenderList,
     model: Model,
     puppet: Puppet,
     player: AnimationPlayer,
@@ -249,10 +250,14 @@ impl ApplicationHandler for App {
 
             let surface = instance.create_surface(window.clone()).unwrap();
             let size = window.inner_size();
-            let (device, queue, surface_ctx) =
+            let (device, queue, mut surface_ctx) =
                 create_surface_context(&instance, surface, size.width, size.height)
                     .await
                     .expect("surface context");
+            // Overlay, ColorBurn and LinearBurn read the frame through a copy
+            // of it; the primary backends' surfaces allow one.
+            surface_ctx.config.usage |= wgpu::TextureUsages::COPY_SRC;
+            surface_ctx.reconfigure(&device);
 
             let mut renderer = WgpuRenderer::new(device, queue, surface_ctx.render_format);
 
@@ -423,7 +428,7 @@ impl ApplicationHandler for App {
                     if let Err(e) = cache.refresh(renderer, &self.model, &self.puppet) {
                         eprintln!("Failed to refresh the render cache: {}", e);
                     }
-                    let render_list = collect(cache, &self.puppet);
+                    cache.collect_into(&self.puppet, &mut self.render_list);
 
                     let Some((frame, view)) = surface_ctx.acquire() else {
                         surface_ctx.reconfigure(&renderer.device);
@@ -440,10 +445,10 @@ impl ApplicationHandler for App {
                     let (w, h) = (surface_ctx.config.width, surface_ctx.config.height);
                     let (device, queue) = (renderer.device.clone(), renderer.queue.clone());
                     let mut done = renderer.frame().render(
-                        &[&render_list],
+                        &[&self.render_list],
                         catchlight_wgpu::RenderTarget {
                             view: &view,
-                            texture: None,
+                            texture: Some(&frame.texture),
                             width: w,
                             height: h,
                         },
@@ -592,6 +597,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         renderer: None,
         surface: None,
         targets: catchlight_wgpu::FrameTargets::new(),
+        render_list: RenderList::default(),
         model,
         puppet,
         player,
