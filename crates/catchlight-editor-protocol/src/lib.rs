@@ -175,6 +175,20 @@ mod tests {
     }
 
     #[test]
+    fn a_session_source_takes_only_its_own_fields_and_only_a_source_carries_bytes() {
+        for value in [
+            serde_json::json!({"format":"clm", "textures":[]}),
+            serde_json::json!({"format":"manifest", "textures":[]}),
+            serde_json::json!({"format":"json", "path":"model.json"}),
+        ] {
+            assert!(serde_json::from_value::<SessionSource>(value).is_err());
+        }
+        let new = |source| Command::SessionNew { name: None, source };
+        assert!(new(None).carries_bytes().is_none());
+        assert!(new(Some(SessionSource::Clm {})).carries_bytes().is_some());
+    }
+
+    #[test]
     fn a_misspelt_request_field_is_refused() {
         let line = r#"{"id":4,"cmd":"mesh_set","session":1,"node":"a","verts":[],"uvs":[],"indices":[],"origin":[0,0],"ifrev":5}"#;
         let err = serde_json::from_str::<Request>(line).unwrap_err();

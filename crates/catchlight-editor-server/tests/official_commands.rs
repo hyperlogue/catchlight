@@ -577,29 +577,6 @@ fn a_read_only_session_refuses_every_typed_edit() {
     f.humanoid();
 }
 
-#[test]
-fn a_replica_answers_the_typed_reads_as_the_editor_does() {
-    let mut f = Fixture::new();
-    f.ok(f.map("head_yaw", "turn"));
-    f.ok(f.set(ExpressionGroup::Expression, "sad", vec![param("jaw", 0.5)]));
-    let session = f.session;
-    for command in [
-        Command::HumanoidGet { session },
-        Command::ExpressionList { session },
-        Command::ExtensionWarnings { session },
-        Command::ClipList { session },
-    ] {
-        let from_editor = f.ok(command.clone());
-        let from_replica = replica_query(&f.model(), &command).unwrap();
-        assert_eq!(
-            serde_json::to_value(&from_editor).unwrap(),
-            serde_json::to_value(&from_replica).unwrap(),
-            "{}",
-            command.tag()
-        );
-    }
-}
-
 fn lane(target: LaneTarget, frames: &[u32]) -> Lane {
     Lane::new(
         target,

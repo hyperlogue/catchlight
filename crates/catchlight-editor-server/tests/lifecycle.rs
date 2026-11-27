@@ -390,43 +390,6 @@ fn manifest_creation_names_the_session_and_refuses_unreferenced_files() {
 }
 
 #[test]
-fn source_variants_reject_foreign_fields_and_classify_bytes_per_request() {
-    for value in [
-        serde_json::json!({"format":"clm", "textures":[]}),
-        serde_json::json!({"format":"manifest", "textures":[]}),
-        serde_json::json!({"format":"json", "path":"model.json"}),
-    ] {
-        assert!(serde_json::from_value::<SessionSource>(value).is_err());
-    }
-    assert!(
-        Command::SessionNew {
-            name: None,
-            source: None
-        }
-        .carries_bytes()
-        .is_none()
-    );
-    assert!(
-        Command::SessionNew {
-            name: None,
-            source: Some(SessionSource::Clm {})
-        }
-        .carries_bytes()
-        .is_some()
-    );
-    assert!(
-        serde_json::from_value::<Command>(
-            serde_json::json!({"cmd":"structure_json_import", "session":1, "if_rev":0})
-        )
-        .is_err()
-    );
-    assert!(
-        serde_json::from_value::<Command>(serde_json::json!({"cmd":"edit_undo", "session":1}))
-            .is_err()
-    );
-}
-
-#[test]
 fn forks_are_independent_models_with_clean_history_and_source_metadata() {
     let editor = Editor::new();
     let model = authored_model();

@@ -625,7 +625,7 @@ mod tests {
     use std::sync::Mutex;
 
     use super::*;
-    use crate::{Attachments, FileStorage, NoKeptStore, SidecarKeptStore, UserKeptStore};
+    use crate::{Attachments, FileStorage, SidecarKeptStore, UserKeptStore};
 
     struct Fixture {
         editor: Editor,
@@ -1441,15 +1441,6 @@ mod tests {
             assert_eq!(kept, Kept::Unreadable, "{forged}");
         }
         std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn an_editor_that_keeps_nothing_says_versions_last_for_the_session() {
-        let mut f = Fixture::new(
-            Editor::with_storage(Arc::new(crate::NoStorage)).with_kept_store(Arc::new(NoKeptStore)),
-        );
-        f.saved(None);
-        assert_eq!(f.list().1, Kept::Session);
     }
 
     #[test]

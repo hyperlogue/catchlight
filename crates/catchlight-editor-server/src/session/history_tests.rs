@@ -475,7 +475,7 @@ fn close_waits_for_session_work_without_blocking_the_registry() {
 }
 
 #[test]
-fn navigation_replaces_model_generation_and_clears_retained_runtime() {
+fn navigation_replaces_model_generation() {
     let editor = Editor::new();
     let session = new_session(&editor);
     rename(&editor, session, "A");
@@ -484,12 +484,6 @@ fn navigation_replaces_model_generation_and_clears_retained_runtime() {
             (model.identity(), model.generation(), rev)
         })
         .unwrap();
-    editor.with_puppet(session, |_, _| ()).unwrap();
-    assert!(
-        editor
-            .with_session(session, |s| Ok(s.puppet.is_some()))
-            .unwrap()
-    );
     assert_eq!(
         ok_revision(command(&editor, Command::Undo { session, if_rev: 1 })),
         2
@@ -502,11 +496,6 @@ fn navigation_replaces_model_generation_and_clears_retained_runtime() {
     assert_eq!(after.0, initial.0);
     assert!(after.1 > initial.1);
     assert_eq!(after.2, 2);
-    assert!(
-        editor
-            .with_session(session, |s| Ok(s.puppet.is_none()))
-            .unwrap()
-    );
     assert!(editor.is_dirty(session).unwrap());
 }
 

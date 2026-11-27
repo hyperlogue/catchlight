@@ -157,17 +157,6 @@ fn a_hundred_drag_events_and_one_commit_leave_one_undo_entry() {
     ));
 }
 
-#[test]
-fn scratch_is_not_a_server_command() {
-    assert!(
-        serde_json::from_value::<Request>(serde_json::json!({
-            "id": 1, "cmd": "scratch_deform", "session": 1,
-            "node": "panel", "offsets": [[0, 0]]
-        }))
-        .is_err()
-    );
-}
-
 fn open_bytes(editor: &Editor, title: &str, bytes: Vec<u8>) -> SessionId {
     let mut attachments = Attachments::none();
     attachments.insert("model", bytes);

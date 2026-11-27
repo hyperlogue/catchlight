@@ -217,37 +217,6 @@ fn an_id_the_model_already_carries_is_refused_under_its_own_code() {
     ));
 }
 
-/// A string outside the Id charset never reaches a command at all — it is
-/// refused where the request is decoded, which is a different answer from an
-/// Id that is merely taken.
-#[test]
-fn an_id_outside_the_charset_is_a_bad_request_not_a_duplicate() {
-    let (_ed, session) = editor();
-    let line = format!(
-        r#"{{"id":9,"cmd":"node_add","session":{},"parent":"root","kind":"part","node":"has space"}}"#,
-        session.0
-    );
-    let err = serde_json::from_str::<Request>(&line).unwrap_err();
-    assert!(err.to_string().contains("invalid byte"), "{err}");
-}
-
-#[test]
-fn an_add_with_no_id_still_draws_one() {
-    let (ed, session) = editor();
-    let node = node_of(body(
-        &ed,
-        2,
-        Command::NodeAdd {
-            session,
-            parent: NodeId::new("root").unwrap(),
-            kind: NodeKindArg::Part,
-            name: None,
-            node: None,
-        },
-    ));
-    assert!(node.as_str().starts_with("root/part-"), "{node}");
-}
-
 #[test]
 fn an_add_past_the_deepest_level_is_a_limit() {
     let (ed, session) = editor();

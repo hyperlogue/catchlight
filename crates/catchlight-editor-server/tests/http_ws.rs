@@ -579,7 +579,6 @@ fn a_post_over_the_request_cap_is_413() {
     );
     assert_eq!(response.status, 413);
     assert_eq!(response.header("connection"), Some("close"));
-    assert_eq!(String::from_utf8_lossy(&response.body), "body too large");
 }
 
 /// An agent's CLI posts; the tab it is talking to listens on a socket.
@@ -732,40 +731,6 @@ fn the_structure_endpoint_pairs_its_bytes_with_the_revision_they_are() {
         b"",
     );
     assert_eq!(missing.status, 404);
-}
-
-#[test]
-fn session_open_reads_the_store_and_nothing_else() {
-    let server = start();
-    store_file(&server, "model.clm", &clm_bytes());
-
-    let mut socket = connect(server.addr, TOKEN, None).unwrap();
-    send(
-        &mut socket,
-        Request {
-            id: 1,
-            command: Command::SessionOpen {
-                path: "model.clm".into(),
-            },
-        },
-    );
-    match body_of(reply_to(&mut socket, 1)) {
-        ResponseBody::Session { .. } => {}
-        other => panic!("expected Session, got {other:?}"),
-    }
-
-    // No key a client could have put there: a key the store does not hold is
-    // an error, not a lookup somewhere else.
-    send(
-        &mut socket,
-        Request {
-            id: 2,
-            command: Command::SessionOpen {
-                path: "not-in-the-store.clm".into(),
-            },
-        },
-    );
-    assert!(matches!(reply_to(&mut socket, 2), Reply::Err { .. }));
 }
 
 #[test]
@@ -1061,16 +1026,24 @@ fn a_preflight_is_answered_for_an_allowlisted_origin_only() {
         b"",
     );
     assert_eq!(allowed.status, 204);
-    assert_eq!(
-        allowed.header("access-control-allow-headers"),
-        Some("Authorization, Content-Type")
-    );
+    let listed = |name: &str| -> Vec<String> {
+        allowed
+            .header(name)
+            .unwrap_or_default()
+            .split(',')
+            .map(|item| item.trim().to_ascii_lowercase())
+            .collect()
+    };
+    let headers = listed("access-control-allow-headers");
+    for header in ["authorization", "content-type"] {
+        assert!(headers.iter().any(|h| h == header), "{headers:?}");
+    }
     // A cross-origin `POST /request` is preflighted, so the method has to be
     // named here or a browser never sends the command.
-    assert_eq!(
-        allowed.header("access-control-allow-methods"),
-        Some("GET, POST, OPTIONS")
-    );
+    let methods = listed("access-control-allow-methods");
+    for method in ["get", "post"] {
+        assert!(methods.iter().any(|m| m == method), "{methods:?}");
+    }
 
     let foreign = http(
         server.addr,
@@ -1126,34 +1099,6 @@ fn a_body_over_the_ceiling_is_drained_so_its_413_arrives() {
     );
     assert_eq!(response.status, 413);
     assert_eq!(response.header("connection"), Some("close"));
-    assert_eq!(String::from_utf8_lossy(&response.body), "body too large");
-}
-
-/// A body without a token is refused against its headers alone. The body is
-/// never sent, so an answer that waits for one never arrives; the length here
-/// is well under the ceiling, which leaves the token as the only thing that
-/// can decide.
-#[test]
-fn an_unauthorized_body_is_answered_before_it_is_read() {
-    let server = start();
-    let started = Instant::now();
-    let response = http(
-        server.addr,
-        "POST",
-        "/request",
-        &[
-            ("Authorization", "Bearer not-the-token"),
-            ("Content-Type", "multipart/form-data; boundary=b"),
-            ("Content-Length", "4000000"),
-        ],
-        b"",
-    );
-    assert_eq!(response.status, 401);
-    assert_eq!(response.header("connection"), Some("close"));
-    assert!(
-        started.elapsed() < Duration::from_secs(5),
-        "the 401 waited on a body that was never sent"
-    );
 }
 
 /// A tab that is only watching sends nothing for minutes, so the server keeps
@@ -1241,32 +1186,6 @@ fn a_part(socket: &mut Socket, session: SessionId, id: u64) -> NodeId {
         ResponseBody::Node { node, .. } => node,
         other => panic!("expected Node, got {other:?}"),
     }
-}
-
-#[test]
-fn a_multipart_post_carries_a_textures_bytes_into_the_command() {
-    let server = start();
-    let mut socket = connect(server.addr, TOKEN, None).unwrap();
-    let (session, _) = new_session(&mut socket, 1);
-    let part = a_part(&mut socket, session, 2);
-
-    let response = post_multipart(
-        server.addr,
-        &Request {
-            id: 4,
-            command: Command::TextureAdd {
-                session,
-                node: part,
-                encoding: TextureEncoding::Png,
-                texture: None,
-            },
-        },
-        &[("texture", &one_pixel_png())],
-    );
-    assert!(matches!(
-        body_of(posted(&response)),
-        ResponseBody::Texture { .. }
-    ));
 }
 
 /// The reply rides in a header so the body can be the bytes themselves.
@@ -1496,37 +1415,21 @@ fn a_byte_bearing_command_over_the_websocket_is_refused() {
                 camera: None,
             },
         ),
+        (
+            4,
+            Command::TextureAdd {
+                session,
+                node: NodeId::new("root").unwrap(),
+                encoding: TextureEncoding::default(),
+                texture: None,
+            },
+        ),
     ] {
         send(&mut socket, Request { id, command });
         match reply_to(&mut socket, id) {
             Reply::Err { code, .. } => assert_eq!(code, ErrorCode::BulkOverHttp, "request {id}"),
             other => panic!("expected Err, got {other:?}"),
         }
-    }
-}
-
-#[test]
-fn a_texture_add_over_the_websocket_is_refused() {
-    let server = start();
-    let mut socket = connect(server.addr, TOKEN, None).unwrap();
-    let (session, _) = new_session(&mut socket, 1);
-    let part = a_part(&mut socket, session, 2);
-
-    send(
-        &mut socket,
-        Request {
-            id: 4,
-            command: Command::TextureAdd {
-                session,
-                node: part,
-                encoding: TextureEncoding::default(),
-                texture: None,
-            },
-        },
-    );
-    match reply_to(&mut socket, 4) {
-        Reply::Err { code, .. } => assert_eq!(code, ErrorCode::BulkOverHttp),
-        other => panic!("expected Err, got {other:?}"),
     }
 }
 

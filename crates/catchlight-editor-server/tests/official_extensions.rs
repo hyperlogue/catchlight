@@ -7,8 +7,12 @@
 //! A session checks the official extensions by their own rules: building one
 //! registers them.
 
+use catchlight_core::extension::Extension;
+use catchlight_core::extension::codes::NOT_CHECKED;
 use catchlight_core::{InterpolateMode, Model, ParamId};
-use catchlight_editor_protocol::{Command, Reply, Request, ResponseBody, SessionSource};
+use catchlight_editor_protocol::{
+    Command, ExtensionRef, ExtensionWarningInfo, Reply, Request, ResponseBody, SessionSource,
+};
 use catchlight_editor_server::{Attachments, Editor};
 use catchlight_extension_animations::{Animations, Clip, Keyframe, Lane, LaneTarget};
 use catchlight_extension_expressions::{Expression, Expressions, Setting};
@@ -31,19 +35,28 @@ fn a_session_checks_its_animations_as_the_extension_does() {
     }]);
 
     let warnings = check_in_a_session(&model);
+    let ghost = ExtensionRef::Param(ParamId::new("ghost").unwrap());
     assert!(
         warnings
             .iter()
-            .any(|w| w.contains("catchlight.animations") && w.contains("ghost")),
+            .any(|w| w.key.as_str() == Animations::KEY && w.subjects.contains(&ghost)),
         "{warnings:?}"
     );
-    assert!(
-        !warnings.iter().any(|w| w.contains("not registered")),
-        "{warnings:?}"
-    );
+    assert_checked(&warnings, &[Animations::KEY]);
 }
 
-fn check_in_a_session(model: &Model) -> Vec<String> {
+fn assert_checked(warnings: &[ExtensionWarningInfo], keys: &[&str]) {
+    for key in keys {
+        assert!(
+            !warnings
+                .iter()
+                .any(|w| w.key.as_str() == *key && w.code == NOT_CHECKED),
+            "{key}: {warnings:?}"
+        );
+    }
+}
+
+fn check_in_a_session(model: &Model) -> Vec<ExtensionWarningInfo> {
     let editor = Editor::new();
     let mut attachments = Attachments::none();
     attachments.insert("model", model.to_clm_bytes().unwrap());
@@ -68,13 +81,13 @@ fn check_in_a_session(model: &Model) -> Vec<String> {
     };
     match editor.handle(Request {
         id: 2,
-        command: Command::Check { session },
+        command: Command::ExtensionWarnings { session },
     }) {
         Reply::Ok {
-            body: ResponseBody::Warnings { warnings },
+            body: ResponseBody::ExtensionWarnings { warnings },
             ..
         } => warnings,
-        other => panic!("check: {other:?}"),
+        other => panic!("extension_warnings: {other:?}"),
     }
 }
 
@@ -94,16 +107,22 @@ fn a_session_checks_its_humanoid_and_expressions_as_the_extensions_do() {
             vec![Setting::control("tail_wag", 2.0)],
         )]);
     let warnings = check_in_a_session(&model);
-    for key in ["catchlight.humanoid", "catchlight.expressions"] {
+    for (key, code) in [
+        (
+            Humanoid::KEY,
+            catchlight_extension_humanoid::codes::NONSTANDARD_CONTROL,
+        ),
+        (
+            Expressions::KEY,
+            catchlight_extension_expressions::codes::NONSTANDARD_CONTROL,
+        ),
+    ] {
         assert!(
             warnings
                 .iter()
-                .any(|w| w.contains(key) && w.contains("tail_wag") && w.contains("standard")),
+                .any(|w| w.key.as_str() == key && w.code == code),
             "{key}: {warnings:?}"
         );
     }
-    assert!(
-        !warnings.iter().any(|w| w.contains("not registered")),
-        "{warnings:?}"
-    );
+    assert_checked(&warnings, &[Humanoid::KEY, Expressions::KEY]);
 }

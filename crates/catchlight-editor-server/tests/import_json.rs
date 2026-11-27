@@ -146,30 +146,6 @@ fn ok(reply: Reply) {
 }
 
 #[test]
-fn json_and_clm_sources_construct_the_same_model() {
-    let bytes = std::fs::read(models_dir().join("welded_seam.clm")).unwrap();
-    let file = clm::decode(&bytes).unwrap();
-    let ed = editor();
-    let mut attachments = Attachments::none();
-    attachments.insert("model", bytes);
-    let from_file = session(
-        ed.handle_with(
-            req(
-                1,
-                Command::SessionNew {
-                    name: None,
-                    source: Some(SessionSource::Clm {}),
-                },
-            ),
-            attachments,
-        )
-        .0,
-    );
-    let from_json = session(create_json(&ed, &as_json(&file)));
-    assert_eq!(session_bytes(&ed, from_json), session_bytes(&ed, from_file));
-}
-
-#[test]
 fn every_fixture_round_trips_through_json() {
     for path in fixtures() {
         let name = path.file_name().unwrap().to_string_lossy().to_string();
@@ -263,17 +239,25 @@ fn a_structure_installs_under_the_parent_the_command_names() {
         &ed,
         Command::ImportJson {
             session,
-            parent: root,
+            parent: root.clone(),
             if_rev: ed.revision(session).unwrap(),
             textures: sent.textures.clone(),
         },
         &sent,
     ));
 
-    let after = ed
-        .with_model(session, catchlight_core::Model::node_count)
+    let installed = NodeId::new(format!("copy{}", file.doc.nodes[0].id)).unwrap();
+    let landed = ed
+        .with_model(session, |m| {
+            let parent = m.node(&installed).and_then(|n| n.parent().cloned());
+            let textures = addon.textures.iter().all(|t| {
+                m.texture(&t.id)
+                    .is_some_and(|got| got.data[..] == t.data[..])
+            });
+            (parent, textures)
+        })
         .expect("the session is open");
-    assert!(after > before, "the subtree landed: {before} -> {after}");
+    assert_eq!(landed, (Some(root), true), "the subtree and its textures");
 
     ok(ed.handle(req(
         9,

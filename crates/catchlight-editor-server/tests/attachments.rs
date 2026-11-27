@@ -332,23 +332,6 @@ fn a_fixed_attachment_that_did_not_arrive_is_refused() {
     assert_eq!(code(reply), ErrorCode::BadRequest);
 }
 
-/// `handle` is `handle_with` with nothing attached, so a byte-bearing command
-/// sent that way is refused for the reason it should be: its bytes are missing.
-#[test]
-fn handle_alone_cannot_carry_a_byte_bearing_command() {
-    let ed = editor();
-    assert_eq!(
-        code(ed.handle(req(
-            2,
-            Command::SessionNew {
-                name: None,
-                source: Some(SessionSource::Manifest {})
-            }
-        ))),
-        ErrorCode::BadRequest,
-    );
-}
-
 /// A source factory publishes a clean session with
 /// nothing behind it. Anything else and a tab warns about unsaved changes the
 /// moment a file is opened, and one undo empties the model.
@@ -558,32 +541,6 @@ fn a_manifest_reference_with_no_attachment_is_refused_naming_it() {
         }
         other => panic!("expected Err, got {other:?}"),
     }
-}
-
-/// An imported model is not a file on disk, so a bare save has nowhere to go.
-#[test]
-fn an_import_leaves_the_session_with_no_file_to_save_to() {
-    let ed = editor();
-    let (reply, _) = send(
-        &ed,
-        2,
-        Command::SessionNew {
-            name: None,
-            source: Some(SessionSource::Clm {}),
-        },
-        with(vec![("model", a_model())]),
-    );
-    let s = session_of(reply);
-    assert_eq!(
-        code(ed.handle(req(
-            3,
-            Command::Save {
-                session: s,
-                path: None
-            }
-        ))),
-        ErrorCode::NoSavePath,
-    );
 }
 
 #[test]

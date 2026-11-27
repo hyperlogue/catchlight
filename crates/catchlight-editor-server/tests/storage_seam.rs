@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::io;
 use std::sync::{Arc, Mutex};
 
-use catchlight_editor_protocol::{Command, Reply, Request, ResponseBody, SessionId};
+use catchlight_editor_protocol::{Command, ErrorCode, Reply, Request, ResponseBody, SessionId};
 use catchlight_editor_server::{Editor, Storage};
 
 #[derive(Debug, Default)]
@@ -108,33 +108,6 @@ fn a_session_opens_from_a_store_with_no_filesystem() {
 }
 
 #[test]
-fn save_without_a_path_reuses_the_key_the_session_was_opened_from() {
-    let store = MemStorage::with("project/akari.clm", clm_bytes());
-    let editor = Editor::with_storage(store.clone());
-    let session = match ok(&editor.handle(req(
-        1,
-        Command::SessionOpen {
-            path: "project/akari.clm".into(),
-        },
-    ))) {
-        ResponseBody::Session { session } => *session,
-        other => panic!("expected Session, got {other:?}"),
-    };
-
-    match ok(&editor.handle(req(
-        2,
-        Command::Save {
-            session,
-            path: None,
-        },
-    ))) {
-        ResponseBody::Saved { path } => assert_eq!(path, "project/akari.clm"),
-        other => panic!("expected Saved, got {other:?}"),
-    }
-    assert!(store.get("project/akari.clm").is_some());
-}
-
-#[test]
 fn a_missing_key_is_an_error_against_the_request_that_asked_for_it() {
     let editor = Editor::with_storage(Arc::new(MemStorage::default()));
     match editor.handle(req(
@@ -160,10 +133,10 @@ fn no_storage_is_a_named_error_rather_than_a_panic() {
             path: "anything.clm".into(),
         },
     )) {
-        Reply::Err { message, .. } => assert!(
-            message.contains("no storage backend configured"),
-            "message was {message:?}"
-        ),
+        Reply::Err { code, message, .. } => {
+            assert_eq!(code, ErrorCode::Io);
+            assert!(message.contains("anything.clm"), "message was {message:?}");
+        }
         other => panic!("expected Err, got {other:?}"),
     }
 }

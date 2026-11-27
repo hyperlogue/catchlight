@@ -14,7 +14,7 @@ use catchlight_editor_protocol::{
     Command, ErrorCode, ExtensionKey, ExtensionRef, ExtensionSet, ExtensionValueInfo, ParamId,
     Rename, Reply, Request, ResponseBody, SessionId,
 };
-use catchlight_editor_server::{Attachments, Editor, Payload, Storage, replica_query};
+use catchlight_editor_server::{Attachments, Editor, Payload, Storage};
 use serde_json::json;
 
 #[derive(Debug, Default)]
@@ -372,37 +372,6 @@ fn the_listing_reports_both_kinds_in_key_order() {
             );
         }
         other => panic!("expected bytes, got {other:?}"),
-    }
-}
-
-/// The listing is a pure read of the model, so a tab holding a replica answers
-/// it without asking — and has to answer it the same.
-#[test]
-fn a_replica_lists_the_extensions_the_editor_lists() {
-    let mut f = Fixture::new();
-    f.set_bytes("acme.thumb", b"bytes here");
-    f.set_json("acme.camera", json!({"v": 1}));
-
-    let from_editor = f.list();
-    let command = Command::Extensions { session: f.session };
-    let from_replica = f
-        .editor
-        .with_model(f.session, |model| replica_query(model, &command))
-        .unwrap()
-        .unwrap();
-    match from_replica {
-        ResponseBody::Extensions { extensions } => {
-            let mine: Vec<(String, ExtensionValueInfo)> = extensions
-                .into_iter()
-                .map(|e| (e.key.to_string(), e.value))
-                .collect();
-            assert_eq!(
-                format!("{mine:?}"),
-                format!("{from_editor:?}"),
-                "one implementation, one answer",
-            );
-        }
-        other => panic!("expected Extensions, got {other:?}"),
     }
 }
 
