@@ -11,13 +11,26 @@ use super::*;
 
 /// An extension as stored. JSON values travel inline with the structure;
 /// bytes live in their own section and travel by hash.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum ExtensionValue {
     /// A plain annotation: carried, never maintained.
     Json(serde_json::Value),
     /// A plain annotation: carried, never maintained.
     Bytes(Arc<[u8]>),
     Maintained(RawExtension),
+}
+
+impl std::fmt::Debug for ExtensionValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Json(value) => f.debug_tuple("Json").field(value).finish(),
+            Self::Bytes(bytes) => f
+                .debug_struct("Bytes")
+                .field("len", &bytes.len())
+                .finish_non_exhaustive(),
+            Self::Maintained(raw) => f.debug_tuple("Maintained").field(raw).finish(),
+        }
+    }
 }
 
 impl ExtensionValue {

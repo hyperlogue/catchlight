@@ -97,10 +97,19 @@ const fn check_size(what: &'static str, size: usize, limit: usize) -> Result<(),
 /// Raw bytes of one `EXT_SECT` entry. The reference stores vendor
 /// payloads opaquely (`puppet.extData[name] = bytes`); they may be
 /// binary, so no JSON decoding happens here.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct VendorData {
     pub name: String,
     pub payload: Vec<u8>,
+}
+
+impl std::fmt::Debug for VendorData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VendorData")
+            .field("name", &self.name)
+            .field("bytes", &self.payload.len())
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -280,6 +289,15 @@ impl InxModel {
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    #[test]
+    fn vendor_data_prints_its_byte_count() {
+        let vendor = VendorData {
+            name: "vendor".into(),
+            payload: vec![0xAB; 1 << 20],
+        };
+        assert!(format!("{vendor:?}").len() < 100, "{vendor:?}");
+    }
 
     #[test]
     fn test_magic_bytes_validation() {

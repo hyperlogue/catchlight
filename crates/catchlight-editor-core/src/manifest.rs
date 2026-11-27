@@ -49,10 +49,19 @@ pub enum ManifestError {
     Model(#[from] ModelError),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct TextureData {
     pub encoding: TextureEncoding,
     pub bytes: Arc<[u8]>,
+}
+
+impl std::fmt::Debug for TextureData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TextureData")
+            .field("encoding", &self.encoding)
+            .field("bytes", &self.bytes.len())
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -547,6 +556,15 @@ pub fn image_dims_as(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn texture_data_prints_its_byte_count() {
+        let texture = TextureData {
+            encoding: TextureEncoding::Png,
+            bytes: vec![0xAB; 1 << 20].into(),
+        };
+        assert!(format!("{texture:?}").len() < 100, "{texture:?}");
+    }
 
     fn png_bytes(w: u32, h: u32) -> Vec<u8> {
         let img = image::RgbaImage::new(w, h);

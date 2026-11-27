@@ -848,3 +848,12 @@ fn a_preview_honours_the_pose_it_is_given() {
     assert_ne!(rest, posed, "posing pull must change the preview");
     assert_eq!(rest, back, "leaving pull out must render it at its default");
 }
+
+#[test]
+fn a_payload_prints_its_byte_count() {
+    let payload = Payload {
+        content_type: "image/png",
+        bytes: vec![0xAB; 1 << 20],
+    };
+    assert!(format!("{payload:?}").len() < 100, "{payload:?}");
+}

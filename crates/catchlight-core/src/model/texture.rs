@@ -4,11 +4,21 @@ use super::*;
 
 /// Source-encoded texture bytes (PNG/TGA), immutable under its Id. `Arc<[u8]>`
 /// matches [`crate::texture::EncodedTexture`], so decoding shares the allocation.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ModelTexture {
     pub encoding: TextureEncoding,
     pub alpha: TextureAlpha,
     pub data: Arc<[u8]>,
+}
+
+impl std::fmt::Debug for ModelTexture {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ModelTexture")
+            .field("encoding", &self.encoding)
+            .field("alpha", &self.alpha)
+            .field("bytes", &self.data.len())
+            .finish_non_exhaustive()
+    }
 }
 
 impl From<&ModelTexture> for crate::texture::EncodedTexture {

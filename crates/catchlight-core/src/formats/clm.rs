@@ -208,10 +208,19 @@ impl ClmFile {
 /// A section of unrecognised kind, written back byte for byte after the known
 /// sections, so an older tool does not destroy a newer writer's data.
 /// Structure-only containers neither read nor write them.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ClmUnknownSection {
     pub kind: u32,
     pub data: std::sync::Arc<[u8]>,
+}
+
+impl std::fmt::Debug for ClmUnknownSection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClmUnknownSection")
+            .field("kind", &self.kind)
+            .field("bytes", &self.data.len())
+            .finish_non_exhaustive()
+    }
 }
 
 /// The manifest supplies texture order and encoding, which `Structure` lacks.
@@ -420,11 +429,20 @@ pub struct ClmExtensionMarker {
     pub hash: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClmExtensionBlob {
     pub key: ExtensionKey,
     #[serde(with = "serde_bytes")]
     pub data: Vec<u8>,
+}
+
+impl std::fmt::Debug for ClmExtensionBlob {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClmExtensionBlob")
+            .field("key", &self.key)
+            .field("bytes", &self.data.len())
+            .finish_non_exhaustive()
+    }
 }
 
 /// Length as compact JSON text, which any authoring tool can compute.
@@ -455,7 +473,7 @@ pub fn extension_hash(bytes: &[u8]) -> String {
 }
 
 /// A texture as the author supplied it: never decoded, never re-encoded.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClmTexture {
     pub id: TexId,
     pub encoding: TextureEncoding,
@@ -464,14 +482,36 @@ pub struct ClmTexture {
     pub data: Vec<u8>,
 }
 
+impl std::fmt::Debug for ClmTexture {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClmTexture")
+            .field("id", &self.id)
+            .field("encoding", &self.encoding)
+            .field("alpha", &self.alpha)
+            .field("bytes", &self.data.len())
+            .finish_non_exhaustive()
+    }
+}
+
 /// Serializes identically to [`ClmTexture`] without copying the payload.
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Clone, Copy, Serialize)]
 pub struct ClmTextureBytes<'a> {
     pub id: &'a TexId,
     pub encoding: TextureEncoding,
     pub alpha: TextureAlpha,
     #[serde(with = "serde_bytes")]
     pub data: &'a [u8],
+}
+
+impl std::fmt::Debug for ClmTextureBytes<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClmTextureBytes")
+            .field("id", self.id)
+            .field("encoding", &self.encoding)
+            .field("alpha", &self.alpha)
+            .field("bytes", &self.data.len())
+            .finish_non_exhaustive()
+    }
 }
 
 impl<'a> From<&'a ClmTexture> for ClmTextureBytes<'a> {

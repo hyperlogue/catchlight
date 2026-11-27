@@ -59,11 +59,20 @@ pub struct LiveInputsJson {
 }
 
 /// Straight-alpha sRGB artwork, tightly packed (`4 * width` bytes per row).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct TextureImage {
     pub width: u32,
     pub height: u32,
     pub rgba: Vec<u8>,
+}
+
+impl std::fmt::Debug for TextureImage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TextureImage")
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .finish_non_exhaustive()
+    }
 }
 
 /// One session's model and pose, in the tab. No GPU, so it tests natively.
@@ -1316,6 +1325,16 @@ mod tests {
     use crate::CatchlightEditor;
     use catchlight_editor_server::Attachments;
     use serde_json::{Value, json};
+
+    #[test]
+    fn a_texture_image_prints_its_size_not_its_pixels() {
+        let image = TextureImage {
+            width: 512,
+            height: 512,
+            rgba: vec![0xAB; 512 * 512 * 4],
+        };
+        assert!(format!("{image:?}").len() < 100, "{image:?}");
+    }
 
     const ROOT: &str = "root";
 

@@ -132,10 +132,19 @@ impl FromIterator<(String, Vec<u8>)> for Attachments {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Payload {
     pub content_type: &'static str,
     pub bytes: Vec<u8>,
+}
+
+impl std::fmt::Debug for Payload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Payload")
+            .field("content_type", &self.content_type)
+            .field("bytes", &self.bytes.len())
+            .finish_non_exhaustive()
+    }
 }
 
 pub struct Editor {

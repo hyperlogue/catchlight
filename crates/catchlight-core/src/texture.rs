@@ -33,13 +33,23 @@ impl TextureFormat {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct EncodedTexture {
     pub format: TextureFormat,
     pub data: Arc<[u8]>,
     /// `true` for premultiplied-in-sRGB on-disk bytes (every `.inx` texture);
     /// `false` for editor-authored straight alpha.
     pub premultiplied: bool,
+}
+
+impl std::fmt::Debug for EncodedTexture {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EncodedTexture")
+            .field("format", &self.format)
+            .field("bytes", &self.data.len())
+            .field("premultiplied", &self.premultiplied)
+            .finish_non_exhaustive()
+    }
 }
 
 impl EncodedTexture {

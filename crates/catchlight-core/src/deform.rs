@@ -44,7 +44,7 @@ struct SourceSlot {
 // Inline capacity 2: at most one Param plus one MeshGroup-parent source per node.
 type Sources = SmallVec<[SourceSlot; 2]>;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct DeformStack {
     vert_count: usize,
     sources: Sources,
@@ -55,6 +55,17 @@ pub struct DeformStack {
     // a frame re-folds the same param values.
     last_combined_mask: Option<u64>,
     generation: u64,
+}
+
+impl std::fmt::Debug for DeformStack {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DeformStack")
+            .field("vert_count", &self.vert_count)
+            .field("sources", &self.sources.len())
+            .field("dirty", &self.dirty)
+            .field("generation", &self.generation)
+            .finish_non_exhaustive()
+    }
 }
 
 impl DeformStack {

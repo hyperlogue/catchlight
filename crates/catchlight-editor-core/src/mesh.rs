@@ -447,11 +447,20 @@ impl UvMap {
 }
 
 /// One alpha byte per texel, row-major from the top left.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct AlphaMask {
     width: u32,
     height: u32,
     alpha: Vec<u8>,
+}
+
+impl std::fmt::Debug for AlphaMask {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AlphaMask")
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .finish_non_exhaustive()
+    }
 }
 
 impl AlphaMask {
@@ -1385,6 +1394,12 @@ impl ModelMeshExt for Model {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_alpha_mask_prints_its_size_not_its_texels() {
+        let mask = AlphaMask::new(1024, 1024, vec![0xFF; 1 << 20]).unwrap();
+        assert!(format!("{mask:?}").len() < 100, "{mask:?}");
+    }
 
     fn quad() -> ClmMesh {
         ClmMesh {

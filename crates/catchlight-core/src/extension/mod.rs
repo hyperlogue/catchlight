@@ -81,10 +81,22 @@ pub struct RawExtension {
 
 /// JSON rides inline in every structure feed; bytes live in the file's
 /// `Extensions` section and reach a browser tab by hash.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum Payload {
     Json(serde_json::Value),
     Bytes(Arc<[u8]>),
+}
+
+impl fmt::Debug for Payload {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Json(value) => f.debug_tuple("Json").field(value).finish(),
+            Self::Bytes(bytes) => f
+                .debug_struct("Bytes")
+                .field("len", &bytes.len())
+                .finish_non_exhaustive(),
+        }
+    }
 }
 
 impl Payload {

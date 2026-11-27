@@ -55,8 +55,18 @@ impl ModelNodeKind {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct ModelMesh(pub(super) Arc<ClmMesh>);
+
+impl std::fmt::Debug for ModelMesh {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ModelMesh")
+            .field("vertices", &self.0.vertex_count())
+            .field("triangles", &self.0.triangle_count())
+            .field("origin", &self.0.origin)
+            .finish_non_exhaustive()
+    }
+}
 
 impl ModelMesh {
     #[must_use]

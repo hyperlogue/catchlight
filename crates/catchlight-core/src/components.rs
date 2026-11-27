@@ -24,12 +24,21 @@ impl TextureIdx {
 
 /// Premultiplied LINEAR colour stored as `Rgba8UnormSrgb` bytes. Premultiplied
 /// storage makes filtering correct at an alpha edge without a bleed pass.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct DecodedTexture {
     pub width: u32,
     pub height: u32,
     /// Tightly packed (`4 * width` bytes per row).
     pub rgba: Arc<[u8]>,
+}
+
+impl std::fmt::Debug for DecodedTexture {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DecodedTexture")
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .finish_non_exhaustive()
+    }
 }
 
 impl DecodedTexture {
@@ -412,12 +421,22 @@ impl Default for MeshIndices {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Mesh {
     pub vertices: Vec<Vec2>,
     pub uvs: Vec<Vec2>,
     pub indices: MeshIndices,
     pub origin: Vec2,
+}
+
+impl std::fmt::Debug for Mesh {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Mesh")
+            .field("vertices", &self.vertices.len())
+            .field("triangles", &(self.indices.len() / 3))
+            .field("origin", &self.origin)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Default for Mesh {

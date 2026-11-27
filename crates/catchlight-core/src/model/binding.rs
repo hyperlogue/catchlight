@@ -1268,8 +1268,22 @@ impl ModelBinding {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct ModelBindingValues(pub(super) Arc<ClmBindingValues>);
+
+/// A deform's cells carry an offset per vertex, so only their count shows;
+/// scalar cells print in full.
+impl std::fmt::Debug for ModelBindingValues {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &*self.0 {
+            ClmBindingValues::Deform(deform) => f
+                .debug_struct("ModelBindingValues")
+                .field("deform_cells", &deform.cells.len())
+                .finish_non_exhaustive(),
+            scalar => f.debug_tuple("ModelBindingValues").field(scalar).finish(),
+        }
+    }
+}
 
 impl ModelBindingValues {
     #[must_use]
