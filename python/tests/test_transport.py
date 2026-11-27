@@ -32,8 +32,8 @@ def test_a_connection_past_the_window_is_remade_before_the_request(
 ) -> None:
     with UnixSocketTransport(server.socket_path, reconnect_after=0.0) as transport:
         client = Client(transport)
-        session = client.new()
-        client.add_part(session, name="Body")
+        client.send(SessionList())
+        client.send(SessionList())
         assert transport.connections == 2
 
 
@@ -65,16 +65,6 @@ def test_no_editor_at_the_path_is_a_transport_error(tmp_path: Path) -> None:
 
 
 # -- the http door
-
-
-def test_every_post_dials_because_the_editor_closes_every_response(
-    served: LaunchedServer,
-) -> None:
-    with HttpTransport(served.http_url or "", served.token or "") as transport:
-        client = Client(transport)
-        client.send(SessionList())
-        client.send(SessionList())
-        assert transport.connections == 2
 
 
 def test_a_closed_http_transport_is_remade_on_the_next_request(

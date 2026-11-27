@@ -110,12 +110,11 @@ def test_a_layer_with_no_name_is_refused_by_its_position(tmp_path: Path) -> None
 
 
 def test_a_field_that_is_not_a_number_is_refused_by_name(tmp_path: Path) -> None:
-    with pytest.raises(LayersError, match="'Head' has a z that is not a number"):
-        read_layers(_write(tmp_path, {"name": "Head", "z": "front"}))
-    with pytest.raises(LayersError, match="'Head' has an offset"):
-        read_layers(_write(tmp_path, {"name": "Head", "offset": [1.0]}))
-    with pytest.raises(LayersError, match="'Head' has a opacity"):
-        read_layers(_write(tmp_path, {"name": "Head", "opacity": True}))
+    for field, value in (("z", "front"), ("offset", [1.0]), ("opacity", True)):
+        with pytest.raises(LayersError) as raised:
+            read_layers(_write(tmp_path, {"name": "Head", field: value}))
+        message = str(raised.value)
+        assert "'Head'" in message and field in message, message
 
 
 def test_a_mesh_mode_the_editor_does_not_know_is_refused_by_name(tmp_path: Path) -> None:

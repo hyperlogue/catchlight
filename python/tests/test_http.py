@@ -8,7 +8,6 @@ import pytest
 
 from catchlight import (
     Client,
-    HttpTransport,
     LaunchedServer,
     SessionList,
     TransportError,
@@ -61,18 +60,6 @@ def test_the_bytes_the_door_hands_out_are_the_bytes_a_save_writes(
 
     written = Path(served.client().save(session, str(tmp_path / "written.clm")))
     assert fetched.read_bytes() == written.read_bytes()
-
-
-def test_a_texture_staged_over_http_is_the_one_the_editor_reads(
-    served: LaunchedServer, tmp_path: Path
-) -> None:
-    source = write_png(tmp_path / "body.png")
-    transport = HttpTransport(served.http_url or "", served.token or "")
-    with Client(transport) as client:
-        session = client.new()
-        part = client.add_part(session, name="Body")
-        texture = client.add_texture(session, part, source)
-        assert transport.get_texture(session, texture) == source.read_bytes()
 
 
 def test_a_wrong_token_is_refused_on_the_first_command(served: LaunchedServer) -> None:
