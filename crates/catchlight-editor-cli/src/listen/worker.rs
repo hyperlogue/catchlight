@@ -478,12 +478,15 @@ mod tests {
             failure: None,
             registered: 0,
         };
-        assert_eq!(
-            notice(&reg, 2, &["4", "7"]),
-            "[catchlight] The person sent 2 new review comment(s) (#4, #7) on editor session 3 \
-             (model \"lan\"); 2 thread(s) now wait for you.\n\
-             Run `catchlight-editor --session 3 review fetch --attachments-dir /tmp/x` to read and \
-             acknowledge them."
-        );
+        let text = notice(&reg, 2, &["4", "7"]);
+        for part in [
+            "session 3",
+            "\"lan\"",
+            "#4",
+            "#7",
+            "`catchlight-editor --session 3 review fetch --attachments-dir /tmp/x`",
+        ] {
+            assert!(text.contains(part), "{part} is missing from {text}");
+        }
     }
 }

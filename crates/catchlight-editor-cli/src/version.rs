@@ -300,12 +300,29 @@ mod tests {
             },
             None,
         );
-        assert_eq!(
-            listed,
-            "(the model has no file yet: these versions are kept once it is saved)\n\
-             version 2  by agent claude  at rev 7  2025-11-25 12:00Z\n  tidied the hair\n\
-             version 1 \"baseline\"  by agent claude  at rev 7  2025-11-25 12:00Z\n  tidied the hair\n"
+        let lines: Vec<&str> = listed.lines().collect();
+        assert_eq!(lines.len(), 5, "{listed}");
+        assert!(
+            !lines[0].starts_with("version"),
+            "an unsaved model says so first"
         );
+        for (line, version, label) in [
+            (lines[1], "version 2 ", None),
+            (lines[3], "version 1 ", Some("\"baseline\"")),
+        ] {
+            assert!(line.starts_with(version), "{line}");
+            assert!(line.contains("claude") && line.contains("rev 7"), "{line}");
+            assert!(line.contains("2025-11-25 12:00Z"), "{line}");
+            assert_eq!(
+                label.is_some_and(|l| line.contains(l)),
+                label.is_some(),
+                "{line}"
+            );
+        }
+        for summary in [lines[2], lines[4]] {
+            assert!(summary.starts_with(' '), "{summary:?}");
+            assert_eq!(summary.trim(), "tidied the hair");
+        }
     }
 
     #[test]

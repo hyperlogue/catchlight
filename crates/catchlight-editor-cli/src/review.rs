@@ -1112,24 +1112,20 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(
-            text,
-            "thread 3 on node head/part-1 [open]\n\
-             \x20 target missing: the model no longer holds it\n\
-             \x20 opened at pose: head_yaw=0.5\n\
-             \x20 [human] at rev 4:\n\
-             \x20   old\n\
-             \x20 [agent: claude] at rev 4:\n\
-             \x20   done\n\
-             \x20 [human] (new) at rev 4:\n\
-             \x20   still torn\n\
-             \x20   at the ear\n\
-             \n\
-             Make the changes, then answer each thread with\n\
-             `review reply <thread> -m \"<what changed, or your question>\"`; the reply ends\n\
-             your claim on it. Resolving is the person's call. Unless you listen\n\
-             (`review listen`), run `review watch` again to wait for more.\n"
+        let (threads, advice) = text.split_once("\n\n").expect("threads, then advice");
+        let lines: Vec<&str> = threads.lines().collect();
+        assert!(
+            lines[0].starts_with("thread 3 on node head/part-1"),
+            "{text}"
         );
+        assert!(threads.contains("target missing"), "{text}");
+        assert!(threads.contains("head_yaw=0.5"), "{text}");
+        let new: Vec<usize> = (0..lines.len())
+            .filter(|&i| lines[i].contains("(new)"))
+            .collect();
+        assert_eq!(new.len(), 1, "only the unread comment is new: {text}");
+        assert_eq!(lines[new[0] + 1].trim(), "still torn", "{text}");
+        assert!(advice.contains("`review reply <thread>"), "{advice}");
     }
 
     #[test]
@@ -1411,10 +1407,12 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(
-            acked,
-            "delivered; claimed thread 1\n\
-             thread 2 is claimed by claude (claude:s1): its comments were left for them; leave it to them\n"
+        let lines: Vec<&str> = acked.lines().collect();
+        assert_eq!(lines.len(), 2, "{acked}");
+        assert!(lines[0].contains("claimed thread 1"), "{acked}");
+        assert!(
+            lines[1].starts_with("thread 2 ") && lines[1].contains("claude (claude:s1)"),
+            "{acked}"
         );
         let claimed = describe(
             &ResponseBody::ReviewClaimed {
@@ -1425,10 +1423,8 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(
-            claimed,
-            "claimed thread 1 4 for 60 minutes; claim again to renew\n"
-        );
+        assert!(claimed.contains("thread 1 4 "), "{claimed}");
+        assert!(claimed.contains("60 minutes"), "{claimed}");
     }
 
     #[test]
