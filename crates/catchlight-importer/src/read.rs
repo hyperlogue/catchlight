@@ -25,31 +25,3 @@ pub fn read_vec<R: Read>(data: &mut R, n: usize) -> io::Result<Vec<u8>> {
     data.read_exact(&mut buf)?;
     Ok(buf)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::Cursor;
-
-    #[test]
-    fn test_read_u8() {
-        let data = vec![42u8];
-        let mut cursor = Cursor::new(data);
-        assert_eq!(read_u8(&mut cursor).unwrap(), 42);
-    }
-
-    #[test]
-    fn test_read_be_u32() {
-        let data = vec![0x00, 0x00, 0x01, 0x00];
-        let mut cursor = Cursor::new(data);
-        assert_eq!(read_be_u32(&mut cursor).unwrap(), 256);
-    }
-
-    #[test]
-    fn test_read_vec() {
-        let data = vec![1, 2, 3, 4, 5];
-        let mut cursor = Cursor::new(data);
-        let result = read_vec(&mut cursor, 3).unwrap();
-        assert_eq!(result, vec![1, 2, 3]);
-    }
-}

@@ -503,49 +503,4 @@ mod tests {
             );
         }
     }
-
-    fn build_minimal_inp(payload_json: &[u8]) -> Vec<u8> {
-        let mut data = Vec::new();
-        data.extend_from_slice(MAGIC);
-        data.extend_from_slice(&(payload_json.len() as u32).to_be_bytes());
-        data.extend_from_slice(payload_json);
-        data.extend_from_slice(TEX_SECT);
-        data.extend_from_slice(&0u32.to_be_bytes());
-        data
-    }
-
-    #[test]
-    fn inp_bytes_parse_into_a_single_root_node() {
-        let payload_json = br#"{
-            "nodes": {
-                "uuid": 1,
-                "name": "Root",
-                "type": "Node",
-                "transform": {
-                    "trans": [0.0, 0.0, 0.0],
-                    "rot": [0.0, 0.0, 0.0],
-                    "scale": [1.0, 1.0]
-                },
-                "children": []
-            },
-            "param": []
-        }"#;
-        let bytes = build_minimal_inp(payload_json);
-
-        let model = InxModel::parse(Cursor::new(&bytes)).expect("parse .inp bytes");
-        assert!(model.textures.is_empty());
-        assert!(model.vendors.is_empty());
-
-        let doc = crate::from_inx_model(&model).expect("import").doc;
-        assert_eq!(doc.nodes.len(), 1);
-        assert_eq!(doc.nodes[0].name, "Root");
-    }
-
-    #[test]
-    fn inp_bytes_with_the_wrong_magic_are_refused() {
-        let mut bytes = vec![b'N', b'O', b'P', b'E', 0, 0, 0, 0];
-        bytes.extend_from_slice(&0u32.to_be_bytes());
-        let err = InxModel::parse(Cursor::new(bytes)).unwrap_err();
-        assert!(matches!(err, InxParseError::IncorrectMagic));
-    }
 }

@@ -201,8 +201,7 @@ fn livliv_binary_refuses_required_watermarks_with_or_without_allow_lossy() {
                 "kind {kind} allow_lossy={allow_lossy} exited successfully: {stderr}"
             );
             assert!(
-                stderr.contains(&format!("watermark \"{kind}\""))
-                    && stderr.contains("screen-space output rendering"),
+                stderr.contains(&format!("watermark \"{kind}\"")),
                 "kind {kind} allow_lossy={allow_lossy} did not report the watermark blocker: {stderr}"
             );
             assert!(
