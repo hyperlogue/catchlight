@@ -434,6 +434,6 @@ mod tests {
             .iter()
             .find(|w| w.message.contains("has no colour"))
             .expect("a colour binding on a mesh group is flagged");
-        assert!(w.message.contains("opacity"), "{}", w.message);
+        assert_eq!(w.node.as_ref(), Some(&part));
     }
 }
