@@ -339,7 +339,7 @@ mod native {
             assert_eq!(root, here.join("sub"));
             assert_eq!(
                 model,
-                Some(here.join("sub/akari.clm").display().to_string())
+                Some(here.join("sub").join("akari.clm").display().to_string())
             );
             assert_eq!(rooted(None, None).unwrap(), (here, None));
         }
