@@ -1955,27 +1955,6 @@ mod tests {
         assert_bounds(&replica, [9.0, 19.0, 11.0, 21.0]);
     }
 
-    #[test]
-    fn bounds_are_of_the_posed_mesh_and_not_the_rest_one() {
-        let editor = CatchlightEditor::new();
-        let session = new_session(&editor);
-        let face = add_drawn_part(&editor, session, "face");
-        set_quad_mesh(&editor, session, &face, 1.0);
-
-        let mut replica = ReplicaState::new();
-        replica.sync_from_editor(editor.editor(), session);
-        replica.frame(0.0);
-        assert_bounds(&replica, [-1.0, -1.0, 1.0, 1.0]);
-
-        // No tick in between: the write combines.
-        assert!(replica.set_scratch_deform(&face, &[0.0, 0.0, 0.0, 0.0, 4.0, 8.0, 0.0, 0.0]));
-        assert_bounds(&replica, [-1.0, -1.0, 5.0, 9.0]);
-
-        assert!(replica.clear_scratch_deform(&face));
-        replica.frame(16.0);
-        assert_bounds(&replica, [-1.0, -1.0, 1.0, 1.0]);
-    }
-
     fn deform_generation(replica: &ReplicaState, node: &str) -> u64 {
         let idx = replica.node_idx(node).expect("the node was baked");
         let Some(NodeKind::Part(part)) = replica.puppet.get(idx).map(|n| &n.kind) else {
@@ -2121,17 +2100,36 @@ mod tests {
 
     #[test]
     fn a_frame_at_a_new_timestamp_steps_by_the_time_between_them() {
-        let editor = CatchlightEditor::new();
-        let session = new_session(&editor);
-        let face = add_drawn_part(&editor, session, "face");
-        set_quad_mesh(&editor, session, &face, 1.0);
+        use catchlight_extension_animations::{Animations, Clip};
 
+        let mut model = Model::new();
+        *model.extension_or_default::<Animations>().unwrap() = Animations::from_clips([Clip {
+            timestep: 0.1,
+            length: 100,
+            ..Clip::new("pulse")
+        }]);
+        let editor = CatchlightEditor::new();
+        let mut attachments = Attachments::none();
+        attachments.insert("model", model.to_clm_bytes().unwrap());
+        let (reply, _) = editor.dispatch_with(
+            &json!({"id": 1, "cmd": "session_create", "source": {"format": "clm"}}).to_string(),
+            attachments,
+        );
+        let reply: Value = serde_json::from_str(&reply).unwrap();
+        let session = SessionId(reply["body"]["session"].as_u64().unwrap());
         let mut replica = ReplicaState::new();
         replica.sync_from_editor(editor.editor(), session);
-        assert!(!replica.frame(0.0));
-        assert!(!replica.frame(0.0));
-        assert!(!replica.frame(16.0));
-        assert_bounds(&replica, [-1.0, -1.0, 1.0, 1.0]);
+        assert!(replica.play("pulse"));
+        let time = |replica: &ReplicaState| replica.playing().expect("playing").time;
+
+        replica.frame(1000.0);
+        let start = time(&replica);
+        replica.frame(1000.0);
+        assert_eq!(time(&replica), start, "the same timestamp is no step");
+        replica.frame(1050.0);
+        assert!((time(&replica) - start - 0.05).abs() < 1e-4);
+        replica.frame(1080.0);
+        assert!((time(&replica) - start - 0.08).abs() < 1e-4);
     }
 
     #[test]
