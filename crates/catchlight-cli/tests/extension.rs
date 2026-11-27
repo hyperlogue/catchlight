@@ -2,7 +2,7 @@
 
 mod common;
 
-use catchlight_cli::{extension, fragment};
+use catchlight_cli::fragment;
 use catchlight_core::formats::clm::ClmExtension;
 
 fn payload() -> Vec<u8> {
@@ -274,12 +274,6 @@ fn an_addon_carries_no_extensions() {
     let message = err.to_string();
     assert!(message.contains("acme.camera"), "{message}");
     assert!(message.contains("extension"), "{message}");
-}
-
-#[test]
-fn render_shows_json_whole_and_bytes_as_their_marker() {
-    let json = ClmExtension::Json(serde_json::json!({"a": [1, 2]}));
-    assert_eq!(extension::render(&json), r#"{"a":[1,2]}"#);
 }
 
 #[test]

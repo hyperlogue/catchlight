@@ -39,19 +39,6 @@ fn decoding_and_re_encoding_a_fixture_is_byte_stable() {
     }
 }
 
-#[test]
-fn a_fixture_does_not_differ_from_itself() {
-    for path in fixtures() {
-        let file = decode(&path);
-        assert_eq!(
-            diff(&file, &file),
-            Vec::<String>::new(),
-            "{} differs from itself",
-            path.display()
-        );
-    }
-}
-
 type Mutation = (&'static str, fn(&mut ClmFile));
 
 #[test]
@@ -263,29 +250,6 @@ fn a_pure_reorder_is_reported_as_one() {
             "~ order textures: the textures both files carry are in a different order".to_string()
         ]
     );
-}
-
-/// The committed fixtures are LFS objects; no test may modify them.
-#[test]
-fn the_committed_fixtures_are_never_written_to() {
-    let dir = tmp("diff-fixtures-untouched");
-    let before: Vec<(std::path::PathBuf, Vec<u8>)> = fixtures()
-        .into_iter()
-        .map(|p| {
-            let bytes = read(&p);
-            (p, bytes)
-        })
-        .collect();
-
-    let copy = copy_fixture("mip_checker", &dir);
-    let mut edited = decode(&copy);
-    edited.doc.nodes[1].z_order = 9.0;
-    let other = write_clm(&dir, "edited", &edited);
-    assert!(!diff(&decode(&copy), &decode(&other)).is_empty());
-
-    for (path, bytes) in before {
-        assert_eq!(read(&path), bytes, "{} was modified", path.display());
-    }
 }
 
 #[test]

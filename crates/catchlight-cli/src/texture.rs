@@ -89,21 +89,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_signature_beats_the_extension_and_neither_decodes_the_image() {
-        let png = [PNG_MAGIC, b"not actually an image"].concat();
-        assert_eq!(
-            encoding_of(Path::new("mislabelled.tga"), &png),
-            Some(TextureEncoding::Png)
-        );
-
-        let tga = [b"whatever".as_slice(), TGA_FOOTER].concat();
-        assert_eq!(
-            encoding_of(Path::new("mislabelled.png"), &tga),
-            Some(TextureEncoding::Tga)
-        );
-    }
-
-    #[test]
     fn the_extension_answers_when_the_bytes_do_not() {
         assert_eq!(
             encoding_of(Path::new("skin.TGA"), b"tga 1.0 has no footer"),

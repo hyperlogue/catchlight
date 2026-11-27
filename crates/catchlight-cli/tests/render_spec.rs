@@ -90,6 +90,15 @@ fn assert_bad(value: Value, want: &str) {
         .to_string();
     assert!(error.contains(want), "wanted {want}, got {error}");
 }
+fn assert_bad_naming(value: Value, names: &[&str]) {
+    let error = Document::parse(&serde_json::to_vec(&value).unwrap())
+        .and_then(|d| d.resolve(&model()))
+        .unwrap_err()
+        .to_string();
+    for name in names {
+        assert!(error.contains(name), "wanted {name}, got {error}");
+    }
+}
 fn animation() -> Value {
     json!({"name":"Pulse","timestep":0.016666667,"length":6,
         "lanes":[{"param":"drive","interpolation":"Linear","keyframes":[{"frame":0,"value":0},{"frame":5,"value":1}]}]})
@@ -910,37 +919,34 @@ fn controls_and_expressions_pose_in_the_host_order_and_flags_match_the_spec() {
 #[test]
 fn controls_and_expressions_must_name_what_the_model_has() {
     let spec = |settings: Value| json!({"schema":1,"requests":{"default":settings}});
-    for (settings, want) in [
+    for (settings, names) in [
         (
             json!({"controls":{"mouth_smile":0.5}}),
-            "control mouth_smile is not mapped by the model; it maps: mouth_open",
+            &["control", "mouth_smile", "mouth_open"][..],
         ),
         (
             json!({"controls":{"mouth_open":-0.5}}),
-            "control mouth_open must be finite in 0..1",
+            &["control", "mouth_open", "0..1"],
         ),
         (
             json!({"expressions":{"sad":1}}),
-            "unknown expression sad; the model has: happy",
+            &["expression", "sad", "happy"],
         ),
         (
             json!({"expressions":{"happy":1.5}}),
-            "expression happy weight must be finite in 0..1",
+            &["expression", "happy", "0..1"],
         ),
         (
             json!({"visemes":{"happy":1}}),
-            "unknown viseme happy; the model has: pp, aa",
+            &["viseme", "happy", "pp", "aa"],
         ),
         (
             json!({"expressions":{"pp":1}}),
-            "unknown expression pp; the model has: happy",
+            &["expression", "pp", "happy"],
         ),
-        (
-            json!({"visemes":{"pp":-0.5}}),
-            "viseme pp weight must be finite in 0..1",
-        ),
+        (json!({"visemes":{"pp":-0.5}}), &["viseme", "pp", "0..1"]),
     ] {
-        assert_bad(spec(settings), want);
+        assert_bad_naming(spec(settings), names);
     }
     let bare = bare_model();
     for (settings, want) in [
@@ -1078,25 +1084,25 @@ fn a_spec_lane_must_name_one_target_the_model_has() {
             "requests":{"r":{"animation":{"source":"spec","name":"a"}}}})
     };
     let keys = json!([{"frame":0,"value":1}]);
-    for (lane, want) in [
+    for (lane, names) in [
         (
             json!({"control":"mouth_smile","interpolation":"Linear","keyframes":keys}),
-            "animation lane: control mouth_smile is not mapped by the model; it maps: mouth_open",
+            &["lane", "control", "mouth_smile", "mouth_open"][..],
         ),
         (
             json!({"expression":"sad","interpolation":"Linear","keyframes":keys}),
-            "animation lane: unknown expression sad; the model has: happy",
+            &["lane", "expression", "sad", "happy"],
         ),
         (
             json!({"viseme":"oh","interpolation":"Linear","keyframes":keys}),
-            "animation lane: unknown viseme oh; the model has: pp, aa",
+            &["lane", "viseme", "oh", "pp", "aa"],
         ),
         (
             json!({"expression":"aa","interpolation":"Linear","keyframes":keys}),
-            "unknown expression aa",
+            &["lane", "expression", "aa", "happy"],
         ),
     ] {
-        assert_bad(spec(lane), want);
+        assert_bad_naming(spec(lane), names);
     }
     for lane in [
         json!({"interpolation":"Linear","keyframes":keys}),

@@ -310,7 +310,7 @@ pub fn delete(path: &Path, key: &str) -> Result<Changed, Error> {
 }
 
 #[must_use]
-pub fn render(value: &ClmExtension) -> String {
+pub(crate) fn render(value: &ClmExtension) -> String {
     match value {
         ClmExtension::Json(json) => render_json(json),
         ClmExtension::Bytes(marker) => {

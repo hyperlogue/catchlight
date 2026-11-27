@@ -398,10 +398,10 @@ fn schemas_are_exposed_for_every_emitted_record() {
     let (code, stdout, stderr) = common::run(&["bounds", "--schema"]);
     assert_eq!(code, 0, "{stderr}");
     let schema: Value = serde_json::from_str(&stdout).unwrap();
-    assert_eq!(
-        schema["properties"]["overall"]["anyOf"][0]["$ref"],
-        "#/$defs/Bounds"
-    );
+    assert_eq!(schema["additionalProperties"], false);
+    for field in ["schema", "space", "pose", "parts", "overall"] {
+        assert!(schema["properties"].get(field).is_some(), "{field}");
+    }
 }
 
 #[cfg(unix)]

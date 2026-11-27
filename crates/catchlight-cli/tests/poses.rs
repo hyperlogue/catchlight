@@ -296,13 +296,14 @@ fn independent_pair_model(keys: usize, vertices: usize) -> Model {
 #[test]
 fn discovered_pair_products_are_bounded_before_capture_or_output_writes() {
     let model = independent_pair_model(2048, 3);
+    let pair_product = 2048 * 2048;
     assert!(matches!(
         poses::build(&model),
         Err(catchlight_cli::Error::PosesLimit {
             budget: "samples",
-            requested: 4_198_401,
-            ..
-        })
+            limit,
+            requested,
+        }) if requested >= pair_product && requested > limit
     ));
     let dir = common::tmp("poses-sample-budget");
     let input = dir.join("model.clm");

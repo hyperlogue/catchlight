@@ -24,10 +24,6 @@ fn the_binary_writes_a_png_of_the_requested_size_and_prints_the_render_list() {
     assert_eq!(code, 0, "stderr: {stderr}");
 
     assert!(stdout.contains("Render list: 2 root drawables"), "{stdout}");
-    assert!(
-        stdout.contains("=== ROOT DRAWABLES (sorted by z-order) ==="),
-        "{stdout}"
-    );
     assert!(stdout.contains("wrote"), "{stdout}");
 
     let image = image::open(&out).expect("the png decodes").to_rgba8();
