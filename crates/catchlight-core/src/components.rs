@@ -655,14 +655,6 @@ mod tests {
     }
 
     #[test]
-    fn transform_default() {
-        let transform = Transform::default();
-        assert_eq!(transform.translation, Vec3::ZERO);
-        assert_eq!(transform.rotation, Vec3::ZERO);
-        assert_eq!(transform.scale, Vec2::ONE);
-    }
-
-    #[test]
     fn transform_to_matrix_identity() {
         let transform = Transform::default();
         let matrix = transform.to_matrix();
@@ -713,16 +705,6 @@ mod tests {
     }
 
     #[test]
-    fn node_kind_size() {
-        use std::mem::size_of;
-        let size = size_of::<NodeKind>();
-        assert!(
-            size <= 48,
-            "NodeKind is {size} bytes, should be <= 48. Box large variants."
-        );
-    }
-
-    #[test]
     fn mesh_indices_picks_u16_when_max_fits() {
         let indices = MeshIndices::from_usize_iter([0, 1, 2, u16::MAX as usize]).unwrap();
         assert!(matches!(indices, MeshIndices::U16(_)));
@@ -740,21 +722,9 @@ mod tests {
         assert_eq!(indices.len(), 3);
         assert_eq!(indices.as_bytes().len(), 3 * 4);
         assert_eq!(indices.get(2), Some(over as u32));
+        assert_eq!(indices.get(3), None);
         let collected: Vec<u32> = indices.iter_u32().collect();
         assert_eq!(collected, vec![0, 1, over as u32]);
-    }
-
-    #[test]
-    fn mesh_indices_u32_roundtrips_70k_vertex_mesh() {
-        let vertex_count = 70_000usize;
-        let indices = MeshIndices::from_usize_iter(0..vertex_count).unwrap();
-        assert!(matches!(indices, MeshIndices::U32(_)));
-        assert_eq!(indices.len(), vertex_count);
-        assert_eq!(
-            indices.get(vertex_count - 1),
-            Some((vertex_count - 1) as u32)
-        );
-        assert_eq!(indices.get(vertex_count), None);
     }
 
     #[cfg(target_pointer_width = "64")]

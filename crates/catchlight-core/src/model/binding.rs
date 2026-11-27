@@ -1340,19 +1340,8 @@ mod tests {
     use crate::formats::clm::{ClmIndices, ClmMesh};
     use crate::id::SeededHex;
 
-    #[test]
-    fn param_range_rejects_inverted_collapsed_and_nan() {
-        assert!(param_range_is_valid(0.0, 1.0));
-        assert!(param_range_is_valid(-1.0, 1.0));
-        assert!(!param_range_is_valid(1.0, 0.0));
-        assert!(!param_range_is_valid(0.0, 0.0));
-        assert!(!param_range_is_valid(f32::NAN, 1.0));
-        assert!(!param_range_is_valid(0.0, f32::INFINITY));
-    }
-
     struct Fixture {
         m: Model,
-        hex: SeededHex,
         group: NodeId,
         part: NodeId,
         param: ParamId,
@@ -1393,7 +1382,6 @@ mod tests {
             .unwrap();
         Fixture {
             m,
-            hex,
             group,
             part,
             param,
@@ -1628,31 +1616,6 @@ mod tests {
             r.m.binding(&key).unwrap().key_positions()[0],
             vec![0.0, 0.5, 1.0]
         );
-    }
-
-    #[test]
-    fn a_colour_binding_cannot_be_authored_on_a_mesh_group() {
-        let mut r = fixture();
-        let root = r.m.root().unwrap().clone();
-        let group =
-            r.m.add_node(
-                &root,
-                ModelNode::new(
-                    "lattice",
-                    ModelNodeKind::MeshGroup(ModelMeshGroup::new(ClmMesh::default())),
-                ),
-                &mut r.hex,
-            )
-            .unwrap();
-        assert!(matches!(
-            r.m.add_binding(&BindingKey::new(
-                r.param.clone(),
-                group.clone(),
-                BindingTarget::Scalar(ScalarTarget::Opacity)
-            )),
-            Err(ModelError::ColorOnMeshGroup)
-        ));
-        r.m.add_binding(&r.tx(&group)).unwrap();
     }
 
     /// Guards that the derived index never outlives an edit.

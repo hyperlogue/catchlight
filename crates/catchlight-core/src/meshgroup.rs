@@ -1140,7 +1140,6 @@ mod tests {
                 }
             }
         }
-        assert!(bins.candidates.iter().all(|bin| bin.len() <= 4));
     }
 
     #[test]

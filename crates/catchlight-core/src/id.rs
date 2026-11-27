@@ -781,10 +781,11 @@ mod tests {
 
     #[test]
     fn truncating_a_name_keeps_char_boundaries() {
-        let long = "é".repeat(MAX_NAME_BYTES);
+        // The leading ASCII byte puts the cap in the middle of a two-byte char.
+        let long = format!("a{}", "é".repeat(MAX_NAME_BYTES));
         let name = Name::truncated(&long);
-        assert!(name.as_str().len() <= MAX_NAME_BYTES);
-        assert!(name.as_str().chars().all(|c| c == 'é'));
+        assert_eq!(name.as_str().len(), MAX_NAME_BYTES - 1);
+        assert!(long.starts_with(name.as_str()));
         assert_eq!(Name::truncated("short").as_str(), "short");
     }
 

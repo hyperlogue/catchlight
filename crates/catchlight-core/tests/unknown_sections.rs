@@ -153,18 +153,6 @@ fn a_model_carries_unknown_sections_through_an_edit_and_a_save() {
 }
 
 #[test]
-fn a_file_with_no_unknown_section_is_unchanged() {
-    let bytes = fixture();
-    let file = clm::decode(&bytes).unwrap();
-    assert!(file.unknown_sections.is_empty());
-    assert_eq!(file.encode().unwrap(), bytes);
-    assert_eq!(
-        clm::encode(&file.doc, &file.textures, &file.extensions).unwrap(),
-        bytes
-    );
-}
-
-#[test]
 fn authored_equality_sees_unknown_sections() {
     let with = Model::from_clm_bytes(&file_from_the_future()).unwrap();
     let without = Model::from_clm_bytes(&fixture()).unwrap();

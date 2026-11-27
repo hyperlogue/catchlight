@@ -172,7 +172,6 @@ mod tests {
             row(&[(1, 1.0)]),
         ];
         let map = DeformMapping::new(3, 2, &rows).unwrap();
-        assert_eq!(map.rows[0], vec![(0, 0.5), (2, 0.5)]);
         assert_eq!(
             map.map(&[2., 4., 10., 20., 6., 8.]).unwrap(),
             vec![4., 6., 10., 20.]

@@ -116,6 +116,15 @@ fn both_readers_and_both_writers_agree_on_every_fixture() {
             bytes,
             "{name}: decode then encode"
         );
+        assert!(
+            file.unknown_sections.is_empty(),
+            "{name}: every section is known"
+        );
+        assert_eq!(
+            file.encode().unwrap(),
+            bytes,
+            "{name}: the file encodes itself"
+        );
 
         let direct = Model::from_clm_bytes(&bytes).unwrap();
         let through_file = Model::from_clm_file(&file).unwrap();

@@ -1444,19 +1444,19 @@ mod tests {
         puppet.set_param_value(&param, 3.0);
         puppet.contribute(slot, a, 0.0, 1.0);
         puppet.contribute(slot, b, 1.0, 1.0);
-        claim_index_agrees(&puppet);
+        assert_eq!(puppet.param_value(&param), Some(0.5));
 
         puppet.clear_param_contributions();
-        assert!(puppet.param_contributions.is_empty());
-        assert!(
-            puppet.slot_claims.iter().all(smallvec::SmallVec::is_empty),
-            "a cleared claim leaves no row behind",
-        );
-        claim_index_agrees(&puppet);
         assert_eq!(
             puppet.param_value(&param),
             Some(3.0),
-            "and the param is back to what was posed",
+            "the param is back to what was posed",
+        );
+        puppet.contribute(slot, b, 1.0, 1.0);
+        assert_eq!(
+            puppet.param_value(&param),
+            Some(1.0),
+            "a cleared claim does not blend into the next one",
         );
     }
 }

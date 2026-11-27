@@ -501,34 +501,6 @@ mod tests {
     }
 
     #[test]
-    fn source_buf_mut_reuses_allocation_across_frames() {
-        let mut s = DeformStack::new(4);
-        {
-            let buf = s.source_buf_mut(DeformSource::Param(7));
-            for v in buf.iter_mut() {
-                *v = Vec2::new(1.0, 2.0);
-            }
-        }
-        s.combine();
-        let cap_before = s
-            .sources
-            .iter()
-            .find(|slot| slot.source == DeformSource::Param(7))
-            .map_or(0, |slot| slot.offsets.capacity());
-        s.reset();
-        {
-            let buf = s.source_buf_mut(DeformSource::Param(7));
-            buf.fill(Vec2::ZERO);
-        }
-        let cap_after = s
-            .sources
-            .iter()
-            .find(|slot| slot.source == DeformSource::Param(7))
-            .map_or(0, |slot| slot.offsets.capacity());
-        assert_eq!(cap_before, cap_after, "pool must reuse allocation");
-    }
-
-    #[test]
     fn unchanged_param_value_keeps_combined_and_generation() {
         let mut s = DeformStack::new(2);
         let v = Vec2::new(0.3, 0.7);

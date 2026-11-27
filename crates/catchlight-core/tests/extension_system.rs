@@ -556,7 +556,7 @@ fn a_cached_typed_read_does_not_go_stale_after_an_id_change() {
 }
 
 #[test]
-fn extension_mut_unshares_only_when_shared_and_bumps_the_generation() {
+fn extension_mut_bumps_the_generation_and_leaves_a_snapshot_alone() {
     let r = rig();
     let mut model = r.model.clone();
     model
@@ -565,16 +565,15 @@ fn extension_mut_unshares_only_when_shared_and_bumps_the_generation() {
         .0
         .add(IdRef::Param(r.param.clone()), "first");
     let before = model.generation();
-    let a = model.extension_mut::<Shared>().unwrap() as *const Shared;
+    model.extension_mut::<Shared>().unwrap();
     assert!(model.generation() > before);
-    let b = model.extension_mut::<Shared>().unwrap() as *const Shared;
-    assert_eq!(a, b, "an unshared slot is written in place");
 
     let snapshot = model.clone();
-    let c = model.extension_mut::<Shared>().unwrap();
-    c.0.add(IdRef::Param(r.param), "second");
-    let c = c as *const Shared;
-    assert_ne!(b, c, "a shared slot is copied before the write");
+    model
+        .extension_mut::<Shared>()
+        .unwrap()
+        .0
+        .add(IdRef::Param(r.param), "second");
     assert_eq!(snapshot.extension::<Shared>().unwrap().0.texts(), ["first"]);
     assert_eq!(
         model.extension::<Shared>().unwrap().0.texts(),

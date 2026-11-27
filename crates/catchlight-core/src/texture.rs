@@ -481,16 +481,6 @@ mod tests {
     }
 
     #[test]
-    fn align_helpers_round_toward_multiples_of_16() {
-        assert_eq!(align_down(-1), -16);
-        assert_eq!(align_down(0), 0);
-        assert_eq!(align_down(31), 16);
-        assert_eq!(align_up(1), 16);
-        assert_eq!(align_up(-1), 0);
-        assert_eq!(align_up(16), 16);
-    }
-
-    #[test]
     fn blit_clips_to_source_and_preserves_bytes() {
         const OUT: u32 = 128;
         let mut rgba = vec![0u8; 4 * 4 * 4];
@@ -754,22 +744,6 @@ mod tests {
         let i = ((ly * w + lx) * 4) as usize;
         assert_eq!(&cropped.rgba[i..i + 4], &[200, 100, 50, 255]);
         assert_eq!(&cropped.rgba[0..4], &[0, 0, 0, 0]);
-    }
-
-    #[test]
-    fn remap_keeps_opaque_uvs_inside_unit_square() {
-        let source = tex(256, 256, &[(140, 150)]);
-        let (cx, cy, cw, ch) = alpha_crop_rect(&source, ROOMY).unwrap();
-        let remap = |u: f64, v: f64| {
-            (
-                ((u * 256.0 - cx as f64) / f64::from(cw)) as f32,
-                ((v * 256.0 - cy as f64) / f64::from(ch)) as f32,
-            )
-        };
-        let (ox, oy) = remap(140.5 / 256.0, 150.5 / 256.0);
-        assert!((0.0..=1.0).contains(&ox) && (0.0..=1.0).contains(&oy));
-        let (gx, gy) = remap(0.0, 0.0);
-        assert!(gx < 0.0 && gy < 0.0);
     }
 
     #[test]

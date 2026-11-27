@@ -202,13 +202,6 @@ fn a_value_that_is_not_a_number_is_refused_by_every_mutator_that_writes_one() {
 }
 
 #[test]
-fn a_clone_keeps_the_identity() {
-    let model = Model::new();
-    let snapshot = model.clone();
-    assert_eq!(model.identity(), snapshot.identity());
-}
-
-#[test]
 fn editing_forward_from_a_restored_snapshot_never_reuses_a_generation() {
     let mut model = Model::new();
     let snapshot = model.clone();

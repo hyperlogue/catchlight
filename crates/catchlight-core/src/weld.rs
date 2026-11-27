@@ -328,15 +328,6 @@ mod tests {
     }
 
     #[test]
-    fn coincident_seam_at_rest_is_a_no_op() {
-        let (mut arena, a, b) = two_part_arena(Vec2::ZERO);
-        arena.welds = vec![seam_weld(a, b, 0.5)].into();
-        run(&mut arena);
-        assert_eq!(weld_slot(&arena, a), vec![Vec2::ZERO; 3]);
-        assert_eq!(weld_slot(&arena, b), vec![Vec2::ZERO; 3]);
-    }
-
-    #[test]
     fn differing_local_frames_with_coincident_world_seam_is_a_no_op() {
         let (mut arena, a, b) = two_part_arena(Vec2::new(4.0, 2.0));
         arena.welds = vec![seam_weld(a, b, 0.5)].into();

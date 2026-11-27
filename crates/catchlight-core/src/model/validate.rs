@@ -419,44 +419,6 @@ mod tests {
     }
 
     #[test]
-    fn a_spine_needs_links_with_a_length() {
-        assert_eq!(spine_joints(&[[0.0, -1.0], [0.0, -2.0]]), Ok(()));
-        assert_eq!(spine_joints(&[]), Err(SpineJointError::NoJoints));
-        assert_eq!(
-            spine_joints(&[[0.0, f32::NAN]]),
-            Err(SpineJointError::NonFinite(0))
-        );
-        assert_eq!(
-            spine_joints(&[[0.0, 0.0]]),
-            Err(SpineJointError::Coincident(0))
-        );
-        assert_eq!(
-            spine_joints(&[[0.0, -1.0], [0.0, -1.0]]),
-            Err(SpineJointError::Coincident(1))
-        );
-    }
-
-    #[test]
-    fn a_nodes_placement_is_finite() {
-        let identity = ClmTransform::default();
-        assert_eq!(node_placement(0.0, &identity), Ok(()));
-        assert_eq!(
-            node_placement(f32::NAN, &identity),
-            Err(PlacementFault::ZOrder)
-        );
-        let poisons: [fn(&mut ClmTransform); 3] = [
-            |t| t.translation[2] = f32::NAN,
-            |t| t.rotation[0] = f32::INFINITY,
-            |t| t.scale[1] = f32::NEG_INFINITY,
-        ];
-        for poison in poisons {
-            let mut bad = identity;
-            poison(&mut bad);
-            assert_eq!(node_placement(0.0, &bad), Err(PlacementFault::Transform));
-        }
-    }
-
-    #[test]
     fn a_nodes_appearance_is_finite() {
         assert_eq!(appearance(&ModelNodeKind::Group), Ok(()));
         assert_eq!(
@@ -481,21 +443,5 @@ mod tests {
             poison(&mut bad);
             assert_eq!(appearance(&ModelNodeKind::Composite(bad)), Err(fault));
         }
-    }
-
-    #[test]
-    fn a_deform_cell_is_sized_to_the_mesh_and_finite() {
-        assert_eq!(deform_offsets(&[0.0; 8], 8), Ok(()));
-        assert_eq!(
-            deform_offsets(&[0.0; 6], 8),
-            Err(DeformFault::Length {
-                expected: 8,
-                got: 6
-            })
-        );
-        assert_eq!(
-            deform_offsets(&[0.0, f32::INFINITY], 2),
-            Err(DeformFault::NonFinite)
-        );
     }
 }

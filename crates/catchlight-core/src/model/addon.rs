@@ -942,10 +942,8 @@ mod tests {
         })
     }
 
-    fn listed(r: &Requirements) -> Vec<(String, &'static str, String)> {
-        r.iter()
-            .map(|q| (q.id.to_string(), q.field, q.owner.to_string()))
-            .collect()
+    fn listed(r: &Requirements) -> Vec<Requirement> {
+        r.iter().cloned().collect()
     }
 
     fn named(m: &Model, name: &str) -> NodeId {
@@ -958,6 +956,14 @@ mod tests {
             .unwrap_or_else(|| panic!("no node named {name}"))
     }
 
+    fn need(id: Required, field: &'static str, owner: &NodeId) -> Requirement {
+        Requirement {
+            id,
+            field,
+            owner: RequirementOwner::Node(owner.clone()),
+        }
+    }
+
     #[test]
     fn requirements_of_an_extracted_fragment_are_exactly_its_cut_edges() {
         let b = base();
@@ -967,41 +973,21 @@ mod tests {
         assert_eq!(
             listed(&addon.requirements()),
             vec![
-                (
-                    format!("node {:?}", b.head.as_str()),
-                    "parent",
-                    hat.to_string()
-                ),
-                (
-                    format!("node {:?}", b.head.as_str()),
-                    "parent",
-                    sway.to_string()
-                ),
-                (
-                    format!("drawable {:?}", b.body.as_str()),
-                    "mask source",
-                    hat.to_string()
-                ),
-                (
-                    format!("param {:?}", b.param.as_str()),
-                    "binding param",
-                    hat.to_string()
-                ),
-                (
-                    format!("param {:?}", b.param.as_str()),
+                need(Required::Node(b.head.clone()), "parent", &hat),
+                need(Required::Node(b.head.clone()), "parent", &sway),
+                need(Required::Drawable(b.body.clone()), "mask source", &hat),
+                need(Required::Param(b.param.clone()), "binding param", &hat),
+                need(
+                    Required::Param(b.param.clone()),
                     "motion response param",
-                    sway.to_string()
+                    &sway
                 ),
-                (
-                    format!("vertex slot \"left\" on part {:?}", b.body.as_str()),
+                need(
+                    Required::Slot(b.body.clone(), slot_id("left")),
                     "weld end",
-                    hat.to_string()
+                    &hat
                 ),
-                (
-                    format!("vertex slot \"right\" on part {:?}", b.body.as_str()),
-                    "weld end",
-                    hat.to_string()
-                ),
+                need(Required::Slot(b.body, slot_id("right")), "weld end", &hat),
             ]
         );
         assert_eq!(addon.requirements().nodes().count(), 2);
@@ -1564,6 +1550,8 @@ mod tests {
         let cut = b.m.extract(std::slice::from_ref(&b.root));
         assert_eq!(cut.node_count(), 0, "the root is not there to cut");
         assert!(cut.roots().is_empty());
+        assert!(cut.is_fragment());
+        assert!(cut.requirements().is_empty());
         assert_eq!(cut.bindings().count(), 0);
         let reopened =
             Model::from_clm_bytes_with(&cut.to_clm_bytes().unwrap(), ReadOptions::fragment())
@@ -1662,15 +1650,5 @@ mod tests {
             "{:?}",
             addon.check()
         );
-    }
-
-    #[test]
-    fn extracting_the_whole_tree_is_an_empty_fragment() {
-        let b = base();
-        let whole = b.m.extract(std::slice::from_ref(&b.root));
-        assert!(whole.is_fragment());
-        assert_eq!(whole.root(), None);
-        assert_eq!(whole.node_count(), 0);
-        assert!(whole.requirements().is_empty());
     }
 }
