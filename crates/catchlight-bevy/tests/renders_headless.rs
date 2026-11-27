@@ -9,8 +9,10 @@
 //! from the shared asset, each holding its own deform set, and each is
 //! collected into with *its* puppet's frame.
 
+use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use bevy::asset::RenderAssetUsages;
 use bevy::camera::visibility::RenderLayers;
@@ -39,10 +41,35 @@ fn fixture(stem: &str) -> Model {
     Model::from_clm_bytes(&std::fs::read(path).expect("read fixture")).expect("parse fixture")
 }
 
-/// A render app with no window: the plugins `CatchlightPlugin` needs, plus an
-/// offscreen camera target. Returns `None` when no adapter could be created,
-/// which is how a machine with no GPU at all reports itself.
-fn render_app() -> App {
+/// Some Vulkan drivers deadlock when one thread destroys a device while
+/// another creates or uses one, so each test holds this from before its
+/// device exists until after it is destroyed.
+static GPU: Mutex<()> = Mutex::new(());
+
+/// A render app that owns the GPU for as long as it lives.
+struct RenderApp {
+    app: App,
+    // Declared after `app` so the device is gone before the next test starts.
+    _gpu: MutexGuard<'static, ()>,
+}
+
+impl Deref for RenderApp {
+    type Target = App;
+
+    fn deref(&self) -> &App {
+        &self.app
+    }
+}
+
+impl DerefMut for RenderApp {
+    fn deref_mut(&mut self) -> &mut App {
+        &mut self.app
+    }
+}
+
+/// A render app with no window: the plugins `CatchlightPlugin` needs.
+fn render_app() -> RenderApp {
+    let gpu = GPU.lock().unwrap_or_else(PoisonError::into_inner);
     let mut app = App::new();
     // The order is DefaultPlugins' own: the renderer comes up before the
     // asset plugins that register render assets against it.
@@ -65,7 +92,7 @@ fn render_app() -> App {
     ));
     app.finish();
     app.cleanup();
-    app
+    RenderApp { app, _gpu: gpu }
 }
 
 fn offscreen_target(app: &mut App) -> Handle<Image> {
