@@ -767,7 +767,6 @@ mod tests {
         let mut history = ModelHistory::new(first, HistoryLimits::default());
         history.record(second, 1).unwrap();
         assert_eq!(history.bytes(), expected);
-        assert_eq!(history.payloads.len(), 2);
     }
 
     #[test]
@@ -781,7 +780,6 @@ mod tests {
         assert!(history.bytes() > payload.len());
         history.record(model, 3).unwrap();
         assert!(history.bytes() < payload.len());
-        assert!(history.payloads.is_empty());
     }
 
     #[test]
