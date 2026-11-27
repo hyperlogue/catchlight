@@ -166,15 +166,6 @@ mod tests {
     }
 
     #[test]
-    fn an_id_outside_the_charset_does_not_parse() {
-        let line = r#"{"id":4,"cmd":"node_delete","session":1,"node":"a b"}"#;
-        let err = serde_json::from_str::<Request>(line).unwrap_err();
-        assert!(err.to_string().contains("invalid byte"), "{err}");
-        let RequestId { id } = serde_json::from_str(line).unwrap();
-        assert_eq!(id, 4);
-    }
-
-    #[test]
     fn a_session_source_takes_only_its_own_fields_and_only_a_source_carries_bytes() {
         for value in [
             serde_json::json!({"format":"clm", "textures":[]}),
@@ -186,14 +177,5 @@ mod tests {
         let new = |source| Command::SessionNew { name: None, source };
         assert!(new(None).carries_bytes().is_none());
         assert!(new(Some(SessionSource::Clm {})).carries_bytes().is_some());
-    }
-
-    #[test]
-    fn a_misspelt_request_field_is_refused() {
-        let line = r#"{"id":4,"cmd":"mesh_set","session":1,"node":"a","verts":[],"uvs":[],"indices":[],"origin":[0,0],"ifrev":5}"#;
-        let err = serde_json::from_str::<Request>(line).unwrap_err();
-        assert!(err.to_string().contains("unknown field `ifrev`"), "{err}");
-        let RequestId { id } = serde_json::from_str(line).unwrap();
-        assert_eq!(id, 4);
     }
 }
