@@ -10,7 +10,6 @@ members = [
     "crates/catchlight-cli",
     "crates/catchlight-editor-core",
     "crates/catchlight-editor-protocol",
-    "crates/catchlight-editor-discovery",
     "crates/catchlight-editor-server",
     "crates/catchlight-editor-cli",
     "crates/catchlight-editor",
@@ -41,7 +40,6 @@ catchlight-extension-expressions = { path = "crates/catchlight-extension-express
 catchlight-importer = { path = "crates/catchlight-importer", version = "0.4.0" }
 catchlight-editor-core = { path = "crates/catchlight-editor-core", version = "0.4.0" }
 catchlight-editor-protocol = { path = "crates/catchlight-editor-protocol", version = "0.4.0" }
-catchlight-editor-discovery = { path = "crates/catchlight-editor-discovery", version = "0.4.0" }
 catchlight-editor-server = { path = "crates/catchlight-editor-server", version = "0.4.0" }
 catchlight-editor-cli = { path = "crates/catchlight-editor-cli", version = "0.4.0" }
 catchlight-wgpu = { path = "crates/catchlight-wgpu", version = "0.4.0" }

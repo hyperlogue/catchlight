@@ -9,7 +9,7 @@ use std::os::unix::fs::{
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, anyhow, bail};
-use catchlight_editor_protocol::ReviewIdentity;
+use catchlight_editor_protocol::{EDITOR_DIR, ReviewIdentity};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
@@ -126,11 +126,7 @@ impl Store {
         let mut failed = Vec::new();
         let preferred = [
             Some(self.dir.join("images").join(&leaf)),
-            runtime.map(|r| {
-                r.join("catchlight-editor")
-                    .join("review-images")
-                    .join(&leaf)
-            }),
+            runtime.map(|r| r.join(EDITOR_DIR).join("review-images").join(&leaf)),
         ];
         for dir in preferred.into_iter().flatten() {
             match private_dir(&dir).and_then(|()| probe(&dir)) {
@@ -455,7 +451,7 @@ mod tests {
         let images = store
             .images(&editor, 1, "claude:a", Some(&runtime))
             .unwrap();
-        assert!(images.starts_with(runtime.join("catchlight-editor")));
+        assert!(images.starts_with(runtime.join(EDITOR_DIR)));
         assert!(private(&images));
 
         std::fs::remove_dir_all(&runtime).unwrap();

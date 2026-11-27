@@ -26,8 +26,6 @@ mod storage;
 mod transport;
 mod versions;
 
-#[cfg(unix)]
-pub use catchlight_editor_discovery::default_socket_path;
 pub use editor::{Attachments, Editor, Observer, Payload, Subscription};
 pub use error::EditorError;
 #[cfg(not(target_arch = "wasm32"))]
@@ -42,4 +40,4 @@ pub use query::{extension_value_info, replica_query, replica_reply};
 pub use storage::FileStorage;
 pub use storage::{NoStorage, Storage, join_key, key_stem, parent_key};
 #[cfg(unix)]
-pub use transport::serve_unix;
+pub use transport::{default_socket_path, serve_unix};

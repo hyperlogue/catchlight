@@ -11,6 +11,7 @@ pub use catchlight_core::{MotionResponse, ResponseInput, ResponseSource};
 use serde::{Deserialize, Serialize};
 
 mod command;
+mod connection;
 mod edit;
 mod extension;
 mod reply;
@@ -18,6 +19,7 @@ mod review;
 mod vocab;
 
 pub use command::*;
+pub use connection::*;
 pub use edit::*;
 pub use extension::*;
 pub use reply::*;

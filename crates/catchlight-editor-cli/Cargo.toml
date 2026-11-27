@@ -11,7 +11,6 @@ description = "Thin client for the catchlight editor server: drives an editing s
 
 [dependencies]
 catchlight-editor-protocol.workspace = true
-catchlight-editor-discovery.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true

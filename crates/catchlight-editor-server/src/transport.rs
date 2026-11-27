@@ -12,8 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use catchlight_core::LoadLimits;
-use catchlight_editor_discovery::default_socket_path;
-use catchlight_editor_protocol::{ErrorCode, Reply, Request};
+use catchlight_editor_protocol::{EDITOR_DIR, ErrorCode, Reply, Request, SOCKET_FILE};
 use serde_json::Value;
 
 use crate::doors::{
@@ -22,6 +21,15 @@ use crate::doors::{
 use crate::{Attachments, Editor, Payload};
 
 const SOCKET_IO_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// `$XDG_RUNTIME_DIR/catchlight-editor/server.sock`, else the temp dir.
+// The CLI keeps its own copy in its `discovery` module;
+// `crates/catchlight-editor/tests/discovery.rs` keeps the two equal.
+#[must_use]
+pub fn default_socket_path() -> PathBuf {
+    let base = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(std::env::temp_dir, PathBuf::from);
+    base.join(EDITOR_DIR).join(SOCKET_FILE)
+}
 
 pub fn serve_unix(editor: Arc<Editor>, path: &Path) -> std::io::Result<()> {
     let listener = bind_unix_listener(path)?;

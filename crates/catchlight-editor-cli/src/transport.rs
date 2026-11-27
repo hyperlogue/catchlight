@@ -12,11 +12,11 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
-use catchlight_editor_discovery::{Connection, default_connection_path};
-use catchlight_editor_protocol::{COMMAND_BYTES, Reply, Request};
+use catchlight_editor_protocol::{COMMAND_BYTES, Connection, Reply, Request};
 use serde_json::{Map, Value};
 
 use super::MAX_COMMAND_BYTES;
+use crate::discovery::default_connection_path;
 
 /// Sized for a render under a software adapter.
 const HTTP_TIMEOUT: Duration = Duration::from_secs(300);
@@ -106,7 +106,7 @@ pub fn resolve(target: &Target) -> Result<(Transport, Endpoint)> {
     // The default socket is a guess: any failure on it falls through silently.
     #[cfg(unix)]
     let socket_error = {
-        let path = catchlight_editor_discovery::default_socket_path();
+        let path = crate::discovery::default_socket_path();
         match UnixStream::connect(&path) {
             Ok(stream) => {
                 let endpoint = Endpoint::Socket(std::path::absolute(&path)?);

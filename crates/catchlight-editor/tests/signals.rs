@@ -17,7 +17,7 @@ fn stopped_by(signal: &str) -> Option<i32> {
     let mut launcher = Command::new(env!("CARGO_BIN_EXE_catchlight-editor"))
         .args(["--no-open", "--port", "0"])
         .current_dir(&dir)
-        .env("CATCHLIGHT_EDITOR_CONNECTION", &connection)
+        .env(catchlight_editor_protocol::CONNECTION_ENV, &connection)
         .env("CATCHLIGHT_KEEP", dir.join("kept"))
         .stdout(Stdio::null())
         .stderr(Stdio::null())

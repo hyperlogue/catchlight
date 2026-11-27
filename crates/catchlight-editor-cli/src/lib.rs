@@ -9,6 +9,7 @@ mod cli;
 mod commands;
 mod compose;
 mod current;
+mod discovery;
 mod extension;
 #[cfg(unix)]
 mod listen;
@@ -32,6 +33,10 @@ use commands::{
 };
 use print::{code_name, print_body, print_reply};
 use route::{Reached, Route};
+
+pub use discovery::default_connection_path;
+#[cfg(unix)]
+pub use discovery::default_socket_path;
 
 #[must_use]
 pub fn command_names() -> Vec<String> {

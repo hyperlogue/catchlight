@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
-use catchlight_editor_protocol::{Command, Reply, Request, ResponseBody, SessionId};
+use catchlight_editor_protocol::{Command, EDITOR_DIR, Reply, Request, ResponseBody, SessionId};
 
 use crate::transport;
 
@@ -13,7 +13,7 @@ fn current_path() -> PathBuf {
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
         .unwrap_or_else(std::env::temp_dir);
-    base.join("catchlight-editor").join("current")
+    base.join(EDITOR_DIR).join("current")
 }
 
 /// The remembered session and the editor that numbered it. Every editor

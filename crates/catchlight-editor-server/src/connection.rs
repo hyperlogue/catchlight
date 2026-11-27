@@ -8,9 +8,30 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-pub use catchlight_editor_discovery::{Connection, default_connection_path};
+pub use catchlight_editor_protocol::Connection;
+use catchlight_editor_protocol::{CONNECTION_ENV, CONNECTION_FILE, EDITOR_DIR};
 
 use crate::HttpServer;
+
+/// Where a running editor writes its [`Connection`] for local clients;
+/// `CATCHLIGHT_EDITOR_CONNECTION` overrides it. Never a shared temp dir: the
+/// file holds a bearer token.
+// The CLI keeps its own copy in its `discovery` module;
+// `crates/catchlight-editor/tests/discovery.rs` keeps the two equal.
+#[must_use]
+pub fn default_connection_path() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os(CONNECTION_ENV) {
+        return Some(PathBuf::from(path));
+    }
+    let base = if cfg!(windows) {
+        std::env::var_os("LOCALAPPDATA").map(PathBuf::from)
+    } else {
+        std::env::var_os("XDG_RUNTIME_DIR")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
+    }?;
+    Some(base.join(EDITOR_DIR).join(CONNECTION_FILE))
+}
 
 /// The written file, removed again when this is dropped.
 #[derive(Debug)]
