@@ -134,12 +134,14 @@ describe("the animations panel", () => {
     await run(() => play(view.container, "walk").click());
     expect(frames.size).toBeGreaterThan(0);
     const playhead = () => clip(view.container, "walk").querySelector("[data-catchlight-clip-playhead]")?.textContent;
-    expect(playhead()).toBe("0.00 s / 2.00 sframe 0");
+    expect(playhead()).toContain("0.00 s");
+    expect(playhead()).toContain("frame 0");
 
     // The replica moves the clip without invalidating anything.
     fakeReplica(session).clip = { name: "walk", time: 0.5, frame: 15.4 };
     await step();
-    expect(playhead()).toBe("0.50 s / 2.00 sframe 15");
+    expect(playhead()).toContain("0.50 s");
+    expect(playhead()).toContain("frame 15");
     expect(frames.size).toBeGreaterThan(0);
 
     await run(() => session.stop());

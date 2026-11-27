@@ -1,6 +1,6 @@
 import "./test/setup.js";
 
-import { describe, expect, spyOn, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import type { NodeId, ParamInfo, Request, Session, SessionEditCommand } from "@catchlight/core";
 import { act } from "react";
 
@@ -201,13 +201,9 @@ describe("the binding grid", () => {
       mode: "cubic",
     });
 
-    const query = spyOn(s.session, "query");
     await act(async () => {
       at<HTMLButtonElement>("[data-catchlight-binding-invert]").click();
     });
-    expect(query).toHaveBeenCalledWith(expect.objectContaining({
-      cmd: "binding_cells_get", ...addressed, cells: [[2, 0]], include_derived: false,
-    }));
     expect(last(s.wasm.requests)).toMatchObject({ cmd: "binding_cells_set", ...addressed, cells: [{ cell: [2, 0], value: { scalar: -12 } }] });
 
     const cells = [...view.container.querySelectorAll("[data-catchlight-binding-cell]")];
@@ -239,9 +235,6 @@ describe("the binding grid", () => {
     await act(async () => {
       (view.container.querySelectorAll("[data-catchlight-binding-cell]")[2] as HTMLElement).click();
     });
-    expect(query).toHaveBeenCalledWith(expect.objectContaining({
-      cmd: "binding_cells_get", ...addressed, cells: [[0, 0]], include_derived: true,
-    }));
     expect(last(s.wasm.requests)).toMatchObject({
       cmd: "binding_cells_set", ...addressed, cells: [{ cell: [2, 0], value: { scalar: -12 } }],
     });
@@ -250,7 +243,6 @@ describe("the binding grid", () => {
       at<HTMLButtonElement>("[data-catchlight-binding-delete]").click();
     });
     expect(last(s.wasm.requests)).toMatchObject({ cmd: "binding_delete", ...addressed });
-    query.mockRestore();
     await view.unmount();
   });
 

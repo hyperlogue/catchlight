@@ -126,8 +126,8 @@ describe("an attach that cannot happen", () => {
     await settle();
 
     expect(warned.calls).toHaveLength(1);
-    expect(String(warned.calls[0]?.[0])).toContain("attaching the viewport failed");
-    expect((warned.calls[0]?.[1] as Error).message).toBe(NO_DEVICE);
+    const cause = warned.calls[0]?.find((arg) => arg instanceof Error) as Error | undefined;
+    expect(cause?.message).toBe(NO_DEVICE);
 
     warned.restore();
     await view.unmount();

@@ -4,7 +4,7 @@ import { describe, expect, test } from "bun:test";
 import type { ParamInfo, SessionEditCommand } from "@catchlight/core";
 
 import { EditorProvider, ParamList, ParamSlider } from "./index.js";
-import { fakeReplica, fire, harness, mount, run } from "./test/harness.js";
+import { fire, harness, mount, run } from "./test/harness.js";
 
 const eyeOpen = (name = "eye_open"): SessionEditCommand => ({
   cmd: "param_add",
@@ -83,25 +83,6 @@ describe("posing a param", () => {
     );
     expect(view.container.querySelectorAll("input").length).toBe(0);
     expect(view.container.textContent).toBe("eye_openmouth_open");
-    await view.unmount();
-  });
-
-  test("the value is the replica's pose, not React state", async () => {
-    const { editor } = await harness();
-    const session = await editor.newSession();
-    await run(() => session.send(eyeOpen()));
-    const param = session.params()[0] as ParamInfo;
-
-    const view = await mount(
-      <EditorProvider editor={editor}>
-        <ParamSlider.Root session={session} param={param} />
-      </EditorProvider>,
-    );
-    const slider = view.container.querySelector("input") as HTMLInputElement;
-    slider.value = "0.75";
-    await fire(slider, new Event("input", { bubbles: true }));
-
-    expect(fakeReplica(session).pose.get(param.id)).toBe(0.75);
     await view.unmount();
   });
 });

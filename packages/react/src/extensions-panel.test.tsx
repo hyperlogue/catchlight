@@ -60,14 +60,12 @@ describe("the extensions panel", () => {
   test("lists every extension, with a maintained one's version and references", async () => {
     const { render } = await seeded();
     const view = await render();
-    const keys = [...view.container.querySelectorAll("[data-catchlight-extension]")].map(
-      (r) => r.querySelector("span")?.firstChild?.textContent,
-    );
-    expect(keys).toEqual(["acme.framing", "acme.notes", "catchlight.humanoid"]);
-    expect(row(view.container, "acme.framing").querySelector("small")?.textContent).toBe(
-      "Version 2, 2 references",
-    );
-    expect(row(view.container, "acme.notes").querySelector("small")?.textContent).toBe("JSON");
+    const rows = [...view.container.querySelectorAll("[data-catchlight-extension]")];
+    const keys = ["acme.framing", "acme.notes", "catchlight.humanoid"];
+    expect(rows).toHaveLength(keys.length);
+    rows.forEach((r, i) => expect(r.textContent?.startsWith(keys[i]!)).toBe(true));
+    expect(row(view.container, "acme.framing").textContent).toContain("Version 2, 2 references");
+    expect(row(view.container, "acme.notes").textContent).toContain("JSON");
     await view.unmount();
   });
 
