@@ -2,7 +2,7 @@
 #
 #   irm https://github.com/hyperlogue/catchlight/releases/latest/download/install.ps1 | iex
 #
-# CATCHLIGHT_VERSION      a release tag such as v0.3.0 (default: the latest)
+# CATCHLIGHT_VERSION      a release tag such as v0.4.0 (default: the latest)
 # CATCHLIGHT_INSTALL_DIR  where the binary goes (default: %LOCALAPPDATA%\catchlight\bin)
 # CATCHLIGHT_DOWNLOAD_URL a mirror holding the release assets (overrides both)
 #

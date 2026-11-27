@@ -1417,7 +1417,7 @@ dependencies = [
 
 [[package]]
 name = "catchlight"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "catchlight-bevy",
  "catchlight-core",
@@ -1429,7 +1429,7 @@ dependencies = [
 
 [[package]]
 name = "catchlight-bevy"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bevy",
  "bytemuck",
@@ -1446,7 +1446,7 @@ dependencies = [
 
 [[package]]
 name = "catchlight-cli"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "base64",
  "catchlight-core",
@@ -1473,7 +1473,7 @@ dependencies = [
 
 [[package]]
 name = "catchlight-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "blake3",
  "bytemuck",
@@ -1494,7 +1494,7 @@ dependencies = [
 
 [[package]]
 name = "catchlight-editor"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "catchlight-editor-cli",
@@ -1506,7 +1506,7 @@ dependencies = [
 
 [[package]]
 name = "catchlight-editor-cli"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "catchlight-editor-protocol",
@@ -1519,7 +1519,7 @@ dependencies = [
 
 [[package]]
 name = "catchlight-editor-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "catchlight-core",
  "image",
@@ -1531,7 +1531,7 @@ dependencies = [
 
 [[package]]
 name = "catchlight-editor-protocol"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "catchlight-core",
  "serde",
@@ -1541,7 +1541,7 @@ dependencies = [
 
 [[package]]
 name = "catchlight-editor-server"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "catchlight-core",
  "catchlight-editor-core",
@@ -1568,7 +1568,7 @@ dependencies = [
 
 [[package]]
 name = "catchlight-editor-wasm"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "catchlight-core",
  "catchlight-editor-core",
@@ -1592,7 +1592,7 @@ dependencies = [
 
 [[package]]
 name = "catchlight-extension-animations"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "catchlight-core",
  "catchlight-extension-expressions",
@@ -1606,7 +1606,7 @@ dependencies = [
 
 [[package]]
 name = "catchlight-extension-expressions"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "catchlight-core",
  "catchlight-extension-humanoid",
@@ -1617,7 +1617,7 @@ dependencies = [
 
 [[package]]
 name = "catchlight-extension-humanoid"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "catchlight-core",
  "serde",
@@ -1627,7 +1627,7 @@ dependencies = [
 
 [[package]]
 name = "catchlight-importer"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -1647,7 +1647,7 @@ dependencies = [
 
 [[package]]
 name = "catchlight-wgpu"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bytemuck",
  "catchlight-core",
@@ -5376,7 +5376,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "visual-tests"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "catchlight-core",
@@ -6275,7 +6275,7 @@ checksum = "3ae8337f8a065cfc972643663ea4279e04e7256de865aa66fe25cec5fb912d3f"
 
 [[package]]
 name = "xtask"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "catchlight-core",

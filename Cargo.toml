@@ -21,7 +21,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/hyperlogue/catchlight"
@@ -32,17 +32,17 @@ categories = ["graphics", "game-development"]
 # Internal crates. The `version` is not redundant with `path`: publishing to
 # crates.io requires it, and without it these read as `*` requirements, which
 # `cargo deny check bans` rejects. Keep it in step with `workspace.package`.
-catchlight-core = { path = "crates/catchlight-core", version = "0.3.0" }
-catchlight-extension-animations = { path = "crates/catchlight-extension-animations", version = "0.3.0" }
-catchlight-extension-humanoid = { path = "crates/catchlight-extension-humanoid", version = "0.3.0" }
-catchlight-extension-expressions = { path = "crates/catchlight-extension-expressions", version = "0.3.0" }
-catchlight-importer = { path = "crates/catchlight-importer", version = "0.3.0" }
-catchlight-editor-core = { path = "crates/catchlight-editor-core", version = "0.3.0" }
-catchlight-editor-protocol = { path = "crates/catchlight-editor-protocol", version = "0.3.0" }
-catchlight-editor-server = { path = "crates/catchlight-editor-server", version = "0.3.0" }
-catchlight-editor-cli = { path = "crates/catchlight-editor-cli", version = "0.3.0" }
-catchlight-wgpu = { path = "crates/catchlight-wgpu", version = "0.3.0" }
-catchlight-bevy = { path = "crates/catchlight-bevy", version = "0.3.0" }
+catchlight-core = { path = "crates/catchlight-core", version = "0.4.0" }
+catchlight-extension-animations = { path = "crates/catchlight-extension-animations", version = "0.4.0" }
+catchlight-extension-humanoid = { path = "crates/catchlight-extension-humanoid", version = "0.4.0" }
+catchlight-extension-expressions = { path = "crates/catchlight-extension-expressions", version = "0.4.0" }
+catchlight-importer = { path = "crates/catchlight-importer", version = "0.4.0" }
+catchlight-editor-core = { path = "crates/catchlight-editor-core", version = "0.4.0" }
+catchlight-editor-protocol = { path = "crates/catchlight-editor-protocol", version = "0.4.0" }
+catchlight-editor-server = { path = "crates/catchlight-editor-server", version = "0.4.0" }
+catchlight-editor-cli = { path = "crates/catchlight-editor-cli", version = "0.4.0" }
+catchlight-wgpu = { path = "crates/catchlight-wgpu", version = "0.4.0" }
+catchlight-bevy = { path = "crates/catchlight-bevy", version = "0.4.0" }
 
 # Data structures
 indextree = "4.7"

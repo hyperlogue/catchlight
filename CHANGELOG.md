@@ -1,5 +1,87 @@
 # Changelog
 
+## [0.4.0] - 2026-11-26
+
+This release fixes animation timing and makes the file reader, the importer
+and the editor server refuse malformed input instead of hanging or crashing.
+It includes breaking changes for Rust callers of `catchlight-core`,
+`catchlight-wgpu`, `catchlight-bevy` and `catchlight-extension-animations`
+(see Removed below).
+
+### New
+
+- **Motion-driven params in the editor.** Params that a motion response
+  drives now appear in their own "Driven by motion" group as live readouts,
+  each naming the response that drives it. Pause motion from the dock header
+  to pose them by hand.
+- **Vertex slots.** The editor, CLI and error messages now call a named
+  vertex a "vertex slot", so it is clear what a weld or motion response
+  refers to.
+- **Bevy scheduling.** Order your own systems before the puppet tick with
+  the new `CatchlightSystems::Tick` system set.
+- **Driver in `param list`.** `catchlight-editor param list` shows which
+  motion response drives each param.
+
+### Fixed
+
+- **Looping clips keep time.** Looping animations ran about 12% fast at
+  60 Hz and froze on their last frame on high-refresh displays. A loop now
+  keeps its exact length at any frame rate.
+- **Model edits in Bevy.** Editing or hot-reloading a model no longer blanks
+  the puppet for a frame, re-uploads every texture, or restarts its
+  animation.
+- **Large models in the browser editor.** Models with more than 2,048
+  textures failed to sync to the editor tab.
+- **Malformed `.clm` files.** A crafted file could hang the reader. Slot
+  lists and texture manifests are now checked before any work is done.
+- **Broken imports are refused.** An `.inx` file with a malformed mesh array
+  or a ragged binding matrix is now refused with an error that names the bad
+  element. Before, it imported a silently wrong mesh or ran out of memory.
+- **Editor server stability.** Oversized preview, spine-fit and mesh
+  generation requests are refused instead of crashing the editor. The server
+  keeps running after a failed connection, and an editor that was killed no
+  longer blocks the next one from starting.
+- **Safer saves.** Models, review threads, saved versions and rendered files
+  are written to a temporary file and moved into place, so a crash or two
+  saves at once can no longer leave a truncated file.
+- **Render output permissions.** `catchlight-cli render` wrote images,
+  videos and manifests readable only by their owner. They now get normal
+  file permissions.
+- **CLI in pipelines.** `catchlight-cli ... | head` exits quietly with
+  status 141 instead of printing a panic. A second Ctrl-C interrupts a render
+  that is stuck, and `poses` and `extension get` refuse to write over their
+  input model.
+- **Clearer CLI errors.** File errors name the file, and
+  `catchlight-editor` reports a mistyped argument before it tries to connect.
+- **Renderer robustness.** A surface the adapter cannot draw to returns an
+  error instead of panicking, BGRA targets read back with the right colours,
+  and GPU validation errors in the browser are logged instead of freezing the
+  tab.
+- **Private socket directory.** The editor's default socket directory is
+  created private to its user and refused if someone else owns it.
+- **LivLiv packages under a symlinked folder.** Packages inside a symlinked
+  directory (such as `/tmp` on macOS) now import.
+
+### Removed
+
+- **Windowing features in `catchlight-bevy`.** The crate no longer turns on
+  Bevy's `bevy_window`, `bevy_winit` and `x11` features. Enable them in your
+  app, as `DefaultPlugins` users already do.
+- **Renderer auto-detect constructors.** `WgpuRenderer::new_autodetect` and
+  `Pipelines::new_autodetect` are gone; `new` now picks the right mask path
+  and instancing mode for the device's backend. `configure_surface` returns
+  a `Result`.
+- **Public keyframe field.** `Lane::keyframes` is private. Build lanes with
+  `Lane::new`, which keeps keyframes in frame order, and read them with
+  `keyframes()`.
+- **Loose helpers in `catchlight-core`.** `target_of`, `scalar_cells`,
+  `deform_cells` and `mask_mode_name` are now methods on the types they
+  describe. `LoadLimitError::resource` is a `LoadResource` instead of a
+  string, `Extension::refs_mut` returns a slice, and `Weld`, `WeldPair` and
+  the `DeformStack::vert_count` field are no longer public.
+- **Rust 2021 builds.** All crates now use Rust edition 2024. They are
+  built and tested with Rust 1.98.
+
 ## [0.3.0] - 2026-11-26
 
 This release includes breaking changes for Rust callers of `catchlight-core`
@@ -123,5 +205,6 @@ Removed below).
   (e.g., `import { CatchlightEditor } from "@catchlight/editor-ui"` and
   `@catchlight/editor-ui/theme.css`).
 
+[0.4.0]: https://github.com/hyperlogue/catchlight/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/hyperlogue/catchlight/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/hyperlogue/catchlight/releases/tag/v0.2.2
