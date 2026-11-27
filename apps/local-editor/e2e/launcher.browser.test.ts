@@ -13,7 +13,7 @@ import { expect, test } from "bun:test";
 import { existsSync } from "node:fs";
 import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
 
@@ -41,7 +41,7 @@ test.skipIf(!browserExe || !existsSync(exe))(
       return out;
     };
 
-    const server = Bun.spawn([exe, "--no-open", "--port", "0"], { env, stderr: "pipe" });
+    const server = Bun.spawn([exe, "--no-open", "--port", "0", "--root", dirname(model)], { env, stderr: "pipe" });
     const browser = await chromium.launch({
       executablePath: browserExe!,
       headless: true,
