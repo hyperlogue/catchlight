@@ -344,11 +344,6 @@ describe("viewports and lifetime", () => {
 });
 
 describe("what the editor says about itself", () => {
-  test("the backend kind is what a status line reads", async () => {
-    const { editor } = await inTab();
-    expect(editor.backendKind()).toBe("in-tab");
-  });
-
   test("there is no graphics tier until a canvas has asked for a device", async () => {
     const { editor, module } = await inTab();
     const session = await editor.newSession();

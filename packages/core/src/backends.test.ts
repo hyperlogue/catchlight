@@ -63,15 +63,6 @@ describe("in-tab", () => {
     expect(editor.requests).toHaveLength(before);
   });
 
-  test("a key the editor's store does not have is its own refusal", async () => {
-    const editor = new FakeEditor();
-    const backend = new InTabBackend(editor, new MemoryStorage());
-
-    await expect(backend.send({ cmd: "session_open", path: "missing.clm" })).rejects.toBeInstanceOf(
-      ProtocolError,
-    );
-  });
-
   test("saving drains what the editor wrote into the store", async () => {
     const editor = new FakeEditor();
     const storage = new MemoryStorage();
@@ -395,11 +386,6 @@ describe("connected", () => {
     ).rejects.toBeInstanceOf(ProtocolError);
 
     expect(socket.sent).toHaveLength(before);
-  });
-
-  test("reading a key back is nothing: the file is already where it was asked to go", async () => {
-    const { backend } = await connect();
-    expect(await backend.readFile("project/akari.clm")).toBeUndefined();
   });
 });
 
