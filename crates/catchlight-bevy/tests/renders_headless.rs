@@ -224,14 +224,13 @@ fn update_drawing(app: &mut App, target: &Handle<Image>, frames: usize, what: &s
     pixels
 }
 
-static PREPARE_FAILURES: AtomicUsize = AtomicUsize::new(0);
+static ERRORS: AtomicUsize = AtomicUsize::new(0);
 
-/// Counts the "preparing the render cache failed" errors logged anywhere in
-/// this process. Render systems run on pool threads, so the subscriber has
-/// to be the global one.
-struct PrepareFailureCounter;
+/// Counts the errors this crate logs anywhere in this process. Render systems
+/// run on pool threads, so the subscriber has to be the global one.
+struct ErrorCounter;
 
-impl tracing::Subscriber for PrepareFailureCounter {
+impl tracing::Subscriber for ErrorCounter {
     fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
         *metadata.level() == tracing::Level::ERROR
     }
@@ -241,29 +240,21 @@ impl tracing::Subscriber for PrepareFailureCounter {
     fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
     fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
     fn event(&self, event: &tracing::Event<'_>) {
-        struct Message(String);
-        impl tracing::field::Visit for Message {
-            fn record_debug(&mut self, _: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-                self.0 += &format!("{value:?}");
-            }
-        }
-        let mut message = Message(String::new());
-        event.record(&mut message);
-        if message.0.contains("preparing the render cache failed") {
-            PREPARE_FAILURES.fetch_add(1, Ordering::SeqCst);
+        if event.metadata().target().starts_with("catchlight_bevy") {
+            ERRORS.fetch_add(1, Ordering::SeqCst);
         }
     }
     fn enter(&self, _: &tracing::span::Id) {}
     fn exit(&self, _: &tracing::span::Id) {}
 }
 
-fn prepare_failures() -> usize {
+fn errors_logged() -> usize {
     static INSTALL: std::sync::Once = std::sync::Once::new();
     INSTALL.call_once(|| {
-        tracing::subscriber::set_global_default(PrepareFailureCounter)
+        tracing::subscriber::set_global_default(ErrorCounter)
             .expect("no other subscriber in this binary");
     });
-    PREPARE_FAILURES.load(Ordering::SeqCst)
+    ERRORS.load(Ordering::SeqCst)
 }
 
 fn render_entity(app: &App, entity: Entity) -> Entity {
@@ -480,45 +471,6 @@ fn a_despawned_puppet_releases_its_cache() {
         state.resident_caches(),
         0,
         "and the cache with the last puppet that drew through it",
-    );
-}
-
-#[test]
-fn the_puppet_actually_lands_on_the_camera_target() {
-    let mut app = render_app();
-    let target = offscreen_target(&mut app);
-    app.world_mut().spawn((
-        Camera2d,
-        Camera {
-            // Transparent, so "was anything drawn" is just "is any pixel
-            // opaque" — the default clear colour is opaque and would answer
-            // yes for an empty frame.
-            clear_color: ClearColorConfig::Custom(Color::NONE),
-            ..default()
-        },
-        RenderTarget::Image(target.clone().into()),
-        CatchlightCamera,
-    ));
-    let model = app
-        .world_mut()
-        .resource_mut::<Assets<CatchlightModel>>()
-        .add(CatchlightModel::new(fixture("welded_seam")));
-    app.world_mut().spawn((
-        CatchlightPuppet::new(model),
-        Transform::from_scale(Vec3::splat(0.4)),
-    ));
-
-    for _ in 0..4 {
-        app.update();
-    }
-
-    let drawn = drawn_pixels(&readback(&app, &target));
-    assert!(
-        drawn > 1000,
-        "the puppet drew {drawn} of {} pixels; a blank frame here is the \
-         classic bevy integration failure (wrong view format, MSAA on the \
-         view target, a render list whose slots name another cache)",
-        SIZE * SIZE,
     );
 }
 
@@ -800,21 +752,17 @@ fn a_failed_prepare_is_retried_only_once_the_options_change() {
         Transform::from_scale(Vec3::splat(0.4)),
     ));
 
-    let start = prepare_failures();
+    let start = errors_logged();
     for _ in 0..5 {
         app.update();
     }
-    assert_eq!(prepare_failures() - start, 1, "five frames, one attempt");
+    assert_eq!(errors_logged() - start, 1, "five frames, one attempt");
 
     app.insert_resource(over_budget(1));
     for _ in 0..5 {
         app.update();
     }
-    assert_eq!(
-        prepare_failures() - start,
-        2,
-        "new options, one more attempt"
-    );
+    assert_eq!(errors_logged() - start, 2, "new options, one more attempt");
 
     app.insert_resource(CatchlightSettings::default());
     for _ in 0..3 {

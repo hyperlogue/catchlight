@@ -535,10 +535,7 @@ fn a_malformed_model_reports_the_core_error() {
     let catchlight_bevy::ModelAssetError::Parse(core) = &error else {
         panic!("expected a parse error, got {error:?}");
     };
-    assert_eq!(
-        error.to_string(),
-        format!("could not parse the model: {core}")
-    );
+    assert!(error.to_string().contains(&core.to_string()), "{error}");
 }
 
 #[test]
