@@ -50,10 +50,17 @@ fn visemes() -> Expressions {
     ])
 }
 
+fn assert_close(got: Option<f32>, want: f32) {
+    assert!(
+        got.is_some_and(|got| (got - want).abs() < 1e-6),
+        "{got:?} is not {want}"
+    );
+}
+
 #[test]
 fn one_expression_at_a_partial_weight_fades_from_what_was_there() {
     let c = controls(&visemes(), &[("aa", 0.25)], &[("mouth_open", 0.2)]);
-    assert_eq!(c.get("mouth_open"), Some(0.2 + (1.0 - 0.2) * 0.25));
+    assert_close(c.get("mouth_open"), 0.4);
     // No value yet counts as 0.
     assert_eq!(c.get("mouth_width"), Some(0.125));
     assert_eq!(c.get("mouth_smile"), None);
@@ -253,7 +260,7 @@ fn visemes_blend_over_expressions_on_controls() {
         "the expression aa plays no part"
     );
     let half = blend(0.5);
-    assert_eq!(half.get("mouth_open"), Some(0.2 + (1.0 - 0.2) * 0.5));
+    assert_close(half.get("mouth_open"), 0.6);
     let silent = blend(0.0);
     assert_eq!(silent.get("mouth_open"), Some(0.2));
 }

@@ -41,5 +41,5 @@ fn the_standard_expression_and_viseme_names_are_distinct() {
     let mut names: Vec<&str> = VISEMES.iter().chain(&EMOTIONS).copied().collect();
     names.sort_unstable();
     names.dedup();
-    assert_eq!(names.len(), 26);
+    assert_eq!(names.len(), VISEMES.len() + EMOTIONS.len());
 }

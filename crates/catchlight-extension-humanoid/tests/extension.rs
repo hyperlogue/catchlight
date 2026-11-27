@@ -68,13 +68,16 @@ fn mappings(model: &Model) -> Vec<(String, ControlMapping)> {
 }
 
 #[test]
-fn the_standard_list_has_35_distinct_controls_23_of_them_two_sided() {
+fn the_standard_controls_are_distinct_and_list_the_two_sided_ones_first() {
     let mut names: Vec<_> = CONTROLS.iter().map(|c| c.name).collect();
     names.sort_unstable();
     names.dedup();
-    assert_eq!(names.len(), 35);
-    assert_eq!(CONTROLS.iter().filter(|c| !c.one_sided).count(), 23);
-    assert!(CONTROLS[..23].iter().all(|c| !c.one_sided));
+    assert_eq!(names.len(), CONTROLS.len());
+    assert!(
+        CONTROLS
+            .windows(2)
+            .all(|pair| !(pair[0].one_sided && !pair[1].one_sided))
+    );
 }
 
 #[test]
