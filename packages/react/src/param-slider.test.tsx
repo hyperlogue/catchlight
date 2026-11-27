@@ -82,7 +82,8 @@ describe("posing a param", () => {
       </EditorProvider>,
     );
     expect(view.container.querySelectorAll("input").length).toBe(0);
-    expect(view.container.textContent).toBe("eye_openmouth_open");
+    const rows = [...view.container.querySelectorAll("[role=listitem] > b")];
+    expect(rows.map((row) => row.textContent)).toEqual(["eye_open", "mouth_open"]);
     await view.unmount();
   });
 });
