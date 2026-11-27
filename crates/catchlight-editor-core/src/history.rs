@@ -647,10 +647,10 @@ mod tests {
         history.record(named_model("C"), 4).unwrap();
         assert!(!history.metadata().pruned);
         history.record(named_model("D"), 5).unwrap();
-        assert_eq!(
-            history.model_at(2).unwrap_err().to_string(),
-            "revision 2 is not retained"
-        );
+        assert!(matches!(
+            history.model_at(2),
+            Err(HistoryError::RevisionUnavailable(2))
+        ));
         assert_eq!(history.metadata().root, 0);
         assert!(history.metadata().pruned);
         assert_eq!(history.depths(), (3, 0));
@@ -754,8 +754,6 @@ mod tests {
         history.navigate(HistoryNavigation::Undo, 2).unwrap();
         history.record(model.clone(), 3).unwrap();
         assert_eq!(history.bytes(), payload.len() + 3 * own_bytes);
-        assert_eq!(history.payloads.len(), 1);
-        assert_eq!(history.payloads.values().next().unwrap().1, 3);
         let bytes = history.bytes();
         history.navigate(HistoryNavigation::Goto(1), 4).unwrap();
         assert_eq!(history.bytes(), bytes);

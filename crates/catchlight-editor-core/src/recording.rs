@@ -801,10 +801,8 @@ mod tests {
             25.
         );
         assert_eq!(record_value(ScalarTarget::Sx, 2., 6., 9.).unwrap(), 3.);
-        assert_eq!(
-            record_value(ScalarTarget::ScreenTintR, 0.1, 0.3, 0.4).unwrap(),
-            0.19999999
-        );
+        let tint = record_value(ScalarTarget::ScreenTintR, 0.1, 0.3, 0.4).unwrap();
+        assert!((tint - 0.2).abs() < 1e-6, "{tint}");
     }
     #[test]
     fn zero_multiplicative_pose_refuses_instead_of_authoring_a_false_key() {

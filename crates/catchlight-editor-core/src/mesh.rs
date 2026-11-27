@@ -1488,12 +1488,21 @@ mod tests {
             wm.add_vertex(p).unwrap();
         }
         let uv_map = UvMap::from_texture_size(4.0, 4.0);
-        let mesh = wm.to_mesh(&uv_map, Some(&alpha)).unwrap();
-        let tri_count = match &mesh.indices {
-            ClmIndices::U16(v) => v.len() / 3,
-            ClmIndices::U32(v) => v.len() / 3,
+        let indices = |mesh: &ClmMesh| -> Vec<u32> {
+            match &mesh.indices {
+                ClmIndices::U16(v) => v.iter().map(|&i| u32::from(i)).collect(),
+                ClmIndices::U32(v) => v.clone(),
+            }
         };
-        assert!((2..8).contains(&tri_count), "got {tri_count} triangles");
+        let whole = wm.to_mesh(&uv_map, None).unwrap();
+        let mesh = wm.to_mesh(&uv_map, Some(&alpha)).unwrap();
+        assert_eq!(indices(&whole).len(), 4 * 3);
+        let kept = indices(&mesh);
+        assert_eq!(kept.len(), 2 * 3, "the transparent half is culled");
+        assert!(
+            kept.iter().all(|&i| mesh.verts[i as usize * 2] <= 0.0),
+            "what is kept lies over the opaque half"
+        );
         let uv0 = [mesh.uvs[0], mesh.uvs[1]];
         assert!((uv0[0] - 0.0).abs() < 1e-5);
         assert!((uv0[1] - 1.0).abs() < 1e-5);
