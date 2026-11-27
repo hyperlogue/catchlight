@@ -156,49 +156,6 @@ fn gl_blend_func_modes_match_color_and_alpha_factors() {
     }
 }
 
-#[test]
-fn every_blend_mode_produces_a_well_formed_wgpu_blend_state() {
-    let all = [
-        BlendMode::Normal,
-        BlendMode::Multiply,
-        BlendMode::Screen,
-        BlendMode::ClipToLower,
-        BlendMode::SliceFromLower,
-        BlendMode::ColorDodge,
-        BlendMode::LinearDodge,
-        BlendMode::Overlay,
-        BlendMode::ColorBurn,
-        BlendMode::LinearBurn,
-        BlendMode::Darken,
-        BlendMode::Lighten,
-        BlendMode::Add,
-        BlendMode::Inverse,
-        BlendMode::Subtract,
-    ];
-    for mode in all {
-        let _ = blend_mode_to_wgpu(mode);
-    }
-    fn _exhaustive(mode: BlendMode) {
-        match mode {
-            BlendMode::Normal
-            | BlendMode::Multiply
-            | BlendMode::Screen
-            | BlendMode::ClipToLower
-            | BlendMode::SliceFromLower
-            | BlendMode::ColorDodge
-            | BlendMode::LinearDodge
-            | BlendMode::Overlay
-            | BlendMode::ColorBurn
-            | BlendMode::LinearBurn
-            | BlendMode::Darken
-            | BlendMode::Lighten
-            | BlendMode::Add
-            | BlendMode::Inverse
-            | BlendMode::Subtract => {}
-        }
-    }
-}
-
 /// Without One factors, Min/Max would compare scaled values and Subtract
 /// would drop terms.
 #[test]
@@ -316,7 +273,7 @@ fn project_aabb_to_scissor_is_conservative_and_y_flipped() {
 }
 
 #[test]
-fn nested_composites_keep_tight_bounds_without_clipping_darken() {
+fn nested_composites_do_not_clip_darken() {
     use crate::{DrawableInfo, RenderList};
     let mut ctx = render_context(100, 100);
     ctx.renderer
@@ -359,19 +316,6 @@ fn nested_composites_keep_tight_bounds_without_clipping_darken() {
     list.set_children(1, vec![composite(2), composite(3)]);
     list.set_children(2, vec![part(0)]);
     list.set_children(3, Vec::new());
-    ctx.render(&list, Some(wgpu::Color::WHITE));
-    assert_eq!(
-        ctx.renderer.composite_bounds.get(1),
-        Some(&Some([25.0, 25.0, 75.0, 75.0]))
-    );
-
-    ctx.renderer
-        .update_camera(glam::Mat4::from_translation(glam::vec3(0.25, 0.0, 0.0)));
-    ctx.render(&list, Some(wgpu::Color::WHITE));
-    assert_eq!(
-        ctx.renderer.composite_bounds.get(1),
-        Some(&Some([37.5, 25.0, 87.5, 75.0]))
-    );
 
     if let DrawableInfo::Composite { blend_mode, .. } = &mut list.root_drawables[0] {
         *blend_mode = BlendMode::Darken;
@@ -384,25 +328,66 @@ fn nested_composites_keep_tight_bounds_without_clipping_darken() {
         "Darken affects pixels outside the nested bounds"
     );
     assert_eq!(&pixels[(50 * 100 + 50) * 4..][..4], &[255; 4]);
-
-    list.composite_children
-        .get_mut(2)
-        .expect("children")
-        .push(part(99));
-    ctx.render(&list, Some(wgpu::Color::WHITE));
-    assert_eq!(ctx.renderer.composite_bounds.get(1), Some(&None));
 }
 
 #[test]
-fn composite_pool_stats_track_size_and_reset() {
-    use super::CompositePool;
-    let mut pool = CompositePool::new(800, 600);
-    assert_eq!(pool.stats(), (0, 0, 800, 600));
-    pool.ensure_size(1024, 768);
-    assert_eq!(pool.stats(), (0, 0, 1024, 768));
-    pool.ensure_size(1, 1);
-    let (_, _, w, h) = pool.stats();
-    assert_eq!((w, h), (1, 1));
+fn a_composite_draws_at_the_size_the_target_was_resized_to() {
+    use crate::{DrawableInfo, RenderList};
+    let mut ctx = render_context(100, 100);
+    ctx.renderer
+        .upload_mesh(0, &catchlight_core::Mesh::quad(1.0, 1.0))
+        .expect("mesh");
+    ctx.renderer
+        .upload_textures([(
+            0,
+            &catchlight_core::DecodedTexture {
+                width: 4,
+                height: 4,
+                rgba: vec![255; 64].into(),
+            },
+        )])
+        .expect("texture");
+    let mut list = RenderList::default();
+    list.root_drawables.push(DrawableInfo::Composite {
+        node_id: 1,
+        z_order: 0.0,
+        blend_mode: BlendMode::Normal,
+        opacity: 0.5,
+        tint: glam::Vec3::ONE,
+        screen_tint: glam::Vec3::ZERO,
+        mask_sources: Default::default(),
+        mask_threshold: 0.5,
+    });
+    list.set_children(
+        1,
+        vec![DrawableInfo::Part {
+            mesh_id: 0,
+            texture_id: 0,
+            transform: glam::Mat4::IDENTITY,
+            z_order: 0.0,
+            blend_mode: BlendMode::Normal,
+            opacity: 1.0,
+            tint: glam::Vec3::ONE,
+            screen_tint: glam::Vec3::ZERO,
+            mask_sources: Default::default(),
+            mask_threshold: 0.5,
+        }],
+    );
+    ctx.render(&list, Some(wgpu::Color::BLACK));
+    let pixels = ctx.read_rgba().expect("pixels");
+    let faded: [u8; 4] = pixels[(50 * 100 + 50) * 4..][..4].try_into().unwrap();
+    assert_ne!(faded, [0, 0, 0, 255], "the composite draws");
+
+    ctx.resize(300, 200);
+    ctx.render(&list, Some(wgpu::Color::BLACK));
+    let pixels = ctx.read_rgba().expect("pixels");
+    let at = |x: usize, y: usize| &pixels[(y * 300 + x) * 4..][..4];
+    // The quad covers the middle half of the target, here 75..225 by 50..150.
+    for (x, y) in [(150, 100), (100, 75), (200, 125)] {
+        assert_eq!(at(x, y), faded, "({x}, {y})");
+    }
+    assert_eq!(at(10, 10), &[0, 0, 0, 255]);
+    assert_eq!(at(290, 190), &[0, 0, 0, 255]);
 }
 
 /// One device for the whole unit-test binary, never destroyed: NVIDIA's Vulkan

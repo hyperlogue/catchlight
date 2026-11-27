@@ -92,11 +92,16 @@ fn a_composite_does_not_fold_its_opacity_into_its_children() {
     let mut build = common::Build::new();
     let tex = build.texture(common::solid_texture(4, 4, [200, 120, 60, 255]));
     let root = build.root();
+    // Below 1 so the composite is not flattened.
     let composite = build.node(
         &root,
         "group",
         1.0,
-        ModelNodeKind::Composite(catchlight_core::ModelComposite::default()),
+        ModelNodeKind::Composite({
+            let mut composite = catchlight_core::ModelComposite::default();
+            composite.opacity = 0.25;
+            composite
+        }),
     );
     build.part(
         &composite,
@@ -108,7 +113,6 @@ fn a_composite_does_not_fold_its_opacity_into_its_children() {
     );
     let model = build.model;
     let mut puppet = Puppet::new(&model);
-    // Below 1 so the composite is not flattened.
     let composite_idx = puppet
         .iter()
         .find(|(_, node)| node.name == "group")
@@ -139,7 +143,7 @@ fn a_composite_does_not_fold_its_opacity_into_its_children() {
     );
     assert_eq!(
         puppet.opacity(composite_idx),
-        Some(1.0),
+        Some(0.25),
         "the composite's own opacity"
     );
     let [DrawableInfo::Part { opacity, .. }] = list.composite_children(composite_idx.0) else {
