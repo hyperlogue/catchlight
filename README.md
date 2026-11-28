@@ -15,7 +15,7 @@ Catchlight is a software stack for 2.5D character animation. It simulates
 | Offering | Audience and purpose | Distribution |
 | --- | --- | --- |
 | **Catchlight Demo** | Choose the in-browser editor or camera-driven face tracking. | The hosted app in `apps/site/`, named `catchlight-demo` in the web workspace. |
-| **Catchlight Studio** | Author locally with a person and an agent sharing editor sessions. | `catchlight-editor`: one binary that serves the editor UI on `127.0.0.1`, opens the browser, and runs agent commands against the same session. Install it below. |
+| **Catchlight Editor** | Author locally with a person and an agent sharing editor-host sessions. | `catchlight-editor`: one binary that runs the editor host, serves the editor UI on `127.0.0.1`, opens the browser, and runs agent commands against the same session. Install it below. |
 | **Catchlight libraries** | Embed animation or authoring in another application, or automate an editor. | Rust libraries, the `@catchlight/*` browser packages, and the [Python client](python/README.md). |
 
 Install the local editor from a [release](https://github.com/hyperlogue/catchlight/releases),

@@ -12,8 +12,8 @@ suggest 3D movement.
 A complete character — its node tree, params and their bindings, textures,
 welds and extensions — as authored, plus what
 is derived from them without any pose. The one form everything else comes
-from: the file stores it, the editor changes it, puppets animate it, render
-caches are built from it.
+from: the file stores it, the editor host changes it, puppets animate it,
+render caches are built from it.
 _Avoid_: rig, document
 
 **Model file**:
@@ -479,32 +479,41 @@ _Avoid_: mouth shape, phoneme (that's the sound, not its look)
 **Live input**:
 A value a program gives a puppet for a frame without storing it in the
 model: a control's value, or the weight of an expression or a viseme. Stage
-takes them from tracking and Studio from its sliders. While an animation
+takes them from tracking and the Editor from its sliders. While an animation
 plays, its lane on the same control, expression or viseme wins.
 _Avoid_: preview (that's a rendered image), tracking (that's one source)
 
-### Editing
-
-**Studio**:
-Catchlight's authoring application, where a person and an agent work on the
-same model through shared editor sessions. It runs locally against a
-connected editor, or in the browser alone as the demo.
-_Avoid_: editor (the thing that edits, which the studio talks to)
-
-**Stage**:
-Catchlight's planned live-performance application, not yet built: it
-animates a puppet from a performer's tracking and hands its frames to
-streaming software. It performs a model and never authors one.
-_Avoid_: studio (that's authoring)
+### Applications
 
 **Editor**:
+Catchlight's authoring application, where a person and an agent work on the
+same model through shared editor-host sessions. It runs locally against a
+connected editor host, or in the browser alone as the demo.
+_Avoid_: studio (that's filming)
+
+**Studio**:
+Catchlight's planned filming application, not yet built: it renders a
+model's animations offline as shots and composes them into a finished video,
+exact frame by frame. It films a model and never authors one.
+_Avoid_: editor (that's authoring), stage (that's live)
+
+**Stage**:
+Catchlight's planned live-streaming application, not yet built: it animates
+a puppet from a performer's tracking and hands its frames to streaming
+software as they happen. It performs a model and never authors one.
+_Avoid_: studio (that's filming)
+
+### Editing
+
+**Editor host**:
 The one thing that edits: it holds sessions, takes commands and keeps each
 session's history. It runs in the tab or as a local server, and every client
 speaks to it the same way.
+_Avoid_: editor (that's the application), engine, backend
 
 **Session**:
-One open model in the editor, with its history, its revision, and the store
-file it saves to, if any.
+One open model in the editor host, with its history, its revision, and the
+store file it saves to, if any.
 
 **History**:
 A session's record of its edits, which can be undone, redone or jumped
@@ -533,8 +542,8 @@ A new session started from another session's model at a given revision,
 with a history of its own.
 
 **Store**:
-Where the editor's own files live. A path on the wire names a file in the
-store, never one a client holds.
+Where the editor host's own files live. A path on the wire names a file in
+the store, never one a client holds.
 _Avoid_: filesystem
 
 **Open**:
@@ -551,7 +560,7 @@ with its textures — without saving the session.
 
 **Replica**:
 A tab's own copy of one session's model, with a puppet posing it: fed by the
-editor and never edited locally, so it answers reads and draws frames
+editor host and never edited locally, so it answers reads and draws frames
 without a round trip.
 _Avoid_: mirror, cache, local model
 
@@ -567,10 +576,10 @@ and never go backwards.
 _Avoid_: sync, push
 
 **Command**:
-One request to the editor. An **edit** changes a model or which sessions
+One request to the editor host. An **edit** changes a model or which sessions
 exist, and is the only kind that moves a revision; **presence** shares view
 state; a **query** changes no session. Replica queries are pure functions of
-the model and can be answered locally; server queries need the editor's
+the model and can be answered locally; server queries need the editor host's
 sessions, store or renderer.
 _Avoid_: request (that's the envelope), action, document command
 
@@ -600,10 +609,10 @@ file, and not carried into a fork.
 _Avoid_: chat, annotations
 
 **Kept**:
-What the editor keeps beside a saved model between runs, its review and its
-versions, so they are there when the model is next opened. Where is the
-editor's choice, made once for both, and no client depends on it; a client
-is told only how long they last.
+What the editor host keeps beside a saved model between runs, its review and
+its versions, so they are there when the model is next opened. Where is the
+editor host's choice, made once for both, and no client depends on it; a
+client is told only how long they last.
 _Avoid_: sidecar (that's one place they may be kept), cache
 
 **Thread**:
