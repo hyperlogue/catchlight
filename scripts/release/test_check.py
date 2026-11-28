@@ -16,6 +16,7 @@ class ReleaseVersionTests(unittest.TestCase):
         paths = [ROOT / 'Cargo.toml', ROOT / 'Cargo.lock']
         paths += list((ROOT / 'crates').glob('*/Cargo.toml'))
         paths += list((ROOT / 'packages').glob('*/package.json'))
+        paths += [ROOT / 'README.md', *(ROOT / 'crates').glob('*/README.md')]
         for path in paths:
             dest = self.root / path.relative_to(ROOT)
             dest.parent.mkdir(parents=True, exist_ok=True)
@@ -46,6 +47,12 @@ class ReleaseVersionTests(unittest.TestCase):
             'name = "catchlight"\nversion = "' + check() + '"',
             'name = "catchlight"\nversion = "99.0.0"'))
         with self.assertRaisesRegex(ValueError, 'Cargo.lock: catchlight'):
+            check(self.root)
+
+    def test_readme_drift(self):
+        path = self.root / 'README.md'
+        path.write_text(path.read_text() + '\n```toml\ncatchlight = "0.1.0"\n```\n')
+        with self.assertRaisesRegex(ValueError, 'README.md: catchlight must use'):
             check(self.root)
 
 

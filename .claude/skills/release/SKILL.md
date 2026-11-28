@@ -26,7 +26,10 @@ description: Prepare or cut a Catchlight release with changelog review, a shared
    under `packages/` to that exact version. All public crates inherit it,
    including the `catchlight` facade. Refresh `Cargo.lock` with Cargo and
    `bun.lock` with Bun; private demo and generated npm package versions are
-   outside the public release set. Run `python3 scripts/release/check.py`.
+   outside the public release set. Set the `catchlight` install snippets in
+   `README.md` and crate READMEs to the new `major.minor` (for example
+   `catchlight = "0.4"`). Run `python3 scripts/release/check.py`; it rejects
+   drift in all of these.
 4. Commit the approved release as `release: catchlight X.Y.Z`. Fixes that the
    checks below require land as separate commits after it; the tag goes last.
 5. Run every `run:` step of every job in

@@ -10,6 +10,10 @@ import sys
 import tomllib
 
 ROOT = Path(__file__).resolve().parents[2]
+# A README dependency line such as `catchlight = "0.4"` or
+# `catchlight = { version = "0.4", features = [...] }`.
+README_REQUIREMENT = re.compile(
+    r'^(catchlight[-\w]*) = (?:\{[^}\n]*?version = )?"([^"]+)"', re.M)
 
 
 def check(root=ROOT):
@@ -27,6 +31,15 @@ def check(root=ROOT):
         package = json.loads(path.read_text())
         if not package.get('private') and package.get('version') != version:
             errors.append(f'{package["name"]} must use {version}')
+    # Readmes pin major.minor so a patch release leaves them current.
+    requirement = '.'.join(version.split('.')[:2])
+    readmes = [root / 'README.md', *sorted(root.glob('crates/*/README.md'))]
+    for path in readmes:
+        if not path.exists():
+            continue
+        for name, found in README_REQUIREMENT.findall(path.read_text()):
+            if found != requirement:
+                errors.append(f'{path.relative_to(root)}: {name} must use "{requirement}"')
     lock = tomllib.loads((root / 'Cargo.lock').read_text())
     for package in lock['package']:
         if 'source' not in package and package['version'] != version:

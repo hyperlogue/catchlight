@@ -9,7 +9,7 @@ three-dimensional movement by deforming two-dimensional parts.
 
 ```toml
 [dependencies]
-catchlight = { version = "0.2", features = ["wgpu"] }
+catchlight = { version = "0.4", features = ["wgpu"] }
 ```
 
 ```rust,no_run

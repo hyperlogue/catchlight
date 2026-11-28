@@ -62,7 +62,7 @@ renderer. Editor tools and command-line applications remain separate crates.
 
 ```toml
 [dependencies]
-catchlight = "0.1.0"
+catchlight = "0.4"
 ```
 
 ## Acknowledgement
