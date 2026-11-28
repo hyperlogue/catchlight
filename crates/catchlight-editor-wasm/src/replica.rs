@@ -19,7 +19,7 @@ use catchlight_core::{
 use catchlight_editor_protocol::{ErrorCode, Reply, Request, RequestId, SessionId};
 use catchlight_editor_server::{Editor, replica_reply};
 use catchlight_extension_animations::{AnimationPlayer, Animations, LiveInputs, Rig};
-use catchlight_extension_expressions::Expressions;
+use catchlight_extension_expressions::{Expressions, LipSync};
 use catchlight_extension_humanoid::Humanoid;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -48,6 +48,15 @@ pub struct Playing {
     pub time: f32,
     /// Fractional.
     pub frame: f32,
+}
+
+/// What the voice a replica hears gives its mouth.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct VoiceJson {
+    /// How loud the voice is, 0..1, against the room and the speaker.
+    pub level: f32,
+    /// The weight lip sync gives each viseme it plays.
+    pub visemes: BTreeMap<String, f32>,
 }
 
 /// The live inputs a replica poses its puppet with, by name.
@@ -95,6 +104,10 @@ pub struct ReplicaState {
     moving: bool,
     player: AnimationPlayer,
     inputs: LiveInputs,
+    /// The voice the mouth follows.
+    voice: Option<LipSync>,
+    /// `inputs` with the voice's visemes raised over them, for one tick.
+    voiced: LiveInputs,
     editing: bool,
     motion_paused: bool,
 }
@@ -142,6 +155,8 @@ impl ReplicaState {
             moving: false,
             player: AnimationPlayer::default(),
             inputs: LiveInputs::default(),
+            voice: None,
+            voiced: LiveInputs::default(),
             editing: false,
             motion_paused: false,
         }
@@ -362,6 +377,37 @@ impl ReplicaState {
 
     pub fn clear_inputs(&mut self) {
         self.inputs = LiveInputs::default();
+        self.tick(0.0);
+    }
+
+    /// Hears a mono voice's next `samples` at `sample_rate` Hz; the mouth
+    /// follows it from the next tick, its visemes raised over the live ones,
+    /// and the puppet keeps moving until [`Self::clear_voice`]. A new rate
+    /// starts the voice afresh; one that is not a positive number is ignored.
+    pub fn push_voice(&mut self, samples: &[f32], sample_rate: f32) {
+        if !(sample_rate >= 1.0 && sample_rate <= u32::MAX as f32) {
+            return;
+        }
+        let rate = sample_rate.round() as u32;
+        let voice = match &mut self.voice {
+            Some(voice) if voice.sample_rate() == rate => voice,
+            slot => slot.insert(LipSync::new(rate)),
+        };
+        voice.push(samples);
+    }
+
+    /// What the voice gives the mouth now; `None` with no voice.
+    pub fn voice(&self) -> Option<VoiceJson> {
+        let voice = self.voice.as_ref()?;
+        Some(VoiceJson {
+            level: voice.level(),
+            visemes: voice.visemes().map(|(n, w)| (n.into(), w)).collect(),
+        })
+    }
+
+    /// Stops following the voice; the mouth returns at once.
+    pub fn clear_voice(&mut self) {
+        self.voice = None;
         self.tick(0.0);
     }
 
@@ -669,15 +715,24 @@ impl ReplicaState {
         Some([authored[0] + local.x, authored[1] + local.y, authored[2]])
     }
 
-    /// Evaluate one step of `dt` seconds: the live inputs and the playing
-    /// clip, then the puppet. Returns whether the puppet is still moving: a
-    /// clip plays or a motion response has not settled. Viewports use
-    /// [`Self::frame`] so two canvases do not step the puppet twice.
+    /// Evaluate one step of `dt` seconds: the voice, the live inputs and the
+    /// playing clip, then the puppet. Returns whether the puppet is still
+    /// moving: a voice is heard, a clip plays or a motion response has not
+    /// settled. Viewports use [`Self::frame`] so two canvases do not step the
+    /// puppet twice.
     pub fn tick(&mut self, dt: f32) -> bool {
+        let inputs = match &self.voice {
+            Some(voice) => {
+                self.voiced.clone_from(&self.inputs);
+                voice.raise_visemes(&mut self.voiced.visemes);
+                &self.voiced
+            }
+            None => &self.inputs,
+        };
         self.player
-            .advance_with(&mut self.puppet, dt, Rig::of(&self.model), &self.inputs);
+            .advance_with(&mut self.puppet, dt, Rig::of(&self.model), inputs);
         let motion = self.puppet.tick(&self.model, dt);
-        motion.motion_responses || self.player.is_playing()
+        motion.motion_responses || self.player.is_playing() || self.voice.is_some()
     }
 
     /// Advance to the animation frame stamped `now_ms`; ticks at most once per
@@ -1092,6 +1147,27 @@ pub mod browser {
         #[wasm_bindgen(js_name = clearInputs)]
         pub fn clear_inputs(&self) {
             self.inner.borrow_mut().state.clear_inputs();
+        }
+
+        /// A mono voice's next samples, which the mouth follows.
+        #[wasm_bindgen(js_name = pushVoice)]
+        pub fn push_voice(&self, samples: &[f32], sample_rate: f32) {
+            self.inner
+                .borrow_mut()
+                .state
+                .push_voice(samples, sample_rate);
+        }
+
+        /// As JSON `{ level, visemes }`; `undefined` with no voice.
+        #[must_use]
+        pub fn voice(&self) -> Option<String> {
+            let voice = self.inner.borrow().state.voice()?;
+            serde_json::to_string(&voice).ok()
+        }
+
+        #[wasm_bindgen(js_name = clearVoice)]
+        pub fn clear_voice(&self) {
+            self.inner.borrow_mut().state.clear_voice();
         }
 
         /// As JSON `{ controls, expressions, visemes }`, each a map of name to

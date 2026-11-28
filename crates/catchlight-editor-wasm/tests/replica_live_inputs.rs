@@ -53,8 +53,8 @@ fn ramp(name: &str) -> Clip {
 /// (0..1), all resting at 0, with `wave` moving the drawn part `hat`.
 /// `mouth_open` maps onto `jaw`, and `brow_left_height` and
 /// `brow_right_height` both onto `brow`, as the identity. The expression
-/// `happy` sets `blush`; the viseme `aa` opens the mouth fully. One clip,
-/// `ramp`.
+/// `happy` sets `blush`; the viseme `aa` opens the mouth fully and `uw` to
+/// 0.6. One clip, `ramp`.
 fn rig() -> Model {
     let mut model = Model::new();
     for (p, min) in [
@@ -100,10 +100,10 @@ fn rig() -> Model {
             "happy",
             vec![Setting::param(pid("blush"), 1.0)],
         )],
-        [Expression::new(
-            "aa",
-            vec![Setting::control("mouth_open", 1.0)],
-        )],
+        [
+            Expression::new("aa", vec![Setting::control("mouth_open", 1.0)]),
+            Expression::new("uw", vec![Setting::control("mouth_open", 0.6)]),
+        ],
     );
     *model.extension_or_default::<Animations>().unwrap() = Animations::from_clips([ramp("ramp")]);
     model
@@ -294,6 +294,66 @@ fn clearing_all_inputs_returns_every_param() {
     for param in ["lid", "blush", "jaw"] {
         assert_eq!(value(&replica, param), 0.0, "{param}");
     }
+}
+
+/// Frame `frame`'s share of a 300 Hz tone at 48 kHz: a round mouth.
+fn hum(frame: usize) -> Vec<f32> {
+    (frame * 800..(frame + 1) * 800)
+        .map(|i| 0.2 * (std::f32::consts::TAU * 300.0 * i as f32 / 48_000.0).sin())
+        .collect()
+}
+
+/// Hears `frames` frames of the hum from `from`, framing each.
+fn hear(replica: &mut ReplicaState, from: usize, frames: usize) {
+    for frame in from..from + frames {
+        replica.push_voice(&hum(frame), 48_000.0);
+        assert!(
+            replica.frame(frame as f64 * DT_MS),
+            "a voice keeps it moving"
+        );
+    }
+}
+
+#[test]
+fn a_voice_opens_the_mouth_through_its_viseme_until_cleared() {
+    let mut replica = replica_of(&rig());
+    assert_eq!(replica.voice(), None);
+    hear(&mut replica, 0, 30);
+    let round = replica.voice().unwrap().visemes["uw"];
+    assert!(round > 0.9, "{:?}", replica.voice());
+    assert!(
+        close(value(&replica, "jaw"), 0.6 * round),
+        "uw opens the jaw"
+    );
+    assert_eq!(replica.inputs(), Default::default(), "not a live input");
+
+    replica.clear_voice();
+    assert_eq!(replica.voice(), None);
+    assert_eq!(value(&replica, "jaw"), 0.0);
+    assert!(!replica.frame(30.0 * DT_MS), "idle again");
+}
+
+#[test]
+fn a_voice_raises_a_lower_live_viseme_and_leaves_a_higher_one() {
+    let mut replica = replica_of(&rig());
+    replica.set_viseme_weight("uw", Some(0.2));
+    hear(&mut replica, 0, 30);
+    assert!(value(&replica, "jaw") > 0.55);
+    assert_eq!(replica.inputs().visemes.get("uw"), Some(&0.2));
+
+    replica.set_viseme_weight("uw", Some(1.0));
+    assert!(close(value(&replica, "jaw"), 0.6));
+}
+
+#[test]
+fn a_voice_at_a_new_rate_starts_afresh_and_a_bad_rate_is_ignored() {
+    let mut replica = replica_of(&rig());
+    hear(&mut replica, 0, 30);
+    replica.push_voice(&hum(30), f32::NAN);
+    replica.push_voice(&hum(30), 0.0);
+    assert!(replica.voice().unwrap().visemes["uw"] > 0.9);
+    replica.push_voice(&hum(30), 24_000.0);
+    assert!(replica.voice().unwrap().visemes.values().all(|&w| w == 0.0));
 }
 
 #[test]

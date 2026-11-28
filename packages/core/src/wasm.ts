@@ -102,6 +102,11 @@ export interface WasmReplica extends WasmOwned {
   clearInputs(): void;
   /** JSON `LiveInputs`. */
   inputs(): string;
+  /** A mono voice's next samples, which the mouth follows. */
+  pushVoice(samples: Float32Array, sampleRate: number): void;
+  /** JSON `Voice`; `undefined` with no voice. */
+  voice(): string | undefined;
+  clearVoice(): void;
   play(clip: string): boolean;
   stop(): void;
   /** JSON `Playing`; `undefined` when nothing plays. */

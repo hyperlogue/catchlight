@@ -330,12 +330,31 @@ describe("live inputs and playback", () => {
     expect(revisions()).toBe(0);
   });
 
+  test("a voice reaches the replica and repaints, and is never a live input", () => {
+    const { replica, session, repaints, revisions } = rigged();
+    expect(session.voice()).toBeUndefined();
+    session.pushVoice(new Float32Array(800), 48000);
+    session.pushVoice(new Float32Array(800), 48000);
+    expect(replica.heard).toEqual({ sampleRate: 48000, samples: 1600 });
+    replica.speaking = { level: 0.75, visemes: { ae: 0.5 } };
+    expect(session.voice()).toEqual({ level: 0.75, visemes: { ae: 0.5 } });
+    expect(session.inputs()).toEqual({ controls: {}, expressions: {}, visemes: {} });
+
+    session.clearVoice();
+    expect(session.voice()).toBeUndefined();
+    expect(repaints()).toBe(3);
+    expect(revisions()).toBe(0);
+  });
+
   test("a closed session takes no live input", () => {
     const { replica, session } = rigged();
     session.close();
     session.setControl("mouth_open", 0.5);
+    session.pushVoice(new Float32Array(800), 48000);
     expect(session.play("wave")).toBe(false);
     expect(replica.live.controls).toEqual({});
+    expect(replica.heard).toBeUndefined();
+    expect(session.voice()).toBeUndefined();
     expect(session.inputs()).toEqual({ controls: {}, expressions: {}, visemes: {} });
   });
 });

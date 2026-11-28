@@ -1200,6 +1200,24 @@ export class FakeReplica implements WasmReplica {
     return JSON.stringify(this.live);
   }
 
+  /** Samples heard since the voice started, and their rate. */
+  heard: { sampleRate: number; samples: number } | undefined;
+  /** What `voice()` reports while there is a voice. */
+  speaking = { level: 0, visemes: {} as Record<string, number> };
+
+  pushVoice(samples: Float32Array, sampleRate: number): void {
+    const before = this.heard?.sampleRate === sampleRate ? this.heard.samples : 0;
+    this.heard = { sampleRate, samples: before + samples.length };
+  }
+
+  voice(): string | undefined {
+    return this.heard && JSON.stringify(this.speaking);
+  }
+
+  clearVoice(): void {
+    this.heard = undefined;
+  }
+
   play(clip: string): boolean {
     if (!this.doc?.clips.some((c) => c.name === clip)) return false;
     this.clip = { name: clip, time: 0, frame: 0 };

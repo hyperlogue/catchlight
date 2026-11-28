@@ -5,6 +5,8 @@ export * from "./protocol.gen.js";
 export { Editor, fileKey } from "./editor.js";
 export type { ExportedModel } from "./editor.js";
 export { Session } from "./session.js";
+export { startLipSync } from "./lipsync.js";
+export type { LipSync, VoiceSource } from "./lipsync.js";
 export { MeshDraft, RecordingGesture } from "./authoring.js";
 export type {
   MeshDraftView,
@@ -14,6 +16,7 @@ export type {
 export type {
   Playing,
   LiveInputs,
+  Voice,
   ScratchTransform,
   SessionCommand,
   SessionEditCommand,

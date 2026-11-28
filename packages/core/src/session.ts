@@ -88,6 +88,14 @@ export interface LiveInputs {
   visemes: Record<string, number>;
 }
 
+/** What the voice a tab hears gives the mouth. */
+export interface Voice {
+  /** How loud it is, 0..1, against the room and the speaker. */
+  level: number;
+  /** The weight lip sync gives each viseme it plays. */
+  visemes: Record<string, number>;
+}
+
 /** The clip a tab plays: seconds from its start, and the fractional frame. */
 export interface Playing {
   name: string;
@@ -443,6 +451,31 @@ export class Session {
     if (this.#closed) return;
     this.replica.clearInputs();
     this.#inputsChanged();
+  }
+
+  /**
+   * Hears a mono voice's next `samples` at `sampleRate` Hz, in order and
+   * without gaps. The mouth follows it, its visemes raised over the live ones,
+   * until `clearVoice`. Never one of `inputs()`; authors nothing.
+   */
+  pushVoice(samples: Float32Array, sampleRate: number): void {
+    if (this.#closed) return;
+    this.replica.pushVoice(samples, sampleRate);
+    this.invalidate();
+  }
+
+  /** What the voice gives the mouth now; `undefined` with none. */
+  voice(): Voice | undefined {
+    if (this.#closed) return undefined;
+    const voice = this.replica.voice();
+    return voice === undefined ? undefined : (JSON.parse(voice) as Voice);
+  }
+
+  /** Stops following the voice; the mouth returns at once. */
+  clearVoice(): void {
+    if (this.#closed) return;
+    this.replica.clearVoice();
+    this.invalidate();
   }
 
   /** This tab's live inputs; the same object until they change. */

@@ -19,7 +19,7 @@ pub mod authoring;
 mod replica;
 #[cfg(target_arch = "wasm32")]
 pub use replica::Replica;
-pub use replica::{LiveInputsJson, Playing, ReplicaState, TextureImage};
+pub use replica::{LiveInputsJson, Playing, ReplicaState, TextureImage, VoiceJson};
 
 #[cfg(target_arch = "wasm32")]
 mod gpu;

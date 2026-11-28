@@ -35,11 +35,29 @@ pub struct AnimationSample<'a> {
 /// A program's live inputs for one frame: control values, such as tracking,
 /// and the weights of expressions and visemes. Any may be empty. A playing
 /// clip's lane on the same control, expression or viseme wins.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Default, PartialEq)]
 pub struct LiveInputs {
     pub controls: ControlValues,
     pub expressions: Weights,
     pub visemes: Weights,
+}
+
+impl Clone for LiveInputs {
+    fn clone(&self) -> Self {
+        Self {
+            controls: self.controls.clone(),
+            expressions: self.expressions.clone(),
+            visemes: self.visemes.clone(),
+        }
+    }
+
+    /// Field by field, so copying the same names every frame does not
+    /// allocate.
+    fn clone_from(&mut self, source: &Self) {
+        self.controls.clone_from(&source.controls);
+        self.expressions.clone_from(&source.expressions);
+        self.visemes.clone_from(&source.visemes);
+    }
 }
 
 /// The model data a frame applies controls, expressions and visemes
