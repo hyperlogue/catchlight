@@ -4,7 +4,7 @@ import type { Editor } from "@catchlight/core";
 import type { Page } from "playwright-core";
 
 type Step = (name: string, work: () => Promise<void>) => Promise<void>;
-export async function studio(
+export async function authoring(
   page: Page,
   step: Step,
   shots: string,
@@ -364,7 +364,7 @@ export async function studio(
       .click();
     await page
       .getByRole("textbox", { name: "Key", exact: true })
-      .fill("studio.bad key");
+      .fill("editor.bad key");
     await page
       .getByRole("textbox", { name: "JSON value", exact: true })
       .fill('{"note":"A little explorer"}');
@@ -379,7 +379,7 @@ export async function studio(
       .click();
     await page
       .getByRole("textbox", { name: "Key", exact: true })
-      .fill("studio.notes");
+      .fill("editor.notes");
     await page
       .getByRole("button", { name: "Save extension", exact: true })
       .click();
@@ -402,13 +402,13 @@ export async function studio(
         return art.toDataURL("image/png").split(",")[1]!;
       });
       await page.getByLabel("Import artwork", { exact: true }).setInputFiles({
-        name: "Studio badge.png",
+        name: "Editor badge.png",
         mimeType: "image/png",
         buffer: Buffer.from(png, "base64"),
       });
       await page
         .locator("[data-catchlight-node][data-selected]")
-        .filter({ hasText: "Studio badge" })
+        .filter({ hasText: "Editor badge" })
         .waitFor();
       const id = (await page
         .locator("[data-catchlight-node][data-selected]")
@@ -439,7 +439,7 @@ export async function studio(
         .click();
       await page
         .locator("[data-catchlight-node]")
-        .filter({ hasText: /^Studio badge$/ })
+        .filter({ hasText: /^Editor badge$/ })
         .waitFor({ state: "hidden" });
       await selected("back-hair");
       await page
@@ -487,7 +487,7 @@ export async function studio(
       (await page.locator('[data-catchlight-panel="left"]').boundingBox())!
         .width > before,
     );
-    await page.screenshot({ path: `${shots}/${tag}-studio-desktop.png` });
+    await page.screenshot({ path: `${shots}/${tag}-authoring-desktop.png` });
     await page.setViewportSize({ width: 390, height: 844 });
     for (const target of [
       page.locator("[data-catchlight-workspace-modes] button").first(),
@@ -522,7 +522,7 @@ export async function studio(
       .getByRole("button", { name: "Toggle properties panel", exact: true })
       .click();
     await right.waitFor({ state: "visible" });
-    await page.screenshot({ path: `${shots}/${tag}-studio-mobile.png` });
+    await page.screenshot({ path: `${shots}/${tag}-authoring-mobile.png` });
     await page
       .getByRole("button", { name: "Close properties panel", exact: true })
       .click();

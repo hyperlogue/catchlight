@@ -22,7 +22,7 @@
 
 import { READBACK } from "@catchlight/core";
 import { openModel, selectNode } from "./model.ts";
-import { studio } from "./studio.ts";
+import { authoring } from "./authoring.ts";
 import { snapshots } from "./snapshots.ts";
 import { assertPresentedCanvas } from "./presentation.ts";
 import { workspaces } from "./workspaces.ts";
@@ -650,7 +650,7 @@ async function draws(): Promise<void> {
     if (b1.hash === b0.hash) throw new Error("canvas unchanged after commit");
   });
   await workspaces(page, step, shots, tag);
-  await studio(page, step, shots, tag);
+  await authoring(page, step, shots, tag);
   await draftClose(page, step, shots, tag);
   await drawerKeyboard(page, step, shots, tag);
   await page.screenshot({ path: `${shots}/${tag}-final.png` });

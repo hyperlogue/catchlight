@@ -537,7 +537,7 @@ export function ExtensionsPanel({ session, onError }: { session: Session; onErro
                 required
                 readOnly={!!editing.maintained || editing.readOnly}
                 value={editing.key}
-                placeholder="studio.notes"
+                placeholder="editor.notes"
                 pattern="[^.]+\..+"
                 onChange={(e) => update({ key: e.currentTarget.value })}
               />

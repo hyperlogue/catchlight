@@ -24,7 +24,7 @@ if (mode === "face" || mode === "editor" || query.has("server") || query.has("pr
       <div className="demo-cards">
         <a className="demo-card" href="?demo=editor">
           <span className="card-number">01 / CREATE</span><h2>Editor demo</h2>
-          <p>Explore Lan’s rig, pose the character, and shape your own animation in the studio.</p>
+          <p>Explore Lan’s rig, pose the character, and shape your own animation in the editor.</p>
           <strong>Open the editor <span aria-hidden="true">↗</span></strong>
         </a>
         <a className="demo-card" href="?demo=face">
