@@ -476,6 +476,13 @@ speech takes the mouth while a sound plays and the expression returns
 between sounds.
 _Avoid_: mouth shape, phoneme (that's the sound, not its look)
 
+**Lip sync**:
+Visemes following a voice as it is heard, read from its sound alone: the
+spectrum gives the mouth's shape (open, wide, round, or a fricative's) and
+the loudness how far it plays. It raises viseme weights over the live inputs
+and is never written to the model.
+_Avoid_: lip flap, mouth tracking
+
 **Live input**:
 A value a program gives a puppet for a frame without storing it in the
 model: a control's value, or the weight of an expression or a viseme. Stage

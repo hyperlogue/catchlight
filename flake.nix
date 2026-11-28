@@ -55,8 +55,8 @@
 
         craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
 
-        # Keep shaders, crate Markdown embedded by rustdoc, and the render
-        # schema's JSON example. Git LFS model fixtures stay out, so a plain
+        # Keep shaders, crate Markdown embedded by rustdoc, the render
+        # schema's JSON example and the lip-sync shape network. Git LFS model fixtures stay out, so a plain
         # clone is enough to build the binaries.
         src = lib.cleanSourceWith {
           src = ./.;
@@ -68,6 +68,7 @@
             || path == toString ./THIRD-PARTY-NOTICES.md
             || (lib.hasSuffix ".md" path && lib.hasPrefix "${toString ./crates}/" path)
             || path == toString ./crates/catchlight-cli/tests/fixtures/render-spec.json
+            || path == toString ./crates/catchlight-extension-expressions/src/lipsync/shapes.bin
             || path == toString ./crates/catchlight-importer/src/livliv/model-v4.json
             || path == toString ./crates/catchlight-importer/src/livliv/keyforms-v1.json
             || craneLib.filterCargoSources path type;

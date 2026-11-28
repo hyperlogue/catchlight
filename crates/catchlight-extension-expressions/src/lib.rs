@@ -32,8 +32,10 @@
 //! ```
 
 pub mod authoring;
+mod lipsync;
 mod standard;
 
+pub use lipsync::{LIP_SYNC_VISEMES, LipSync};
 pub use standard::{EMOTIONS, VISEME_CONTROLS, VISEMES, standard_visemes};
 
 use std::collections::BTreeMap;
